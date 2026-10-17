@@ -1,6 +1,6 @@
 # errata
 
-[![license](https://img.shields.io/github/license/f-klement/errata)](https://github.com/f-klement/errata/blob/main/LICENSE)
+[![license](https://img.shields.io/badge/license-MIT-blue)](https://github.com/f-klement/errata/blob/main/LICENSE)
 [![release](https://img.shields.io/github/v/tag/f-klement/errata?label=release)](https://github.com/f-klement/errata/releases)
 [![docker hub](https://img.shields.io/github/v/release/f-klement/errata?label=docker%20hub&logo=docker)](https://hub.docker.com/r/fklement/errata)
 [![docker pulls](https://img.shields.io/docker/pulls/fklement/errata)](https://hub.docker.com/r/fklement/errata)
@@ -141,4 +141,4 @@ CRITICAL vulnerability turns up in the last release.
 
 ## License
 
-MIT.
+MIT, see [LICENSE](https://github.com/f-klement/errata/blob/main/LICENSE).

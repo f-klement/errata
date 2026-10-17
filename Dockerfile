@@ -27,6 +27,12 @@ ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/ko-app
 # Root, as in the released image: CI systems mount a workspace owned by the
 # runner, which a non-root container cannot write. `docker run --user` narrows it.
 USER 0
-LABEL org.opencontainers.image.source=https://github.com/f-klement/errata \
-      org.opencontainers.image.licenses=MIT
+ARG VERSION=dev
+LABEL org.opencontainers.image.title=errata \
+      org.opencontainers.image.description="Checks the claims a repository makes about itself against its files, live systems and next apply." \
+      org.opencontainers.image.url=https://hub.docker.com/r/fklement/errata \
+      org.opencontainers.image.source=https://github.com/f-klement/errata \
+      org.opencontainers.image.documentation=https://github.com/f-klement/errata#readme \
+      org.opencontainers.image.licenses=MIT \
+      org.opencontainers.image.version=${VERSION}
 ENTRYPOINT ["/ko-app/errata"]

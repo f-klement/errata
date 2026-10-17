@@ -49,9 +49,14 @@ kos:
     ko_data_creation_time: "{{ .CommitTimestamp }}"
     sbom: spdx
     labels:
+      org.opencontainers.image.title: errata
+      org.opencontainers.image.description: Checks the claims a repository makes about itself against its files, live systems and next apply.
+      org.opencontainers.image.url: https://hub.docker.com/r/fklement/errata
       org.opencontainers.image.source: https://github.com/f-klement/errata
+      org.opencontainers.image.documentation: https://github.com/f-klement/errata#readme
       org.opencontainers.image.licenses: MIT
       org.opencontainers.image.version: "{{ .Version }}"
+      org.opencontainers.image.revision: "{{ .FullCommit }}"
 
 checksum:
   name_template: checksums.txt
