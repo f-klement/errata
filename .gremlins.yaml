@@ -20,5 +20,7 @@ unleash:
     - ^dist/
     # The CI module cache (GOPATH), which holds every dependency's source.
     - ^\.gopath/
+    # The CI build and lint caches.
+    - ^\.cache/
     # The autopatch planner is its own module, tested by make ci-test.
     - ^ci/
