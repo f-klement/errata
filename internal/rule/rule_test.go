@@ -274,23 +274,6 @@ func TestAgreeCancelled(t *testing.T) {
 	}
 }
 
-// assert is decoded but not evaluated yet, so it is unknown and never true,
-// and its extractors do not run.
-func TestAssertIsUnknown(t *testing.T) {
-	var ran string
-	c := check.Check{ID: "r", Rule: &check.Rule{
-		Extractors: []check.NamedExtractor{named("a", fake{values: []check.Value{at("x", "f", 1)}, root: &ran})},
-		Assert:     "a == 'x'",
-	}}
-	res := Run(context.Background(), "/repo", c)
-	if res.Verdict != check.VerdictUnknown || res.Message != "assert: CEL evaluation is not implemented yet" {
-		t.Fatalf("verdict %s message %q", res.Verdict, res.Message)
-	}
-	if ran != "" {
-		t.Fatalf("assert rule ran its extractor at %q", ran)
-	}
-}
-
 // For any values from any extractors: agree is unknown when an extractor that
 // allow_empty does not list finds nothing, or when fewer than two values are
 // left and no listed extractor came back empty; otherwise it is true exactly

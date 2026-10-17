@@ -9,8 +9,8 @@ stderr 'checks\[0\]: check "a": decode: .*unknown field "why"'
 ! exec errata check -c absent.yaml
 stderr 'absent.yaml'
 
-! exec errata check --format sarif -c no-reason.yaml
-stderr 'unknown --format "sarif", want one of junit, text'
+! exec errata check --format html -c no-reason.yaml
+stderr 'unknown --format "html", want one of junit, sarif, text'
 
 -- no-reason.yaml --
 checks:

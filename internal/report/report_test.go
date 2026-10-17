@@ -94,7 +94,7 @@ func TestWriteErrorsPropagate(t *testing.T) {
 }
 
 func TestFormatNames(t *testing.T) {
-	if got := strings.Join(FormatNames(), ","); got != "junit,text" {
+	if got := strings.Join(FormatNames(), ","); got != "junit,sarif,text" {
 		t.Fatalf("FormatNames = %s", got)
 	}
 }

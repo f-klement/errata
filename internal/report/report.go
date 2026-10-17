@@ -20,6 +20,7 @@ type Reporter interface {
 var Formats = map[string]Reporter{
 	"text":  Text{},
 	"junit": JUnit{},
+	"sarif": SARIF{},
 }
 
 // FormatNames returns the accepted --format values in a stable order.

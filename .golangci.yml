@@ -25,6 +25,7 @@ linters:
     - thelper        # test helpers without t.Helper(), which misreport the failing line
     - forbidigo      # no fmt.Print* outside the CLI: output goes through a Reporter
     - noctx          # exec and net calls without a context cannot be cancelled
+    - depguard       # internal/rule importing os or syscall, which could read the machine's zone files
   settings:
     exhaustive:
       default-signifies-exhaustive: true
@@ -32,6 +33,24 @@ linters:
       forbid:
         - pattern: ^fmt\.Print(f|ln)?$
           msg: write to an io.Writer passed in, so tests can capture output
+        # A verdict must not depend on the machine's zone files, ZONEINFO or TZ.
+        - pattern: ^time\.LoadLocation$
+          msg: read a named zone with rule's zone(), from the embedded database, never the machine's
+        - pattern: ^time\.Local$
+          msg: Local is the machine's zone; a verdict must not depend on where errata runs
+    depguard:
+      rules:
+        # internal/rule evaluates over extracted values and embedded data and reads no file, so
+        # no machine state, zone files included, can reach a verdict.
+        rule-reads-no-files:
+          files:
+            - "**/internal/rule/*.go"
+            - "!$test"
+          deny:
+            - pkg: os
+              desc: internal/rule reads no file; zones come from the embedded database
+            - pkg: syscall
+              desc: internal/rule reads no file; zones come from the embedded database
     nolintlint:
       require-explanation: true
       require-specific: true

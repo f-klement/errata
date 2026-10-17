@@ -72,6 +72,13 @@ The feature no other tool ships.
 - `--base`, the diff range, detected in GitLab, GitHub Actions and Jenkins.
 - Extractors for Dockerfiles, Docker Compose (the effective service configuration), Helm charts and
   values, Kustomize files, and Kubernetes `env:` entries as one more reader for `env:`.
+- Kubernetes manifests read as objects: selected by kind, namespace and name across files, and
+  containers by name. Argo CD and Flux resources, Helmfile, Skaffold, Tilt and DevSpace, buildx bake
+  files and `.dockerignore`, cluster configs (kind, k3d, minikube, k3s, kubeadm, Talos), Carvel ytt
+  and OpenShift Templates, and the keys and recipients of SOPS files and Sealed Secrets, whose values
+  are never decrypted.
+- Container image references parsed once for every place an image is named, with `compare: image`
+  so a Dockerfile, a compose file, a manifest and Helm values agree on one image.
 - Helm template references: every value a template reads exists, and every value is read.
 - Nix: the literal values in flakes and Nix files, and the pins in `flake.lock`.
 

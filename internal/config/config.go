@@ -16,6 +16,7 @@ import (
 
 	"github.com/f-klement/errata/internal/check"
 	"github.com/f-klement/errata/internal/extract"
+	"github.com/f-klement/errata/internal/rule"
 )
 
 // DefaultFile is the config file errata looks for in the repository root.
@@ -183,7 +184,8 @@ func build(raw json.RawMessage) (c check.Check, decoded bool, err error) {
 }
 
 // buildRule builds a rule's extractors in the order of their names, so the
-// errors and every later message list them the same way on every run.
+// errors and every later message list them the same way on every run, and
+// compiles its assert, so a type error is a load error.
 func buildRule(e checkEntry) (*check.Rule, []error) {
 	r := &check.Rule{
 		Agree:      e.Agree,
@@ -212,6 +214,15 @@ func buildRule(e checkEntry) (*check.Rule, []error) {
 		// Declared even when it did not build, so validation does not also
 		// report agree naming an extractor that extract does not declare.
 		r.Extractors = append(r.Extractors, check.NamedExtractor{Name: name, Extractor: x})
+	}
+	// A rule with agree beside assert is refused by validation, so its
+	// expression is not compiled into a second error.
+	if strings.TrimSpace(e.Assert) != "" && len(e.Agree) == 0 && len(names) > 0 {
+		a, err := rule.Compile(e.Assert, names)
+		if err != nil {
+			errs = append(errs, err)
+		}
+		r.Compiled = a
 	}
 	return r, errs
 }

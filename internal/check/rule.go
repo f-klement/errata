@@ -1,6 +1,7 @@
 package check
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -18,11 +19,23 @@ type Rule struct {
 	Agree []string
 	// Assert is a CEL expression over the extracted values.
 	Assert string
+	// Compiled is Assert compiled and type checked at load. A rule that uses
+	// assert and has none is unknown, never true.
+	Compiled Assertion
 	// AllowEmpty names the extractors that may find no value without the rule
 	// becoming unknown. Any other extractor that finds none makes it unknown.
 	AllowEmpty []string
-	// Normalize is applied, in order, to every value before agree compares.
+	// Normalize is applied, in order, to every value before agree compares
+	// it or assert sees it.
 	Normalize []Normalization
+}
+
+// Assertion is a rule's assert: expression, compiled and type checked at load.
+type Assertion interface {
+	// Eval evaluates the expression over each extractor's values, by
+	// extractor name. An error means it could not decide, and the rule is
+	// unknown.
+	Eval(ctx context.Context, values map[string][]string) (bool, error)
 }
 
 // NamedExtractor is one entry under a rule's extract:, with the name agree:
@@ -54,7 +67,7 @@ const (
 var Normalizations = []Normalization{NormalizeTrim, NormalizeLower}
 
 // Normalized returns text after every normalization of r, in order. It is the
-// form agree compares, so a report that groups a rule's Extracted values by it
+// form agree compares and assert sees, so a report that groups a rule's Extracted values by it
 // gets the groups agree got.
 func (r Rule) Normalized(text string) string {
 	for _, n := range r.Normalize {

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -71,13 +72,94 @@ func TestParseRule(t *testing.T) {
 	}
 }
 
+// An assert is compiled at load, so a rule that loads can run it.
 func TestParseAssertRule(t *testing.T) {
-	checks, err := Parse([]byte("checks:\n- id: a\n  reason: r\n  scope: repo\n  extract: {v: {json: {file: f.json, path: a}}}\n  assert: v == 'x'\n"))
+	checks, err := Parse([]byte("checks:\n- id: a\n  reason: r\n  scope: repo\n  extract: {v: {json: {file: f.json, path: a}}, w: {json: {file: g.json, path: a}}}\n  assert: v[0] == w[0]\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if checks[0].Rule.Assert != "v == 'x'" {
-		t.Fatalf("assert = %q", checks[0].Rule.Assert)
+	r := checks[0].Rule
+	if r.Assert != "v[0] == w[0]" {
+		t.Fatalf("assert = %q", r.Assert)
+	}
+	if r.Compiled == nil {
+		t.Fatal("assert loaded without being compiled")
+	}
+	for values, want := range map[[2]string]bool{{"x", "x"}: true, {"x", "y"}: false} {
+		got, err := r.Compiled.Eval(context.Background(), map[string][]string{"v": {values[0]}, "w": {values[1]}})
+		if err != nil || got != want {
+			t.Errorf("%v: %v, %v; want %v", values, got, err, want)
+		}
+	}
+	if checks, err := Parse([]byte(goodRule)); err != nil || checks[0].Rule.Compiled != nil {
+		t.Errorf("an agree rule: err %v, compiled %v; want no assert compiled", err, checks[0].Rule.Compiled)
+	}
+}
+
+// Each case plants one break in an assert. The load error names the check
+// and shows the expression with a caret under the column.
+func TestParseRejectsAsserts(t *testing.T) {
+	head := "checks:\n- id: bad-assert\n  reason: r\n  scope: repo\n  extract: {v: {json: {file: f.json, path: a}}}\n"
+	cases := map[string]struct{ yaml, want string }{
+		"type error": {
+			head + "  assert: v == 'x'\n",
+			"checks[0]: check \"bad-assert\": assert: found no matching overload for '_==_' applied to '(list(string), string)', at line 1 column 3 of the expression:\n    v == 'x'\n      ^",
+		},
+		"undeclared name": {
+			head + "  assert: v[0] == w[0]\n",
+			"assert: undeclared reference to 'w', at line 1 column 9 of the expression:\n    v[0] == w[0]\n            ^",
+		},
+		"result that is not a bool": {
+			head + "  assert: v[0]\n",
+			"assert: the expression has type string; assert needs a bool",
+		},
+		"parse error": {
+			head + "  assert: v[0] ==\n",
+			"assert: Syntax error: mismatched input '<EOF>'",
+		},
+		"error on the second line of a block": {
+			head + "  assert: |\n    size(v) > 0 &&\n      int(v[0]) > '3'\n",
+			"'_>_' applied to '(int, string)', at line 2 column 13 of the expression:\n      int(v[0]) > '3'\n                ^",
+		},
+		"nesting beyond the parser's limit": {
+			head + "  assert: size(v) > 0 && size(" + strings.Repeat("[", 40) + "1" + strings.Repeat("]", 40) + ") > 0\n",
+			`checks[0]: check "bad-assert": assert: the expression nests deeper than 32 levels`,
+		},
+		"extractor the expression does not use": {
+			"checks:\n- id: bad-assert\n  reason: r\n  scope: repo\n  extract: {v: {json: {file: f.json, path: a}}, w: {json: {file: g.json, path: a}}}\n  assert: size(v) > 0\n",
+			`checks[0]: check "bad-assert": extractor "w" is declared but assert does not use it`,
+		},
+		"extractor name CEL cannot read": {
+			"checks:\n- id: bad-assert\n  reason: r\n  scope: repo\n  extract: {s3-endpoint: {json: {file: f.json, path: a}}}\n  assert: 'true'\n",
+			`checks[0]: check "bad-assert": extractor "s3-endpoint": assert refers to an extractor by its name`,
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := Parse([]byte(tc.yaml))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error:\n%v\nwant it to contain:\n%s", err, tc.want)
+			}
+			if !strings.Contains(err.Error(), `checks[0]: check "bad-assert"`) {
+				t.Fatalf("error = %v, want it to name the check", err)
+			}
+		})
+	}
+}
+
+// A rule with agree beside assert gets the one refusal, not a second about
+// the expression, and an assert is compiled even when an extractor does not
+// build, so one pass reports both.
+func TestParseAssertErrorsOnePass(t *testing.T) {
+	_, err := Parse([]byte("checks:\n- id: a\n  reason: r\n  scope: repo\n  extract: {v: {json: {file: f.json, path: a}}}\n  agree: [v]\n  assert: v == 1\n"))
+	if err == nil || !strings.Contains(err.Error(), "agree and assert are both set") || strings.Contains(err.Error(), "no matching overload") {
+		t.Fatalf("error = %v, want only the agree and assert refusal", err)
+	}
+	_, err = Parse([]byte("checks:\n- id: a\n  reason: r\n  scope: repo\n  extract: {v: {}}\n  assert: v == 1\n"))
+	for _, want := range []string{`extractor "v": an extractor sets exactly one`, "no matching overload for '_==_' applied to '(list(string), int)'"} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %v, want it to contain %q", err, want)
+		}
 	}
 }
 

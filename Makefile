@@ -49,7 +49,7 @@ endef
 COVERAGE_MIN := 90
 FUZZTIME     ?= 15s
 # Each fuzz target as package:Name. `go test -fuzz` takes one target per run.
-FUZZ_TARGETS := ./internal/config:FuzzParse ./internal/protocol:FuzzMessage ./internal/report:FuzzJUnit
+FUZZ_TARGETS := ./internal/config:FuzzParse ./internal/protocol:FuzzMessage ./internal/report:FuzzJUnit ./internal/rule:FuzzAssert ./internal/report:FuzzSARIF
 
 .PHONY: check build tools lint fmt test cover fuzz mutation vuln dogfood public-dry release-dry image-dry ci-local ci-test tool-sums hooks clean
 
