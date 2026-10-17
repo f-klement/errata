@@ -1,0 +1,35 @@
+# A rule loads and runs in the same run as a program check, with one coverage
+# line. A rule that cannot compare is unknown and fails the run: an extractor
+# that cannot read its source, and an assert, which is not evaluated yet.
+! exec errata check
+stdout '^UNKNOWN endpoint-agrees \(repo\)$'
+stdout 'said: extractor "service": '
+stdout '^        extractor "secret": '
+stdout '^UNKNOWN endpoint-asserted \(repo\)$'
+stdout 'said: assert: CEL evaluation is not implemented yet$'
+stdout '^0 errata, 2 unknown. Coverage: ran 3, skipped 1.$'
+stdout 'skipped live-program \(live\): no provider can read a live system'
+
+-- errata.yaml --
+checks:
+  - id: endpoint-agrees
+    reason: r
+    scope: repo
+    extract:
+      service: {yaml: {file: absent.yaml, path: spec.clusterIP}}
+      secret: {regex: {file: absent.txt, pattern: 'endpoint: (.*)'}}
+    agree: [service, secret]
+  - id: endpoint-asserted
+    reason: r
+    scope: repo
+    extract:
+      service: {yaml: {file: absent.yaml, path: spec.clusterIP}}
+    assert: service != ''
+  - id: program
+    reason: r
+    scope: repo
+    run: ['true']
+  - id: live-program
+    reason: r
+    scope: live
+    run: ['true']

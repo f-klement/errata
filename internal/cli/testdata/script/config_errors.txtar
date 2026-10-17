@@ -4,7 +4,7 @@ stderr 'reason is required'
 ! stdout .
 
 ! exec errata check -c typo.yaml
-stderr 'unknown field'
+stderr 'checks\[0\]: check "a": decode: .*unknown field "why"'
 
 ! exec errata check -c absent.yaml
 stderr 'absent.yaml'

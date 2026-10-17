@@ -14,15 +14,18 @@ errata.
 | `internal/config` | the `errata.yaml` format, strict decoding, load errors | running anything |
 | `internal/engine` | which checks run, in what order, and which are skipped | the check protocol's details, output formats |
 | `internal/protocol` | the check protocol: run a program, map its exit code to a verdict | config, providers, output |
+| `internal/rule` | evaluating a rule: run its extractors, compare their values, fail closed | how an extractor reads a file, config, output |
+| `internal/extract` | building and running the extractors a rule names | rules, config, output |
 | `internal/provider` | the provider interface, capabilities, the reconciler model, scope gating | any concrete live system (none yet) |
 | `internal/report` | output formats: `text` and `junit` | where the results came from |
-| `internal/check` | the domain types: `Check`, `Scope`, `Verdict`, `Result`, `Report` | every other package |
+| `internal/check` | the domain types: `Check`, `Rule`, `Extractor`, `Value`, `Location`, `Extracted`, `Scope`, `Verdict`, `Result`, `Report` | every other package |
 
 Three seams carry the design:
 
 1. **`engine.Runner`.** The engine calls a function to run a check. Production passes
-   `protocol.Run`; tests pass a fake. A second runner, such as an in-process Kubernetes ownership
-   check, plugs in here without the engine changing.
+   `engine.Dispatch`, which sends a program check to `protocol.Run` and a rule to `rule.Run`, so
+   one run holds both and prints one coverage line; tests pass a fake. A further runner, such as
+   an in-process Kubernetes ownership check, plugs in here without the engine changing.
 2. **`provider.Provider`.** It declares capabilities, so the engine can skip a `live` or `applied`
    check by name when nothing can reach it. The render, read and predict methods are left out on
    purpose: their signatures should come from the first real provider (Kubernetes), not from a
@@ -41,12 +44,22 @@ touching the engine.
 **Strict YAML decoding.** `sigs.k8s.io/yaml` with `UnmarshalStrict` rejects an unknown key. A
 misspelt `reson:` that the decoder ignored would load a check without its reason, and a misspelt
 `scope:` would change what the check needs. Both would fail silently. That library is also the one
-`client-go` uses, so the Kubernetes provider adds no second YAML stack.
+`client-go` uses, so the Kubernetes provider adds no second YAML stack. It decodes through
+`encoding/json`, which matches `Agree:` to `agree` regardless of case and keeps one of the two when
+both are present, so `config` captures the JSON before that decode and refuses a key that differs
+from a known one only in case. The library also reads only the first YAML document, so a file
+with a second `---` is refused rather than having the checks after it dropped.
 
 **A check that cannot evaluate is unknown, and an unknown fails the run.** A crashing program, a
 timeout or a missing binary gives `VerdictUnknown`. It is kept apart from the errata, which hold
 only claims shown false, and it fails the run all the same. A skip is only for a scope that no provider can
 reach, and the coverage line names each one with its gap.
+
+**A rule's extractors are `check.Extractor` values.** `config` decodes `extract:` into
+`extract.Spec` and calls `extract.Build`, so `check` keeps importing nothing from errata and
+`rule` evaluates a rule without knowing what file format an extractor reads. Load errors list a
+rule's extractors in name order and its verdict messages in the order `agree:` names them, so the
+same file gives the same output on every run.
 
 **The check protocol is exit codes first.** Exit 0 is true, exit 1 is false, anything else is an
 error. Stdout is the message, or the `message` field when stdout is a JSON object. A shell script

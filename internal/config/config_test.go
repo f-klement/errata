@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -40,10 +41,14 @@ func TestParse(t *testing.T) {
 	}
 }
 
-func TestParseEmpty(t *testing.T) {
-	checks, err := Parse(nil)
-	if err != nil || len(checks) != 0 {
-		t.Fatalf("Parse(nil) = %v, %v; want no checks and no error", checks, err)
+// A file with no checks does not load: it would run nothing and exit 0, so a
+// gate on it would go green on nothing.
+func TestParseRefusesNoChecks(t *testing.T) {
+	for _, raw := range []string{"", "# only a comment\n", "checks:\n", "checks: []\n", "checks: ~\n"} {
+		checks, err := Parse([]byte(raw))
+		if !errors.Is(err, ErrNoChecks) || !strings.Contains(err.Error(), "the file holds no checks") {
+			t.Errorf("Parse(%q) = %v, %v; want the no-checks refusal", raw, checks, err)
+		}
 	}
 }
 
@@ -65,6 +70,9 @@ func TestParseRejects(t *testing.T) {
 			"checks:\n- {id: a, reason: r, scope: repo, run: [x], timeout: soon}\n", "timeout",
 		},
 		"not yaml": {"checks: [", "decode"},
+		"unknown key names the check": {
+			"checks:\n- {id: a, why: r, reason: r, scope: repo, run: [x]}\n", `checks[0]: check "a": decode: json: unknown field "why"`,
+		},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -73,6 +81,17 @@ func TestParseRejects(t *testing.T) {
 				t.Fatalf("error = %v, want it to contain %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// A YAML scalar under run: is a string, as it was when the file decoded whole.
+func TestParseCoercesScalarsToStrings(t *testing.T) {
+	checks, err := Parse([]byte("checks:\n- {id: a, reason: r, scope: repo, run: [true, 1]}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(checks[0].Run, " "); got != "true 1" {
+		t.Fatalf("run = %q, want \"true 1\"", got)
 	}
 }
 
@@ -102,6 +121,8 @@ func FuzzParse(f *testing.F) {
 	f.Add([]byte(good))
 	f.Add([]byte("checks: []"))
 	f.Add([]byte("checks:\n- {id: a, reason: r, scope: applied, run: [x], timeout: 1ms}\n"))
+	f.Add([]byte(goodRule))
+	f.Add([]byte("checks:\n- {id: a, reason: r, scope: repo, extract: {v: {toml: {file: f, path: a}}}, assert: v}\n"))
 	f.Fuzz(func(t *testing.T, raw []byte) {
 		checks, err := Parse(raw)
 		if err != nil {

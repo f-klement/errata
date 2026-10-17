@@ -142,15 +142,75 @@ errata is not a schema validator, an admission controller or a security policy e
 
 ### Checks
 
-Every check in `errata.yaml` has these keys:
+A check is a program check or a rule. A program check has `run`; a rule has `extract`. A check
+with both, or with neither, does not load, and neither does a file with no checks: it would run
+nothing and pass. Every check has these keys:
 
 | Key | Required | Meaning |
 |---|---|---|
 | `id` | yes | lower-case words joined by single hyphens, unique in the file |
 | `reason` | yes | why the check exists and what breaks without it |
-| `scope` | yes | `repo`, `live` or `applied` |
-| `run` | yes | the command, as a list of arguments, run from the repository root |
-| `timeout` | no | a Go duration such as `10s` or `2m`; default `30s` |
+| `scope` | yes | `repo`, `live` or `applied`; a rule is always `repo` |
+| `run` | program check | the command, as a list of arguments, run from the repository root |
+| `timeout` | no | program check only: a Go duration such as `10s` or `2m`; default `30s` |
+| `extract` | rule | the rule's extractors, each under a name of its own |
+| `agree` | rule: this or `assert` | the extractors whose values must all be equal |
+| `assert` | rule: this or `agree` | a CEL expression over the extracted values (not evaluated yet) |
+| `allow_empty` | no | rule only: the extractors that may find no value, such as `[client]` |
+| `normalize` | no | rule only: `trim`, `lower` or both, in order, applied before `agree` compares |
+
+Keys are matched exactly: `Agree` is refused, not read as `agree`. The file is one YAML document;
+a second `---` does not load, since the checks after it would never run.
+
+### Rules
+
+A rule names extractors and states how their values relate. This one says that the S3 endpoint in
+a Service and the one in the client's config are the same host:
+
+```yaml
+checks:
+  - id: s3-endpoint-agrees
+    reason: >
+      Clients read the endpoint from their config. If it stops naming the Service's address,
+      every upload fails while the Service itself stays healthy.
+    scope: repo
+    extract:
+      service: {yaml: {file: deploy/service.yaml, path: spec.clusterIP}}
+      client:  {regex: {file: config/client.yaml, pattern: 'endpoint: "([^:]+):'}}
+    agree: [service, client]
+```
+
+`agree` holds when every value from every named extractor has the same string form. It names
+only extractors the rule declares, each once, and every extractor the rule declares, so none is
+left out of the comparison by mistake. When the values differ, the message lists each distinct
+value with every `file:line` it was found at:
+
+```text
+FALSE s3-endpoint-agrees (repo)
+  why:  Clients read the endpoint from their config. If it stops naming the Service's address, every upload fails while the Service itself stays healthy.
+  said: agree: the values differ
+          "10.43.0.5" at deploy/service.yaml:12 (service)
+          "s3.internal" at config/client.yaml:3 (client)
+```
+
+`normalize: [trim, lower]` compares the values with surrounding white space removed and in lower
+case; the message shows them in that form. A rule has `agree` or `assert`, never both: one check
+tests one relation, so two relations are two checks. `assert` loads, but until CEL evaluation
+lands a rule that uses it is unknown.
+
+A rule fails closed. An extractor that cannot read its source makes the rule unknown, with the
+extractor's error in the message. So does an extractor that finds no value, unless `allow_empty`
+lists it. A rule that has fewer than two values to compare is unknown too, so `agree: [tags]`
+over a regular expression with one match is unknown and over two matches compares them. The
+exception is a rule where an extractor that `allow_empty` lists came back empty: one value left
+is true. With no value at all the rule is unknown, even when `allow_empty` lists every extractor.
+Two extractors with the same spec, or a name listed twice in `agree` or `allow_empty`, do not
+load. A rule takes no `timeout`, because its extractors read files inside errata rather
+than running a program, and its scope is `repo` for the same reason.
+
+### Extractors
+
+<!-- The lead fills this section from trio C's draft: the keys under yaml, json, toml and regex. -->
 
 ### The check protocol
 
@@ -271,10 +331,12 @@ Each package has one job, and the domain types import nothing else:
 
 | Package | Job |
 |---|---|
-| `internal/check` | the domain: check, scope, verdict, result, report |
+| `internal/check` | the domain: check, rule, extractor, value, scope, verdict, result, report |
 | `internal/config` | reads `errata.yaml`, strictly |
 | `internal/engine` | decides which checks run and which are skipped |
 | `internal/protocol` | runs a check program and turns its exit code into a verdict |
+| `internal/rule` | evaluates a rule: runs its extractors and compares their values |
+| `internal/extract` | builds the extractors a rule names and reads their values from files |
 | `internal/provider` | the interface for running systems, and the reconciler model |
 | `internal/report` | the text and JUnit outputs |
 | `internal/cli` | flags, wiring and exit codes |
