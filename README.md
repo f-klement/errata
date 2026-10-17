@@ -2,7 +2,7 @@
 
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![release](https://img.shields.io/github/v/tag/f-klement/errata?label=release)](https://github.com/f-klement/errata/releases)
-[![docker hub](https://img.shields.io/github/v/release/f-klement/errata?label=docker%20hub&logo=docker)](https://hub.docker.com/r/fklement/errata)
+[![docker hub](https://img.shields.io/docker/v/fklement/errata?sort=semver&label=docker%20hub&logo=docker)](https://hub.docker.com/r/fklement/errata/tags)
 [![docker pulls](https://img.shields.io/docker/pulls/fklement/errata)](https://hub.docker.com/r/fklement/errata)
 [![go](https://img.shields.io/github/go-mod/go-version/f-klement/errata?logo=go)](go.mod)
 [![Ko-fi](https://img.shields.io/badge/Ko--fi-buy%20me%20a%20coffee-FF5E5B?logo=kofi&logoColor=white)](https://ko-fi.com/fklement)
@@ -252,8 +252,8 @@ layer in it catches a different kind of defect:
 
 The container image: `docker build -t errata .` builds it from the [Dockerfile](Dockerfile).
 Releases build the same image with [ko](https://ko.build) from the `kos:` section of
-`.goreleaser.yaml`, which also attaches an SBOM per platform; CI checks that both use the same base
-images. `make release-dry` builds the release binaries without publishing.
+`.goreleaser.yaml`, and attach an SPDX SBOM per binary to the GitHub release; CI checks that both
+recipes use the same base images. `make release-dry` builds the release binaries without publishing.
 
 The API tests in `internal/cli/testdata/script` run the real binary, so they pin the output and
 the exit codes that CI depends on. [docs/architecture.md](docs/architecture.md) says what each

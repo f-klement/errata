@@ -13,6 +13,7 @@ GOLANGCI_LINT_VERSION := v2.15.0
 GREMLINS_VERSION      := v0.6.0
 GOVULNCHECK_VERSION   := v1.9.0
 GORELEASER_VERSION    := v2.18.3
+SYFT_VERSION          := v1.54.0
 
 # SHA-256 of each released archive, from the project's own checksum file at
 # that version. After a version bump, `make tool-sums` rewrites them; until
@@ -24,6 +25,8 @@ GREMLINS_SHA256_linux_amd64      := b02a42e47935f891c9a411d68c07e211c7082609e79c
 GREMLINS_SHA256_linux_arm64      := 686542674e54559afb7e86d6994d342c19a856cfd970c315748989537936664c
 GORELEASER_SHA256_linux_amd64    := b8dee4728bca1aba0d71a832a17cd0a3799f75372878e7ffa36aef2343bce0bc
 GORELEASER_SHA256_linux_arm64    := fa7011a7f8de3b504326b8552cf21c708ed3089519b01d372da32ef4e8d298d7
+SYFT_SHA256_linux_amd64          := 54a87372498168b2d033e876fd41fa4e8035b872699e525a57046e1f2f09c860
+SYFT_SHA256_linux_arm64          := ee6d4566373a05b344bc6b5f1706f14419bf9338ba39ff686e247deefe9b8818
 
 PLATFORM := $(shell uname -s | tr A-Z a-z)_$(shell uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
 # GoReleaser names its archives Linux_x86_64 and Linux_arm64.
@@ -56,7 +59,7 @@ check: lint test cover fuzz mutation vuln dogfood $(INTERNAL)
 build:
 	CGO_ENABLED=0 $(GO) build -trimpath -ldflags '$(LDFLAGS)' -o errata ./cmd/errata
 
-tools: $(BIN)/golangci-lint $(BIN)/gremlins $(BIN)/govulncheck $(BIN)/goreleaser
+tools: $(BIN)/golangci-lint $(BIN)/gremlins $(BIN)/govulncheck $(BIN)/goreleaser $(BIN)/syft
 
 $(BIN)/golangci-lint:
 ifneq ($(GOLANGCI_LINT_SHA256_$(PLATFORM)),)
@@ -77,6 +80,13 @@ ifneq ($(GORELEASER_SHA256_$(PLATFORM)),)
 	$(call fetch,https://github.com/goreleaser/goreleaser/releases/download/$(GORELEASER_VERSION)/goreleaser_$(GORELEASER_ASSET).tar.gz,$(GORELEASER_SHA256_$(PLATFORM)),goreleaser,$@)
 else
 	GOBIN=$(BIN) $(GO) install github.com/goreleaser/goreleaser/v2@$(GORELEASER_VERSION)
+endif
+# syft writes the SPDX SBOM GoReleaser attaches to each release archive.
+$(BIN)/syft:
+ifneq ($(SYFT_SHA256_$(PLATFORM)),)
+	$(call fetch,https://github.com/anchore/syft/releases/download/$(SYFT_VERSION)/syft_$(SYFT_VERSION:v%=%)_$(PLATFORM).tar.gz,$(SYFT_SHA256_$(PLATFORM)),syft,$@)
+else
+	GOBIN=$(BIN) $(GO) install github.com/anchore/syft/cmd/syft@$(SYFT_VERSION)
 endif
 
 lint: $(BIN)/golangci-lint

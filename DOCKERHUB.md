@@ -2,7 +2,7 @@
 
 [![license](https://img.shields.io/badge/license-MIT-blue)](https://github.com/f-klement/errata/blob/main/LICENSE)
 [![release](https://img.shields.io/github/v/tag/f-klement/errata?label=release)](https://github.com/f-klement/errata/releases)
-[![docker hub](https://img.shields.io/github/v/release/f-klement/errata?label=docker%20hub&logo=docker)](https://hub.docker.com/r/fklement/errata)
+[![docker hub](https://img.shields.io/docker/v/fklement/errata?sort=semver&label=docker%20hub&logo=docker)](https://hub.docker.com/r/fklement/errata/tags)
 [![docker pulls](https://img.shields.io/docker/pulls/fklement/errata)](https://hub.docker.com/r/fklement/errata)
 [![Ko-fi](https://img.shields.io/badge/Ko--fi-buy%20me%20a%20coffee-FF5E5B?logo=kofi&logoColor=white)](https://ko-fi.com/fklement)
 
@@ -98,12 +98,12 @@ jobs:
 Releases are built with [ko](https://ko.build) from the `kos:` section of
 [`.goreleaser.yaml`](https://github.com/f-klement/errata/blob/main/.goreleaser.yaml): errata
 compiled into a static binary on top of `bash:5.3-alpine3.24`, pinned by digest, for `linux/amd64`
-and `linux/arm64`, with an SPDX SBOM per platform. Each release builds it from the public source at
-its tag.
+and `linux/arm64`. Each release builds it from the public source at its tag, and the
+[GitHub release](https://github.com/f-klement/errata/releases) carries an SPDX SBOM for each
+binary.
 
 The [`Dockerfile`](https://github.com/f-klement/errata/blob/main/Dockerfile) builds the same image
-with `docker build -t errata .`: the same base images, binary path, user and entrypoint, without the
-SBOM. CI builds it on every change and refuses a base image that differs from the release's.
+with `docker build -t errata .`: the same base images, binary path, user and entrypoint. CI builds it on every change and refuses a base image that differs from the release's.
 
 ### Adding tools
 
@@ -137,7 +137,7 @@ CRITICAL vulnerability turns up in the last release.
   and the planned dry run scope will use dry runs only.
 - **It is not a language linter.** Rules that need a language's parser or types belong in that
   language's linter. errata checks what files, git and running systems say.
-- Images are published for `linux/amd64` and `linux/arm64`, each with an SPDX SBOM.
+- Images are published for `linux/amd64` and `linux/arm64`.
 
 ## License
 
