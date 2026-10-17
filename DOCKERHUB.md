@@ -23,10 +23,10 @@ image.
 
 ## Run it
 
-Mount the repository at `/repo`, which is the working directory:
+Mount the repository and make it the working directory:
 
 ```bash
-docker run --rm -v "$PWD:/repo" fklement/errata check
+docker run --rm -v "$PWD:/repo" -w /repo fklement/errata check
 ```
 
 It reads `errata.yaml` from the repository root. A minimal one:
@@ -75,7 +75,7 @@ jobs:
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--root` | `.` (`/repo` in the image) | the repository root, and the checks' working directory |
+| `--root` | `.` | the repository root, and the checks' working directory |
 | `--config`, `-c` | `<root>/errata.yaml` | the config file |
 | `--format`, `-f` | `text` | `text`, or `junit` for CI |
 

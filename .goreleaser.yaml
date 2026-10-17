@@ -32,8 +32,11 @@ kos:
     # newest digest when Trivy reports a fixed Alpine package.
     base_image: bash:5.3-alpine3.24@sha256:61962062d969cb46dfc2bad061d36342406fa485f64f246aa7e95693ca07df1f
     platforms: [linux/amd64, linux/arm64]
+    # No working_dir here: in GoReleaser's kos it is the directory to BUILD
+    # from, not the image's working directory, and setting it to /repo broke
+    # the v0.1.0 release. ko cannot set an image working directory, so the
+    # docs run the image with `docker run -w /repo`.
     tags: ["{{ .Version }}", latest]
-    working_dir: /repo
     # Root, because the image is mostly a CI job image: GitHub Actions and
     # GitLab mount a workspace owned by the runner's user, which a non root
     # container cannot write. `docker run --user` still narrows it.

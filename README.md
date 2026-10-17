@@ -82,10 +82,10 @@ FALSE docs-name-the-ci-node (repo)
 1 erratum, 0 unknown. Coverage: ran 1, skipped 0.
 ```
 
-Or with Docker, with the repository mounted at `/repo`:
+Or with Docker, with the repository mounted at `/repo` and used as the working directory:
 
 ```bash
-docker run --rm -v "$PWD:/repo" fklement/errata check
+docker run --rm -v "$PWD:/repo" -w /repo fklement/errata check
 ```
 
 ## Features
