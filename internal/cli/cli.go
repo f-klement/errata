@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -69,10 +70,24 @@ func newVersionCmd() *cobra.Command {
 		Short: "Print the errata version",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			_, err := fmt.Fprintln(cmd.OutOrStdout(), Version)
+			_, err := fmt.Fprintln(cmd.OutOrStdout(), resolveVersion(Version, debug.ReadBuildInfo))
 			return err
 		},
 	}
+}
+
+// resolveVersion prefers the version a release build stamps with -ldflags.
+// `go install module@vX.Y.Z` stamps nothing, but Go records the module
+// version in the binary, so that is the fallback; a local build records
+// "(devel)" and stays "dev".
+func resolveVersion(stamped string, buildInfo func() (*debug.BuildInfo, bool)) string {
+	if stamped != "dev" {
+		return stamped
+	}
+	if info, ok := buildInfo(); ok && info != nil && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		return info.Main.Version
+	}
+	return stamped
 }
 
 func newCheckCmd() *cobra.Command {

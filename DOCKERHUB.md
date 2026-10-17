@@ -2,7 +2,7 @@
 
 [![license](https://img.shields.io/github/license/f-klement/errata)](https://github.com/f-klement/errata/blob/main/LICENSE)
 [![release](https://img.shields.io/github/v/tag/f-klement/errata?label=release)](https://github.com/f-klement/errata/releases)
-[![docker hub](https://img.shields.io/docker/v/fklement/errata?label=docker%20hub&logo=docker)](https://hub.docker.com/r/fklement/errata)
+[![docker hub](https://img.shields.io/github/v/release/f-klement/errata?label=docker%20hub&logo=docker)](https://hub.docker.com/r/fklement/errata)
 [![docker pulls](https://img.shields.io/docker/pulls/fklement/errata)](https://hub.docker.com/r/fklement/errata)
 [![Ko-fi](https://img.shields.io/badge/Ko--fi-buy%20me%20a%20coffee-FF5E5B?logo=kofi&logoColor=white)](https://ko-fi.com/fklement)
 
@@ -92,6 +92,18 @@ jobs:
   `awk` and `find`.
 - It runs as root, so a CI job can write its report into the workspace. Pass `--user` to
   `docker run` to run it as yourself.
+
+### How it is built
+
+Releases are built with [ko](https://ko.build) from the `kos:` section of
+[`.goreleaser.yaml`](https://github.com/f-klement/errata/blob/main/.goreleaser.yaml): errata
+compiled into a static binary on top of `bash:5.3-alpine3.24`, pinned by digest, for `linux/amd64`
+and `linux/arm64`, with an SPDX SBOM per platform. Each release builds it from the public source at
+its tag.
+
+The [`Dockerfile`](https://github.com/f-klement/errata/blob/main/Dockerfile) builds the same image
+with `docker build -t errata .`: the same base images, binary path, user and entrypoint, without the
+SBOM. CI builds it on every change and refuses a base image that differs from the release's.
 
 ### Adding tools
 
