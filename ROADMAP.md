@@ -12,14 +12,14 @@ A complete tool for running checks in CI, with nothing yet that needs a running 
 - Fail closed: a check that cannot evaluate is unknown, and an unknown fails the run.
 - Coverage on every run, with the gap behind each skipped check.
 - Text and JUnit output; binaries for six platforms and a container image.
+- Every pinned dependency, tool and base image kept current by Renovate, and a nightly scan of the
+  released image that cuts a patch release when a fixable vulnerability appears.
 
 ## v0.2.0: rules in YAML
 
 The baseline a checker of claims is compared on, and the release that makes most repo-scope checks
 need no program at all.
 
-- First: every pinned dependency, tool and base image kept current by Renovate, so the CI image
-  and the release image pick up security fixes without anyone editing a version by hand.
 - Rules: name extractors and state how their values relate.
   - `agree:` every value is equal.
   - `assert:` a CEL expression holds, for relations beyond equality, such as a threshold that must

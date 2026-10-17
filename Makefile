@@ -15,8 +15,9 @@ GOVULNCHECK_VERSION   := v1.9.0
 GORELEASER_VERSION    := v2.18.3
 
 # SHA-256 of each released archive, from the project's own checksum file at
-# that version. A version bump needs these bumped with it, or the download
-# fails its check. govulncheck publishes no binaries and is always built.
+# that version. After a version bump, `make tool-sums` rewrites them; until
+# then the download fails its check. govulncheck publishes no binaries and is
+# always built.
 GOLANGCI_LINT_SHA256_linux_amd64 := 9b7fe6a6bf6334b98decf8d86b11415ea7889afdabdd1959fdce23af2a9ebcea
 GOLANGCI_LINT_SHA256_linux_arm64 := b4d8f17068b35ee6060cc2f69a16fb48740d706fbba81661c318649c114a6998
 GREMLINS_SHA256_linux_amd64      := b02a42e47935f891c9a411d68c07e211c7082609e79c2435b67c85ee9658c538
@@ -32,7 +33,8 @@ GORELEASER_ASSET := $(subst linux_amd64,Linux_x86_64,$(subst linux_arm64,Linux_a
 define fetch
 	@tmp=$$(mktemp -d) && trap 'rm -rf "$$tmp"' EXIT && \
 	curl -sSfL -o "$$tmp/a.tar.gz" "$(1)" && \
-	echo "$(2)  $$tmp/a.tar.gz" | sha256sum -c --quiet - && \
+	{ echo "$(2)  $$tmp/a.tar.gz" | sha256sum -c --quiet - || \
+	  { echo "checksum mismatch for $(1). After a version bump, run make tool-sums." >&2; exit 1; }; } && \
 	tar -xzf "$$tmp/a.tar.gz" -C "$$tmp" "$(3)" && \
 	mkdir -p "$(BIN)" && install -m 0755 "$$tmp/$(3)" "$(4)" && \
 	echo "installed $(4)"
@@ -43,7 +45,7 @@ FUZZTIME     ?= 15s
 # Each fuzz target as package:Name. `go test -fuzz` takes one target per run.
 FUZZ_TARGETS := ./internal/config:FuzzParse ./internal/protocol:FuzzMessage ./internal/report:FuzzJUnit
 
-.PHONY: check build tools lint fmt test cover fuzz mutation vuln dogfood public-dry release-dry ci-test clean
+.PHONY: check build tools lint fmt test cover fuzz mutation vuln dogfood public-dry release-dry ci-test tool-sums clean
 
 # ci/ is stripped from the public mirror, so a public clone runs the gate
 # without the publish and autopatch targets.
@@ -134,6 +136,10 @@ ci-test:
 release-dry: $(BIN)/goreleaser
 	$(BIN)/goreleaser check
 	$(BIN)/goreleaser release --snapshot --clean --skip=publish,ko
+
+# Rewrite the archive checksums for the pinned tool versions.
+tool-sums:
+	scripts/tool-sums.sh
 
 clean:
 	rm -rf errata bin coverage.out public dist
