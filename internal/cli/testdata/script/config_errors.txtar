@@ -1,0 +1,20 @@
+# A config that does not load exits 2, names the problem, and runs nothing.
+! exec errata check -c no-reason.yaml
+stderr 'reason is required'
+! stdout .
+
+! exec errata check -c typo.yaml
+stderr 'unknown field'
+
+! exec errata check -c absent.yaml
+stderr 'absent.yaml'
+
+! exec errata check --format sarif -c no-reason.yaml
+stderr 'unknown --format "sarif", want one of junit, text'
+
+-- no-reason.yaml --
+checks:
+  - {id: a, scope: repo, run: ['true']}
+-- typo.yaml --
+checks:
+  - {id: a, why: r, scope: repo, run: ['true']}

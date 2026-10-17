@@ -1,0 +1,13 @@
+# Every claim true: exit 0, coverage printed anyway.
+exec errata check
+stdout '^0 errata, 0 unknown. Coverage: ran 1, skipped 0.$'
+! stderr .
+
+-- errata.yaml --
+checks:
+  - id: readme-exists
+    reason: The README is the entry point.
+    scope: repo
+    run: [test, -f, README.md]
+-- README.md --
+hello

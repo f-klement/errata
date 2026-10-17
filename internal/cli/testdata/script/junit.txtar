@@ -1,0 +1,8 @@
+! exec errata check --format junit
+stdout '<testsuite name="errata" tests="2" failures="1" errors="0" skipped="0">'
+stdout '<failure message="bad">'
+
+-- errata.yaml --
+checks:
+  - {id: good, reason: r, scope: repo, run: ['true']}
+  - {id: bad, reason: r, scope: repo, run: [sh, -c, 'echo bad; exit 1']}

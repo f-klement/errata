@@ -1,0 +1,15 @@
+# errata's own checks: claims this repository makes about itself.
+checks:
+  - id: docs-use-no-dashes
+    reason: >
+      CLAUDE.md forbids em dashes, en dashes and spaced hyphens as punctuation in prose. A
+      dash that slips into a document is the rule broken in the place an agent reads it.
+    scope: repo
+    run: [sh, checks/no-dashes.sh]
+
+  - id: docs-relative-links-resolve
+    reason: >
+      The README and docs link to each other by relative path. A renamed file leaves a link
+      that 404s on the forge and sends a reader nowhere, with no error anywhere.
+    scope: repo
+    run: [sh, checks/relative-links.sh]

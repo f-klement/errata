@@ -1,0 +1,8 @@
+# --root moves both the default config location and the checks' working dir.
+exec errata check --root repo
+stdout 'ran 1'
+
+-- repo/errata.yaml --
+checks:
+  - {id: here, reason: r, scope: repo, run: [test, -f, marker]}
+-- repo/marker --

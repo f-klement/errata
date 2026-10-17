@@ -1,0 +1,59 @@
+# golangci-lint v2. Each linter here catches a defect class, not a style
+# preference; style is gofmt and goimports, enforced as formatters.
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard # errcheck, govet, ineffassign, staticcheck, unused
+  enable:
+    - errorlint      # errors compared with == or type-asserted, which breaks on wrapped errors
+    - nilerr         # returns nil after checking err != nil
+    - gosec          # exec with tainted input, file permissions, weak crypto
+    - gocritic       # a broad set of bug patterns (appendAssign, badCond, dupBranchBody)
+    - revive         # exported identifiers without a doc comment, among others
+    - exhaustive     # a switch on Scope or Verdict that misses a value
+    - unparam        # a parameter that always receives the same value
+    - unconvert      # needless conversions that hide a type mismatch
+    - nolintlint     # a //nolint without a linter name and a reason
+    - misspell
+    - copyloopvar
+    - intrange
+    - perfsprint
+    - usetesting     # os.MkdirTemp in tests instead of t.TempDir
+    - thelper        # test helpers without t.Helper(), which misreport the failing line
+    - forbidigo      # no fmt.Print* outside the CLI: output goes through a Reporter
+    - noctx          # exec and net calls without a context cannot be cancelled
+  settings:
+    exhaustive:
+      default-signifies-exhaustive: true
+    forbidigo:
+      forbid:
+        - pattern: ^fmt\.Print(f|ln)?$
+          msg: write to an io.Writer passed in, so tests can capture output
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+    revive:
+      rules:
+        - name: exported
+        - name: package-comments
+        - name: unused-parameter
+        - name: unreachable-code
+        - name: early-return
+    gosec:
+      excludes:
+        - G204 # running the user's check command is the check protocol
+        - G304 # reading the config path the user passed is the job
+  exclusions:
+    presets: [std-error-handling]
+    rules:
+      - path: _test\.go
+        linters: [gosec, forbidigo]
+
+formatters:
+  enable: [gofmt, goimports]
+  settings:
+    goimports:
+      local-prefixes: [github.com/f-klement/errata]

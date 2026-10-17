@@ -1,0 +1,9 @@
+/errata
+/bin
+/dist
+/target
+node_modules/
+.env
+coverage.out
+/public
+/.gopath

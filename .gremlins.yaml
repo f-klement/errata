@@ -1,0 +1,24 @@
+# Mutation testing: gremlins changes one operator at a time and reruns the
+# tests. A mutant that survives is a behaviour no test pins.
+unleash:
+  threshold:
+    efficacy: 85        # killed / (killed + lived), percent
+    # Mutants reached by any test, percent. Not 100: Go's coverage profile
+    # starts a switch case's block after the colon, so a mutant in a case
+    # expression always reads as not covered even when tests run that arm.
+    mutant-coverage: 85
+  integration: false
+  # Each mutant's time limit is this multiple of the baseline test time. The
+  # protocol tests run real subprocesses, so on a loaded machine the default
+  # turns slow mutants into timeouts, which count against mutant coverage.
+  timeout-coefficient: 10
+  workers: 2
+  exclude-files:
+    - cmd/errata/main.go
+    # Generated copies of the sources: make public-dry and make release-dry.
+    - ^public/
+    - ^dist/
+    # The CI module cache (GOPATH), which holds every dependency's source.
+    - ^\.gopath/
+    # The autopatch planner is its own module, tested by make ci-test.
+    - ^ci/

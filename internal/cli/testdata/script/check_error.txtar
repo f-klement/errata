@@ -1,0 +1,12 @@
+# A check that cannot evaluate is unknown. It is not an erratum, since its
+# claim was not shown false, but it fails the run rather than passing silently.
+! exec errata check
+stdout '^UNKNOWN broken \(repo\)$'
+stdout '^0 errata, 1 unknown. Coverage: ran 1, skipped 0.$'
+
+-- errata.yaml --
+checks:
+  - id: broken
+    reason: r
+    scope: repo
+    run: [errata-no-such-program]

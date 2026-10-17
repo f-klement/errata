@@ -1,0 +1,14 @@
+# Exit codes are the CI contract: 0 clean, 1 an erratum or an unknown, 2 usage.
+exec errata check -c clean.yaml
+! exec errata check -c dirty.yaml
+exec sh -c 'errata check -c dirty.yaml >/dev/null; echo code=$?'
+stdout code=1
+exec sh -c 'errata check -c missing.yaml 2>/dev/null; echo code=$?'
+stdout code=2
+
+-- clean.yaml --
+checks:
+  - {id: a, reason: r, scope: repo, run: ['true']}
+-- dirty.yaml --
+checks:
+  - {id: a, reason: r, scope: repo, run: ['false']}

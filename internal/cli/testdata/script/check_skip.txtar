@@ -1,0 +1,12 @@
+# No provider exists yet, so live and applied checks are skipped by name and
+# the coverage line says so. A skip alone does not fail the run.
+exec errata check
+stdout '^0 errata, 0 unknown. Coverage: ran 1, skipped 2.$'
+stdout 'skipped pinned-image \(live\): no provider can read a live system'
+stdout 'skipped field-owner \(applied\): no provider can read and predict a live system'
+
+-- errata.yaml --
+checks:
+  - {id: always, reason: r, scope: repo, run: ['true']}
+  - {id: pinned-image, reason: r, scope: live, run: ['true']}
+  - {id: field-owner, reason: r, scope: applied, run: ['true']}

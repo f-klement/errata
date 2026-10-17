@@ -1,0 +1,15 @@
+# A false claim: exit 1, and the output carries the reason and the message.
+! exec errata check
+stdout '^FALSE ci-node \(repo\)$'
+stdout 'why:  CI moved to builder'
+stdout 'said: docs/ci.md names atlas'
+stdout '^1 erratum, 0 unknown. Coverage: ran 1, skipped 0.$'
+
+-- errata.yaml --
+checks:
+  - id: ci-node
+    reason: CI moved to builder; a doc naming another node misleads whoever reads it.
+    scope: repo
+    run: [sh, -c, 'grep -q atlas docs/ci.md && echo "docs/ci.md names atlas" && exit 1; exit 0']
+-- docs/ci.md --
+CI runs on atlas.

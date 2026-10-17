@@ -1,0 +1,10 @@
+# Trivy findings accepted on purpose. Each entry says why and expires, so an
+# acceptance is reviewed instead of silently outliving its reason.
+misconfigurations:
+  - id: DS-0002
+    paths: [ci/image/Dockerfile]
+    statement: >
+      The CI image runs as root on purpose: GitLab mounts the job workspace owned
+      by the runner, and the jobs write their reports and build output there. It
+      runs only as a CI job image, never as a service.
+    expired_at: 2027-04-17

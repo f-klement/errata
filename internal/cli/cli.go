@@ -1,0 +1,121 @@
+// Package cli turns arguments into a run and a run into an exit code. It holds
+// no domain logic: it parses flags, wires config, engine and reporter
+// together, and maps the outcome to the exit codes below.
+package cli
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"path/filepath"
+	"strings"
+
+	"github.com/spf13/cobra"
+
+	"github.com/f-klement/errata/internal/config"
+	"github.com/f-klement/errata/internal/engine"
+	"github.com/f-klement/errata/internal/report"
+)
+
+// Exit codes. CI reads only these, so they are part of the public contract.
+const (
+	ExitOK     = 0 // every check that ran found its claim true
+	ExitErrata = 1 // at least one erratum or unknown
+	ExitUsage  = 2 // bad flags or a config that does not load
+)
+
+// Version is set at build time with -ldflags "-X .../cli.Version=v0.1.0".
+var Version = "dev"
+
+// errErrata marks a run that completed and failed on an erratum or an
+// unknown, so Execute can tell it apart from a usage error.
+var errErrata = errors.New("errata found")
+
+// Execute runs the CLI with args and returns the process exit code. It takes
+// its streams as arguments so tests drive it without a subprocess.
+func Execute(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	root := newRoot()
+	root.SetArgs(args)
+	root.SetOut(stdout)
+	root.SetErr(stderr)
+
+	err := root.ExecuteContext(ctx)
+	switch {
+	case err == nil:
+		return ExitOK
+	case errors.Is(err, errErrata):
+		return ExitErrata
+	default:
+		fmt.Fprintln(stderr, "errata:", err)
+		return ExitUsage
+	}
+}
+
+func newRoot() *cobra.Command {
+	root := &cobra.Command{
+		Use:           "errata",
+		Short:         "Check the claims a repository makes about itself",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+	}
+	root.AddCommand(newCheckCmd(), newVersionCmd())
+	return root
+}
+
+func newVersionCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print the errata version",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			_, err := fmt.Fprintln(cmd.OutOrStdout(), Version)
+			return err
+		},
+	}
+}
+
+func newCheckCmd() *cobra.Command {
+	var (
+		repoRoot   string
+		configPath string
+		format     string
+	)
+	cmd := &cobra.Command{
+		Use:   "check",
+		Short: "Run the checks in errata.yaml and print the errata",
+		Long: "Run every check the available providers can reach, skip the rest with the reason,\n" +
+			"and print the errata and the coverage. errata never applies anything.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			reporter, ok := report.Formats[format]
+			if !ok {
+				return fmt.Errorf("unknown --format %q, want one of %s", format, strings.Join(report.FormatNames(), ", "))
+			}
+			absRoot, err := filepath.Abs(repoRoot)
+			if err != nil {
+				return err
+			}
+			if configPath == "" {
+				configPath = filepath.Join(absRoot, config.DefaultFile)
+			}
+			checks, err := config.Load(configPath)
+			if err != nil {
+				return fmt.Errorf("load %s: %w", configPath, err)
+			}
+
+			rep := engine.New(absRoot, nil).Execute(cmd.Context(), checks)
+			if err := reporter.Write(cmd.OutOrStdout(), rep); err != nil {
+				return err
+			}
+			if rep.Failed() {
+				return errErrata
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&repoRoot, "root", ".", "repository root; checks run with this as their working directory")
+	cmd.Flags().StringVarP(&configPath, "config", "c", "", "config file (default <root>/"+config.DefaultFile+")")
+	cmd.Flags().StringVarP(&format, "format", "f", "text", "output format: "+strings.Join(report.FormatNames(), ", "))
+	return cmd
+}

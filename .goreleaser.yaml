@@ -1,0 +1,64 @@
+# One run builds every release artefact from the public source at a tag:
+# binaries and checksums for the GitHub release (created through the REST API,
+# no GitHub Actions), and a multi-arch image pushed to Docker Hub with ko,
+# which needs no Docker daemon. `make release-dry` builds the binaries locally
+# without a token and uploads nothing.
+version: 2
+
+builds:
+  - main: ./cmd/errata
+    env: [CGO_ENABLED=0]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X github.com/f-klement/errata/internal/cli.Version={{ .Tag }}
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+
+archives:
+  - formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files: [LICENSE, README.md]
+
+kos:
+  - main: ./cmd/errata
+    repositories: [docker.io/fklement/errata]
+    bare: true
+    # Docker's official bash image, which is Alpine with bash: checks are
+    # programs, usually shell scripts, and they may use bash syntax. A
+    # distroless static base has no shell at all. The digest fixes what is
+    # built; ci/autopatch.sh re-resolves the moving 5.3-alpine3.24 tag to its
+    # newest digest when Trivy reports a fixed Alpine package.
+    base_image: bash:5.3-alpine3.24@sha256:61962062d969cb46dfc2bad061d36342406fa485f64f246aa7e95693ca07df1f
+    platforms: [linux/amd64, linux/arm64]
+    tags: ["{{ .Version }}", latest]
+    working_dir: /repo
+    # Root, because the image is mostly a CI job image: GitHub Actions and
+    # GitLab mount a workspace owned by the runner's user, which a non root
+    # container cannot write. `docker run --user` still narrows it.
+    user: "0"
+    env: [CGO_ENABLED=0]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X github.com/f-klement/errata/internal/cli.Version={{ .Tag }}
+    creation_time: "{{ .CommitTimestamp }}"
+    ko_data_creation_time: "{{ .CommitTimestamp }}"
+    sbom: spdx
+    labels:
+      org.opencontainers.image.source: https://github.com/f-klement/errata
+      org.opencontainers.image.licenses: MIT
+      org.opencontainers.image.version: "{{ .Version }}"
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  # GitHub writes the notes from the commits between tags, which works on the
+  # shallow clone a release builds from.
+  use: github-native
+
+release:
+  github:
+    owner: f-klement
+    name: errata
