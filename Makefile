@@ -14,6 +14,7 @@ GREMLINS_VERSION      := v0.6.0
 GOVULNCHECK_VERSION   := v1.9.0
 GORELEASER_VERSION    := v2.18.3
 SYFT_VERSION          := v1.54.0
+KO_VERSION            := v0.19.1
 
 # SHA-256 of each released archive, from the project's own checksum file at
 # that version. After a version bump, `make tool-sums` rewrites them; until
@@ -27,6 +28,8 @@ GORELEASER_SHA256_linux_amd64    := b8dee4728bca1aba0d71a832a17cd0a3799f75372878
 GORELEASER_SHA256_linux_arm64    := fa7011a7f8de3b504326b8552cf21c708ed3089519b01d372da32ef4e8d298d7
 SYFT_SHA256_linux_amd64          := 54a87372498168b2d033e876fd41fa4e8035b872699e525a57046e1f2f09c860
 SYFT_SHA256_linux_arm64          := ee6d4566373a05b344bc6b5f1706f14419bf9338ba39ff686e247deefe9b8818
+KO_SHA256_linux_amd64            := 635ac6ea3fd376c935fee597fbb29ab2c2449f49ef1655085fe3aa9c25fed7a5
+KO_SHA256_linux_arm64            := 4099b2d1170d3b8a70e049237462efc2dd14d5fa30e9d2e5e108fb4f778cdd3f
 
 PLATFORM := $(shell uname -s | tr A-Z a-z)_$(shell uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
 # GoReleaser names its archives Linux_x86_64 and Linux_arm64.
@@ -48,18 +51,18 @@ FUZZTIME     ?= 15s
 # Each fuzz target as package:Name. `go test -fuzz` takes one target per run.
 FUZZ_TARGETS := ./internal/config:FuzzParse ./internal/protocol:FuzzMessage ./internal/report:FuzzJUnit
 
-.PHONY: check build tools lint fmt test cover fuzz mutation vuln dogfood public-dry release-dry ci-test tool-sums clean
+.PHONY: check build tools lint fmt test cover fuzz mutation vuln dogfood public-dry release-dry image-dry ci-local ci-test tool-sums hooks clean
 
 # ci/ is stripped from the public mirror, so a public clone runs the gate
 # without the publish and autopatch targets.
 INTERNAL := $(if $(wildcard ci/public-tree.sh),public-dry ci-test)
 
-check: lint test cover fuzz mutation vuln dogfood $(INTERNAL)
+check: lint test cover fuzz mutation vuln dogfood image-dry $(INTERNAL)
 
 build:
 	CGO_ENABLED=0 $(GO) build -trimpath -ldflags '$(LDFLAGS)' -o errata ./cmd/errata
 
-tools: $(BIN)/golangci-lint $(BIN)/gremlins $(BIN)/govulncheck $(BIN)/goreleaser $(BIN)/syft
+tools: $(BIN)/golangci-lint $(BIN)/gremlins $(BIN)/govulncheck $(BIN)/goreleaser $(BIN)/syft $(BIN)/ko
 
 $(BIN)/golangci-lint:
 ifneq ($(GOLANGCI_LINT_SHA256_$(PLATFORM)),)
@@ -87,6 +90,13 @@ ifneq ($(SYFT_SHA256_$(PLATFORM)),)
 	$(call fetch,https://github.com/anchore/syft/releases/download/$(SYFT_VERSION)/syft_$(SYFT_VERSION:v%=%)_$(PLATFORM).tar.gz,$(SYFT_SHA256_$(PLATFORM)),syft,$@)
 else
 	GOBIN=$(BIN) $(GO) install github.com/anchore/syft/cmd/syft@$(SYFT_VERSION)
+endif
+# ko builds the release image; make image-dry runs it the way GoReleaser does.
+$(BIN)/ko:
+ifneq ($(KO_SHA256_$(PLATFORM)),)
+	$(call fetch,https://github.com/ko-build/ko/releases/download/$(KO_VERSION)/ko_$(KO_VERSION:v%=%)_$(GORELEASER_ASSET).tar.gz,$(KO_SHA256_$(PLATFORM)),ko,$@)
+else
+	GOBIN=$(BIN) $(GO) install github.com/google/ko@$(KO_VERSION)
 endif
 
 lint: $(BIN)/golangci-lint
@@ -141,11 +151,49 @@ ci-test:
 	cd ci/autopatch && $(GO) vet ./... && $(GO) test -count=1 ./...
 	ci/test-ci.sh
 
+# The release image, built by ko with .goreleaser.yaml's base image and user
+# into a tarball, pushed nowhere, and its config checked against what the
+# READMEs promise. `release-dry` skips ko, so before this nothing tested the
+# image until a tag: that is how v0.1.0 shipped a kos setting ko rejects.
+IMAGE_DRY := $(CURDIR)/dist/image-dry
+image-dry: $(BIN)/ko
+	@rm -rf $(IMAGE_DRY) && mkdir -p $(IMAGE_DRY)
+	KO_DOCKER_REPO=registry.invalid/errata \
+	KO_DEFAULTBASEIMAGE="$$(sed -n 's/^ *base_image: *//p' .goreleaser.yaml)" \
+	CGO_ENABLED=0 GOFLAGS=-trimpath $(BIN)/ko build ./cmd/errata --bare --push=false \
+	  --platform=linux/amd64 --image-user="$$(sed -n 's/^ *user: *"\{0,1\}\([0-9]*\)"\{0,1\}$$/\1/p' .goreleaser.yaml)" \
+	  --tarball=$(IMAGE_DRY)/image.tar
+	@cd $(IMAGE_DRY) && tar -xf image.tar && cfg=$$(sed -n 's/.*"Config":"\([^"]*\)".*/\1/p' manifest.json) && \
+	for want in '"Entrypoint":\["/ko-app/errata"\]' '"User":"0"' 'PATH=[^"]*/ko-app'; do \
+	  grep -q "$$want" "$$cfg" || { echo "image config lacks $$want" >&2; exit 1; }; \
+	done && echo "image-dry: entrypoint, user and PATH as documented"
+
+# The gate with CI's directory layout: Go's module, build and lint caches
+# inside the project, as the shared runner cache needs them. Two defects that
+# only CI saw came from that layout (a cache directory named like a source
+# file, and checks reading dependency sources), so run this before pushing a
+# change to the pipeline, the Makefile or the checks.
+# TMPDIR is on disk and outside the project: Gremlins copies the project,
+# caches included, once per worker into it, which on a tmpfs /tmp fills
+# memory, and a TMPDIR inside the project would be copied into itself.
+CI_LOCAL_TMP ?= $(HOME)/.cache/errata-ci-local
+ci-local:
+	@mkdir -p $(CI_LOCAL_TMP)
+	TMPDIR=$(CI_LOCAL_TMP) GOPATH=$(CURDIR)/.gopath GOCACHE=$(CURDIR)/.cache/go-build \
+	GOLANGCI_LINT_CACHE=$(CURDIR)/.cache/golangci-lint GOFLAGS=-modcacherw \
+	$(MAKE) check FUZZTIME=5s
+
 # Every release binary for every platform, into ./dist. No token, no upload.
 # The image is skipped: ko writes a snapshot image to a local Docker daemon.
 release-dry: $(BIN)/goreleaser
 	$(BIN)/goreleaser check
 	$(BIN)/goreleaser release --snapshot --clean --skip=publish,ko
+
+# The commit-msg hook: commit subjects are published on the mirror, so they
+# are checked before the commit exists. CI runs the same check on every push.
+hooks:
+	git config core.hooksPath .githooks
+	@echo "commit messages are now checked by ci/check-commit-msg.sh"
 
 # Rewrite the archive checksums for the pinned tool versions.
 tool-sums:
