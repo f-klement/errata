@@ -364,3 +364,138 @@ func TestPropertyAgree(t *testing.T) {
 		}
 	})
 }
+
+// A message quotes at most maxQuoted bytes of a value, then ... and the
+// value's length, so a false rule over long values writes a short message.
+// The planted break is quoting the whole value.
+func TestMessagesClipLongValues(t *testing.T) {
+	long := strings.Repeat("v", 100_000)
+	want := fmt.Sprintf("%q... (100000 bytes)", long[:maxQuoted])
+	for name, c := range map[string]check.Check{
+		"agree false": agreeRule(
+			named("a", fake{values: []check.Value{at(long, "a.yaml", 1)}}),
+			named("b", fake{values: []check.Value{at("w"+long[1:], "b.yaml", 2)}}),
+		),
+		"agree one value": agreeRule(named("a", fake{values: []check.Value{at(long, "a.yaml", 1)}})),
+		"assert false":    assertRule(t, "size(a) == 0", named("a", fake{values: []check.Value{at(long, "a.yaml", 1)}})),
+		"assert unknown":  assertRule(t, "int(a[0]) == 1", named("a", fake{values: []check.Value{at(long, "a.yaml", 1)}})),
+	} {
+		res := Run(context.Background(), "/repo", c)
+		if !strings.Contains(res.Message, want) {
+			t.Errorf("%s: the message does not quote the value clipped: %.300q", name, res.Message)
+		}
+		if len(res.Message) > 4*maxQuoted+500 {
+			t.Errorf("%s: a message of %d bytes", name, len(res.Message))
+		}
+	}
+}
+
+// Two long values that agree in their first maxQuoted bytes still print
+// differently: each is quoted from just before the first byte where it
+// differs from the values it is compared with, with that offset and its
+// length. The planted break is quoting the first maxQuoted bytes, which
+// printed these two URLs alike.
+func TestClipShowsWhereValuesDiffer(t *testing.T) {
+	url := func(tag string) string {
+		return "https://registry.example.com/" + strings.Repeat("a/", 129) + "ax?tag=" + tag
+	}
+	a, b := url("1.2.3"), url("1.2.4")
+	if len(a) != 299 || len(b) != 299 {
+		t.Fatalf("the URLs are %d and %d bytes", len(a), len(b))
+	}
+	for name, c := range map[string]check.Check{
+		"agree":  agreeRule(named("a", fake{values: []check.Value{at(a, "a.yaml", 1)}}), named("b", fake{values: []check.Value{at(b, "b.json", 1)}})),
+		"assert": assertRule(t, "a[0] == b[0]", named("a", fake{values: []check.Value{at(a, "a.yaml", 1)}}), named("b", fake{values: []check.Value{at(b, "b.json", 1)}})),
+	} {
+		res := Run(context.Background(), "/repo", c)
+		if res.Verdict != check.VerdictFalse {
+			t.Fatalf("%s: %s %s", name, res.Verdict, res.Message)
+		}
+		for _, tag := range []string{`tag=1.2.3" (from byte `, `tag=1.2.4" (from byte `} {
+			if !strings.Contains(res.Message, tag) {
+				t.Errorf("%s: the message does not show %s:\n%s", name, tag, res.Message)
+			}
+		}
+		if !strings.Contains(res.Message, " of 299)") {
+			t.Errorf("%s: the message does not give the length:\n%s", name, res.Message)
+		}
+	}
+}
+
+// A window starts and ends on a rune boundary, so a clipped value quotes
+// whole characters and never half of one as an escaped byte. In "end", byte
+// maxQuoted falls inside é, so the window ends before it; in "start", the
+// byte quoteContext before the first difference falls inside é, so the
+// window starts at it. The planted break is cutting at the byte counts,
+// which quotes "\xa9" at the edge.
+func TestWindowsKeepWholeRunes(t *testing.T) {
+	end := strings.Repeat("a", maxQuoted-1) + "é" + strings.Repeat("a", 40)
+	shared := strings.Repeat("a", 100) + "é" + strings.Repeat("b", quoteContext-1)
+	x, y := shared+"x"+strings.Repeat("c", 200), shared+"y"+strings.Repeat("c", 200)
+	for _, tc := range []struct {
+		name   string
+		values []string
+		v      string
+		want   string
+	}{
+		{"end", []string{end}, end,
+			fmt.Sprintf("%q... (%d bytes)", end[:maxQuoted-1], len(end))},
+		{"start", []string{x, y}, x,
+			fmt.Sprintf("...%q (from byte 100 of %d)", x[100:], len(x))},
+	} {
+		if got := newQuoter(tc.values).quote(tc.v); got != tc.want {
+			t.Errorf("%s: quoted\n%s\nwant\n%s", tc.name, got, tc.want)
+		}
+	}
+}
+
+// Different values never print alike, however long they are and however
+// many share their prefixes: a window that two long values share is told
+// apart by the fingerprint.
+func TestPropertyQuotedValuesDiffer(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		base := strings.Repeat("a", rapid.IntRange(0, 600).Draw(t, "shared"))
+		var values []string
+		for range rapid.IntRange(2, 8).Draw(t, "values") {
+			tail := rapid.StringOfN(rapid.SampledFrom([]rune("ab")), 0, 400, -1).Draw(t, "tail")
+			values = append(values, base+tail)
+		}
+		q := newQuoter(values)
+		printed := map[string]string{}
+		for _, v := range values {
+			p := q.quote(v)
+			if other, ok := printed[p]; ok && other != v {
+				t.Fatalf("%d and %d bytes print alike: %s", len(v), len(other), p)
+			}
+			printed[p] = v
+			if len(p) > maxQuoted+100 {
+				t.Fatalf("a value of %d bytes prints as %d", len(v), len(p))
+			}
+		}
+	})
+}
+
+// Four values where windows match: x and y differ at byte 10 and agree
+// after it, as u and w do, and each shares its first 511 bytes with another
+// value, so x's and y's windows start at byte 479 and hold the same bytes,
+// as u's and w's do. The planted break is printing no fingerprint, which
+// prints x and y alike.
+func TestSharedWindowsPrintAFingerprint(t *testing.T) {
+	base, c := strings.Repeat("a", 10), strings.Repeat("c", 500)
+	values := []string{base + "X" + c + "1", base + "X" + c + "2", base + "Y" + c + "1", base + "Y" + c + "2"}
+	q := newQuoter(values)
+	printed := map[string]bool{}
+	for _, v := range values {
+		p := q.quote(v)
+		if printed[p] {
+			t.Fatalf("two values print alike: %s", p)
+		}
+		printed[p] = true
+		if !strings.Contains(p, "(from byte 479 of 512, fingerprint ") {
+			t.Errorf("no fingerprint: %s", p)
+		}
+	}
+	if p := newQuoter(values[:2]).quote(values[0]); strings.Contains(p, "fingerprint") {
+		t.Errorf("two values print a fingerprint, though their windows differ: %s", p)
+	}
+}

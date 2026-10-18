@@ -9,10 +9,13 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/f-klement/errata/internal/check"
 	"github.com/f-klement/errata/internal/extract"
@@ -44,21 +47,62 @@ type checkEntry struct {
 	Assert     string                  `json:"assert,omitempty"`
 	AllowEmpty []string                `json:"allow_empty,omitempty"`
 	Normalize  []string                `json:"normalize,omitempty"`
+	// SkipNotLiteral is skip_not_literal: the extractors whose not literal
+	// values the rule leaves out.
+	SkipNotLiteral []string `json:"skip_not_literal,omitempty"`
 }
 
 // ruleKeys are the keys only a rule has. A check that sets any of them is a
 // rule, whatever the value, so a program check that sets one is refused as
 // both rather than loading with a key that does nothing.
-var ruleKeys = []string{"extract", "agree", "assert", "allow_empty", "normalize"}
+var ruleKeys = []string{"extract", "agree", "assert", "allow_empty", "normalize", "skip_not_literal"}
 
 // Load reads and validates the config at path. It reports every invalid check
 // at once, so a user fixes the file in one pass rather than one error a run.
-func Load(path string) ([]check.Check, error) {
+// Each check's location names the file relative to root, the repository
+// root, when the file is inside it, and as path, marked outside, otherwise.
+func Load(root, path string) ([]check.Check, error) {
+	return LoadWith(root, path, extract.Build)
+}
+
+// Builder makes the extractor one entry under a rule's extract: describes.
+// extract.Build is the one errata runs with.
+type Builder func(extract.Spec) (check.Extractor, error)
+
+// LoadWith is Load with the extractors made by build. The CLI's tests pass a
+// builder that wraps extract.Build in a reader of not literal values, which
+// no extractor errata has yet returns.
+func LoadWith(root, path string, build Builder) ([]check.Check, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	return Parse(raw)
+	checks, err := ParseWith(raw, build)
+	if err != nil {
+		return nil, err
+	}
+	at := place(root, path)
+	for i := range checks {
+		checks[i].At.File, checks[i].At.Outside = at.File, at.Outside
+	}
+	return checks, nil
+}
+
+// place is where the config at path is: its path relative to root, with
+// slashes, when it is inside root, and otherwise path as given, marked
+// outside. The mark matters for a relative path such as ci.yaml, which names
+// a file of the working directory and would read as one of the repository.
+func place(root, path string) check.Location {
+	absRoot, rerr := filepath.Abs(root)
+	absPath, perr := filepath.Abs(path)
+	if rerr != nil || perr != nil {
+		return check.Location{File: path, Outside: true}
+	}
+	rel, err := filepath.Rel(absRoot, absPath)
+	if err != nil || !filepath.IsLocal(rel) {
+		return check.Location{File: path, Outside: true}
+	}
+	return check.Location{File: filepath.ToSlash(rel)}
 }
 
 // ErrNoChecks is the load error for a file that holds no checks. A suite of
@@ -69,12 +113,21 @@ var ErrNoChecks = errors.New("the file holds no checks: a config with none would
 // error, because a misspelt key that is silently ignored turns a check off
 // with no symptom, and so is a key that differs from a known one only in case.
 func Parse(raw []byte) ([]check.Check, error) {
-	if n := documents(raw); n > 1 {
-		return nil, fmt.Errorf("the file holds %d YAML documents; errata reads one, so put every check in one document under checks", n)
-	}
+	return ParseWith(raw, extract.Build)
+}
+
+// ParseWith is Parse with the extractors made by build.
+func ParseWith(raw []byte, newExtractor Builder) ([]check.Check, error) {
 	doc, err := toJSON(raw)
 	if err != nil {
 		return nil, fmt.Errorf("decode: %w", err)
+	}
+	n, first, err := documents(raw)
+	if err != nil {
+		return nil, fmt.Errorf("decode: %w", err)
+	}
+	if n > 1 {
+		return nil, fmt.Errorf("the file holds %d YAML documents; errata reads one, so put every check in one document under checks", n)
 	}
 	if errs := exactKeys(doc, reflect.TypeFor[file](), ""); len(errs) > 0 {
 		return nil, fmt.Errorf("decode: %w", errors.Join(errs...))
@@ -93,9 +146,21 @@ func Parse(raw []byte) ([]check.Check, error) {
 		checks []check.Check
 		errs   []error
 		seen   = map[string]bool{}
+		at     = lines(first)
+		plain  = plainStrings(first)
 	)
 	for i, raw := range f.Checks {
-		c, decoded, err := build(raw)
+		// A string YAML 1.1 read as a bool, a number or null is refused
+		// before the check is built, as a decode error is: the value the
+		// check would hold is not the text its author wrote.
+		if i < len(plain) && len(plain[i].errs) > 0 {
+			errs = append(errs, fmt.Errorf("checks[%d]: check %q: decode: %w", i, plain[i].id, errors.Join(plain[i].errs...)))
+			continue
+		}
+		c, decoded, err := build(raw, newExtractor)
+		if i < len(at) {
+			c.At.Line = at[i]
+		}
 		if decoded {
 			// Validate even after a build error, so one pass reports every
 			// problem with the check.
@@ -121,7 +186,7 @@ func Parse(raw []byte) ([]check.Check, error) {
 // build decodes one check strictly and builds its extractors. decoded reports
 // whether the check decoded, so it is worth validating; err names the check,
 // by its id when the id itself decodes.
-func build(raw json.RawMessage) (c check.Check, decoded bool, err error) {
+func build(raw json.RawMessage, newExtractor Builder) (c check.Check, decoded bool, err error) {
 	var named struct {
 		ID string `json:"id"`
 	}
@@ -135,9 +200,14 @@ func build(raw json.RawMessage) (c check.Check, decoded bool, err error) {
 	}
 	var keys map[string]json.RawMessage
 	_ = json.Unmarshal(raw, &keys) // a check that is not an object fails decodeStrict below
-	if v, ok := keys["allow_empty"]; ok {
-		if b := string(bytes.TrimSpace(v)); b == "true" || b == "false" {
-			return refuse(fmt.Errorf("allow_empty takes a list of extractor names, such as allow_empty: [name]; %s is not accepted", b))
+	// Each of these takes names, and a bool (read as a switch) or one bare
+	// name are the likely mistakes, so the error says what to write instead
+	// of naming a Go type. null is a list with no name, refused below.
+	for _, key := range []string{"allow_empty", "skip_not_literal"} {
+		if v, ok := keys[key]; ok {
+			if b := string(bytes.TrimSpace(v)); b != "null" && !strings.HasPrefix(b, "[") {
+				return refuse(fmt.Errorf("%s takes a list of extractor names, such as %s: [name]; %s is not accepted", key, key, clip(b)))
+			}
 		}
 	}
 	var e checkEntry
@@ -172,8 +242,11 @@ func build(raw json.RawMessage) (c check.Check, decoded bool, err error) {
 	if _, ok := keys["allow_empty"]; ok && len(e.AllowEmpty) == 0 {
 		errs = append(errs, errors.New("allow_empty lists no extractor: name the extractors that may find no value, or remove the key"))
 	}
+	if _, ok := keys["skip_not_literal"]; ok && len(e.SkipNotLiteral) == 0 {
+		errs = append(errs, errors.New("skip_not_literal lists no extractor: name the extractors whose not literal values to leave out, or remove the key"))
+	}
 	if isRule {
-		r, rerrs := buildRule(e)
+		r, rerrs := buildRule(e, newExtractor)
 		c.Rule = r
 		errs = append(errs, rerrs...)
 	}
@@ -186,11 +259,12 @@ func build(raw json.RawMessage) (c check.Check, decoded bool, err error) {
 // buildRule builds a rule's extractors in the order of their names, so the
 // errors and every later message list them the same way on every run, and
 // compiles its assert, so a type error is a load error.
-func buildRule(e checkEntry) (*check.Rule, []error) {
+func buildRule(e checkEntry, newExtractor Builder) (*check.Rule, []error) {
 	r := &check.Rule{
-		Agree:      e.Agree,
-		Assert:     e.Assert,
-		AllowEmpty: e.AllowEmpty,
+		Agree:          e.Agree,
+		Assert:         e.Assert,
+		AllowEmpty:     e.AllowEmpty,
+		SkipNotLiteral: e.SkipNotLiteral,
 	}
 	for _, n := range e.Normalize {
 		r.Normalize = append(r.Normalize, check.Normalization(n))
@@ -199,21 +273,27 @@ func buildRule(e checkEntry) (*check.Rule, []error) {
 	names := slices.Sorted(maps.Keys(e.Extract))
 	for i, a := range names {
 		for _, b := range names[i+1:] {
-			// Two names over one spec return the same values at the same
+			// Two names over one place return the same values at the same
 			// locations, so agree would be true without comparing two places.
-			if reflect.DeepEqual(e.Extract[a], e.Extract[b]) {
+			// Place cleans each file, so f and ./f are one place.
+			if reflect.DeepEqual(e.Extract[a].Place(), e.Extract[b].Place()) {
 				errs = append(errs, fmt.Errorf("extractors %q and %q read the same place, so comparing them compares a value with itself", a, b))
 			}
 		}
 	}
 	for _, name := range names {
-		x, err := extract.Build(e.Extract[name])
-		if err != nil {
+		x, err := newExtractor(e.Extract[name])
+		switch {
+		case err != nil:
 			errs = append(errs, fmt.Errorf("extractor %q: %w", name, err))
+		case x == nil:
+			// Fail closed: a nil extractor would load and be called at run
+			// time, and validation reads nil as one that did not build.
+			errs = append(errs, fmt.Errorf("extractor %q: built nothing, and gave no error", name))
 		}
 		// Declared even when it did not build, so validation does not also
 		// report agree naming an extractor that extract does not declare.
-		r.Extractors = append(r.Extractors, check.NamedExtractor{Name: name, Extractor: x})
+		r.Extractors = append(r.Extractors, check.NamedExtractor{Name: name, Kind: e.Extract[name].Kind(), Extractor: x})
 	}
 	// A rule with agree beside assert is refused by validation, so its
 	// expression is not compiled into a second error.
@@ -225,4 +305,33 @@ func buildRule(e checkEntry) (*check.Rule, []error) {
 		r.Compiled = a
 	}
 	return r, errs
+}
+
+// maxQuotedKey is the most bytes of a key's value a load error quotes.
+const maxQuotedKey = 64
+
+// clip is s, a value as JSON, cut at maxQuotedKey bytes with "..." when it
+// was cut. A JSON string is cut as text and quoted again, so the quote closes
+// and no escape is cut in two; any other value is cut on a rune boundary.
+func clip(s string) string {
+	if len(s) <= maxQuotedKey {
+		return s
+	}
+	var text string
+	if json.Unmarshal([]byte(s), &text) == nil {
+		return strconv.Quote(cutBytes(text)) + "..."
+	}
+	return cutBytes(s) + "..."
+}
+
+// cutBytes is s cut at maxQuotedKey bytes, on a rune boundary.
+func cutBytes(s string) string {
+	if len(s) <= maxQuotedKey {
+		return s
+	}
+	end := maxQuotedKey
+	for end > 0 && !utf8.RuneStart(s[end]) {
+		end--
+	}
+	return s[:end]
 }

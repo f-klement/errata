@@ -1,8 +1,0 @@
-# A YAML float spelling in a string field is a string, as it was before each
-# check decoded on its own: .inf is a file extension, not infinity.
-exec errata check
-stdout '^0 errata, 0 unknown. Coverage: ran 1, skipped 0.$'
-
--- errata.yaml --
-checks:
-  - {id: inf-arg, reason: .nan, scope: repo, run: [sh, -c, 'test "$1" = +Inf', sh, .inf]}

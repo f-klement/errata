@@ -25,6 +25,11 @@ type Rule struct {
 	// AllowEmpty names the extractors that may find no value without the rule
 	// becoming unknown. Any other extractor that finds none makes it unknown.
 	AllowEmpty []string
+	// SkipNotLiteral names the extractors whose not literal values are left
+	// out of the comparison. A not literal value from any other extractor
+	// makes the rule unknown. An extractor whose every value was left out
+	// counts as one that found no value, so AllowEmpty decides.
+	SkipNotLiteral []string
 	// Normalize is applied, in order, to every value before agree compares
 	// it or assert sees it.
 	Normalize []Normalization
@@ -41,7 +46,11 @@ type Assertion interface {
 // NamedExtractor is one entry under a rule's extract:, with the name agree:
 // and assert: refer to it by.
 type NamedExtractor struct {
-	Name      string
+	Name string
+	// Kind is the kind of extractor, such as json or "ini, plain dialect on
+	// pytest.ini",
+	// for a message; "" when the config gave none.
+	Kind      string
 	Extractor Extractor
 }
 
@@ -49,7 +58,37 @@ type NamedExtractor struct {
 // the values. A report reads the locations from here, not from the message.
 type Extracted struct {
 	Extractor string
-	Values    []Value
+	// Values are the values the rule compared, or would have compared had it
+	// not been unknown.
+	Values []Value
+	// LeftOut are the not literal values that skip_not_literal left out of
+	// the comparison. A report shows each as left out.
+	LeftOut []Value
+}
+
+// LeftOutCount is the part of a rule's message that counts the values
+// skip_not_literal left out: a line for each extractor that left any out, in
+// the order of extracted, or "" when none did. An extractor whose every value
+// was left out says the rule compared nothing from it, which a rule that
+// holds through allow_empty would otherwise not say. The rule ends its
+// message with it, and a report that cuts a message keeps it whole.
+func LeftOutCount(extracted []Extracted) string {
+	var lines []string
+	for _, x := range extracted {
+		n := len(x.LeftOut)
+		switch {
+		case n == 0:
+		case len(x.Values) > 0 && n == 1:
+			lines = append(lines, fmt.Sprintf("skip_not_literal left out 1 not literal value of extractor %q", x.Extractor))
+		case len(x.Values) > 0:
+			lines = append(lines, fmt.Sprintf("skip_not_literal left out %d not literal values of extractor %q", n, x.Extractor))
+		case n == 1:
+			lines = append(lines, fmt.Sprintf("skip_not_literal left out the one value of extractor %q, which is not literal, so the rule compared nothing from it", x.Extractor))
+		default:
+			lines = append(lines, fmt.Sprintf("skip_not_literal left out all %d not literal values of extractor %q, so the rule compared nothing from it", n, x.Extractor))
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // Normalization is one transformation applied to a value before a rule
@@ -112,8 +151,10 @@ func (r Rule) validate(c Check) []error {
 	}
 
 	declared := make(map[string]bool, len(r.Extractors))
+	byName := make(map[string]NamedExtractor, len(r.Extractors))
 	for _, e := range r.Extractors {
 		declared[e.Name] = true
+		byName[e.Name] = e
 	}
 	named := make(map[string]bool, len(r.Agree))
 	for _, name := range r.Agree {
@@ -136,6 +177,26 @@ func (r Rule) validate(c Check) []error {
 			errs = append(errs, fmt.Errorf("allow_empty names %q twice", name))
 		}
 		listed[name] = true
+	}
+	skipped := make(map[string]bool, len(r.SkipNotLiteral))
+	for _, name := range r.SkipNotLiteral {
+		if !declared[name] {
+			errs = append(errs, fmt.Errorf("skip_not_literal names %q, which extract does not declare", name))
+		}
+		if skipped[name] {
+			errs = append(errs, fmt.Errorf("skip_not_literal names %q twice", name))
+		}
+		// An extractor that did not build is reported where it failed. One
+		// whose kind returns literal values only has nothing to leave out,
+		// so the key would load and do nothing.
+		if x := byName[name]; x.Extractor != nil && !skipped[name] && !MayReturnNotLiteral(x.Extractor) {
+			whose := "whose extractor"
+			if x.Kind != "" {
+				whose = "whose kind of extractor, " + x.Kind + ","
+			}
+			errs = append(errs, fmt.Errorf("skip_not_literal names %q, %s returns only literal values, so it has nothing to leave out", name, whose))
+		}
+		skipped[name] = true
 	}
 	if hasAgree && !hasAssert {
 		// An extractor that agree leaves out is never compared, so the rule

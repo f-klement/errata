@@ -328,6 +328,9 @@ func TestSARIFPathsOutsideTheRepository(t *testing.T) {
 		`C:\x`:             `C:\x`,
 		"C:/x":             "C:/x",
 		"c:x":              "c:x",
+		// A drive once .. is resolved.
+		"a/../d:":  "a/../d:",
+		`a\..\c:x`: `a\..\c:x`,
 	}
 	for file, shown := range cases {
 		r := check.Result{Check: check.Check{ID: "c", Reason: "r"}, Verdict: check.VerdictFalse, Message: "m",
@@ -446,25 +449,35 @@ func manyErrata(rng *rand.Rand, n, msg int) check.Report {
 func writeWith(t *testing.T, rep check.Report, bu budget) []byte {
 	t.Helper()
 	var buf bytes.Buffer
-	if err := writeBounded(&buf, rep, bu); err != nil {
+	if err := (SARIF{}).writeBounded(&buf, rep, bu); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
 }
 
+// slowOnly skips t under -race, -short and Gremlins' mutation tag, and make
+// slow runs it once, plain, from the Makefile's SLOW_TESTS, which the extract
+// package's TestEverySlowTestIsInMakeSlow holds to the tests that call it.
+func slowOnly(t *testing.T) {
+	t.Helper()
+	if testing.Short() || raceEnabled || mutationRun {
+		t.Skip("builds a large input; make slow runs it")
+	}
+}
+
 // The review's case: 25,000 errata that errata's file held as 24,794
 // results at 9,499,809 bytes gzipped, which upload-sarif sent as 10,060,066.
-// At the real budget the simulated upload is under GitHub's limit. make test
-// runs with -race, so it skips there; the cuts it reaches are the ones
-// TestSARIFBoundsTheUpload runs at a small budget. Run it with
+// At the real budget the simulated upload is under GitHub's limit. It skips
+// under -race, -short and Gremlins' mutation tag, and make slow runs it once,
+// plain; the cuts it reaches are the ones TestSARIFBoundsTheUpload runs at a
+// small budget. Run it with
 //
 //	go test -run TestSARIFBoundsTheReviewersUpload ./internal/report/
 func TestSARIFBoundsTheReviewersUpload(t *testing.T) {
-	if testing.Short() || raceEnabled {
-		// It builds a 35 MB file several times: 6 seconds plain, 90 under
-		// -race, which make test's two minute timeout cannot hold.
-		t.Skip("builds a 35 MB file several times; run it without -race and -short")
-	}
+	// It builds a 35 MB file several times: 6 seconds plain, 90 under
+	// -race, which make test's two minute timeout cannot hold, and 6 more
+	// for every mutant of the report package under Gremlins.
+	slowOnly(t)
 	rng := rand.New(rand.NewPCG(1, 2))
 	b := writeSARIF(t, manyErrata(rng, maxResults, 163))
 	out := decodeSARIF(t, b)
@@ -686,8 +699,8 @@ func TestSARIFCutsLongData(t *testing.T) {
 func TestSARIFCapsRelatedLocations(t *testing.T) {
 	cases := map[int]string{
 		maxRelated:     "",
-		maxRelated + 1: "\n1 more value is left out: code scanning rejects a result with more than 1000 locations.",
-		maxRelated + 2: "\n2 more values are left out: code scanning rejects a result with more than 1000 locations.",
+		maxRelated + 1: "\n1 more value is not linked: code scanning rejects a result with more than 1000 locations.",
+		maxRelated + 2: "\n2 more values are not linked: code scanning rejects a result with more than 1000 locations.",
 	}
 	for others, tail := range cases {
 		values := []check.Value{val("b", "f.yaml", 1)}

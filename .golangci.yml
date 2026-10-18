@@ -25,7 +25,7 @@ linters:
     - thelper        # test helpers without t.Helper(), which misreport the failing line
     - forbidigo      # no fmt.Print* outside the CLI: output goes through a Reporter
     - noctx          # exec and net calls without a context cannot be cancelled
-    - depguard       # internal/rule importing os or syscall, which could read the machine's zone files
+    - depguard       # internal/rule importing a package that reads a file, such as the machine's zone files
   settings:
     exhaustive:
       default-signifies-exhaustive: true
@@ -38,19 +38,47 @@ linters:
           msg: read a named zone with rule's zone(), from the embedded database, never the machine's
         - pattern: ^time\.Local$
           msg: Local is the machine's zone; a verdict must not depend on where errata runs
+        # archive/zip is on internal/rule's allow list for the embedded zones; OpenReader would
+        # read a zip from the disk.
+        - pattern: ^zip\.OpenReader$
+          msg: read the embedded zone database with zip.NewReader; errata reads no zip from the disk
     depguard:
       rules:
         # internal/rule evaluates over extracted values and embedded data and reads no file, so
-        # no machine state, zone files included, can reach a verdict.
+        # no machine state, zone files included, can reach a verdict. An allow list, because a
+        # deny list misses a package that reads a file without os (net/http's http.Dir did). Each
+        # standard package ends in $, an exact match, since a bare io would admit io/ioutil.
+        # errata's own packages stop at check: extract reads files.
         rule-reads-no-files:
+          list-mode: strict
+          # Both globs: the second needs a directory between rule/ and the file, so it
+          # covers a subpackage and not the package itself.
           files:
             - "**/internal/rule/*.go"
+            - "**/internal/rule/**/*.go"
             - "!$test"
-          deny:
-            - pkg: os
-              desc: internal/rule reads no file; zones come from the embedded database
-            - pkg: syscall
-              desc: internal/rule reads no file; zones come from the embedded database
+          allow:
+            - archive/zip$
+            - bytes$
+            - context$
+            - embed$
+            - errors$
+            - fmt$
+            - hash/fnv$
+            - io$
+            - maps$
+            - math$
+            - net/netip$
+            - reflect$
+            - regexp$
+            - slices$
+            - strconv$
+            - strings$
+            - sync$
+            - time$
+            - unicode/utf8$
+            - cel.dev/cel-go
+            - github.com/f-klement/errata/internal/check$
     nolintlint:
       require-explanation: true
       require-specific: true

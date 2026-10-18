@@ -10,6 +10,19 @@ type noValues struct{}
 
 func (noValues) Extract(string) ([]Value, error) { return nil, nil }
 
+// computes is an extractor whose kind declares that it can return a not
+// literal value, as a shell or CI reader will.
+type computes struct{ noValues }
+
+func (computes) MayReturnNotLiteral() bool { return true }
+
+// computing makes c's extractors ones that can return a not literal value.
+func computing(c *Check) {
+	for i := range c.Rule.Extractors {
+		c.Rule.Extractors[i].Extractor = computes{}
+	}
+}
+
 func validRule() Check {
 	return Check{
 		ID:     "endpoint-agrees",
@@ -37,6 +50,14 @@ func TestValidateRule(t *testing.T) {
 		{"agree names an extractor twice", func(c *Check) { c.Rule.Agree = []string{"service", "secret", "service"} }, `agree names "service" twice`},
 		{"allow empty names an extractor twice", func(c *Check) { c.Rule.AllowEmpty = []string{"secret", "secret"} }, `allow_empty names "secret" twice`},
 		{"allow empty names an undeclared extractor", func(c *Check) { c.Rule.AllowEmpty = []string{"configmap"} }, `allow_empty names "configmap", which extract does not declare`},
+		{"valid skip not literal", func(c *Check) { computing(c); c.Rule.SkipNotLiteral = []string{"service", "secret"} }, ""},
+		{"skip not literal names an extractor twice", func(c *Check) { computing(c); c.Rule.SkipNotLiteral = []string{"secret", "service", "secret"} }, `skip_not_literal names "secret" twice`},
+		{"skip not literal names an undeclared extractor", func(c *Check) { computing(c); c.Rule.SkipNotLiteral = []string{"configmap"} }, `skip_not_literal names "configmap", which extract does not declare`},
+		{"skip not literal names a literal only extractor", func(c *Check) {
+			computing(c)
+			c.Rule.Extractors[1].Extractor = noValues{}
+			c.Rule.SkipNotLiteral = []string{"service", "secret"}
+		}, `skip_not_literal names "service", whose extractor returns only literal values, so it has nothing to leave out`},
 		{"live rule", func(c *Check) { c.Scope = ScopeLive }, `scope "live": a rule reads files, so its scope is repo; a live extractor comes with a provider`},
 		{"applied rule", func(c *Check) { c.Scope = ScopeApplied }, `scope "applied": a rule reads files, so its scope is repo`},
 		{"run and extract", func(c *Check) { c.Run = []string{"true"} }, "a check is a program check (run) or a rule (extract), never both"},
@@ -151,3 +172,30 @@ func TestNormalized(t *testing.T) {
 		}
 	}
 }
+
+// An extractor that did not build is reported where it failed, so
+// skip_not_literal does not report it a second time, and one that declares
+// it cannot return a not literal value is refused as one that does not say.
+func TestValidateSkipNotLiteralKinds(t *testing.T) {
+	c := validRule()
+	c.Rule.Extractors[0].Extractor = nil
+	c.Rule.SkipNotLiteral = []string{"secret"}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("an extractor that did not build: %v", err)
+	}
+	c.Rule.Extractors[0].Extractor = declaresLiteral{}
+	err := c.Validate()
+	if want := `skip_not_literal names "secret", whose extractor returns only literal values`; err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("error = %v, want it to contain %q", err, want)
+	}
+	// With its kind, the message names it.
+	c.Rule.Extractors[0].Kind = "ini, git dialect on .gitconfig"
+	err = c.Validate()
+	if want := `skip_not_literal names "secret", whose kind of extractor, ini, git dialect on .gitconfig, returns only literal values, so it has nothing to leave out`; err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("error = %v, want it to contain %q", err, want)
+	}
+}
+
+type declaresLiteral struct{ noValues }
+
+func (declaresLiteral) MayReturnNotLiteral() bool { return false }

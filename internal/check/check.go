@@ -43,6 +43,9 @@ type Check struct {
 	Run     []string
 	Timeout time.Duration
 	Rule    *Rule
+	// At is where the check is written: the config file and the line its
+	// entry starts on. The loader sets it; a line of 0 is not known.
+	At Location
 }
 
 // IsRule reports whether c is a rule rather than a program check.

@@ -33,6 +33,8 @@ func TestParseDuration(t *testing.T) {
 		// Prometheus durations.
 		"2d": 2 * day, "1w": 7 * day, "1y": 365 * day, "1w3d": 10 * day, "1d12h": 36 * time.Hour,
 		"1y2w3d4h5m6s7ms": 365*day + 14*day + 3*day + 4*time.Hour + 5*time.Minute + 6*time.Second + 7*time.Millisecond,
+		// The most of one unit a duration holds, one under the refused 106752d.
+		"106751d": 106751 * day, "15250w": 15250 * 7 * day,
 	} {
 		got, err := parseDuration(in)
 		if err != nil || got != want {
@@ -120,6 +122,7 @@ func TestSplitPort(t *testing.T) {
 		"70000:80":      `"70000:80": the host port "70000" is above 65535`,
 		"8010-8000:80":  `the host port "8010-8000" is a range that ends before it starts`,
 		"host:8080:80":  `"host:8080:80": "host" is not an IP address`,
+		":8080:80":      `":8080:80": "" is not an IP address`,
 		"${PORT}:80":    `the host port "${PORT}" is not a number`,
 		"1:2:3":         `"1" is not an IP address`,
 		"8080:80/tcp/x": `the protocol "tcp/x" is not one of`,

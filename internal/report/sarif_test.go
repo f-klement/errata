@@ -52,6 +52,7 @@ type sarifOut struct {
 		Tool struct {
 			Driver struct {
 				Name           string `json:"name"`
+				Version        string `json:"version"`
 				InformationURI string `json:"informationUri"`
 				Rules          []struct {
 					ID                   string                 `json:"id"`
@@ -334,6 +335,67 @@ func TestSARIFProgramCheckPointsAtTheConfig(t *testing.T) {
 	}
 }
 
+// A loaded check carries the line its entry starts on, and a program check's
+// result, or a rule's that found no value, points there: the file relative to
+// the root, or a message naming it when the file is outside the repository.
+func TestSARIFResultPointsAtTheCheck(t *testing.T) {
+	program := func(at check.Location) check.Result {
+		return check.Result{Check: check.Check{ID: "p", Reason: "r", Run: []string{"x"}, At: at}, Verdict: check.VerdictFalse, Message: "said"}
+	}
+	noValue := program(check.Location{File: "ci/errata.yaml", Line: 9})
+	noValue.Check.Run, noValue.Check.Rule = nil, &check.Rule{Assert: "size(v) > 0"}
+	noValue.Extracted = []check.Extracted{{Extractor: "v"}}
+	cases := []struct {
+		name  string
+		res   check.Result
+		where string
+		text  string
+	}{
+		{"program check", program(check.Location{File: "errata.yaml", Line: 14}), "errata.yaml:14", "said"},
+		{"another config file", program(check.Location{File: "ci/checks.yaml", Line: 3}), "ci/checks.yaml:3", "said"},
+		{"line not known", program(check.Location{File: "errata.yaml"}), "errata.yaml:0", "said"},
+		{"rule with no value", noValue, "ci/errata.yaml:9", "said"},
+		{"outside the repository", program(check.Location{File: "/etc/errata.yaml", Line: 2}), "nowhere",
+			"said\nThe check is in /etc/errata.yaml, outside the repository, so this result has no place in a file."},
+		// A config given as ci.yaml from a directory outside the root: under
+		// %SRCROOT% the same path would name another file.
+		{"outside, by a relative path", program(check.Location{File: "ci.yaml", Line: 2, Outside: true}), "nowhere",
+			"said\nThe check is in ci.yaml, outside the repository, so this result has no place in a file."},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			res := decodeSARIF(t, writeSARIF(t, check.Report{Results: []check.Result{c.res}})).Runs[0].Results[0]
+			if len(res.Locations) != 1 || res.Locations[0].where() != c.where {
+				t.Fatalf("locations %+v, want %s", res.Locations, c.where)
+			}
+			if res.Message.Text != c.text {
+				t.Fatalf("message = %q, want %q", res.Message.Text, c.text)
+			}
+			if c.where == "nowhere" && res.Locations[0].Message.Text != "the check is in "+c.res.Check.At.File+", outside the repository" {
+				t.Fatalf("location message = %q", res.Locations[0].Message.Text)
+			}
+		})
+	}
+}
+
+// The driver names the errata that wrote the file, by the version the CLI
+// passes in, and a build without one leaves the key out.
+func TestSARIFCarriesTheVersion(t *testing.T) {
+	var buf bytes.Buffer
+	if err := (SARIF{Version: "v0.2.0"}).Write(&buf, sarifSample); err != nil {
+		t.Fatal(err)
+	}
+	if got := decodeSARIF(t, buf.Bytes()).Runs[0].Tool.Driver.Version; got != "v0.2.0" {
+		t.Fatalf("driver version = %q, want v0.2.0", got)
+	}
+	if strings.Contains(string(writeSARIF(t, sarifSample)), `"version": "v`) {
+		t.Fatal("a SARIF with no version wrote one")
+	}
+	if got := Formats["sarif"]("v9.9.9"); got != (SARIF{Version: "v9.9.9"}) {
+		t.Fatalf("Formats[sarif] = %+v, want the version passed in", got)
+	}
+}
+
 // texts is one extractor per value, named e0, e1 and so on.
 func texts(file string, vs ...string) []check.Extracted {
 	out := make([]check.Extracted, len(vs))
@@ -506,10 +568,29 @@ func genSARIFReport(t *rapid.T) check.Report {
 					At:   check.Location{File: anyPath.Draw(t, "file"), Line: rapid.IntRange(-2, 1<<20).Draw(t, "line")},
 				})
 			}
+			for range rapid.IntRange(0, 2).Draw(t, "left out") {
+				e.LeftOut = append(e.LeftOut, check.Value{
+					Text:       anyText.Draw(t, "text"),
+					At:         check.Location{File: anyPath.Draw(t, "file"), Line: rapid.IntRange(-2, 1<<20).Draw(t, "line")},
+					NotLiteral: true,
+				})
+			}
 			r.Extracted = append(r.Extracted, e)
 		}
 	}
 	return rep
+}
+
+// heldWithLeftOut counts the rules in rep that hold with a value left out,
+// each of which is a note notification.
+func heldWithLeftOut(rep check.Report) int {
+	n := 0
+	for _, r := range rep.Results {
+		if r.Verdict == check.VerdictTrue && len(leftOut(r)) > 0 {
+			n++
+		}
+	}
+	return n
 }
 
 // Whatever bytes a check or a repository file put into a report, the output
@@ -523,15 +604,19 @@ func TestPropertySARIFIsValidAndCountsAgree(t *testing.T) {
 		if !utf8.Valid(b) {
 			t.Fatalf("output is not valid UTF-8")
 		}
+		if r := rawActedOn(b); r >= 0 {
+			t.Fatalf("output holds %U raw, which a terminal acts on", r)
+		}
 		if errs := s.validate(b); len(errs) > 0 {
 			t.Fatalf("output breaks the schema:\n%s", strings.Join(errs, "\n"))
 		}
 		out := decodeSARIF(t, b)
 		_, skipped := rep.Coverage()
 		inv := out.Runs[0].Invocations[0]
-		if len(out.Runs[0].Results) != len(rep.Errata()) || len(inv.Notifications) != len(rep.Unknowns())+skipped || inv.ExecutionSuccessful != (len(rep.Unknowns()) == 0) {
-			t.Fatalf("%d results, %d notifications, successful %v; report has %d errata, %d unknown, %d skipped",
-				len(out.Runs[0].Results), len(inv.Notifications), inv.ExecutionSuccessful, len(rep.Errata()), len(rep.Unknowns()), skipped)
+		held := heldWithLeftOut(rep)
+		if len(out.Runs[0].Results) != len(rep.Errata()) || len(inv.Notifications) != len(rep.Unknowns())+skipped+held || inv.ExecutionSuccessful != (len(rep.Unknowns()) == 0) {
+			t.Fatalf("%d results, %d notifications, successful %v; report has %d errata, %d unknown, %d skipped, %d held with values left out",
+				len(out.Runs[0].Results), len(inv.Notifications), inv.ExecutionSuccessful, len(rep.Errata()), len(rep.Unknowns()), skipped, held)
 		}
 		for _, res := range out.Runs[0].Results {
 			if len(res.Locations) != 1 || res.Message.Text == "" {
@@ -554,6 +639,7 @@ func FuzzSARIF(f *testing.F) {
 	f.Add("x", "see [the fix](https://evil.example/login) {0}", "[r](1)", "../../etc/passwd", "[x](1) {{x}}", 2, uint8(4*3))
 	f.Add("x", strings.Repeat("m", messageLimit+1), strings.Repeat("r", descriptionLimit+1), "//evil.example/x", strings.Repeat("v", valueLimit+1), 3, uint8(4*2+2))
 	f.Add("x", "", "", "", "", -1, uint8(3))
+	f.Add("x", actedOnRunes, "\xc2\x9b31m", "f", actedOnRunes, 1, uint8(4*2))
 	s := loadSchema(f)
 	f.Fuzz(func(t *testing.T, id, msg, reason, file, text string, line int, shape uint8) {
 		var values []check.Value
@@ -582,6 +668,9 @@ func FuzzSARIF(f *testing.F) {
 		b := writeSARIF(t, rep)
 		if !utf8.Valid(b) {
 			t.Fatalf("output is not valid UTF-8")
+		}
+		if r := rawActedOn(b); r >= 0 {
+			t.Fatalf("output holds %U raw, which a terminal acts on", r)
 		}
 		if errs := s.validate(b); len(errs) > 0 {
 			t.Fatalf("output breaks the schema:\n%s\n%s", strings.Join(errs, "\n"), b)

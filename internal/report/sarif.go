@@ -19,8 +19,13 @@ import (
 // annotations. Each check is a rule in tool.driver.rules, and each erratum is
 // a result. An unknown and a skipped check are notifications of the
 // invocation, not results: neither showed a claim false, and code scanning
-// would open an alert for any result.
-type SARIF struct{}
+// would open an alert for any result. So is a rule that holds with values
+// that skip_not_literal left out, since it held on what was left.
+type SARIF struct {
+	// Version is errata's version, written as the driver's version so a
+	// reader knows which errata wrote the file.
+	Version string
+}
 
 // sarifSchema is the schema the output follows: the OASIS errata01 text,
 // which testdata/sarif-schema-2.1.0.json holds.
@@ -30,10 +35,10 @@ const sarifSchema = "https://docs.oasis-open.org/sarif/sarif/v2.1.0/errata01/os/
 // the checkout, so a value's repository relative path lands on the file.
 const srcRoot = "%SRCROOT%"
 
-// configFile is where a result with no value of its own points: a program
-// check, or a rule whose extractors returned nothing. A report does not know
-// the --config path or the line a check starts on, so this is the default
-// config file at line 1.
+// configFile is where a result with no value of its own points when its
+// check carries no location, as a check built by hand rather than loaded
+// does: the default config file, at line 1. A loaded program check, or a rule
+// whose extractors returned nothing, points at the line its entry starts on.
 const configFile = "errata.yaml"
 
 // The limits below come from GitHub's page "SARIF support for code scanning"
@@ -105,6 +110,7 @@ type sarifTool struct {
 
 type sarifDriver struct {
 	Name           string      `json:"name"`
+	Version        string      `json:"version,omitempty"`
 	InformationURI string      `json:"informationUri"`
 	Rules          []sarifRule `json:"rules"`
 }
@@ -139,9 +145,10 @@ type sarifInvocation struct {
 }
 
 type sarifNotification struct {
-	Level   string        `json:"level"`
-	Message sarifMessage  `json:"message"`
-	Rule    *sarifRuleRef `json:"associatedRule,omitempty"`
+	Level     string          `json:"level"`
+	Message   sarifMessage    `json:"message"`
+	Locations []sarifLocation `json:"locations,omitempty"`
+	Rule      *sarifRuleRef   `json:"associatedRule,omitempty"`
 }
 
 type sarifRuleRef struct {
@@ -181,8 +188,8 @@ type sarifRegion struct {
 // Write encodes r. encoding/json writes every string as valid UTF-8, with a
 // replacement character for each invalid byte, so the output is a valid file
 // whatever bytes a repository file put into a value.
-func (SARIF) Write(w io.Writer, r check.Report) error {
-	return writeBounded(w, r, defaultBudget)
+func (s SARIF) Write(w io.Writer, r check.Report) error {
+	return s.writeBounded(w, r, defaultBudget)
 }
 
 // budget is what the upload may take: gzipped, and plain, below which it
@@ -278,8 +285,9 @@ type cuts struct {
 	short          bool
 }
 
-func writeBounded(w io.Writer, r check.Report, bu budget) error {
+func (s SARIF) writeBounded(w io.Writer, r check.Report, bu budget) error {
 	p := build(r)
+	p.run.Tool.Driver.Version = s.Version
 	p.budget = bu
 	all := cuts{results: len(p.results), notes: len(p.notes)}
 	compact, err := p.marshal(all, false)
@@ -383,10 +391,22 @@ func build(r check.Report) pieces {
 			}
 			p.notes, p.shortNotes = append(p.notes, note(-1)), append(p.shortNotes, note(shortLimit))
 		case res.Verdict == check.VerdictUnknown:
-			note := func(msgLimit, reasonLimit int) sarifNotification {
-				return sarifNotification{Level: "error", Message: sarifMessage{unknownText(res, msgLimit, reasonLimit)}, Rule: ref}
+			// The short form, for a file that does not fit, keeps the count
+			// in the message and leaves the locations out.
+			locs, said := leftOutLocations(res)
+			whole := sarifNotification{Level: "error", Message: sarifMessage{unknownText(res, messageLimit, -1, said)}, Locations: locs, Rule: ref}
+			short := sarifNotification{Level: "error", Message: sarifMessage{unknownText(res, shortLimit, shortLimit, "")}, Rule: ref}
+			p.notes, p.shortNotes = append(p.notes, whole), append(p.shortNotes, short)
+		case res.Verdict == check.VerdictTrue && len(leftOut(res)) > 0:
+			locs, said := leftOutLocations(res)
+			note := func(limit int) sarifNotification {
+				text := "check " + plain(res.Check.ID) + " holds on the values left: " + cut(strings.TrimSpace(res.Message), "message", limit)
+				return sarifNotification{Level: "note", Message: sarifMessage{text}, Rule: ref}
 			}
-			p.notes, p.shortNotes = append(p.notes, note(messageLimit, -1)), append(p.shortNotes, note(shortLimit, shortLimit))
+			whole := note(messageLimit)
+			whole.Message.Text += said
+			whole.Locations = locs
+			p.notes, p.shortNotes = append(p.notes, whole), append(p.shortNotes, note(shortLimit))
 		case res.Verdict == check.VerdictFalse && len(p.results) == maxResults:
 			p.overCount++
 		case res.Verdict == check.VerdictFalse:
@@ -421,7 +441,10 @@ func (p pieces) marshal(c cuts, indent bool) ([]byte, error) {
 		enc.SetIndent("", "  ")
 	}
 	err := enc.Encode(sarifLog{Schema: sarifSchema, Version: "2.1.0", Runs: []sarifRun{run}})
-	return buf.Bytes(), err
+	// encoding/json writes C1 controls and direction controls as they are,
+	// and the file can go to stdout, so they are written as JSON escapes.
+	// The escapes are made here, so the size measured is the size written.
+	return escapeActedOn(buf.Bytes(), func(r rune) string { return fmt.Sprintf(`\u%04x`, r) }), err
 }
 
 // warning says what the file c describes leaves out or cuts, and why, or
@@ -434,7 +457,7 @@ func (p pieces) warning(c cuts) string {
 	}
 	if n := len(p.notes) - c.notes; n == 1 {
 		said = append(said, "1 notification left out")
-	} else if n > 1 {
+	} else if n > 0 {
 		said = append(said, fmt.Sprintf("%d notifications left out", n))
 	}
 	if c.short {
@@ -522,20 +545,38 @@ func plainCut(s string, n int) string {
 // what was cut and how long s was. what names s in that remark. A negative
 // limit means no limit.
 func cut(s, what string, limit int) string {
-	if limit < 0 || utf8.RuneCountInString(s) <= limit {
+	return cutKeeping(s, what, limit, "")
+}
+
+// cutKeeping is cut that keeps tail, the end of s, whole: s without it is cut
+// to leave room for it. It is the count of values skip_not_literal left out,
+// which ends a rule's message, so a long message does not cut the count off.
+// A tail that is not the end of s, or that does not fit in limit, is cut with
+// the rest.
+func cutKeeping(s, what string, limit int, tail string) string {
+	if limit < 0 {
 		return plain(s)
 	}
-	runes := []rune(s)
-	return plain(string(runes[:limit])) + fmt.Sprintf(" (cut: the %s is %d bytes)", what, len(s))
+	body, kept := s, ""
+	if tail != "" && strings.HasSuffix(s, "\n"+tail) && utf8.RuneCountInString(tail) < limit {
+		body, kept = strings.TrimSuffix(s, "\n"+tail), "\n"+plain(tail)
+		limit -= utf8.RuneCountInString(tail) + 1
+	}
+	head, over := prefix(body, limit)
+	if !over {
+		return plain(body) + kept
+	}
+	return plain(head) + fmt.Sprintf(" (cut: the %s is %d bytes)", what, len(s)) + kept
 }
 
 // unknownText is the notification of an unknown, its message and reason
-// cut at msgLimit and reasonLimit.
-func unknownText(res check.Result, msgLimit, reasonLimit int) string {
+// cut at msgLimit and reasonLimit, and said, which follows the message.
+func unknownText(res check.Result, msgLimit, reasonLimit int, said string) string {
 	text := "check " + plain(res.Check.ID) + " is unknown"
 	if msg := strings.TrimSpace(res.Message); msg != "" {
-		text += ": " + cut(msg, "message", msgLimit)
+		text += ": " + cutKeeping(msg, "message", msgLimit, check.LeftOutCount(res.Extracted))
 	}
+	text += said
 	if reason := strings.TrimSpace(res.Check.Reason); reason != "" {
 		text += "\nwhy: " + cut(reason, "reason", reasonLimit)
 	}
@@ -545,78 +586,150 @@ func unknownText(res check.Result, msgLimit, reasonLimit int) string {
 func sarifResultOf(res check.Result, ruleIndex int) sarifResult {
 	msg := "check " + plain(res.Check.ID) + " found its claim false"
 	if m := strings.TrimSpace(res.Message); m != "" {
-		msg = cut(m, "message", messageLimit)
+		msg = cutKeeping(m, "message", messageLimit, check.LeftOutCount(res.Extracted))
 	}
 	out := sarifResult{RuleID: res.Check.ID, RuleIndex: ruleIndex, Level: "error"}
 
 	values := flatten(res.Extracted)
 	primary := disagreeing(res.Check.Rule, values)
 	if primary < 0 {
-		p, _ := physical(check.Location{File: configFile, Line: 1})
-		out.Locations = []sarifLocation{{Physical: p}}
-		out.Message = sarifMessage{msg}
-		return out
-	}
-
-	first := values[primary]
-	p, inside := physical(first.value.At)
-	if inside {
-		out.Locations = []sarifLocation{{Physical: p}}
-	} else {
-		out.Locations = []sarifLocation{{Message: &sarifMessage{outside(first)}}}
-		msg += "\nThe value is at " + cut(first.value.At.File, "path", valueLimit) + ", outside the repository, so this result has no place in a file."
-	}
-
-	var links []string
-	rest := 0
-	for i, f := range values {
-		if i == primary {
-			continue
+		at := res.Check.At
+		if at.File == "" {
+			at = check.Location{File: configFile, Line: 1}
 		}
-		if len(out.Related) == maxRelated {
-			rest++
-			continue
-		}
-		// Ids from 1 keep each related location distinct, which the schema
-		// requires, even when two values share a place.
-		id := len(out.Related) + 1
-		loc := sarifLocation{ID: id}
-		if p, inside := physical(f.value.At); inside {
-			loc.Physical, loc.Message = p, &sarifMessage{label(f)}
+		if p, inside := physical(at); inside {
+			out.Locations = []sarifLocation{{Physical: p}}
 		} else {
-			loc.Message = &sarifMessage{outside(f)}
+			where := cut(at.File, "path", valueLimit)
+			out.Locations = []sarifLocation{{Message: &sarifMessage{"the check is in " + where + ", outside the repository"}}}
+			msg += "\nThe check is in " + where + ", outside the repository, so this result has no place in a file."
 		}
-		out.Related = append(out.Related, loc)
-		// code scanning links a related location only from the result
-		// message. The link text is errata's own words; the value is in
-		// the related location's message.
-		links = append(links, fmt.Sprintf("[value %d](%d)", id, id))
+	} else {
+		first := values[primary]
+		if p, inside := physical(first.value.At); inside {
+			out.Locations = []sarifLocation{{Physical: p}}
+		} else {
+			out.Locations = []sarifLocation{{Message: &sarifMessage{outside(first)}}}
+			msg += "\nThe value is at " + cut(first.value.At.File, "path", valueLimit) + ", outside the repository, so this result has no place in a file."
+		}
 	}
+
+	// Compared values take the related location slots first, but for
+	// leftOutReserve kept for the values left out, so neither side pushes the
+	// other out; a side that needs fewer slots leaves them to the other.
+	// Compared values come first among the locations.
+	var compared []named
+	for i, f := range values {
+		if i != primary {
+			compared = append(compared, f)
+		}
+	}
+	left := leftOut(res)
+	keepCompared := min(len(compared), maxRelated-min(len(left), leftOutReserve))
+	keepLeft := min(len(left), maxRelated-keepCompared)
+	var links, leftLinks []string
+	for _, f := range compared[:keepCompared] {
+		loc := relatedLocation(f, len(out.Related)+1, false)
+		out.Related = append(out.Related, loc)
+		links = append(links, fmt.Sprintf("[value %d](%d)", loc.ID, loc.ID))
+	}
+	for _, f := range left[:keepLeft] {
+		loc := relatedLocation(f, len(out.Related)+1, true)
+		out.Related = append(out.Related, loc)
+		leftLinks = append(leftLinks, fmt.Sprintf("[value %d](%d)", loc.ID, loc.ID))
+	}
+	// code scanning links a related location only from the result message.
+	// The link text is errata's own words; the value is in the related
+	// location's message. The "]" of "[related locations]" ends any "[" that
+	// data before it left open, so a viewer that reads a link as
+	// [^\]]*\]\( cannot join that "[" to the first link here.
 	if len(links) > 0 {
-		// The "]" of "[related locations]" ends any "[" that data before it
-		// left open, so a viewer that reads a link as [^\]]*\]\( cannot join
-		// that "[" to the first link here.
 		msg += "\nThe other values, as [related locations]: " + strings.Join(links, ", ") + "."
 	}
-	if rest > 0 {
-		noun := "values are"
-		if rest == 1 {
-			noun = "value is"
-		}
-		msg += fmt.Sprintf("\n%d more %s left out: code scanning rejects a result with more than %d locations.", rest, noun, maxRelated+1)
+	if len(leftLinks) > 0 {
+		msg += "\nThe values left out as not literal, as [related locations]: " + strings.Join(leftLinks, ", ") + "."
 	}
+	msg += notLinked(len(compared)-keepCompared, len(left)-keepLeft)
 	out.Message = sarifMessage{msg}
 	return out
+}
+
+// leftOutReserve is how many related location slots a result keeps for
+// values skip_not_literal left out when the compared values would fill the
+// cap. Compared values come first, since they show the disagreement, and
+// code scanning shows only the first 100 locations of a result, so 899 slots
+// still hold more compared values than it shows. 100 left out values are
+// enough to show which places the rule did not compare, and the message
+// counts the rest of each side.
+const leftOutReserve = 100
+
+// notLiteralRemark ends the message of a related location that holds a
+// value skip_not_literal left out.
+const notLiteralRemark = "not literal, so skip_not_literal left it out of the comparison"
+
+// relatedLocation is the location of value f, numbered id, with a message
+// that names it, and says it was left out when it was. Ids from 1 keep each
+// location distinct, which the schema requires, even when two values share a
+// place.
+func relatedLocation(f named, id int, leftOut bool) sarifLocation {
+	loc := sarifLocation{ID: id}
+	text := label(f)
+	if p, inside := physical(f.value.At); inside {
+		loc.Physical = p
+	} else {
+		text = outside(f)
+	}
+	if leftOut {
+		text += ", " + notLiteralRemark
+	}
+	loc.Message = &sarifMessage{text}
+	return loc
+}
+
+// notLinked is the sentence that counts the values a result could not link,
+// compared and left out, or "" when it linked every one.
+func notLinked(compared, leftOut int) string {
+	n := compared + leftOut
+	if n == 0 {
+		return ""
+	}
+	noun := "values are"
+	if n == 1 {
+		noun = "value is"
+	}
+	of := ""
+	if leftOut > 0 {
+		of = fmt.Sprintf(", %d compared and %d left out as not literal", compared, leftOut)
+	}
+	return fmt.Sprintf("\n%d more %s not linked%s: code scanning rejects a result with more than %d locations.", n, noun, of, maxRelated+1)
+}
+
+// leftOutLocations names the values skip_not_literal left out of res as the
+// locations of a notification, as an erratum names them as related
+// locations, and returns the sentence the notification's message ends with.
+// Notifications have no documented limit on locations; the result's cap
+// holds here too.
+func leftOutLocations(res check.Result) ([]sarifLocation, string) {
+	left := leftOut(res)
+	if len(left) == 0 {
+		return nil, ""
+	}
+	keep := min(len(left), maxRelated)
+	locs := make([]sarifLocation, 0, keep)
+	for _, f := range left[:keep] {
+		locs = append(locs, relatedLocation(f, len(locs)+1, true))
+	}
+	text := "\nThe values left out as not literal are the locations of this notification."
+	if rest := len(left) - keep; rest > 0 {
+		text += fmt.Sprintf(" %d more are not listed: the notification lists at most %d.", rest, maxRelated)
+	}
+	return locs, text
 }
 
 // label names a value in a message: its text quoted as the agree message
 // quotes it, cut at valueLimit, and its extractor.
 func label(f named) string {
-	text := f.value.Text
-	if utf8.RuneCountInString(text) > valueLimit {
-		return fmt.Sprintf("%s (cut: the value is %d bytes) (%s)", plain(fmt.Sprintf("%q", string([]rune(text)[:valueLimit]))), len(text), plain(f.extractor))
-	}
-	return plain(fmt.Sprintf("%q (%s)", text, f.extractor))
+	return plain(quoteValue(f.value.Text) + " (" + f.extractor + ")")
 }
 
 // outside is the message of a value whose path leaves the repository. It has
@@ -675,7 +788,8 @@ func disagreeing(r *check.Rule, values []named) int {
 	return 0
 }
 
-// physical places at under %SRCROOT%. It reports false for a path that is
+// physical places at under %SRCROOT%. It reports false for a location
+// marked outside, whose path is not from the root, and for a path that is
 // absolute, names a host or climbs out with "..": its URI would resolve
 // outside the checkout. The extractors refuse such a path already; this
 // keeps the reporter from writing one if a value ever carries it.
@@ -684,7 +798,7 @@ func physical(at check.Location) (*sarifPhysical, bool) {
 	if file == "" {
 		file = configFile
 	}
-	if !local(file) {
+	if at.Outside || !local(file) {
 		return nil, false
 	}
 	p := &sarifPhysical{Artifact: sarifArtifact{URI: relativeURI(file), URIBaseID: srcRoot}}
@@ -701,9 +815,11 @@ func physical(at check.Location) (*sarifPhysical, bool) {
 // URI and opens the file to fingerprint it, so a name that climbs out under
 // the second reading would hash a line of a file outside the checkout. Under
 // both, no component may be "..", and the path may not be absolute, start
-// with a UNC "\\" or name a drive.
+// with a UNC "\\" or name a drive, before or after its .. are resolved:
+// a/../d: is the drive d: on Windows.
 func local(p string) bool {
-	return inside(p) && inside(strings.ReplaceAll(p, `\`, "/")) && !drive.MatchString(p)
+	slashed := strings.ReplaceAll(p, `\`, "/")
+	return inside(p) && inside(slashed) && !drive.MatchString(path.Clean(slashed))
 }
 
 // drive matches a Windows drive prefix such as "C:".

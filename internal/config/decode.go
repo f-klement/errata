@@ -3,13 +3,18 @@ package config
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 
-	"sigs.k8s.io/yaml"
+	yamlv2 "go.yaml.in/yaml/v2"
+	"go.yaml.in/yaml/v3"
+	sigsyaml "sigs.k8s.io/yaml"
 )
 
 // typedFile is the target the YAML is converted against. sigs.k8s.io/yaml
@@ -36,7 +41,7 @@ func toJSON(raw []byte) (json.RawMessage, error) {
 		// on what the per-check pass reports with the check's name.
 		return json.NewDecoder(strings.NewReader("{}"))
 	}
-	if err := yaml.UnmarshalStrict(raw, &typedFile{}, capture); err != nil {
+	if err := sigsyaml.UnmarshalStrict(raw, &typedFile{}, capture); err != nil {
 		return nil, err
 	}
 	if captureErr != nil {
@@ -45,50 +50,78 @@ func toJSON(raw []byte) (json.RawMessage, error) {
 	return out, nil
 }
 
-// documents counts the YAML documents in raw. The library reads only the
-// first, so a check after a second --- would be dropped without an error.
-// YAML forbids a line that starts with --- or ... followed by a space or the
-// end of the line anywhere but as a document marker, quoted and block scalars
-// included, so the markers can be found line by line.
-func documents(raw []byte) int {
+// documents counts the YAML documents in raw with go.yaml.in/yaml/v3's
+// decoder and returns the first. sigs.k8s.io/yaml reads only the first
+// document, so a check after a second --- would be dropped without an error.
+// The count comes from a decoder, not from a scan of the lines, because only
+// a decoder knows every line break (CR, NEL, LS and PS as well as LF) and an
+// encoding such as UTF-16. Empty documents at the end, such as the one a
+// last --- makes, are not counted: they hold no check, so none is lost. A
+// document after the first that does not decode, such as text after a ...
+// marker, is an error, since it may hold checks.
+func documents(raw []byte) (int, *yaml.Node, error) {
+	dec := yaml.NewDecoder(bytes.NewReader(raw))
 	var (
-		n       int
-		open    bool // an explicit --- started the current document
-		content bool // the current document has a node
+		first *yaml.Node
+		n     int // documents decoded
+		kept  int // documents up to the last one that is not empty
 	)
-	text := strings.TrimPrefix(string(raw), "\ufeff")
-	for line := range strings.Lines(text) {
-		line = strings.TrimRight(line, "\r\n")
-		switch {
-		case marker(line, "---"):
-			if open || content {
-				n++
-			}
-			rest := strings.TrimSpace(line[3:])
-			open, content = true, rest != "" && !strings.HasPrefix(rest, "#")
-		case marker(line, "..."):
-			if open || content {
-				n++
-			}
-			open, content = false, false
-		case !open && !content && strings.HasPrefix(line, "%"):
-			// A directive belongs to the document that follows it.
-		default:
-			if t := strings.TrimSpace(line); t != "" && !strings.HasPrefix(t, "#") {
-				content = true
-			}
+	for {
+		var doc yaml.Node
+		err := dec.Decode(&doc)
+		if errors.Is(err, io.EOF) {
+			return kept, first, nil
+		}
+		if err != nil {
+			return 0, nil, err
+		}
+		n++
+		if first == nil {
+			first = &doc
+		}
+		if !empty(&doc) {
+			kept = n
 		}
 	}
-	if open || content {
-		n++
-	}
-	return n
 }
 
-// marker reports whether line is the document marker m at column 0.
-func marker(line, m string) bool {
-	rest, ok := strings.CutPrefix(line, m)
-	return ok && (rest == "" || rest[0] == ' ' || rest[0] == '\t')
+// empty reports whether doc holds nothing at all: no node was written, so it
+// decodes to a null with no text. A document that writes ~ or null is not
+// empty, since its author wrote something there.
+func empty(doc *yaml.Node) bool {
+	if len(doc.Content) == 0 {
+		return true
+	}
+	c := doc.Content[0]
+	return c.Kind == yaml.ScalarNode && c.Tag == "!!null" && c.Value == ""
+}
+
+// lines returns the line each entry under the top-level checks key starts
+// on, by its index, from the document the checks were decoded from. Checks it
+// cannot place, such as those a merge key brings in, get no line, which
+// SARIF reads as the file without a line. It follows no alias: the decoder
+// refuses every top-level key but checks, so no anchor can come before it.
+func lines(doc *yaml.Node) []int {
+	if doc == nil || len(doc.Content) == 0 {
+		return nil
+	}
+	root := doc.Content[0]
+	if root.Kind != yaml.MappingNode {
+		return nil
+	}
+	// A mapping's Content holds each key and then its value.
+	for i := 0; i < len(root.Content); i += 2 {
+		if root.Content[i].Value != "checks" || root.Content[i+1].Kind != yaml.SequenceNode {
+			continue
+		}
+		entries := root.Content[i+1].Content
+		out := make([]int, len(entries))
+		for j, entry := range entries {
+			out[j] = entry.Line
+		}
+		return out
+	}
+	return nil
 }
 
 // decodeStrict decodes raw into v and refuses a key v does not have.
@@ -180,4 +213,203 @@ func prefix(path string) string {
 		return ""
 	}
 	return path + ": "
+}
+
+// written is what plainStrings finds in one entry under checks: its id as
+// the author wrote it, which names the check in the error, and an error for
+// each string field written as a scalar YAML 1.1 reads as no string.
+type written struct {
+	id   string
+	errs []error
+}
+
+// plainStrings looks at every string field of every check in doc, the first
+// document, and returns an error for each one written as a plain scalar that
+// loads as a string other than the text written. sigs.k8s.io/yaml decodes
+// with yaml/v2, which reads y, yes, on, no and off as bools, 1e3 and 007 as
+// numbers and ~ as null, and then turns the value back into a string for
+// the field, so id: y loads as the id "true" and 007 as "7". The fields come from the types the file
+// decodes into, so a string field added later is looked at too.
+func plainStrings(doc *yaml.Node) []written {
+	if doc == nil || len(doc.Content) == 0 {
+		return nil
+	}
+	var out []written
+	for _, p := range pairs(doc.Content[0], nil) {
+		seq := resolve(p.value)
+		if p.key.Value != "checks" || seq.Kind != yaml.SequenceNode {
+			continue
+		}
+		for _, entry := range seq.Content {
+			var e written
+			for _, f := range pairs(entry, nil) {
+				if f.key.Value == "id" {
+					e.id = resolve(f.value).Value
+				}
+			}
+			w := &stringWalk{}
+			w.walk(entry, reflect.TypeFor[checkEntry](), "")
+			e.errs = w.errs
+			out = append(out, e)
+		}
+		break
+	}
+	return out
+}
+
+type stringWalk struct {
+	errs []error
+}
+
+// walk reads n as a value of type t at path, the field's name in an error.
+// It goes only as deep as t, and no type of the file holds itself, so an
+// alias that leads back to a node above ends the walk. It reads an alias
+// each time it is used, as yaml/v2's decode, which ran first and bounds how
+// often aliases may repeat, read it.
+func (w *stringWalk) walk(n *yaml.Node, t reflect.Type, path string) {
+	n = resolve(n)
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	switch t.Kind() {
+	case reflect.String:
+		if what, loads, ok := coerced(n, false); ok {
+			w.errs = append(w.errs, plainError(path, n.Value, "", what, loads))
+		}
+	case reflect.Struct:
+		fields := jsonFields(t)
+		for _, p := range pairs(n, nil) {
+			if ft, ok := fields[p.key.Value]; ok {
+				w.walk(p.value, ft, join(path, p.key.Value))
+			}
+		}
+	case reflect.Map:
+		for _, p := range pairs(n, nil) {
+			if t.Key().Kind() == reflect.String {
+				if what, loads, ok := coerced(p.key, true); ok {
+					w.errs = append(w.errs, plainError(path, p.key.Value, "the name ", what, loads))
+				}
+			}
+			w.walk(p.value, t.Elem(), join(path, p.key.Value))
+		}
+	case reflect.Slice:
+		if n.Kind == yaml.SequenceNode {
+			for i, item := range n.Content {
+				w.walk(item, t.Elem(), fmt.Sprintf("%s[%d]", path, i))
+			}
+		}
+	default: // a number or a bool field takes what YAML reads
+	}
+}
+
+func plainError(path, text, noun, what, loads string) error {
+	return fmt.Errorf("%s: YAML 1.1 reads %s%s, unquoted, as %s, so it would load as %q; write it quoted: %s", path, noun, text, what, loads, strconv.Quote(text))
+}
+
+// coerced reports whether the scalar n, a string field's value or, with key
+// set, a map's string key, loads as a string other than the text written,
+// and if so what YAML 1.1 reads it as ("the bool true", "the number 1000",
+// "null") and the string it loads as. It decodes n alone with
+// sigs.k8s.io/yaml, as the file is decoded, so it compares the very string
+// a check would hold. y loads as "true" and 1e3 as "1000", so both are
+// refused; 5, true and 20.04 load as written, so they are not. A quoted or
+// block scalar is the text written, and so is a plain one over several
+// lines, since no bool, number or null holds a line break.
+func coerced(n *yaml.Node, key bool) (what, loads string, ok bool) {
+	const written = yaml.DoubleQuotedStyle | yaml.SingleQuotedStyle | yaml.LiteralStyle | yaml.FoldedStyle
+	if n.Kind != yaml.ScalarNode || n.Style&written != 0 || strings.ContainsAny(n.Value, "\n\r") {
+		return "", "", false
+	}
+	text := n.Value
+	if n.Style&yaml.TaggedStyle != 0 {
+		text = n.Tag + " " + text
+	}
+	if key {
+		var m map[string]int
+		if sigsyaml.Unmarshal([]byte(text+": 0"), &m) != nil || len(m) != 1 {
+			return "", "", false // a key that does not decode fails the whole file
+		}
+		for k := range m {
+			loads = k
+		}
+	} else {
+		var v struct {
+			V string `json:"v"`
+		}
+		if sigsyaml.Unmarshal([]byte("v: "+text), &v) != nil {
+			return "", "", false
+		}
+		loads = v.V
+	}
+	if loads == n.Value {
+		return "", "", false
+	}
+	var v map[string]any
+	// yaml/v2 names what the text is; it decodes, since the library, which
+	// decodes with yaml/v2, just did.
+	_ = yamlv2.Unmarshal([]byte("v: "+text), &v)
+	switch x := v["v"].(type) {
+	case nil:
+		what = "null"
+	case bool:
+		what = fmt.Sprintf("the bool %t", x)
+	case int, int64, uint64, float64:
+		what = fmt.Sprintf("the number %v", x)
+	default:
+		what = fmt.Sprintf("the %s %q", strings.TrimPrefix(n.Tag, "!!"), x)
+	}
+	return what, loads, true
+}
+
+// pair is one key of a mapping and its value.
+type pair struct{ key, value *yaml.Node }
+
+// pairs returns the keys of the mapping n, after any aliases, as YAML 1.1
+// merges them: the keys written in n, then those a << key brings in, each
+// key once, the first one kept, as yaml/v2 does. visiting holds the mappings
+// being merged, so a merge that leads back to one of them ends.
+func pairs(n *yaml.Node, visiting map[*yaml.Node]bool) []pair {
+	n = resolve(n)
+	if n.Kind != yaml.MappingNode || visiting[n] {
+		return nil
+	}
+	if visiting == nil {
+		visiting = map[*yaml.Node]bool{}
+	}
+	visiting[n] = true
+	defer delete(visiting, n)
+	var own, merged []pair
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		k, v := n.Content[i], n.Content[i+1]
+		if k.Tag != "!!merge" {
+			own = append(own, pair{k, v})
+			continue
+		}
+		v = resolve(v)
+		if v.Kind == yaml.SequenceNode {
+			for _, m := range v.Content {
+				merged = append(merged, pairs(m, visiting)...)
+			}
+		} else {
+			merged = append(merged, pairs(v, visiting)...)
+		}
+	}
+	var out []pair
+	seen := map[string]bool{}
+	for _, p := range append(own, merged...) {
+		if !seen[p.key.Value] {
+			seen[p.key.Value] = true
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// resolve is the node the alias n names, or n when it is no alias. An alias
+// names an anchored node, and an alias carries no anchor, so one step is all.
+func resolve(n *yaml.Node) *yaml.Node {
+	if n.Kind == yaml.AliasNode && n.Alias != nil {
+		return n.Alias
+	}
+	return n
 }

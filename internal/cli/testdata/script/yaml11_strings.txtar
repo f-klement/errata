@@ -1,0 +1,30 @@
+# errata.yaml is read as YAML 1.1, where y, on and no are bools, 1e3 a number
+# and ~ null. A string field written so that it would load as another string
+# does not load, and the error names the check, the field and the text, and
+# says to quote it: id: y once loaded as the id "true", and .inf as the
+# argument +Inf. A number or a bool that loads as written, such as 5, loads.
+! exec errata check
+! stdout .
+stderr '^errata: load .*errata.yaml: checks\[0\]: check "y": decode: id: YAML 1.1 reads y, unquoted, as the bool true, so it would load as "true"; write it quoted: "y"$'
+stderr '^checks\[1\]: check "inf-arg": decode: reason: YAML 1.1 reads \.nan, unquoted, as the number NaN, so it would load as "NaN"; write it quoted: "\.nan"$'
+stderr '^run\[4\]: YAML 1.1 reads \.inf, unquoted, as the number \+Inf, so it would load as "\+Inf"; write it quoted: "\.inf"$'
+
+# Quoted, each is the text written.
+exec errata check -c quoted.yaml
+stdout '^0 errata, 0 unknown. Coverage: ran 2, skipped 0.$'
+
+# A number that loads as its own text is the text written.
+exec errata check -c numbers.yaml
+stdout '^0 errata, 0 unknown. Coverage: ran 1, skipped 0.$'
+
+-- errata.yaml --
+checks:
+  - {id: y, reason: r, scope: repo, run: [sh, -c, 'true']}
+  - {id: inf-arg, reason: .nan, scope: repo, run: [sh, -c, 'test "$1" = .inf', sh, .inf]}
+-- numbers.yaml --
+checks:
+  - {id: numbers, reason: r, scope: repo, run: [sh, -c, 'test "$1 $2 $3" = "5 true 20.04"', sh, 5, true, 20.04]}
+-- quoted.yaml --
+checks:
+  - {id: "y", reason: r, scope: repo, run: [sh, -c, 'true']}
+  - {id: inf-arg, reason: '.nan', scope: repo, run: [sh, -c, 'test "$1" = .inf', sh, ".inf"]}

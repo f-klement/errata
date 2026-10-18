@@ -31,8 +31,8 @@ stderr 'check "name": extractor "backup-schedule": assert refers to an extractor
 stderr 'check "deep": assert: the expression nests deeper than 32 levels \(each term of a \+ chain, each \?: and each \.call is a level\)$'
 ! stderr 'line -1'
 
-# The worked case from the ticket loads; its extractors are not built yet, so
-# it is unknown before CEL runs.
+# The worked case from the ticket loads; the files it reads are absent here,
+# so it is unknown before CEL runs.
 ! exec errata check -c good.yaml
 stdout '^UNKNOWN staleness-threshold \(repo\)$'
 stdout '^0 errata, 1 unknown. Coverage: ran 1, skipped 0.$'

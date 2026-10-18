@@ -22,6 +22,7 @@ func TestCronInterval(t *testing.T) {
 		"0,30 * * * *":    30 * time.Minute,
 		"0-59/20 * * * *": 20 * time.Minute,
 		"5/15 * * * *":    15 * time.Minute,
+		"0 5-5 * * *":     day, // a range may start and end on one value
 		"0 0,12 * * *":    12 * time.Hour,
 		"0 3 * * 0":       7 * day,
 		"30 5 * * 7":      7 * day,

@@ -28,7 +28,7 @@ need no program at all.
 - Extractors for YAML, JSON and TOML paths, regex captures, and prose in Markdown matched after
   line wraps, backticks and emphasis are normalised. Every extractor returns a list of values with
   their locations, and an extractor that finds nothing is unknown.
-  - YAML, JSON and TOML share one path syntax, a subset of JSONPath.
+  - YAML, JSON and TOML share one path syntax, part of JSONPath, with filters by equality.
   - XML through a subset of XPath 1.0, for the tools that still keep their configuration in XML.
   - Markdown by structure: HTML comments, the text under a heading, fenced code blocks by language,
     and table cells; the same for HTML, AsciiDoc and reStructuredText.
@@ -42,8 +42,9 @@ need no program at all.
     local files only; a value that needs the network is unknown. An `env:` extractor asks every
     reader for one variable, so one rule checks that every place setting it agrees.
   - Infrastructure and service configuration: HCL (Terraform, Packer, Nomad), INI files (Ansible
-    inventories, gitconfig, setup.cfg, tox.ini), Java properties, nginx, Caddyfile and HAProxy,
-    crontab schedules, OpenAPI documents, Protocol Buffers, SQL migrations, CSV and CODEOWNERS.
+    inventories, gitconfig, setup.cfg, tox.ini, php.ini), Java properties, nginx, Caddyfile and
+    HAProxy, crontab schedules, OpenAPI documents, Protocol Buffers, SQL migrations, CSV and
+    CODEOWNERS.
   - Evaluated configuration: Jsonnet and CUE, evaluated without network access.
   - Build files: Makefiles, Justfile, Taskfile and Ninja, CMake and Meson, Gradle, Maven, MSBuild,
     Autotools, Bazel, and the literal values in sbt, SCons, Rakefile and setup.py.
@@ -62,6 +63,9 @@ need no program at all.
 
 The feature no other tool ships.
 
+- Plugins as separate executables, built and released from this repository and installed on
+  demand by an errata command. The release starts by deciding, for every integration, those
+  already shipped as well as those planned, which stay in the core binary and which become plugins.
 - A Kubernetes provider that renders (Helm and Kustomize, in process), reads live objects, and
   predicts an apply with a server-side dry run. errata never applies anything.
 - The `live` and `applied` scopes.
