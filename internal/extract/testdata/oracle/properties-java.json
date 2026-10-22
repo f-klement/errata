@@ -1,0 +1,802 @@
+[
+{"input_hex":"e2825c0d5c205c7530306539203a095c745c3a21f09f986b2e78f09f985c75443833445c75444530305c75443833445c0d5c7a5c7a0d0a","entries":[["� é","\t:!�k.x�😀�zz"]]},
+{"input":"\\ \u2028\n! c\n\\z\\u00e9\u000b \\\\\\=\\uD83D\\uDE00","entries":[[" \u2028",""],["zé\u000b","\\=😀"]]},
+{"input":"\n! c\n\f\\z#","entries":[["z#",""]]},
+{"input":"\\n\\nB\\u0041=\\z\n  # c\n\\uD83D\\uDE00\\\r\n\\ \\\n   #=\\ \n:\\u0041\\ \\#\\ \\\\ \\uD83D\\uDE00\\uDE00\t\\\r:","entries":[["\n\nBA","z"],["😀 #"," "],["","A # \\ 😀�\t:"]]},
+{"input":":\\uDE00\n\\uD83D:","entries":[["","�"],["�",""]]},
+{"input_hex":"5c75443833445c754445303023205c0a2020200d0bff5c3d0942c3a921","entries":[["😀#",""],["\u000b�=","Bé!"]]},
+{"input_hex":"3a0a5c75443833445c0d0ae282eda0805c7531325c6e0d3a205c7531325c235c0d0a205c0a2020205c74ff0d235c3d","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"5c5c746b2e78215c205c74c3a95c75303034315c6e5c0d5c75303065390bff0a20202320630a230c3d615c753030653923f09f980d5c7531320d0a5c7a0a5c0a5c753132205c0a202020","refused":"Malformed \\uxxxx encoding."},
+{"input":"\\\r\n\\uD83D\\\n\\u00e9 !\\z","entries":[["�é","!z"]]},
+{"input_hex":"5c3d5c7531325c6eeda0805c235c5c5c75444530300a2120630a5c3d5c200a5c75303065395c7544383344","refused":"Malformed \\uxxxx encoding."},
+{"input":" \\u00e9\\\r\n \\uD83D\\\n\\ \n\\ \\\n:\\uDE00\\uD83D\\uDE00\\\n\\u0041k.x\n  # c\n","entries":[["é� ",""],[" ","�😀Ak.x"]]},
+{"input_hex":"3d5c3a0d5c7ac3a9c3a95c6e0deda0805c75303065395c75303034315c745c3d0d0ae2825c75444530305cc3a9e2825c3d5c0a5c0aeda080c3a95c75443833445c3d6b2e78","entries":[["",":"],["zéé\n",""],["�éA\t=",""],["��é�=�é�=k.x",""]]},
+{"input_hex":"3d200a5c7530303431e282200c","entries":[["",""],["A�",""]]},
+{"input_hex":"090a20202320630a5c7530303431f09f980d0a3d","entries":[["A�",""],["",""]]},
+{"input":"\\uD83D\u2028\n","entries":[["�\u2028",""]]},
+{"input_hex":"5c75303034310beda0805c75443833445c75444530303d","entries":[["A\u000b�😀",""]]},
+{"input_hex":"3d235c75443833445c0d0a0deda0805c74e280a85c0a2023c2855c5cc2855c75444530305c3d0cf09f980d0a0d0a5c75443833445c23","entries":[["","#�"],["�\t\u2028#\\�=","�"],["�#",""]]},
+{"input_hex":"5c20c3a95c5c0d0af09f980d0a20202320630a0d5c5c75444530305c3d","entries":[[" é\\",""],["�",""],["\\uDE00=",""]]},
+{"input_hex":"5c75444530305c20613a5c235c234209e282eda08009205c0a202020eda0805c7530303431205c200a5c2320e2825c3a0aeda0800a20202320630a095c740a","entries":[["� a","##B\t��\t �A  "],["#","�:"],["�",""],["\t",""]]},
+{"input_hex":"615c0a5c7a5c3d3d0a20202320630aeda0805c75444530300d5c3a5c205c0d0a5c6e0a2120630a5c75444530305c3d615c7544383344c285","entries":[["az=",""],["��",""],[": \n",""],["�=a�",""]]},
+{"input_hex":"5c75443833440d0d5c75444530300b5c3a5c74200d0aff0c5c75443833445c75444530300aff5c7a","entries":[["�",""],["�\u000b:\t",""],["�","😀"],["�z",""]]},
+{},
+{},
+{"input":"\\u00e9\\:!:a#\t\n  # c\n\u000b\\n\\#","entries":[["é:!","a#\t"],["\u000b\n#",""]]},
+{"input_hex":"0af09f9823215c205c0a5c7530306539ff095c5c205c0a2020205c75444530303d5c6e5c6e3d","entries":[["�#! é�","\\ �=\n\n="]]},
+{"input":"\t\n  # c\n \\\n   \\ \\z \n  # c\n\\\r\r\\\r\\uD83D\\\\u00e9 \\\\B\\\\ ::\\\n\u000b\\=\\:\\:\\u00e9\\#\\t\\t","entries":[[" z",""],["�\\u00e9","\\B\\ ::\u000b=::é#\t\t"]]},
+{"input_hex":"5c23c285230ae2825c7544383344c3a9616b2e78420a20202320630a0d5c205c0ac3a9200a3d5c3a205c0a202020e2825c6e5c0a5c5cc2855c20c3a9c285","entries":[["##",""],["��éak.xB",""],[" é",""],["",": �\n\\ é"]]},
+{"input_hex":"eda0805c75303034315c753132e280a8615c2061e280a85c3d0d0a5c753132e282","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"205c0a202020f09f98c285c3a9ff0ac3a9ff5c753030653923ff5c75303034310a5c3aff42","entries":[["�é�",""],["é�é#�A",""],[":�B",""]]},
+{"input":"é\r\n\\n ","entries":[["é",""],["\n",""]]},
+{"input":"#\\:\n  # c\n\\u12B\t\t:B \r","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"5c75303034315c0d0a5c5c0a20202320630a20095c754438334461e282215c75303034310d6161e282f09f98615c0d5c0d5c74c3a95c75303065395c0d0a5c75443833445c7531325c75443833445c7531325c0d0b","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"5c6e0a5c23e2823a425c7530306539205c0a202020ff","entries":[["\n",""],["#�","Bé �"]]},
+{"input_hex":"5c7a61c285e2825c236b2e78c2852342615c0df09f985c20200d0a20235c5c0ac2855c3d5c7530303431ff0ceda080","entries":[["za�#k.x#Ba� ",""],["=A�","�"]]},
+{"input_hex":"21205c0a202020eda0805c7531325c5cc2850d0a5c75443833445c746109ff23ffe280a80a20202320630ac2855c0d6b2e780a2120630a5c7544453030095c0d0a0a2120630aff","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"5c235c75444530305c6ee282210d0a205c0a2020200d0a0a20202320630a5c75443833445c75444530300a","entries":[["#�\n�!",""],["😀",""]]},
+{"input_hex":"5c6e5c7530303431e282","entries":[["\nA�",""]]},
+{"input":"=\\z\\uD83D\\uDE00\\:\n! c\nk.x\\ \n\n  # c\n\n  # c\n\\u0041\\\r\t \\\n   \\=\r\\\n\\\\","entries":[["","z😀:"],["k.x ",""],["A=",""],["\\",""]]},
+{"input":"\\u00e9\\\\\\u00e9\\uD83D#=\\nk.x\\uD83Dé\t!\u2028\\\r\n\r#","entries":[["é\\é�#","\nk.x�é\t!\u2028"]]},
+{"input_hex":"5c7a5c7531320a20202320630ae282200d3af09f98c3a95c745c0d0a2120630a5c0d0ac3a9ff","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"615c6e0c5c20c3a95c6ee280a8ff5c740c5c3d5c0d5c0d0a21f09f98205c0a2020200ae280a8425c20f09f98610c210d0a","entries":[["a\n"," é\n\u2028�\t\f=!� "],["\u2028B �a","!"]]},
+{"input_hex":"c3a90c235c3d0c0c3d5c6b2e78c2856b2e785c20203a0d0a5c23eda0803dc3a9205c0a202020eda0806b2e78205c20200a2120630a235c3d","entries":[["é","#=\f\f=k.xk.x  :"],["#�","é �k.x   "]]},
+{"input_hex":"5c75303034315c6e0a2120630a5c203d0ac2855c230d0ae2825c75303065395c5c0a20202320630a5c3aeda0800b6b2e780a5c3d","entries":[["A\n",""],[" ",""],["#",""],["�é\\",""],[":�\u000bk.x",""],["=",""]]},
+{"input":"B\\n\\u12\\t\\uD83DB\u000b\u2028\\\\u0041\\\\\n\r\\z\\u0041\r\n\\\r\n:","refused":"Malformed \\uxxxx encoding."},
+{"input":"\\ =\\uDE00k.x\\=","entries":[[" ","�k.x="]]},
+{"input":"\\=\n! c\n\n\u2028a\\t#!\\\u2028","entries":[["=",""],["\u2028a\t#!\u2028",""]]},
+{"input_hex":"5c75443833445c7544453030e2820a20202320630aff210d3a5c75443833440d0a5c0a4220205c0a2020205c20205c0a2020205c20","entries":[["😀�",""],["�!",""],["","�"],["B","   "]]},
+{"input":"\\u00e9\\u00e9\\\\\t\r\r\\t: \\ ","entries":[["éé\\",""],["\t"," "]]},
+{"input_hex":"5c75303034315c0d0a5c23eda080eda080c28523c285ff5c3a5c753132","refused":"Malformed \\uxxxx encoding."},
+{"input":":\\\\k.x","entries":[["","\\k.x"]]},
+{"input_hex":"5c75443833440de2825c3a0d0a5c3d5c5c0b6b2e785c0d0a5c3d20f09f985c0a215c6e0a2120630a3d","entries":[["�",""],["�:",""],["=\\\u000bk.x=","�!\n"],["",""]]},
+{"input_hex":"5c3a5c75303065395c0a0d0a095c200a5c0a5c0d5c6e23ffe2825c75443833445c75444530300ce2825c5c5c0d6b2e7861e280a80a5c0d205c0a2020203d","entries":[[":é",""],[" ",""],["\n#��😀","�\\k.xa\u2028"],["",""]]},
+{"input_hex":"c2855c75444530305c7544453030615c0c5c233a0a5c3d5c0d0a205c0a2020205c7a0c0c610b5c3d5c7a5c75444530306b2e78f09f98e2825c75444530305c75443833445c7544453030ff5c7544453030eda08061","entries":[["��a\f#",""],["=z","a\u000b=z�k.x���😀���a"]]},
+{"input":"\\=\n\\\r","entries":[["=",""],["",""]]},
+{"input":"\f\t\\ \\uD83D\\uDE00\n  # c\n\\:\\\n\\:\n","entries":[[" 😀",""],["::",""]]},
+{"input":"\n  # c\n\\uD83D:\\u12!!\\\n\n  # c\n:é\r\n\\u12\\uD83D\\uDE00\\#","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"e2825c0de282425c75443833445c75444530306b2e780a2120630a","entries":[["��B😀k.x",""]]},
+{"input":"\n\r\nB\\:\\u12\\uDE00\r\n\n","refused":"Malformed \\uxxxx encoding."},
+{"input":"a\\uDE00k.xa\u2028\\\n\\\r","entries":[["a�k.xa\u2028",""]]},
+{"input":"\\\r\n\n\n  # c\n\n  # c\n!"},
+{"input":"k.xk.x\\u00e9","entries":[["k.xk.xé",""]]},
+{"input":"\\=\té\\:\n\\\\=\\t\n  # c\n\\uDE00\\uDE00\\\r\n\\u00e9\t:\\#\\uDE00\\u00e9\\tB \\\n   =\\=\\n\u2028\\:\\\r\\:\n","entries":[["=","é:"],["\\","\t"],["��é","#�é\tB ==\n\u2028::"]]},
+{"input_hex":"0a20202320630a5c75443833445c75443833445c7544453030e280a83d205c0a2020205c7544383344c3a9e282230c5c75443833442361235c0a0b0b5c75444530300a5c75444530303d5c3a61200d0a5c234261","entries":[["�😀\u2028","�é�#\f�#a#\u000b\u000b�"],["�",":a "],["#Ba",""]]},
+{"input_hex":"c3a95c0d090c23093deda0800a5c75443833445c7544453030205c745c20e280a86b2e78","entries":[["é#","�"],["😀","\t \u2028k.x"]]},
+{"input":"é\\uD83D\\\né=\u2028","entries":[["é�é","\u2028"]]},
+{"input_hex":"5c7530303431ff0a2120630aff0a2120630aff5c75443833445c3d5c0a0a2120630aeda0800d0aeda080","entries":[["A�",""],["�",""],["��=",""],["�",""],["�",""]]},
+{"input_hex":"215c75443833446b2e786b2e78f09f980a20202320630a20"},
+{"input":" a\\u00e9","entries":[["aé",""]]},
+{"input":"\n! c\nk.x\u000b\\uD83D\\=é\n\\ ","entries":[["k.x\u000b�=é",""],[" ",""]]},
+{"input_hex":"5c5c425c3deda0805c6ee280a85c6e0a20202320630a61c3a95c7aff5c6e5c3ac3a90a5c7544453030c3a90ac3a95c753132c3a95c75443833440d0a42e280a83a0d","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"5c7531325c6e0d5c3a0a2120630a5c7aeda0805c3d420d3a0c5c75443833445c7544453030095c200a20202320630a6b2e785c75303034315c745c7531320de2820d615c75303034310c3a","refused":"Malformed \\uxxxx encoding."},
+{"input":"\f \\\n   \\ \ra\\u0041\\\n","entries":[[""," "],["aA",""]]},
+{"input_hex":"e2820aeda0800a20202320630ac28520eda0800d0a5c745c75443833445c5c0d0a5c7a5c203a0d0b5c230be282","entries":[["�",""],["�",""],["","�"],["\t�\\",""],["z ",""],["\u000b#\u000b�",""]]},
+{"input_hex":"0ae282c285fff09f985c0ac28521c3a90d0a5c235c235c3d4261","entries":[["���!é",""],["##=Ba",""]]},
+{"input":" \\\n   \\ ","entries":[[" ",""]]},
+{"input_hex":"5c753132c2855c23e2825c7530303431c285c2850a2120630af09f985c5c5c7531325c75444530305c3a0a0a20202320630a5c75444530305c23205c753132","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"0a2120630ae2825c75443833445c7544453030e280a80c5c75303034315cff5c0d5c20eda080","entries":[["�😀\u2028","A� �"]]},
+{"input":"\\\r\n\\\r\f\\\nB\u000b\\\r\u000b\n","entries":[["B\u000b\u000b",""]]},
+{"input_hex":"20ff235c75443833445c75444530300d200a20202320630ae280a8c2855c75444530306b2e7842420a20202320630a5c7a5c75303065395c7ae2825c75303034315c75444530303a5c235c0a5c753030343123205c0a202020","entries":[["�#😀",""],["\u2028�k.xBB",""],["zéz�A�","#A# "]]},
+{"input_hex":"215c7531320a20202320630a5c7af09f98c3a90b3d5c7a5c200d0c0c5c5c0a0b5c753030343161eda080ff0d5c7544383344","entries":[["z�é\u000b","z "],["\\",""],["\u000bAa��",""],["�",""]]},
+{"input":"\\uD83D\\uDE00","entries":[["😀",""]]},
+{"input_hex":"5c0a5c5c3a5c7531325c745c5c215c0d0d0aff0a090a0a20202320630a5c5c3a","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"e2825c200a0b615c75444530305c75444530303a235c23c3a95c3d5c0b5c6eeda0800a2120630a0a5c75443833445c6e5c7ac2855c5c215c0d5c7544383344","entries":[["� ",""],["\u000ba��","##é=\u000b\n�"],["�\nz\\!�",""]]},
+{"input_hex":"ff0a5c6effe280a85c3a5c20205c0a2020205c7530306539c285f09f98200a","entries":[["�",""],["\n�\u2028: ","é� "]]},
+{"input_hex":"0a20202320630a5c0d0a42eda080205c7531325c75303034315cff5c7530303431c2855c75443833445c75444530305c3d0c21e2825c7aeda080e280a80a5c0a0a5c0d0a5c7a0d5c75303034315c74","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"0b5c5c5c5c5c5c0d0a205c0a202020610ae282095c3d205c0a2020205c74c285","entries":[["\u000b\\\\\\",""],["a",""],["�","= \t"]]},
+{"input":"k.x!é \\\réé\\\r\\z","entries":[["k.x!é","ééz"]]},
+{"input_hex":"e280a80a20202320630aeda080205c0a2020205c5ce2825c745c743ae2820a20202320630a5c7530306539c3a9eda0805c0df09f985cff","entries":[["\u2028",""],["�","\\�\t\t:�"],["éé���",""]]},
+{"input":"\\\\u00e9\\z\\ \r!\\t \\\r\n\\zB\\é\\\\","entries":[["\\u00e9z ",""],["zBé\\",""]]},
+{"input":"\f\n  # c\n\\u00e9","entries":[["é",""]]},
+{"input_hex":"5c753132ff5c75443833440a","refused":"Malformed \\uxxxx encoding."},
+{"input":"!\\\n\\u00e9 \\u00e9!\n  # c\n\\\\\f\n\\\\\n! c\n\\k.xB\\t \\\n   \\\\\\uD83D\\\\","entries":[["é","é!"],["\\",""],["\\",""],["k.xB\t","\\�\\"]]},
+{"input_hex":"eda080eda080e280a85c75303065395c23615c75303065395c6e","entries":[["��\u2028é#aé\n",""]]},
+{"input_hex":"5c0d0a0c3a425c205c5c0ce280a85c09eda0805c3a5c0d0a5c75303065395c75443833440d0d5c3d5c3d090d0a","entries":[["","B \\\f\u2028\t�:é�"],["==",""]]},
+{"input_hex":"eda0805c5c0a5c743a0a5c6e5c205c75443833445c75444530305c7544453030","entries":[["�\\",""],["\t",""],["\n 😀�",""]]},
+{"input":"\n! c\n\n! c\n\\\n\\uD83D\\#\u2028","entries":[["�#\u2028",""]]},
+{"input_hex":"ffe280a8e2823d61420a5c6e5c6e0ce280a80b3a5c75303065396b2e780a2120630ae282eda080c3a96b2e78eda0805c0d","entries":[["�\u2028�","aB"],["\n\n","\u2028\u000b:ék.x"],["��ék.x�",""]]},
+{"input_hex":"eda080e280a821215c5c5c7a42c28523eda0805c230d5c75303065395c","entries":[["�\u2028!!\\zB#�#",""],["é",""]]},
+{"input_hex":"0c5c2309c3a90a2120630a5c5c5c3a5c75303034310a615c7a5cc2853a5c7544383344090aff","entries":[["#","é"],["\\:A",""],["az","�\t"],["�",""]]},
+{"input_hex":"0a235c0d0a5c6e6b2e785c20e280a85c0d0ac3a95c75303034315c754438334442f09f985c230923235c7530303431f09f980a","entries":[["\nk.x \u2028éA�B�#","##A�"]]},
+{"input_hex":"610a2120630aeda080f09f985c202020","entries":[["a",""],["�� ",""]]},
+{"input_hex":"0df09f98f09f98e280a85c7531320a2120630a5c75443833445c7544453030210a2120630a5c7a","refused":"Malformed \\uxxxx encoding."},
+{"input":"#\\\\: \\\n   \\#\\t\u2028\u2028é\u000b\\\r\r\n\\uDE00\\#a\f\\\\\n\u000b","entries":[["#\t\u2028\u2028é\u000b",""],["�#a","\\"],["\u000b",""]]},
+{"input_hex":"5c75443833443d5c75444530305c75303065393deda0800d0a5c3d5c75303034315c235c75303065395c6e5c3d6b2e780b5c75303034313d5c20eda0805c0d0a235c0a5c5c5c6eff5c0d0b0a","entries":[["�","�é=�"],["=A#é\n=k.x\u000bA"," �#\\\n�\u000b"]]},
+{},
+{"input_hex":"e2820a2120630a5c75303065395c7530306539","entries":[["�",""],["éé",""]]},
+{"input_hex":"5c0a0b0a20202320630a5c7531320af09f983a5c3d205c0a202020205c0a202020210c5c6e5c20e280a85c235c7530303431090ce282ff5c3a0a5c3d3a5c3a5c75443833445c75444530305c0ac285","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"0cc2855c75443833445c75444530305c0de280a8e280a8e280a80a0b5c7ae282","entries":[["😀\u2028\u2028\u2028",""],["\u000bz�",""]]},
+{"input":"\\\\\r\\uD83D\\uDE00 \\u00e9\\\\\\u00e9","entries":[["\\",""],["😀","é\\é"]]},
+{"input":"\u000b\u2028\\\\\\u12\r\u000b\n  # c\n\\:\\","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"5c3a3d200c5ce282615c3d0a3a","entries":[[":","�a="],["",""]]},
+{"input_hex":"0a5c7531325c420c0a2120630aeda0805c75444530300a205c0a2020200d0a205c75443833445c75444530305c7a0a20202320630ae280a8f09f98ffeda0805c0d","refused":"Malformed \\uxxxx encoding."},
+{"input":"\\uD83D\\u12\r\n\n! c\n\\uD83D\\uDE00! \\\n   \\\n\n\\n#\\\r\n\\uD83D\\uDE00 \\\n   \nB\r\n\\uD83D\r","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"615c0d0a0a5c3a5c3d615c75443833445c7544453030093a0961425c6e5c3a5c75443833445c7544453030210d0cff5c7544383344610a2120630a5c7544453030200b0d0c5c7530303431","entries":[["a",""],[":=a😀","aB\n:😀!"],["��a",""],["�","\u000b"],["A",""]]},
+{"input":"\n  # c\n\\uD83D\\uDE00\\u00e9","entries":[["😀é",""]]},
+{"input_hex":"eda0805c7544383344e280a80909ff5c7530303431","entries":[["��\u2028","�A"]]},
+{"input":"ék.x","entries":[["ék.x",""]]},
+{"input_hex":"5c3dff5c7544453030","entries":[["=��",""]]},
+{"input":" \\\n   \\uD83D\\uDE00\\t\\uDE00\f\\\n\\:\n  # c\n\\n\\z\\\n\na\\\n \\\n   \\:!\\ \\u00e9\\uDE00","entries":[["😀\t�",":"],["\nz",""],["a:! é�",""]]},
+{"input_hex":"0b5c203a61205c5cff5c7544383344","entries":[["\u000b ","a \\��"]]},
+{"input_hex":"f09f980d5c6e0b5c233d200d0a5c75303065390c0aff0a20202320630a5c75443833445c7544453030205c0a2020200c5c235c0d0a0a20202320630a205c0a2020205c75303065395c0d6b2e78","entries":[["�",""],["\n\u000b#",""],["é",""],["�",""],["😀","#"],["ék.x",""]]},
+{"input_hex":"5c3dff5c3d235c5c5c205c230b5c7a5c5c5c75443833445c754445303021205c0a202020","entries":[["=�=#\\ #\u000bz\\😀!",""]]},
+{"input_hex":"0d0a09205c0a2020205c7531320a2120630aeda0805c74236b2e78205c230d5c0d0a5c7530306539","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"5c75444530306b2e785c7530306539095c0d0d0a5c0a5c0af09f985c7ac2855c7544453030c3a95c0d0a0a425c5c","entries":[["�k.xé",""],["�z�é",""],["B\\",""]]},
+{"input_hex":"3a5c3a5c75303034310a5c0d5c3d5c235c0a5c5ceda080e2825c5c0d0a0d5c75303034315c7530303431eda0805c7a5c75303034310a5c205c5c3d0b","entries":[["",":A"],["=#\\��\\",""],["AA�zA",""],[" \\","\u000b"]]},
+{"input_hex":"5c20ff0a215c745c5c5c0d0c5c6e095ceda0805c75303065395c6e0a0a20202320630a5c5c5c235c75443833445c23e2825c0d0a","entries":[[" �",""],["\n","�é\n"],["\\#�#�",""]]},
+{"input_hex":"5c0aeda080c3a9230a2120630a5c7530303431c2855c0a5c7544383344ff0c5c7530306539","entries":[["�é#",""],["A��","é"]]},
+{"input_hex":"0d0b0d3df09f98ff0a2120630a0a20202320630a0b090c0b5c0d0a3a5c200a2120630a5c3a6b2e785c3a5c740c","entries":[["\u000b",""],["","��"],["\u000b","\u000b: "],[":k.x:\t",""]]},
+{"input_hex":"e282eda0805c3a5c3a","entries":[["��::",""]]},
+{"input_hex":"0a20202320630a215c5c215c235c75443833445c75444530305c3a0c615c3df09f985c75443833445c75444530305c5c230d"},
+{"input":"\\ \\u12","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"0df09f980a2120630a5c0d0a5c3a0d21c2850a20202320630a5c0d5c745c0d5c753132f09f985c6e0a61205c235c23e280a85c75444530305c205c0af09f985c3a0a2120630a","refused":"Malformed \\uxxxx encoding."},
+{},
+{"input_hex":"5c20c2855c7a5c5c7531325c7530303431215c20c2856b2e780b09f09f980a5c","entries":[[" z\\u12A! k.x\u000b","�"],["",""]]},
+{"input_hex":"0a5c5c215c7531325c7530303431c2855c235c75444530300a20202320630ac28520ff0d5c23090a20202320630a0a20202320630a3d095c75303065395c0d5c7544453030c3a9","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"5c5c7aeda0805c3d5c75303065395c0d0a0a2120630a0c0d0a5c3d093ae280a85c5c7a205c7531320b5c75303065390cffc2855c7530303431","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"23095c75303034316b2e7820e282ff5c5c5c233a0ae280a85c0d0a5c0a61eda0805c5cff","entries":[["\u2028a�\\�",""]]},
+{"input_hex":"0a20202320630a3deda080425c7aeda08009e280a85c7531325c7531325c743d2023096b2e78","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"5c753132f09f980bff3de280a85c3a425c7544453030235c753132235c7544453030c285235c75443833445c75444530300d5c5c5c0d0aeda0805c7a42613a","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"20425c7530306539f09f980a2120630a235c0d0a5c6e","entries":[["Bé�",""],["\n",""]]},
+{"input":"\\\\=\\uD83D\f\\uDE00a=\\u12a\fé\\n\\=B\\u0041\\:\\#\\uD83D#\\:é\\=\r\n\\uD83D","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"6b2e780cf09f98e2820c3a5c0a0d0a5c75443833445c5c3aeda0805c5c5c75303065395c3a23205c0a2020205c7544453030","entries":[["k.x","��\f:"],["�\\","�\\é:# �"]]},
+{"input_hex":"5c75444530300ac2855c6e5c20c285615c205c3a5c75443833440b5c3deda0805c753030343109","entries":[["�",""],["\n a :�\u000b=�A",""]]},
+{"input_hex":"f09f985c23205c0a2020200d0a3d21","entries":[["�#",""],["","!"]]},
+{"input":"\r\n\\\\u12\n! c\n\\é\u2028","entries":[["\\u12",""],["é\u2028",""]]},
+{"input_hex":"5c0a610c3d5c745c7531325c75303034315c75443833445c7a3ae2825c3dc2855c5cc2855c7544453030eda0805c3a5c7a205c7a3d","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"6b2e780af09f986b2e785c0d0a5c0d0b","entries":[["k.x",""],["�k.x\u000b",""]]},
+{"input_hex":"0a2061f09f980aeda0806b2e785c7ac3a95c7544453030205c0a20202020e2825c75443833445c20ff5c6e0d42f09f980961425c75444530300a20202320630a5c753132205c0a202020","refused":"Malformed \\uxxxx encoding."},
+{"input":"\r\n:\\\r\n \\\n   \n\u2028\n  # c\n\\\\\r\n\\t\u000b\\\\\r\n!#\\t\\u12\\\nk.x\\u00e9\t!\\=#\u000b\\uD83D\\uDE00\n  # c\n","entries":[["",""],["\u2028",""],["\\",""],["\t\u000b\\",""],["k.xé","!=#\u000b😀"]]},
+{"input_hex":"ff5c7a0d0a0aeda0800d6b2e786b2e78215c75303065395c745c7531320d0a5c3d5c3d3d5c0c5c7530306539f09f985c5c0d0a5c23c285","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"5c7531325c5c75303065395c0ae28223236b2e78205c0a202020","refused":"Malformed \\uxxxx encoding."},
+{"input":"\n\f\n\t\f\n\u000b\n! c\n\\t","entries":[["\u000b",""],["\t",""]]},
+{"input_hex":"f09f98210d0a23420a5c3de280a83a5c3a","entries":[["�!",""],["=\u2028",":"]]},
+{"input_hex":"0ac2855c0a0b5c7544383344e280a8ff42213a","entries":[["\u000b�\u2028�B!",""]]},
+{"input":"\\u12\n! c\n\\\n\\uDE00\\n \\\n   \\uD83D\\uDE00\n  # c\n\r\n#=","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"5c75444530305c7531320c0920e2825c235c20","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"5c230a2120630a5c235c7409e282205c3d095c0d0ac285","entries":[["#",""],["#\t","� =\t"]]},
+{"input_hex":"5c3d5c5ceda080e2820a20202320630a0b095c0d0a205c0a2020206b2e78ff61f09f985c0d0a21ff0a2120630a5c7531320a20202320630a0b5c75303065390d0a","refused":"Malformed \\uxxxx encoding."},
+{"input":"\\za\\uD83D\\uDE00\\t\\=","entries":[["za😀\t=",""]]},
+{"input_hex":"f09f986142e280a86121615c3de2820a2120630a5c0a5c205c75443833445c75444530300a20202320630a205c7531320a42ff0d5c0d0a5c75443833445c6eeda0800a2120630a","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"420ceda080425c7530306539e280a83a0d5ce282f09f983aeda0800b21420d0a5c740a2120630a0bffe280a8e282e2825c75443833440a2120630a","entries":[["B","�Bé\u2028:"],["��","�\u000b!B"],["\t",""],["\u000b�\u2028���",""]]},
+{"input_hex":"5c74093d0a5c75303034310d0a5c754438334420eda0805c75303034310c","entries":[["\t",""],["A",""],["�","�A\f"]]},
+{"input":"\\t\\\r\né\\\\\\n\r\rB\n! c\n\u2028\nk.x","entries":[["\té\\\n",""],["B",""],["\u2028",""],["k.x",""]]},
+{"input_hex":"eda0805c74","entries":[["�\t",""]]},
+{"input":"\n  # c\n\n\n\t\\=\\ \n! c\n\\u12\\\n\\ \\u12\n  # c\n!\\uD83D","refused":"Malformed \\uxxxx encoding."},
+{"input":"\\#\n! c\n\\uDE00","entries":[["#",""],["�",""]]},
+{"input_hex":"5c3d5c0a5c7530306539200a5c74ff420b0c5c235c7544453030","entries":[["=é",""],["\t�B\u000b","#�"]]},
+{"input":"\r\n\\ ","entries":[[" ",""]]},
+{"input_hex":"20235c3a5c0d0a5c75303034315c5c5c3d0bc3a95c7531320be280a8ff0c2021093a5c205c0a2020200cc2855c6e","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"5ce280a80b5c7a5c74e2820a215c7530303431c2855c745c3a0d0a205c0a202020ff5c7531325c0d235c0d5c75303034315c745c230c3a5c7a5c7531325c20","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"205c0a2020205c75443833445c7a5c740b0a2120630ac3a9f09f980c5c5c5c3a0b0c0b0a20202320630a0a2120630a5c3d","entries":[["�z\t\u000b",""],["é�","\\:\u000b\f\u000b"],["=",""]]},
+{"input":"B\\uD83D\\uDE00\\z\u2028\\uDE00B\u2028","entries":[["B😀z\u2028�B\u2028",""]]},
+{"input_hex":"5c205c75443833445c75444530305c230a2120630a205c0d0a0a5c0d0a5c233a5c0a3a615c0a5c7530303431ffe282eda080f09f98c3a95c75443833440a","entries":[[" 😀#",""],["#",":aA����é�"]]},
+{"input_hex":"e2825c75303065390a20202320630ae280a8425c3a0a20eda080205c0a202020230c5c5c0d0a0b5c200a","entries":[["�é",""],["\u2028B:",""],["�","#\f\\"],["\u000b ",""]]},
+{"input":"\\t\u000b:\\n\\z\\\r\n#\\\\t","entries":[["\t\u000b","\nz#\\t"]]},
+{"input":"\\\\uD83D","entries":[["\\uD83D",""]]},
+{"input":" \\\n    \t\n\n! c\n"},
+{"input_hex":"205c0a2020205c7544453030090a2120630a5c75443833445c75444530305c0d5c0d5c5c0a2120630ae2820d","entries":[["�",""],["😀\\",""],["�",""]]},
+{"input_hex":"3de280a86b2e78f09f980920205c0a2020205c75444530303ae280a83a0bf09f983d5c0d0a0a5c0ae2820c3d5c75303065395c75443833445c7a6b2e785c0d0a0a2120630a5c3d","entries":[["","\u2028k.x�\t  �:\u2028:\u000b�="],["�","é�zk.x"],["=",""]]},
+{"input_hex":"e2825c74205c0a2020200bf09f985c7423","entries":[["�\t","\u000b�\t#"]]},
+{"input_hex":"0b5c0d0a0a2120630ae2823d5c5cc3a95c3a0d0a21e282","entries":[["\u000b",""],["�","\\é:"]]},
+{"input":"\\=\na\\ \n! c\nk.x\té","entries":[["=",""],["a ",""],["k.x","é"]]},
+{"input_hex":"5c7530306539210b423a0c213dc28561ff210c5c3deda0805c7a0a20202320630a0a2120630a5c75303065390a2120630a5c753132ff5c743aff0a2120630a","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"0a20202320630a5c0a0a20202320630a235c3a0ae280a8ff5c75303065390c5c75443833445c74","entries":[["\u2028�é","�\t"]]},
+{"input_hex":"5c0d0a2120630a5c7530303431215c230be2823a0c0a2321","entries":[["A!#\u000b�",""]]},
+{"input":"\\u0041\r\n\\\r\n! c\n","entries":[["A",""]]},
+{"input_hex":"0c5c5c75303065395c6e0d0a2120630a0ceda0800a21","entries":[["\\u00e9\n",""],["�",""]]},
+{"input_hex":"5c7ac2853d5c7a5c233a0d0a5c5c5c75444530305c7a5c0d0a205c0a2020200a090c5c0a5c0d5c75303034313a5c5c205c23e280a8205c5cff5c7a","entries":[["z","z#:"],["\\�z",""],["A","\\ #\u2028 \\�z"]]},
+{"input_hex":"61205c0d205c0a202020c285206b2e785c7a5c7544453030e2825c5c7a6b2e785c6e0d5c0ac2850c5c20","entries":[["a"," k.xz��\\zk.x\n"],[""," "]]},
+{"input_hex":"5c2023eda08009eda08023205c75313221f09f98215c75303065395c5c6b2e78205c0a202020","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"205c0a20202061ff5c7530303431200a5c205c75303065390b5c205c75443833445c75444530305c7aff0d0a5c205c75444530305c75303065395c740a5c0d5c7420","entries":[["a�A",""],[" é\u000b 😀z�",""],[" �é\t",""],["\t",""]]},
+{"input":"\r\\u12\r\\\\ \u000b\\#\\\r\n","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"0d0a0d0a0bffc3a95c5c0a5c0de280a8eda080","entries":[["\u000b�é\\",""],["\u2028�",""]]},
+{"input":"\\\\ ","entries":[["\\",""]]},
+{"input_hex":"5c75443833445c753030343142205c0a202020c2850a2120630a5c7530303431eda080425c233a5c754445303021","entries":[["�AB",""],["A�B#","�!"]]},
+{"input_hex":"3d5c3d3a3a0a2120630a2023f09f980a2120630a5c0d230d0a0a20202320630a5c7530303431090d0a","entries":[["","=::"],["A",""]]},
+{"input_hex":"5c7544453030ff0a5c0d0a5c200a2120630ae280a8eda080e280a80a2120630a090a2120630a3d5c0d0a5c235c7a0a20202320630af09f98e280a83a5c5c3d","entries":[["��",""],[" ",""],["\u2028�\u2028",""],["","#z"],["�\u2028","\\="]]},
+{"input_hex":"3a5c75303034310a20202320630ac3a95c7544383344e2825c75443833445c75444530306b2e785c3d425c0d0a5c7a","entries":[["","A"],["é��😀k.x=Bz",""]]},
+{"input":"\n  # c\n\f\\\n\\n\\\r\n#\\z\r\n\r\\u12\u000b#a","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"5c75303034315c7530306539210a2120630ae280a8c285f09f98c2855c5c3aeda0805c0ae282c3a90d5c0a5c740d0a0a20202320630a090a2120630a0a5c7a0d0a615c5c6b2e78","entries":[["Aé!",""],["\u2028�\\","��é"],["\t",""],["z",""],["a\\k.x",""]]},
+{"input_hex":"5c0d0a5c7461235c7aeda0800d5c75443833440a3ac285f09f98","entries":[["\ta#z�",""],["�",""],["","�"]]},
+{"input":"\r\n \\\n   "},
+{"input":"k.x\n  # c\n ","entries":[["k.x",""]]},
+{"input_hex":"0a5c20205c0a2020205c0d0a215c20c3a90d0a215c3d0a20202320630affc285e282","entries":[[" ","! é"],["��",""]]},
+{"input":"#\\uD83D\\u0041\\  \\\n   \n\\:!\\t\n\u2028 \\\n   ","entries":[[":!\t",""],["\u2028",""]]},
+{"input_hex":"0d0a0a2120630a5c205c230a20202320630aeda080235c740a3d095c3a0d5c0a5c5c5c6e0a5c7544453030c3a95c20420a5c740a2120630a5c7a5c6e","entries":[[" #",""],["�#\t",""],["",":"],["\\\n",""],["�é B",""],["\t",""],["z\n",""]]},
+{"input":"B\r\n\r","entries":[["B",""]]},
+{"input":"!\u2028\\:k.x\\uDE00\\uDE00a"},
+{"input":"\f"},
+{"input_hex":"5c0d5c75444530305c3d5c7ae280a8ff0a5c205c3dffe282f09f980d0a5c6e5c7a5c5c","entries":[["�=z\u2028�",""],[" =���",""],["\nz\\",""]]},
+{"input_hex":"ff210d3d615c3a0a2120630a5c7ac285eda080f09f98205c0a202020095c75303065390a20202320630a","entries":[["�!",""],["","a:"],["z��","é"]]},
+{"input":":\r","entries":[["",""]]},
+{"input_hex":"205c0a2020200a5c75443833445c230a20202320630a5c740a5c7544383344e28242ff5c75443833445c75444530305c235c75443833445c75444530305c3d216b2e7823c2855c75443833445c7544453030206b2e785c75303065395c3dc3a95c0a5c3d5c7530303431","entries":[["�#",""],["\t",""],["��B�😀#😀=!k.x#😀","k.xé=é=A"]]},
+{"input_hex":"eda080","entries":[["�",""]]},
+{"input_hex":"5c0d0a0d21c3a95c75443833445c75444530305c75443833445c75444530303d5c0d205c0a205c0a2020200c5c75444530305c7531320a20202320630a3a5c230a093deda08023","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"f09f98eda0805c753030343109615c7530303431","entries":[["��A","aA"]]},
+{},
+{"input":"\r\n\\uDE00#B\\uD83D \f\f!\r\n\\\r","entries":[["�#B�","!"],["",""]]},
+{"input_hex":"0d0a5c6e5c42eda0805c0a3a5c0d0a0a205c0a202020ff23205c0a2020205c75444530300cf09f985c0a6b2e785c7af09f985c6e3d0a5c7544453030","entries":[["\nB�",""],["�#","�\f�k.xz�\n="],["�",""]]},
+{"input":" B\\\n\\#::\\u12","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"0af09f985c230c6b2e78230a5c75444530303aff","entries":[["�#","k.x#"],["�","�"]]},
+{"input_hex":"5c3a205c75303034315c74e280a83a5c0aff5c745c0d0a205c0a202020","entries":[[":","A\t\u2028:�\t"]]},
+{"input":"\\\n  # c\n\\n!","entries":[["\n!",""]]},
+{"input_hex":"5c205c75443833440bf09f98eda0805c3a095c3dc3a95c7544453030c2853d5c75443833445c75444530305c205c0d235c233d235c5c7a5c7a0b5c","entries":[[" �\u000b��:","=é�=😀 ##=#\\zz\u000b"]]},
+{"input_hex":"61095c0a5c3d5c7544453030eda080c2850d0a205c0a2020200a2120630a3a5c743deda080c2855c5c5c3a235c3a0b0a2120630a0a5c0a5c3d5c74205c0a2020200a","entries":[["a","=��"],["","\t=�\\:#:\u000b"],["=\t",""]]},
+{"input_hex":"5c5c5c75443833445c7544453030f09f985c3d","entries":[["\\😀�=",""]]},
+{"input_hex":"3d3ae280a85c0d42235c75444530303a090d0aff0a5c235c7af09f98c3a95c75303034315c754438334421","entries":[["",":\u2028B#�:\t"],["�",""],["#z�éA�!",""]]},
+{"input_hex":"3d0d0a0ac2855c5cf09f98e280a861215c7af09f98205c0a202020615c75443833445c75444530305c6e5c7530303431eda080eda0800d0a","entries":[["",""],["\\�\u2028a!z�","a😀\nA��"]]},
+{"input_hex":"5c0d0a093d216b2e785c753030653921c3a95c75303065395c74093d6b2e78f09f98c3a95c5c205c3d","entries":[["","!k.xé!éé\t\t=k.x�é\\ ="]]},
+{"input_hex":"5c75303065395c230b5c6e5c75303034315c6e200a20202320630ac2850a20202320630a5c235c0a0b5c3d5c75443833440d0a235c7544383344eda0805c0d3a205c0a2020206b2e78c3a90a20202320630a0d205c0a2020205c6e5c753132","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"5c5c0d5c5c0b5c0a0b0a5c6ec285e2825c3a5c200b4242","entries":[["\\",""],["\\\u000b\u000b",""],["\n�: \u000bBB",""]]},
+{"input":"\r:\\#\n  # c\n\\u00e9\r\n\f\\=\\u0041\\u0041\n","entries":[["","#"],["é",""],["=AA",""]]},
+{"input_hex":"5c5c5c5c5c205c0a2020205c75444530305c7531320a2120630a5c0ae2825c7ae280a85c5c420a2120630a5c7530306539","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"0a5c5ce280a8eda080205c0a2020205c75303034315c0d0a6b2e780a5c23eda0805c3d0a5c75443833445c75444530305c235c7530306539205c0d5c753030653942e280a85c20","entries":[["\\\u2028�","Ak.x"],["#�=",""],["😀#é","éB\u2028 "]]},
+{"input_hex":"420a6b2e78f09f98","entries":[["B",""],["k.x�",""]]},
+{"input":"\\\\u0041\\\\\\n\n! c\n =\\#\\u00e9\\z#é","entries":[["\\u0041\\\n",""],["","#éz#é"]]},
+{"input_hex":"eda0800c3a0af09f980a5c235c7544383344c285","entries":[["�",""],["�",""],["#�",""]]},
+{"input_hex":"0b0b205c0a202020f09f98c3a95c0a615c20eda0800c0d0a5c7ac2850d3d0a5c75303034315c0a3a","entries":[["\u000b\u000b","�éa �\f"],["z",""],["",""],["A",""]]},
+{"input_hex":"0a42230d0a5c7544383344ff5c0d5c75443833445c7544453030c3a909e2825c7544453030f09f98ff","entries":[["B#",""],["��😀é","����"]]},
+{"input_hex":"5c5c5c7530303431425c75443833445c7544453030eda080e280a8615c75303034315c6e205c0a202020","entries":[["\\AB😀�\u2028aA\n",""]]},
+{"input":"\\u12\n  # c\n\\uD83D\t","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"3d5c7544453030215c753132ff5c5c6b2e783ae280a8205c0a2020205c200a0d5c75303065395c0d0a5c3d5c0d0a5c0ae2825c3a5c","refused":"Malformed \\uxxxx encoding."},
+{"input":"","entries":[["",""]]},
+{"input_hex":"e2825c0deda080","entries":[["��",""]]},
+{"input":"\\:\\ \t\u2028\\u12","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"205c0a202020f09f985c0d5c7544453030213de280a8f09f980d423a5c0deda0803af09f985c0d5c5c745c0a61ff","entries":[["��!","\u2028�"],["B","�:�\\ta�"]]},
+{"input_hex":"616b2e785c7aff5c230a20202320630a095c3d0a20202320630a0b21205c0a2020200a2120630a5c75303065395c75303065395c74ff5c745c753132","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"e2825c23e2820c5c23eda0803a5c7544383344c3a95c3d5c75443833445c75303034310a0ac2855c75443833445c3a235c75444530306b2e78","entries":[["�#�","#�:�é=�A"],["�:#�k.x",""]]},
+{"input_hex":"ff5c75444530305c7531320c3a235c3d235c5c42205c0a2020200c5c75303065395c3a20","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"5c5c235cff215c75443833445c75444530305c0a0a2120630a5c0d5c75443833445c75444530305c7531325c7530303431205c0a20202023ff5c75444530305c3a","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"3d3ae282e2823a","entries":[["",":��:"]]},
+{"input_hex":"e282c3a96b2e783a5c235c745c6e5c205c7544383344f09f980a2120630a0d3d095c75443833440a5c7531325c0a0c0a","refused":"Malformed \\uxxxx encoding."},
+{},
+{"input_hex":"5c0d0d0b5c74205c0a20202020f09f985c6e","entries":[["\u000b\t","�\n"]]},
+{"input_hex":"6b2e78090d0a0a2120630a6b2e78ff0d0a5c753132f09f985c3a090d5c75443833445c7544453030c3a90a0a20202320630a0d0a0c5c3d5c7a0a23","refused":"Malformed \\uxxxx encoding."},
+{"input":"! \\\n   "},
+{"input_hex":"61e2825c6b2e7809c2855c205c0d0a5c745c75444530305c75443833440ceda080e280a85c5ceda0805c3d5c7a61","entries":[["a�k.x"," \t��\f�\u2028\\�=za"]]},
+{"input_hex":"0d0ae282eda0800a2120630a5c0d6b2e785c75303065393a0b215c200a2120630a610d0a","entries":[["��",""],["k.xé","\u000b! "],["a",""]]},
+{"input_hex":"e280a80b0b3a230b3a0a0b3d0a2120630a5c7530306539095c7530303431425c0ac2855c23eda080420d5c0a235c7544453030f09f980a20202320630a5c3a5c3ae282","entries":[["\u2028\u000b\u000b","#\u000b:"],["\u000b",""],["é","AB#�B"],["::�",""]]},
+{"input_hex":"5c0d0a0a2120630af09f985c3a205c0a2020205c0d0a5c5c5c75303034315c0a0a0d0a3a5c23","entries":[["�:","\\A"],["","#"]]},
+{"input_hex":"0a5c745c5ce280a85c75443833445c75444530300d0aeda080095c75303065390cc3a921ff0d096b2e78f09f980d0aff5c23","entries":[["\t\\\u2028😀",""],["�","é\fé!�"],["k.x�",""],["�#",""]]},
+{"input_hex":"426b2e785c0d0a5c3a5c7531323a6b2e785c0de280a80ac2850d5c75443833440a20202320630ae2820a2120630a5c0aeda080","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"5c7544383344fff09f98c2855c75444530305c75443833445c75443833445c7544453030e280a8c285eda080","entries":[["�����😀\u2028�",""]]},
+{"input_hex":"5c20f09f985c0d0a5c75303034310c5c75303065390a5c5c5c75443833445c7544453030","entries":[[" �A","é"],["\\😀",""]]},
+{"input_hex":"eda0805c3a5c6e5c7a21e2825c5c5c6e5c7544453030095c75303034313a205c75303065395c5c7a5c0ac2855c0a5c233d21c2850b42eda08023","entries":[["�:\nz!�\\\n�","A: é\\z#=!\u000bB�#"]]},
+{"input_hex":"0a5c3deda0805c7a215c3ae282e282230a205c0a2020205c6e205c5c21233d0c5c6e","entries":[["=�z!:��#",""],["\n","\\!#=\f\n"]]},
+{"input_hex":"5c3ae280a85c7a205c0a202020eda0806b2e785c745cf09f98235c20205c0a2020200aff5c7544453030","entries":[[":\u2028z","�k.x\t�#  "],["��",""]]},
+{"input":"\\uDE00\\\r\n\\#\f\\\n \\\n   ","entries":[["�#",""]]},
+{"input_hex":"0a61c3a9eda0800c0c205c0a2020206b2e780a2120630a215c75443833445c75444530300d0a","entries":[["aé�","k.x"]]},
+{"input_hex":"0a20202320630a0b200b5c3a0d0a09615c0d0a2120630a5c74f09f98c3a93ac3a90d0ae282","entries":[["\u000b","\u000b:"],["a!","c"],["\t�é","é"],["�",""]]},
+{"input_hex":"230c5c21095c0a0a20202320630a5c0d0a0d0aeda080e2820a2120630a233d61235c7a5c75443833445c75444530300c425c3a5ce280a85c75443833443a61200a5c7a","entries":[["��",""],["z",""]]},
+{"input_hex":"0d5c7a5c3a205c0a2020205c7544453030e280a8c285eda0805c74ff5c6ef09f98c3a9ff5c6e5c0a5c7531320b0a0d0a5c75444530305c7530306539c3a93aeda0805c0d0c5c75443833445c7544453030","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"c2855c3de2820c","entries":[["=�",""]]},
+{"input_hex":"f09f986b2e78c28542","entries":[["�k.xB",""]]},
+{"input_hex":"3a0c21c285205c3a5c75443833445c754445303021213d615c205c7544383344215c7a425c5ceda0805c5c0a2120630a09205c0a2020205c74f09f985c75443833445c75444530306b2e78","entries":[["","! :😀!!=a �!zB\\�\\"],["\t�😀k.x",""]]},
+{"input_hex":"205c753132425c0a5c75303034315c235c3a5c75444530305c205c0d0a2120630a5c7544383344e282c285c3a95c5c205c0a5c75443833445c7544453030205c0a2020204242205c0a202020","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"5c7544383344fff09f98205c0a2020205c2020","entries":[["���","  "]]},
+{"input_hex":"205c0a2020205c0a5c75303065393de280a83a5cfff09f98c285","entries":[["é","\u2028:��"]]},
+{"input_hex":"200a2120630a0b205c0a202020e2820a0bc2850d0ae280a85c5c200a5c75443833440b5c75443833445c75303034315c235c3d5c7a210cc2855c23","entries":[["\u000b","�"],["\u000b",""],["\u2028\\",""],["�\u000b�A#=z!","#"]]},
+{"input_hex":"f09f985c7a","entries":[["�z",""]]},
+{"input_hex":"3d5c200d5c0a5c75444530300d0a205c75443833445c7544453030f09f985c235c0a095c206b2e78ff5c6eeda08021","entries":[[""," "],["�",""],["😀�# k.x�\n�!",""]]},
+{"input_hex":"f09f985c75443833443a0d5c0d215c2123ff235c74216b2e785c5c5c75443833440a2120630a5c7531325c75303065393a0a2120630a0a2120630a0d5c3de2825c7530306539210d0a","refused":"Malformed \\uxxxx encoding."},
+{"input":"\\uD83D\\uDE00","entries":[["😀",""]]},
+{"input":"\\uD83Dé\\u00e9\n! c\nk.x\\\n\\\\uDE00\n\\uD83D\\uDE00\\z\\u00e9\\u12\\z\\n\\t","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"5c5c3d09eda080c3a95c0d0a","entries":[["\\","�é"]]},
+{"input_hex":"0d5c235c75303065395c75303034310d0a5c0deda0805c75444530300c5c5c42615c6e215c5c205c0a2020205c75443833445c7544453030","entries":[["#éA",""],["��","\\Ba\n!\\ 😀"]]},
+{"input":"k.xBa\\n\\#é","entries":[["k.xBa\n#é",""]]},
+{"input":"\\ \\uD83D\\#\t\\uDE00\\t\\u12\\\r","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"3d5c0d0a5c7531320a20202320630a5c0a3d5c6e5c0d0a420d0a0a5c75444530300af09f985c753132","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"610a2120630a0d0a5c20e282ff0a5c0d0a0c0c5c753132f09f98095c205c75303065396b2e785c75303065395c7a23e2820a6b2e785c75303065395c6e3a","refused":"Malformed \\uxxxx encoding."},
+{"input":"\\uD83D \\\n   \tk.x \\\n   \\uDE00\\ \r\n\\\u000b\\u12\\u00e9\n! c\n\r\né:\t\u2028\\\n\\:a\\\r\\uDE00\r","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"5c75444530305c7531325c0dc3a90d0a5c75303034315c0a5c74ff21ff5c6eff3a42233a","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"0b0d0af09f98e280a85c5c0c3d5c200a5c7530303431e282e280a85c3a42","entries":[["\u000b",""],["�\u2028\\"," "],["A�\u2028:B",""]]},
+{"input":"\\=","entries":[["=",""]]},
+{"input":"\\uD83D\\ ","entries":[["� ",""]]},
+{"input_hex":"5c20233d610a215c7a5c7ac285ff0a20202320630a6b2e780a20202320630a0a5c7421","entries":[[" #","a"],["k.x",""],["\t!",""]]},
+{"input_hex":"6b2e78e2825c753132","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"3ac3a95c3af09f98f09f985c75444530305c75443833445c75444530303d0d5c0d0ae280a8423d0c205c0d0a3d5c203a","entries":[["","é:���😀="],["\u2028B","= :"]]},
+{"input_hex":"5c75443833445c75444530303d5c0d5c5ceda0805c75303034316b2e78c2850a420c5c0ac3a9205c0a5c753132ffc3a9e2825c7531325c0a","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"205c75444530300c0deda0805c75443833445c7544453030205c0d6b2e78210ae2825c6e5c5c5c0a090a","entries":[["�",""],["�😀","k.x!"],["�\n\\",""]]},
+{"input":"\\uD83Da\n:\\\n\\\r\n\\\r\n\\\n\\ \u000b\n! c\n\u2028\\\\:\r\n","entries":[["�a",""],[""," \u000b"],["\u2028\\",""]]},
+{"input":"\\u12a#\u2028\\n\\\\:a\\:#\u2028\\\\:\\#\r\n\\#\\\r\n\nB:\\u00e9\\:\f","refused":"Malformed \\uxxxx encoding."},
+{"input":"=\\ #\\u12\\u00e9\\z\r","refused":"Malformed \\uxxxx encoding."},
+{"input":"\\uDE00\\uD83D\\uDE00B\\uD83D\\uDE00 \\\n   \r\\=\\z\\uD83D\\uDE00:\f\\=\\u00e9\n\\:\\uD83D\\uDE00","entries":[["�😀B😀",""],["=z😀","=é"],[":😀",""]]},
+{"input_hex":"5c6e5c75444530300a2120630a420a2120630a3d5c75443833445c3a0a5c0a5c0d3d090c095c74eda080090d0a205c0a2020206b2e785c754438334442610c5c0d","entries":[["\n�",""],["B",""],["","�:"],["","\t�\t"],["k.x�Ba",""]]},
+{"input":"\\n\\\\\n\t\n\\n:ak.x\r\n\u2028\r\n\r\n\r\n\\\\\\uDE00\\u0041\r\u000b","entries":[["\n\\",""],["\n","ak.x"],["\u2028",""],["\\�A",""],["\u000b",""]]},
+{"input_hex":"0b0a205c0a2020200c5c75303034315c6e42c3a9095c7531325c0d0a5c740be282c3a90de280a8e280a83af09f98eda080ff425c7a5c0d20","refused":"Malformed \\uxxxx encoding."},
+{"input":"Ba\\\r\n\u2028","entries":[["Ba\u2028",""]]},
+{"input":" aa","entries":[["aa",""]]},
+{"input_hex":"230d5c75303065395c3d5c233a0d0a5c0d5c3d5c0d090b5c6e6b2e78205c0a2020205c7ae2820a2120630af09f9861200a5c7530306539eda08042e282","entries":[["é=#",""],["=\u000b\nk.x","z�"],["�a",""],["é�B�",""]]},
+{"input":"\\uD83D\\uDE00\\u0041\\uD83D a\\uD83D\\uDE00\\uD83D\n\u000b\\\\\f","entries":[["😀A�","a😀�"],["\u000b\\",""]]},
+{"input_hex":"5c5c236b2e785c3d0b0d0a0a20202320630a3ac2855c3a6b2e780a20202320630a5c5c75303034315c7530303431205c0a2020205c3a5c5c3dc2855c75444530305c23f09f980a20202320630a0a2120630a","entries":[["\\#k.x=\u000b",""],["",":k.x"],["\\u0041A",":\\=�#�"]]},
+{"input_hex":"6b2e780a2120630a5c5c0d0a090d215c0a5c75443833445c7a5c5c0a5c7530306539eda0805c20","entries":[["k.x",""],["\\",""],["�z\\",""],["é� ",""]]},
+{"input":"a\\=\n","entries":[["a=",""]]},
+{"input_hex":"0a0b5c7530303431f09f985c75303065390a2120630a5c3a5c75444530305c740a2120630a0c5c75443833445c0d0a5c0d0a615c75303034315c75303065395c753132f09f980d0a5c202061205c0a202020c28542","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"23200a2120630a5c75443833445c75444530300a3aeda0805c0d0a5c5c743a205c0a2020205c75303034310a","entries":[["😀",""],["","�\\t: A"]]},
+{"input":"a\\uD83D","entries":[["a�",""]]},
+{"input_hex":"0d61e280a85c6e5c75444530300a2120630a6b2e78205c0a2020205c0d0a205c0a202020200d0a2120630aeda0803a5c3de280a85c0d5c3d5c5c5c75444530305c23","entries":[["a\u2028\n�",""],["k.x",""],["�","=\u2028=\\�#"]]},
+{},
+{"input":"\\:\u2028\\\\ \\\n   \\uD83D\\uDE00 \\\n   \n\n\r\r\n\\t\r","entries":[[":\u2028\\","😀 "],["\t",""]]},
+{"input":"\\\n\\z\\u00e9 \\\n   ","entries":[["zé",""]]},
+{},
+{"input_hex":"5c7544383344ff5c74205c0a2020205c5c3a5c5c3d235c74615c7a","entries":[["��\t","\\:\\=#\taz"]]},
+{"input":"\r\n\u2028\u2028:","entries":[["\u2028\u2028",""]]},
+{"input":"\\t:\\#\\u12a\r\\t\\\r\n\u000b","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"ff5c75303065395c3a5c75443833445c75444530305c0d0a205c7530303431205c0a2020205c6e","entries":[["�é:😀A","\n"]]},
+{"input_hex":"0a20202320630a6b2e780a20202320630a5c0d0dc2855c5c5c6ef09f98e2820d5c7a5c7a5c3ac2853a3a","entries":[["k.x",""],["\\\n��",""],["zz:",":"]]},
+{"input_hex":"0c5c5c0d0af09f985c0d0a5c75303034316b2e786b2e78","entries":[["\\",""],["�Ak.xk.x",""]]},
+{"input":" \\u12\t\u000b\\:\\","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"eda0800c5c75303065395c75443833445c75444530306b2e785c75303065396b2e785c75444530306b2e785c7531325c5c5c7a5c75443833440a20202320630a0c","refused":"Malformed \\uxxxx encoding."},
+{"input":"\r\f"},
+{"input_hex":"5c7a5c3d5c7531325c7531325c0d0a5c753132c2850d0d0a20f09f985c745c74c3a9ff0aeda080","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"0d0a3a5c6e3df09f985c74615c7a0b","entries":[["","\n=�\taz\u000b"]]},
+{"input_hex":"205c0a2020205c746b2e785c74e280a86b2e780a20202320630a0c0a5c75313209095c75444530305c0d0a5c5c0cc2855c0d0a3d0d0a2120630a0a20202320630a5cff5c6e","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"0a5c200b5c7544453030ff0a2120630ae2825c75303065395c7531320a20202320630a5c235c75443833445c7544453030236b2e780a20202320630a21","refused":"Malformed \\uxxxx encoding."},
+{"input":"é\\u12\\\r\né\\\\\r\n","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"3ae280a821c28521e2820a","entries":[["","\u2028!!�"]]},
+{"input":"\\##\f\n\\:\\uD83D\\uDE00\r\\#\t","entries":[["##",""],[":😀",""],["#",""]]},
+{"input":"\\:\\u00e9","entries":[[":é",""]]},
+{"input_hex":"c2855c20e2825c23205ce280a85c5c5c0d09215c75303034315c75303034315c75443833445c7544453030423d0b0a20202320630a205c0a202020e282c3a920","entries":[[" �#","\u2028\\!AA😀B=\u000b"],["�é",""]]},
+{"input_hex":"5c7530306539205c0a2020205c0d090d5cff0a2120630a5c75443833445c75444530305c0de280a85c200c","entries":[["é",""],["�",""],["😀\u2028 ",""]]},
+{"input_hex":"5c75443833440d0a0a20202320630ae280a85c0a5c235c75303034315c7a0d5c6ef09f985c0d5c743a5c75444530300a5c5c5c3d0c5c23095c7544453030c3a9610a2120630a5c75443833445c75444530300b","entries":[["�",""],["\u2028#Az",""],["\n�\t","�"],["\\=","#\t�éa"],["😀\u000b",""]]},
+{},
+{"input":"\\uD83D\\u0041\\uD83D\\z\\\n","entries":[["�A�z",""]]},
+{"input_hex":"0a0c425c0d0affeda080eda0800d0a5c0d0a2120630a3d5c75443833445c7531320a5c0d5c75443833445c75444530305c0d0a0cc285420a0c230d","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"09eda0805c0a420c5c6ef09f985c7544453030205c0d5c75443833445c754445303061e2825c75444530300a20202320630a205c7531325c0a","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"5c6e5c7531325c75444530300d5c3d615c235c0d0a5c6ec3a95c7a5c6e0ae2825c75444530305c5c6b2e780a20202320630a0a5c7a","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"c2850a20202320630a0a2120630a0a5c75443833445c75444530305c5c6e5c6e5c3d5c3a5c75443833445c75444530305c753132ff5c3a5c0d0a0a0a","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"5c75303034315c5ce280a85c3a425c206120205c0a202020c3a9ff","entries":[["A\\\u2028:B a","é�"]]},
+{"input_hex":"5c6eeda080f09f98ff5c0deda080eda080205c0a202020c285e2820d5c205c5c0d61215c6e5c3a210c0ae280a8ff205c0a2020205c5c0a5c6e5c3a205c0a202020","entries":[["\n�����","�"],[" \\",""],["a!\n:!",""],["\u2028�","\\"],["\n:",""]]},
+{"input":"\\\\\\n\n! c\n\\uDE00=\n! c\nk.x\\:\\t\\na\u000b!\n\\u12\\\r\n \\\n   \\\\ ","refused":"Malformed \\uxxxx encoding."},
+{"input":"\\=\\\\\n  # c\n\r\n","entries":[["=\\",""]]},
+{"input_hex":"5c0a3af09f9861230a2120630a5c205c23610a5c6e093d5c7530303431c3a95c6ec3a942230c","entries":[["","�a#"],[" #a",""],["\n","Aé\néB#\f"]]},
+{"input_hex":"c285eda0800a5c0a5c0d0a5c202361090d5c5c5c75444530305c75443833445c3a5c235c3a09","entries":[["�",""],[" #a",""],["\\��:#:",""]]},
+{"input_hex":"615c7544453030235ceda0800b0a2120630affff5c3d5c745c7a6b2e78f09f985c75303034315c75303034315c0a5c740d0a0c5c23ff","entries":[["a�#�\u000b",""],["��=\tzk.x�AA\t",""],["#�",""]]},
+{"input_hex":"5c74ff5c0d0a09205c753132230c5c7530306539215c0a5c5c740a","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"205c0a2020205c6e5c753030343120c2855c7531325c75303034310de2820ae2820d0a5c0d0ae280a85c20","refused":"Malformed \\uxxxx encoding."},
+{"input":" \t\\:\r\n  # c\n","entries":[[":",""]]},
+{"input":"\r\\=\f\n  # c\nk.x\n! c\n\\:\n\\z","entries":[["=",""],["k.x",""],[":",""],["z",""]]},
+{"input_hex":"0d5c75443833445c75444530300a20202320630a5c7531325c205c6e5c0d0aff5c0a0cc3a9","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"0a2120630aeda0800be280a85c75303034315c230d0a","entries":[["�\u000b\u2028A#",""]]},
+{"input_hex":"0cc3a9eda0800d42e282e280a8c3a9c285615c75303034315c0a0a3a5c75443833445c75444530300a20202320630a5c6e5c75443833445c75444530300d0a5c","entries":[["é�",""],["B�\u2028éaA",""],["","😀"],["\n😀",""],["",""]]},
+{"input_hex":"0d0a5c0deda080","entries":[["�",""]]},
+{"input_hex":"5c0d5c0d5c7544453030e2825c6e5c3a0a20202320630ac2853a5c3d0b6b2e78","entries":[["��\n:",""],["","=\u000bk.x"]]},
+{"input_hex":"3a0c5c3a5c754445303042c285425c0a0d0a3a5c0d6b2e785c7530306539eda0800a20202320630ac3a920fff09f985c7544383344090a","entries":[["",":�BB"],["","k.xé�"],["é","���\t"]]},
+{"input_hex":"615c6ef09f985c7530306539615c0a5c7a5c0d420d0a09","entries":[["a\n�éazB",""]]},
+{"input_hex":"ff5c3a205c0a2020205c75303034315c75443833445c7544453030ff615c3a3a5c200b0c5c5c0a5c205c205c0a202020ff5c0d0a3d5c20205c0a202020","entries":[["�:","A😀�a:: \u000b\f\\"],["  �","  "]]},
+{},
+{"input":"=\u2028\\=\\n\\uD83D\\uDE00","entries":[["","\u2028=\n😀"]]},
+{"input_hex":"5c230b5c23e2820a5c75444530305c7a0d0a205c0a202020e280a8","entries":[["#\u000b#�",""],["�z",""],["\u2028",""]]},
+{"input":"\ra\t\\:\\\r\n\t =\\=\\:é\\n \u000b\\:\\n\n  # c\n \\\n   \\u12:","refused":"Malformed \\uxxxx encoding."},
+{"input":"\n\n  # c\n\\\n\n\\u12","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"5c75444530305c7a5c205c3a0a2120630a3a5c74ff0deda0805c75303034315c230d0a0d0a5c75303034315c75443833445c3d","entries":[["�z :",""],["","\t�"],["�A#",""],["A�=",""]]},
+{"input_hex":"610d0a0a20202320630a5ceda080613de28221e280a85c74090a5c230a0d0a","entries":[["a",""],["�a","�!\u2028\t\t"],["#",""]]},
+{},
+{},
+{"input_hex":"3a0a5c745c75303034310d5c745c3a215c6e5c75444530300a20202320630aeda0800a2120630a5c75303065395c20","entries":[["",""],["\tA",""],["\t:!\n�",""],["�",""],["é ",""]]},
+{"input_hex":"5c75443833445c75444530300a5c7a5c0a3d5c20f09f985c75444530303aeda0805c74","entries":[["😀",""],["z"," ��:�\t"]]},
+{"input_hex":"e280a8eda0805c230a20202320630a5c753030343109","entries":[["\u2028�#",""],["A",""]]},
+{"input_hex":"0a2120630a0a0d0a5c7530306539c2850a2120630a215c0affe282095c3d","entries":[["é",""],["��","="]]},
+{"input_hex":"5c0d5c205c0d5c7a5c0d0a3a5c0a0a20202320630a6b2e78230a20202320630a5c75303034310a21090a2120630ae2820d5c0d0a09fff09f98","entries":[[" z",""],["k.x#",""],["A",""],["�",""],["��",""]]},
+{"input_hex":"0a2120630a090d5c7a61235c75303065395c75303034315c205c6e5c75443833445c7544453030ff5c75443833445c75443833445c75444530305c0d0a5c753132095c3dc3a90b5c5c0dc2850d0a5c7531325c3d0c","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"0d0a5c7544383344e2825c3a5c6e5c3d42215c745c7531320a0d5c75444530305c753132eda0805c205c0a2020205c7a205c0a2020203a5c0dc2855c0d0a42425c7530306539","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"5c0a5c75303065395c7a09c285eda080e280a8215c6eeda080ff5c20200c200a5c235c0d3a5c20205c0a2020200d0a5c20","entries":[["éz","�\u2028!\n��  \f "],["#","  "],[" ",""]]},
+{"input":"a","entries":[["a",""]]},
+{"input_hex":"5c6e0af09f985c235c6e5c753132c3a921205c0a20202009e2825c7a","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"5c7544383344f09f983d0d0a5c0dc2855c23e280a8ffc2855c75443833445c75444530300d5c7530303431","entries":[["��",""],["#\u2028�😀",""],["A",""]]},
+{"input_hex":"e280a80cc285eda0805c75443833445c7544453030eda0805c75443833445c75444530300961","entries":[["\u2028","�😀�😀\ta"]]},
+{"input_hex":"21e282"},
+{"input_hex":"c3a95c3a0bc3a90a2120630ac2855c5c5c0ac3a95c5c5c6e0a20202320630a5c3de280a85c3d5c7530306539eda0805c75303065395c7a5c23f09f985c743a5c75303034315c75303034315c75443833445c75303065395c3a0b","entries":[["é:\u000bé",""],["\\é\\\n",""],["=\u2028=é�éz#�\t","AA�é:\u000b"]]},
+{"input_hex":"0ac2850d230a2120630a5c74205c0a2020200a20202320630a5c6ef09f980d21e280a8","entries":[["",""],["\t",""],["\n�",""]]},
+{"input_hex":"425c3ae2820b5c0d0a0ae282203d","entries":[["B:�\u000b",""],["�",""]]},
+{"input":"\\uD83D\\uDE00\u000b","entries":[["😀\u000b",""]]},
+{"input_hex":"425c5c23205c75444530305c0d0a5c230b0cc2853d5c0df09f98e282200d","entries":[["B\\#","�#\u000b\f=�� "]]},
+{"input":"\u000b\f\\uD83D\\uDE00:\rk.x=","entries":[["\u000b","😀:"],["k.x",""]]},
+{"input":"\\=\\u00e9\f \\ \n  # c\n\\uD83Da\\z\n! c\né\\=\\u0041\\u00e9\\\\:\\ \\z\\# \\\n   \\z\\=\\#\\t\n  # c\n#\\:\\\n","entries":[["=é"," "],["�az",""],["é=Aé\\"," z# z=#\t"]]},
+{"input_hex":"3a5c6eff5c5c75443833445c75444530305c75303034310c5c75303065395c6e5c0d5c3a095c6e0a5c235c0af09f986b2e783ae280a83d200c5c23","entries":[["","\n�\\uD83D�A\fé\n:\t\n"],["#�k.x","\u2028= \f#"]]},
+{"input":"\nBk.x\r\\uDE00B\\\r\n\t#","entries":[["Bk.x",""],["�B#",""]]},
+{"input":"\\==","entries":[["=",""]]},
+{"input_hex":"5c7a5c0a5c0d0a5c745c205c7531320deda0805c3d215c75443833445c3d0b235c7a0c213a","refused":"Malformed \\uxxxx encoding."},
+{"input":"\r\\:\u2028\\u12\\\r\né\f\\u00e9","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"eda0800c","entries":[["�",""]]},
+{"input_hex":"0c235c0d0ac2855c7531325c7530303431eda0805c7530306539f09f985c7531320c5c3d5c0a5c0a","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"5c75443833445c7544453030e282eda0800de2820a0a20202320630a5c74f09f985c235c0d5c7544453030c3a9ff3d0c5c5c75303034315c0a0d5c230a5c75443833445c75444530305c0d5c0d0a5c7a23c285","entries":[["😀��",""],["�",""],["\t�#�é�","\\u0041"],["#",""],["😀z#",""]]},
+{"input_hex":"42e2825c235c0d0a5c75444530300a20202320630a0a2120630a5c235c75443833445c7544453030c3a90ac3a93d0b","entries":[["B�#�",""],["#😀é",""],["é","\u000b"]]},
+{"input_hex":"095c75303034315c75444530305c75444530305c7530303431e2825c5c235c0d5c75443833440c5c5c75303034316b2e780a420a5c6e5c7531325c6e3a425c3d5c3ac3a961","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"e282","entries":[["�",""]]},
+{"input_hex":"0d0a205c0a2020200a20202320630a5c745c6e5c7a3a09ff5c23c3a95c3a616b2e785c75303034315c205c7a5c7530306539c2855c75303065395c745c7544453030ffc2850a615c75443833440a","entries":[["\t\nz","�#é:ak.xA zéé\t��"],["a�",""]]},
+{"input_hex":"c3a95c75303034315c3a6b2e78e282f09f985c7af09f980b0a20202320630a42205c0a202020200c5c75303065395c7a613a3d6b2e78096b2e786b2e785c5c5c75443833445c75444530300c5c0d3aeda080","entries":[["éA:k.x��z�\u000b",""],["B","éza:=k.x\tk.xk.x\\😀\f:�"]]},
+{"input_hex":"0ce280a8ff210d0a0a20202320630a5c7531325c7a5c23","refused":"Malformed \\uxxxx encoding."},
+{"input":"\\#\n  # c\n\r","entries":[["#",""]]},
+{"input_hex":"5c3a0d0b0a2120630a0d5c7544383344e28209","entries":[[":",""],["\u000b",""],["��",""]]},
+{"input_hex":"6b2e785c3a210a0b5c5c0d5c0d0ac2850b5c75303065390ce282205c0a2020206b2e78","entries":[["k.x:!",""],["\u000b\\",""],["\u000bé","� k.x"]]},
+{"input_hex":"235c0a0d0ce280a85c0a3d5c0dff5c0a5c0a0d5c74","entries":[["\u2028","�"],["\t",""]]},
+{"input_hex":"205c75443833445c5c6e09e2825c20c3a95c0d0a205c0a2020205c0d0a5c0d0a20202320630a0cff205c0a202020c285e280a8","entries":[["�\\n","� é# c"],["�","\u2028"]]},
+{"input_hex":"5c745c0d0cc3a9e282","entries":[["\té�",""]]},
+{"input_hex":"6b2e785c7544383344215c75443833445c7544453030f09f98","entries":[["k.x�!😀�",""]]},
+{"input_hex":"215c3a0a5c5c0a09610b5c5c235c200d5c3dff5c75444530305c20205c0a2020205c0d0a0c","entries":[["\\",""],["a\u000b\\# ",""],["=�� ",""]]},
+{"input_hex":"eda0805c75443833445c75444530305c3d0d0a2120630a5c6e090c2023e280a85c5c75303034310d0a","entries":[["�😀=",""],["\n","#\u2028\\u0041"]]},
+{"input_hex":"f09f980a205c0a20202061f09f985c0d0a6b2e78ff0bc3a95c3a3ae282426b2e785c75443833445c7531320b0d5c0d0d0a5c75443833445c75444530305c7530303431","refused":"Malformed \\uxxxx encoding."},
+{},
+{"input_hex":"e2825c75443833445c200a20202320630a215c235c7ae280a80a20202320630a5c7ac3a95c7531323d0c095c3af09f9820095c7a5c0d5c7a5c7530303431235c0df09f98","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"5c0a5c0aeda0805c75443833445c75444530305c23230d0a095c0d0ac2850d0a0d0a5c5c6b2e780a20202320630aff3a5c0d3de2825c7530306539","entries":[["�😀##",""],["",""],["\\k.x",""],["�","=�é"]]},
+{"input_hex":"e280a80be2823a5c5c75443833445c7544453030e280a8615c235c0a5c75303034310cc3a95c0d0ac285e280a80a20202320630a5c235c7aff5c5c","entries":[["\u2028\u000b�","\\uD83D�\u2028a#A\fé\u2028"],["#z�\\",""]]},
+{"input_hex":"205ce28242235c7531323a0aeda0806b2e785c3d615c0d0a5c7531320c","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"21615c7531325c20ff0d0a0aeda080","entries":[["�",""]]},
+{"input_hex":"205c745c5c0a5c0af09f98e280a8205c230c5c7530303431f09f98","entries":[["\t\\",""],["�\u2028","#\fA�"]]},
+{"input_hex":"0d233a095c0d0a215c205c6e5c0d5c205c5c5c3d5c7409c2850b5c3d5c230a5c23e2825c3a615c5c","entries":[[" \\=\t","\u000b=#"],["#�:a\\",""]]},
+{"input_hex":"093a5c6e5c235c200a20202320630a3a5c75443833445c75444530305c7530303431f09f980d0a0a5c6e5c753030653920c3a90cff5c75303034315c7544383344","entries":[["","\n# "],["","😀A�"],["\né","é\f�A�"]]},
+{"input":"\r\n \\=a\n! c\nk.x\\=\\u0041 \\\n   \\uDE00","entries":[["=a",""],["k.x=A","�"]]},
+{"input_hex":"5c75443833440a20202320630a5c7531325c5c3de2820a5c20","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"f09f98","entries":[["�",""]]},
+{"input":"\u2028\\t\n! c\n\\ é\t","entries":[["\u2028\t",""],[" é",""]]},
+{"input":"\\#\\#\r\\t\n\\\\\u000b!é","entries":[["##",""],["\t",""],["\\\u000b!é",""]]},
+{"input":"!#"},
+{"input_hex":"5c20ff205c0a2020205c75444530300a2120630a5c75443833440ae2825c0d0a0d0a5c0a5c3d0d5c3a5c3a5c0d5c","entries":[[" �","�"],["�",""],["�",""],["=",""],["::",""]]},
+{"input_hex":"0d5c3d5c6e5c5c0d0a5c3d5cc285f09f98c2853d0d0a090a2120630a5c3deda080610d0a","entries":[["=\n\\",""],["=�",""],["=�a",""]]},
+{"input_hex":"5c3a0a5c0d5c20215cf09f9821f09f98205c75303034310d0a3d5c7530303431ff5c754438334409ff5c7544383344c2850a","entries":[[":",""],[" !�!�","A"],["","A��\t��"]]},
+{"input_hex":"c3a95c20425c230a2120630a5c3af09f985c0d0a5c0d0a5c3d0a20202320630a5c23","entries":[["é B#",""],[":�=",""],["#",""]]},
+{"input_hex":"0c5c0d0af09f980b5c20205c0a202020420a20202320630a5c3a5c7530306539210a0a5c75303065395c5c0a2120630a","entries":[["�\u000b ","B"],[":é!",""],["é\\",""]]},
+{"input_hex":"095c740a6b2e78eda0805c75443833445c0d0a20202320630a6b2e785c0df09f985c75443833445c205c0d0a5c5c5c5c230a20202320630ac2855c233d5c745c0d21c3a9","entries":[["\t",""],["k.x��#","c"],["k.x�� \\\\#",""],["#","\t!é"]]},
+{"input_hex":"5c5c20200a2120630a5c0d0a0a20202320630a0b5c75443833440affe280a85c75443833445c7544453030","entries":[["\\",""],["\u000b�",""],["�\u2028😀",""]]},
+{"input":"\\\n\n\u2028 \\uD83D\\uDE00\n  # c\n\r\n! c\n\\:\u000b\\\n\u2028\\n\\u12\\\t\\uDE00","refused":"Malformed \\uxxxx encoding."},
+{"input":"\f\\z\\z \\\n   \\u12\u000b\\ k.x\n  # c\n\t","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"0d0a5c7a3d6b2e780a2120630a0a2120630a0d0a5c75443833445c75444530305c3d5c0a5c3df09f98","entries":[["z","k.x"],["😀==�",""]]},
+{"input_hex":"5c0a5c6e5c20205c0a2020205c5c75443833445c75444530305c20c2855c753132205c0a202020215c6e5c75443833440a2120630a5c753132ff3a0a20202320630af09f985c75444530300a20202320630a0d5c0d0a5c235c3a5c5c5c5c5c205c0a202020","refused":"Malformed \\uxxxx encoding."},
+{"input":"\\\n\u2028\t\\uD83D\\\\\n! c\n#\\\\uD83D\\uDE00\\\t:","entries":[["\u2028","�\\"]]},
+{"input":"é","entries":[["é",""]]},
+{"input_hex":"5c0de2820a20202320630ac3a909","entries":[["�",""],["é",""]]},
+{"input":"\r"},
+{"input":"\\z","entries":[["z",""]]},
+{},
+{"input_hex":"e2820b0b5c75443833445c75444530305c0a5c7544453030610be280a86b2e780d0a20202320630a5c74e2825c75444530300a5c6e5c6ef09f98e28209c3a961205c0a2020205c7a5c7a5c7544383344","entries":[["�\u000b\u000b😀�a\u000b\u2028k.x",""],["\t��",""],["\n\n��","éa zz�"]]},
+{},
+{"input_hex":"0a2120630a5c205c236b2e780b0beda0800af09f985c3d0a20202320630aff5c20230c5c200d235c20","entries":[[" #k.x\u000b\u000b�",""],["�=",""],["� #"," "]]},
+{"input_hex":"5c7531325c7531325c5c0c5c75443833445c75444530305c75444530305c74ff","refused":"Malformed \\uxxxx encoding."},
+{"input":"\\t\\=#:\\\f\\ \\t\f","entries":[["\t=#","\f \t\f"]]},
+{"input":"!"},
+{"input_hex":"42ffc3a95c75443833445c7544453030c2855c3d230d0a5c200a23215c3d5c753132215c0d0a3a0af09f98ff615c5c5c0d215c205c3d5c7a","entries":[["B�é😀=#",""],[" ",""],["",""],["��a\\! =z",""]]},
+{"input_hex":"5c75444530305c6eff0d09235c0d","entries":[["�\n�",""]]},
+{"input":"\\\\\u000b\\\\\\uDE00\\\\u0041","entries":[["\\\u000b\\�\\u0041",""]]},
+{"input":"\f\\\\\\=\\#a","entries":[["\\=#a",""]]},
+{"input_hex":"0d0a5c7544383344f09f983a5c7a5c0d235c3a0d42425c7a5c0d0a0a2120630a5c75303065395c3a0b","entries":[["��","z#:"],["BBz",""],["é:\u000b",""]]},
+{"input_hex":"f09f98e2825c0d420c0a0a20202320630a5c6e5c205c75443833445c7544453030425c75444530306b2e785c0d5c5c","entries":[["��B",""],["\n 😀B�k.x\\",""]]},
+{"input_hex":"0b6b2e780d0a5c235c0a0de2820a20202320630a3d5c5c","entries":[["\u000bk.x",""],["#",""],["�",""],["","\\"]]},
+{"input_hex":"eda0805c7531320d5c75443833445c75444530305c5c0a20202320630a5c3a093d5c205c7531320c","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"5c7530306539ff090d0ae282","entries":[["é�",""],["�",""]]},
+{"input":"\\u0041k.xB\n\r\\z","entries":[["Ak.xB",""],["z",""]]},
+{"input_hex":"095c75303034315c3df09f985c20205c0a2020205c5c6e0a5c5c0a215c0dc2853ae282ff6b2e780a20202320630a5c0d0a0a5c3a5c6e205c0a202020e28223","entries":[["A=� ","\\n"],["\\",""],["","��k.x"],[":\n","�#"]]},
+{"input_hex":"e2825c0d0aeda0805c20f09f985c754438334421093d205c0d5c210a3a5c75443833445c75444530300ae280a83a0a0d5c0aff5c3a0b","entries":[["�� ��!","!"],["","😀"],["\u2028",""],["�:\u000b",""]]},
+{"input_hex":"5c753132eda0805c3a3af09f985c7531325c75443833445c7544453030ff5c0a5c3a5c3a5c235c0d0a5c206b2e780bff5c0a5c0a6b2e78","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"5c3deda0805c20ff0b5c233d0a210a3a0d0a21205c0a20202020210d0ac285f09f985c235c75303065395c0a","entries":[["=� �\u000b#",""],["",""],["�#é",""]]},
+{"input_hex":"5c23ff420a5c75303034310c5c75303034316b2e78eda0800d0a5c745c5c205c0a2020205c7544453030205c0a2020205c7a5c75443833445c75444530305c75443833445c75444530305c3d5c74205c0a202020205c0a202020095c75443833445c7544453030425c7544453030","entries":[["#�B",""],["A","Ak.x�"],["\t\\","� z😀😀=\t 😀B�"]]},
+{"input_hex":"f09f98e2823aeda0805c7a42e282615c3d5c75443833443de282e282c2850b5c75443833445c75444530305c75444530300d0a5c203df09f985c233d5c5c5c20e280a80d0a0a20202320630a","entries":[["��","�zB�a=�=��\u000b😀�"],[" ","�#=\\ \u2028"]]},
+{"input_hex":"0a2120630a425c205c0dc3a95c6e5c753030653961235c3a095c0af09f985c75443833445c75444530306b2e78f09f98e2825c75303065393df09f985c740d5c75303034310a2120630a5c205c0a5c3d","entries":[["B é\néa#:","�😀k.x��é=�\t"],["A",""],[" =",""]]},
+{"input":"\\z\\\\ \\:","entries":[["z\\",":"]]},
+{"input":"\\uD83Dé","entries":[["�é",""]]},
+{"input_hex":"5c23e280a842f09f985c75303034315c6e095c75443833445c23","entries":[["#\u2028B�A\n","�#"]]},
+{"input_hex":"61205c0a20202009e2825c7531325c6e5c3a5c75443833445c7544453030e280a823c2855c235c7a5c75443833445c0d0a5c3a5c3d5c0d0a0a20202320630a0c","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"f09f985c3d5c235c7a5c753132e282f09f980c5c75443833445c75444530305c74610a0cf09f980d0a5c7531320a235c5c745c6e","refused":"Malformed \\uxxxx encoding."},
+{"input":"éé\\\r\\\\k.x\n:\\#","entries":[["éé\\k.x",""],["","#"]]},
+{"input":"B\\=é\r\\uD83D\\uDE00\\z","entries":[["B=é",""],["😀z",""]]},
+{"input_hex":"3dc3a9215c75303034310a5c5c0ce2820b5c206b2e785c6e3d09095c75443833445c75444530305c0d0a5c3dc2850d0a2120630a0a2120630a3df09f9820eda0805c745c75303034315c7530303431","entries":[["","é!A"],["\\","�\u000b k.x\n=\t\t😀="],["","� �\tAA"]]},
+{"input_hex":"ff61e282c285","entries":[["�a�",""]]},
+{"input_hex":"5c7544453030eda0800a2120630a5c7530306539615c7531320d0a5c75443833445c75444530305c0c230c205c0a2020203a5c7544453030205c23eda0805c740a2120630a5c75303034310a615c6e","refused":"Malformed \\uxxxx encoding."},
+{"input":"\\u0041B","entries":[["AB",""]]},
+{"input_hex":"5c0a0ae2825c0a5c753132f09f985c7530306539f09f985c3de2820a2120630a0d0a20202320630a","refused":"Malformed \\uxxxx encoding."},
+{"input":"\\uDE00\\\\\\\r\na","entries":[["�\\a",""]]},
+{"input_hex":"5c205c0d0af09f980dc2855c20","entries":[[" �",""],[" ",""]]},
+{"input":"\\ \n! c\n","entries":[[" ",""]]},
+{"input_hex":"5c75443833440a6b2e783d5c3a61420a20202320630a5c20210b3a0a2042095c7531320d5c3a205c0a202020eda080c3a95c3d0a","refused":"Malformed \\uxxxx encoding."},
+{"input":"#\\u12\\z\\u0041!\\uD83D\\uDE00\\uD83D\\\r"},
+{"input":"\\u12\\\n\\n","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"5c5c0a20202320630a5c3a0c6b2e78615c230d5c7530306539e2820a20202320630a5c740a610aeda080425c5c425c3a615c75303065395c235c75313221","refused":"Malformed \\uxxxx encoding."},
+{"input":"\\uD83D\\u0041","entries":[["�A",""]]},
+{"input_hex":"eda0805c3d5c75443833445c75444530305c3a0d5c745c5c3ac2855c753132c3a90a2120630ac2855c203a5c6e205c7a095c4261235c75443833445c75303065395c0a","refused":"Malformed \\uxxxx encoding."},
+{"input":"#\\\\\r\n\\\\\\ \\\ré\t\\\\BB\\\n\\u00e9","entries":[["\\ é","\\BBé"]]},
+{"input_hex":"5c2361eda0805c7a42230d0a20202320630aeda0805c7531320b5c75443833445c7530303431e2825c7a5c5c5c3d0d0a2120630a5c7530303431235c7a2120205c0a2020205c75313209","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"5c745c75443833443a6b2e7821095c75443833445c7544453030eda080615c75443833445c75444530300d0ce280a8","entries":[["\t�","k.x!\t😀�a😀"],["\u2028",""]]},
+{"input_hex":"5c5c3d0c205c0a202020ffe282","entries":[["\\","��"]]},
+{"input_hex":"21c285205c0a202020f09f9823ffe282c3a95c23c3a90d5c7530303431","entries":[["�#��é#é",""],["A",""]]},
+{"input_hex":"5c7531320aeda0800a20202320630a5c0a5c0d0a5c753132420b5c753132230d5c0d0a5c5c5c23","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"09090d0aff0c0d0a5c74","entries":[["�",""],["\t",""]]},
+{"input_hex":"0d0a0b203d0b205c0a202020f09f980a20202320630a0ae2825c0d0a0a5c5c5c75443833445c75444530305c3d0a2120630a5c75443833445c75444530300d0a6b2e783a6b2e780a20202320630ae280a8205c0a202020615c7544383344","entries":[["\u000b","\u000b �"],["�",""],["\\😀=",""],["😀",""],["k.x","k.x"],["\u2028","a�"]]},
+{"input_hex":"095c61e28242205c0a2020203a0d0a0a2120630a0c5c7531320a20202320630a610a2120630a5c7531325c0d0a5c75443833445c7544453030","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"c3a9e28220ffe280a8","entries":[["é�","�\u2028"]]},
+{"input_hex":"420a0d0a0cc2855c7531322323f09f98e280a8200de2820d615c740a20202320630a21","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"5c3d0b23203d3d0a20202320630af09f986b2e78","entries":[["=\u000b#","="],["�k.x",""]]},
+{"input_hex":"5c3d0d0a205c0a2020205c75444530300d5c5c0d0ac2850a5c205c0d5c3a5c75303065395c74ff5c75443833445c75444530306121ff5c5c205c0a2020200c5c7544383344205c0a2020205c0a","entries":[["=",""],["�",""],["\\",""],["",""],[" :é\t�😀a!�\\","� "]]},
+{"input":"\rB\f\\#é","entries":[["B","#é"]]},
+{"input_hex":"0a20202320630a3a42615c3d0a20202320630a0a5c0a5c3d5c74c3a90a20202320630a61eda0805c","entries":[["","Ba="],["=\té",""],["a�",""]]},
+{"input_hex":"5c7a0c215c745c745c75444530300b205c3d5c7530303431095c753132425c74e2825c753132c3a93d215c6e","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"235c5c23e280a8ff0d0a5c0d","entries":[["",""]]},
+{"input_hex":"5c0a5c75313242eda080c3a90a215c3d5c5c7a0de2825c0d0af09f980a2120630a5c3de2825c235c7531325c7530303431","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"425c74eda0800a5c0d0ae280a85c0d5c75303065390c5c75443833445c75444530305c75443833445c75444530305c0d0ae2825c0a3d5c75303034315c0a200d0a5c75443833445c7a09","entries":[["B\t�",""],["\u2028é","😀😀�=A"],["�z",""]]},
+{"input_hex":"5c203a5c3d5c205c7a5c0d0a420d0a0c0c205c0a2020205c75303065395c206123205c0a2020205c74eda0805c0a5c5c205c5c7afff09f983ae2820a0a","entries":[[" ","= zB"],["é a#","\t�\\ \\z��:�"]]},
+{"input":" \\\n   \t\\uD83Dé\n  # c\n\n! c\n\\uD83D\\uDE00\\n\ré\\=\n\t\u2028\t\\:\\\r\\#","entries":[["�é",""],["😀\n",""],["é=",""],["\u2028",":#"]]},
+{"input_hex":"0d0a5c75303065390d0ae282e2825c5cc285","entries":[["é",""],["��\\",""]]},
+{"input":"\r\n\\n","entries":[["\n",""]]},
+{"input_hex":"5c3a5c7a205c0a2020205c7531325c75443833445c75444530305c5cc3a9235c75303065395c75303065395c75443833445c75444530305c75303065390a2120630a5c753030343109e282210a3a230a21205c0a202020205c0d0a0d","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"0a20202320630a5c6ec3a95c0a5c75443833445c75444530305c0a5c745c75444530305c0d0aff5c0d0a615c3d0a5c7544383344","entries":[["\né😀\t��a=",""],["�",""]]},
+{"input_hex":"0a2120630a5c74eda0805c0d5c5c5c3dc3a90a20202320630a5c75303065396142e2823d5c6e","entries":[["\t�\\=é",""],["éaB�","\n"]]},
+{"input_hex":"0b0a5c205c75443833445c75444530305c3d5c20205c0a2020205c6e5c200a20202320630a5c206120095c0a3d5c5ce282e282c2850a20202320630a09","entries":[["\u000b",""],[" 😀= ","\n "],[" a","\\��"]]},
+{"input_hex":"5c7544453030e2825c0d0aff5c75303034315c0d0a0a2120630a5c23205c0d5c3d5c0d0a5c75444530300a2120630a5c6e5c75443833440a20202320630a3df09f980a20202320630a3d0ac3a9205c0a2020200b0d0a","entries":[["���A",""],["#","=�"],["\n�",""],["","�"],["",""],["é","\u000b"]]},
+{"input":"\u2028\\u00e9B\\u00e9\\t","entries":[["\u2028éBé\t",""]]},
+{"input_hex":"c2855c75303034315c3d213d0a5c3a215c20f09f9823e2825c753030343121c3a9e280a8205c0a2020200a5c6e5c5c5c0d","entries":[["A=!",""],[":! �#�A!é\u2028",""],["\n\\",""]]},
+{"input":"\n  # c\n\\\f\\=a\\\n\u000bk.x\n\\t\\\r\\n","entries":[["\f=a\u000bk.x",""],["\t\n",""]]},
+{"input_hex":"0a20202320630a0d0a5c75443833445c7544453030f09f983a5c75303065395c75443833445c753132ff5c74f09f98205c0a202020eda0805cc2855c3a5c75303034315c3d5c0d0a0a5c0d","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"5c75444530305c7530303431f09f985c75443833445c7544453030c2855c5c5c0d0a6b2e785c75443833445c7544453030","entries":[["�A�😀\\k.x😀",""]]},
+{"input":"\\z\r\\uD83D\\uDE00\t\u000b\n! c\n \t \\\n   \\uD83D \\\r\n\u000b","entries":[["z",""],["😀","\u000b"],["�","\u000b"]]},
+{"input_hex":"f09f980a2120630a5c0d0d0d5c75443833440a","entries":[["�",""],["�",""]]},
+{"input_hex":"0a20202320630a5c0a3a3ae2825c0a5c3d","entries":[["",":�="]]},
+{"input":"\n! c\n\\u0041!B\\za\\\r","entries":[["A!Bza",""]]},
+{"input":"\\uD83D\\\r\\\r\n\r\n\\u12","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"205c0a202020c3a95c75444530305c75303065395c235c7a3d3dc2855c5cf09f98425c5c0a2120630a0a20202320630a5c200a5c7a0bf09f98f09f98205c0a2020205c5cc2855c6e","entries":[["é�é#z","=\\�B\\"],[" ",""],["z\u000b��","\\\n"]]},
+{"input_hex":"5c0d0a5c203a215c753132ff2120230a2120630a5c0d3a616b2e7842eda080425c75443833445c75444530305c75443833445c75444530300a20202320630a20c2853d5c75443833445c7544453030612361","refused":"Malformed \\uxxxx encoding."},
+{"input":"\\té\\n\\z\u2028\\\\\\t\r\n\u000b\\=\u2028","entries":[["\té\nz\u2028\\\t",""],["\u000b=\u2028",""]]},
+{"input_hex":"3d3d205c0a202020c3a95c230d0d0ae2823a615c0de28223eda080e280a80a2120630a5c75444530305c2361","entries":[["","= é#"],["�","a�#�\u2028"],["�#a",""]]},
+{"input_hex":"5c0d5c205c5c0b42213a6b2e78205c0a2020205c5c5c5c6b2e78eda080fff09f980a20202320630a5c7a0c","entries":[[" \\\u000bB!","k.x \\\\k.x���"],["z",""]]},
+{"input":"\\z\\n\n\\uD83D\\\\#\\ \\\\\n\\z\r\n\u000b\f\\u12\f\\:\n! c\n\n\\\\#\\u00e9\\nk.x\\ \r\\u0041\\  \\\n   ","refused":"Malformed \\uxxxx encoding."},
+{"input":"\n\\\\","entries":[["",""],["\\",""]]},
+{"input_hex":"ffc3a9","entries":[["�é",""]]},
+{"input_hex":"f09f985c5c5c75443833445c75444530305c5c61f09f985c75443833445c7544453030","entries":[["�\\😀\\a�😀",""]]},
+{"input_hex":"5c7530306539f09f98090a5c745c0a0a2120630a423a0a2120630a205c7a5c75443833445c7544453030206b2e783d5c75444530306b2e780a2120630a5c23205c0a2020206b2e785c75303065395c6ec285","entries":[["é�",""],["\t",""],["B",""],["z😀","k.x=�k.x"],["#","k.xé\n"]]},
+{"input":"=\\\\\\=a\\#\\u00e9\n  # c\n\r\n\\:\\n!\\= \\z","entries":[["","\\=a#é"],[":\n!=","z"]]},
+{"input_hex":"e280a85c205c20c2850a2120630a5c7530303431eda0805c75443833445c5c7531325c0a6b2e78c3a95c0d5c0d0a20202320630a0b6b2e785c3a0ae2825c0d5c3dc3a921","entries":[["\u2028  ",""],["A��\\u12k.xé#","c"],["\u000bk.x:",""],["�=é!",""]]},
+{"input_hex":"0d0a610a205c3d0a3d610942c2855c7aff5c3ac3a95c5c205c6e3d205c0a2020205c0d0a5c6e0b5c3deda08021e282","entries":[["a",""],["=",""],["","a\tBz�:é\\ \n= \n\u000b=�!�"]]},
+{"input":"\n! c\n\\ =\\u0041\\uD83D\\uDE00!k.x\\\n\\\r\n\\u12\\u12","refused":"Malformed \\uxxxx encoding."},
+{},
+{"input_hex":"20ff20eda0805c746b2e780a2120630a5c3d0c205c0a2020200d0a205c0a202020e28261c3a9205c3a0d0a0ac3a90d3d42e280a85c5c5c7530306539203d21","entries":[["�","�\tk.x"],["=",""],["�aé",":"],["é",""],["","B\u2028\\é =!"]]},
+{"input_hex":"0d0a0a23236b2e7809425c7a230a5c75443833445c7544453030f09f98ffe280a85c3d615c0a0a20202320630a5c0a3ac3a95c753030653961","entries":[["😀��\u2028=a",""],["","ééa"]]},
+{"input_hex":"5c6e5c7a3a5c0d0a0c5c5c5c5cf09f98615c205c75303065395c740a2120630a5c6e5c75444530300b0d090ce280a80d0a5c7544383344","entries":[["\nz","\\\\�a é\t"],["\n�\u000b",""],["\u2028",""],["�",""]]},
+{"input_hex":"5c7544383344e280a85c0a5c5c5c3d5c0d0a5c7531325c5cf09f98610d0a5c6e205c0a2020205c3de282e280a85c0a5c205c0d0a206b2e783a5c3a","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"5c235c75443833440d0a5c205c6e21205c6ee282420a5c7530303431093a0d0a5c0d3d200a20202320630a0a","entries":[["#�",""],[" \n!","\n�B"],["A",""],["",""]]},
+{"input_hex":"0a20202320630a5c75303034313dc3a95c3ae2820a20202320630a0a5c230a5c7531325c5c7aeda0803dc2850c5c3d0a2120630a5c235c0d0a5c5c616b2e78","refused":"Malformed \\uxxxx encoding."},
+{"input":"\r\n:\\uD83D\n! c\n\\:\\u12\\\nk.x","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"5c5ce280a80d0a42095c75443833445c75444530300a20202320630a5c75443833445c75444530305c74e280a8095c75444530300d0a5c7544383344205c0a2020200d615c235c205c75303034316b2e7820615c75443833445c7544453030ff235c3d09eda080","entries":[["\\\u2028",""],["B","😀"],["😀\t\u2028","�"],["�",""],["a# Ak.x","a😀�#=\t�"]]},
+{"input_hex":"5c75303065393d5c3d5c23426b2e785c3a215c5c3a090d0a5c5c6e5c75443833445c75444530303a5c7531325c7530303431e280a8610a2120630a615c3af09f98","refused":"Malformed \\uxxxx encoding."},
+{"input":" \\\n   \\uDE00\\\n \\\n    \\\n   \\n\né\\\r\n#\\:\\\r\n\n  # c\n \\\n   \\","entries":[["�\n",""],["é#:",""],["",""]]},
+{"input_hex":"f09f98ff0a20202320630a235c75443833445c75444530305c3ae2825c3a5c3a5c3a0a20202320630a","entries":[["��",""]]},
+{"input_hex":"0d6b2e78205c7a425c3d0a2120630aff5c6ef09f985c3d0d0a0a200b6b2e78","entries":[["k.x","zB="],["�\n�=",""],["\u000bk.x",""]]},
+{"input":"\\\r\\\\u00e9\n\\n\n\r\n\\u0041\\=\f\f\n  # c\n ","entries":[["\\u00e9",""],["\n",""],["A=",""]]},
+{"input_hex":"5c75443833440a613d5c3a42f09f985c205c","entries":[["�",""],["a",":B� "]]},
+{"input_hex":"0b420b0d0a090c425c0a09205c23e280a8426b2e785c5c3d0a2120630a5c0d0a3d425c0a20202320630aff0b5c5c7a5c3d5c0a","entries":[["\u000bB\u000b",""],["B#\u2028Bk.x\\",""],["","B# c"],["�\u000b\\z=",""]]},
+{"input_hex":"5c7a5c75303065395c7a5c3a5c75443833445c75444530305c75303034315c3d5c745c20f09f980c5c75303065395c7531325c205c0dc285205c0a20202021","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"5c75444530305c75443833445c75444530305c0a0af09f985c745c0d0ae280a85c746b2e785c7544453030","entries":[["�😀",""],["�\t\u2028\tk.x�",""]]},
+{},
+{"input_hex":"5c7af09f985c7a3ae280a80a20202320630ae280a8215c0aff5c75443833445c7544453030","entries":[["z�z","\u2028"],["\u2028!�😀",""]]},
+{"input_hex":"6b2e785c7a425c5c235c75443833445c7544383344426b2e785c75444530305c7a5c0a3dff5c6e5c0d0ae2823ac3a9","entries":[["k.xzB\\#��Bk.x�z","�\n�:é"]]},
+{"input_hex":"5c74eda080205c0a202020f09f985c3ac3a95c200a2120630a5c75303065395c233d0ce2823a0a2120630a0c","entries":[["\t�","�:é "],["é#","�:"]]},
+{"input":"\\t\\u12\r\n\\\n\\n","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"3a5c20235c3de2825c23206b2e78235c7530306539c3a95c75313223090a5c5c5c75303034315c3d0d0d0a","refused":"Malformed \\uxxxx encoding."},
+{"input":"\\u00e9a\t\u2028#\\:\t\\t\\n\\n\\#B\\z","entries":[["éa","\u2028#:\t\t\n\n#Bz"]]},
+{"input_hex":"20eda0805c205c75443833445c7544453030e280a80a","entries":[["� 😀\u2028",""]]},
+{"input_hex":"0a2120630a235c5c5c5c7530306539eda0805c0d5c3d5c3d23e280a8425c754445303009e2820c5c745c75444530300d0a5c","entries":[["==#\u2028B�","�\f\t�"],["",""]]},
+{"input":"B\\#\\\n\f\\#\u000b\\u00e9\\\\:\u2028k.x\\uD83D\\uDE00","entries":[["B#","#\u000bé\\:\u2028k.x😀"]]},
+{"input_hex":"615c235c7a5c5c235c75443833445c754445303042c3a9200a2120630a5c23e282423d5c75303065395c0deda0805c3de2825c7a0b","entries":[["a#z\\#😀Bé",""],["#�B","é�=�z\u000b"]]},
+{"input_hex":"5c5c0a5c0a0c215c0a215c0a21205c0a202020f09f98205c0a20202061","entries":[["\\",""],["�","a"]]},
+{"input":"!\\uDE00\\ta\\u00e9\\uD83Dé\\n\rak.x\\=","entries":[["ak.x=",""]]},
+{"input_hex":"0d0a0b5c75444530305c3d205c0a2020200a20202320630a5c5ce2825c235ce2825c0d5c7530303431","entries":[["\u000b�=",""],["\\�#�A",""]]},
+{"input_hex":"5c75444530300a2120630a3a5c3dc285e2820b3d5c2023215c3a5c75443833445c75444530300a5c740a0c","entries":[["�",""],["","=�\u000b= #!:😀"],["\t",""]]},
+{"input_hex":"0a42eda0800c5c75303065390d0b09f09f985c235c0d5c0a","entries":[["B�","é"],["\u000b","�#"]]},
+{"input_hex":"61e28242420d0c5c205c233d0c205c0a2020200c0b5c75303065395c7530306539","entries":[["a�BB",""],[" #","\u000béé"]]},
+{"input_hex":"3ac3a921205c0a202020ffc3a9e282420a420d205c0a202020eda0806b2e785c0a0a2120630a5c7544383344c2855c0d0a205c0a202020205c0a2020205c75443833440a20202320630a","entries":[["","é! �é�B"],["B",""],["�k.x",""],["��",""]]},
+{"input":"B","entries":[["B",""]]},
+{"input":"\\\r\r\\\n\n\\u00e9\\uDE00\\\\ \fa","entries":[["é�\\","a"]]},
+{},
+{"input_hex":"3d5c75443833445c75444530305c20ff","entries":[["","😀 �"]]},
+{"input_hex":"c2855c7a5c6e5c745c753132205c0a2020205c3d205c0a2020203a0d5c7af09f985c75443833440a20202320630a0a20202320630a5c7530306539615c745c205c0d5c7530306539205c0a2020203d5c75443833445c75444530300c5c753030343120f09f98","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"3a23eda08023c3a9420a2120630a5c3d5c0a5c75443833440d0a5c0d5c75303065390a5c20c285","entries":[["","#�#éB"],["=�",""],["é",""],[" ",""]]},
+{"input":"\\\\\\t\\u00e9\n! c\n\\=\\n\r\n \\\n:","entries":[["\\\té",""],["=\n",""],["",""]]},
+{"input_hex":"f09f983a205c75443833440d0a0a5c3d5c23615c0a5c745c6e5c3a5c75303065395c0a205c0a202020c3a90d","entries":[["�","�"],["=#a\t\n:éé",""]]},
+{"input":"\\\r\n\\=\f\r=\\t#a\n! c\n\\:","entries":[["=",""],["","\t#a"],[":",""]]},
+{"input_hex":"5c75443833445c75444530305c0a205c0a2020203d0de280a85c7544453030e280a85c75303065395c0d0a5c75303065390ac2850d0a0df09f98","entries":[["😀",""],["\u2028�\u2028éé",""],["",""],["�",""]]},
+{"input_hex":"3d5c7531325c0b3dff5c5c0a2120630aff5c0d3d4221610961f09f98f09f985c7a3d425c7530306539205c0a2020200d09615c7a","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"0d0a5c75443833445c75444530305c6ee282c3a9205c0d0a0a5c20235c7a5c75303065390b5c75303065395c7544453030","entries":[["😀\n�é",""],[" #zé\u000bé�",""]]},
+{"input":"\\t\\\\\\:\n","entries":[["\t\\:",""]]},
+{"input_hex":"5c75303034310c5c23eda0805c74615c6e5c75443833445c0a235c74","entries":[["A","#�\ta\n�#\t"]]},
+{"input_hex":"42235c0d0a5c75444530300af09f983a205c0a2020205c745c7530303431","entries":[["B#�",""],["�","\tA"]]},
+{"input_hex":"5c6ec3a90b0d0d5c75313223230b5c7544453030c3a95c5c75303034316b2e785c7544383344615c0a5c205c75303065395c7544453030f09f983d","refused":"Malformed \\uxxxx encoding."},
+{"input":"\\n\\uD83D","entries":[["\n�",""]]},
+{"input":"\r\n\u000b\n  # c\n=\\","entries":[["\u000b",""],["",""]]},
+{"input_hex":"5c23ff5c7530303431e280a80dc2855c3d09f09f983d5c7531325c7aeda0805c75303034315c7a420a20202320630a","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"5c75303065395c3a5c6e3a5c7531323a3a5c75303065390d20c2855c745c75303065395c6eff0d0a0a5c75443833445c75444530305c230d0a5c0a0a5c5c0d0a","refused":"Malformed \\uxxxx encoding."},
+{"input":" \\nB","entries":[["\nB",""]]},
+{"input_hex":"e280a85c5c7af09f985c0d","entries":[["\u2028\\z�",""]]},
+{"input_hex":"0a2120630a5c75444530305c75303034315c0dc2855c0a210d0a5c0d0a2120630a205c0a202020f09f980a2120630aeda080","entries":[["�A!",""],["�",""],["�",""]]},
+{"input_hex":"0a20202320630a5c3d5c7544383344e282eda0805c0d0a0b5c75303065390a20202320630ae280a8096b2e780cc285235c0dc2855c75303065390dc3a9ff5c7530303431c2855c754438334420c3a95c0d0a5c20","entries":[["=���\u000bé",""],["\u2028","k.x\f#é"],["é�A�","é "]]},
+{"input":"\\uD83D\\ \fé","entries":[["� ","é"]]},
+{"input":"\\=\\uD83D\\uDE00\\\r\n\\=\\uD83D\\uDE00  ","entries":[["=😀=😀",""]]},
+{"input":"\t\né\\#:a\\t\\ \n! c\n\\#B\u2028\\uD83D\\uDE00\\uD83D\r\\uDE00\\téa!\\u12:\\z\r\n","refused":"Malformed \\uxxxx encoding."},
+{"input":"\\#é\\\n\\u0041=\n! c\n\\t\\u12\u2028=\\\r\\u00e9é\\u00e9\fé\\uD83D:\f\\u12#\\","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"420b5c200d0af09f98093d0deda080","entries":[["B\u000b ",""],["�",""],["�",""]]},
+{"input":"\u000ba\n  # c\n\\n","entries":[["\u000ba",""],["\n",""]]},
+{"input":"\n! c\n!="},
+{"input_hex":"0b5c3d205c0a2020205c75303034315c23095c740a20202320630a5c7544383344ffff0a3a095c7544383344215c7a0d095c7a0d61","entries":[["\u000b=","A#\t\t"],["���",""],["","�!z"],["z",""],["a",""]]},
+{"input_hex":"42e280a85c75444530305c75443833445c200be2825c75443833445c0a5c7530306539205c0a20202021f09f980d5c3d6b2e783af09f985c205c7a5c6e20","entries":[["B\u2028�� \u000b��é","!�"],["=k.x","� z\n "]]},
+{"input_hex":"3d5c7530306539eda0805c745c7530306539203a5c75303034315c7a0a20202320630a0a0b095c74205c0a202020","entries":[["","é�\té :Az"],["\u000b","\t "]]},
+{"input_hex":"c3a9c3a95c74425cc3a90a2120630ac3a95c200ae2820a2120630a205c0a2020205c3a0a0a5c0d0a3a0bf09f98","entries":[["éé\tBé",""],["é ",""],["�",""],[":",""],["","\u000b�"]]},
+{"input_hex":"3d5c75443833445c235c0a5c5c5c7aff0c5c7a","entries":[["","�#\\z�\fz"]]},
+{"input_hex":"5c3a5c0d5c0deda0805c0d0a5c754445303009205c75444530305c745c7aff5c3d0c420b5c0d0a3a5c3d0a2120630a5c0d0a5c75443833445c75444530300a20202320630a0b0c0a2120630a","entries":[[":��","�\tz�=\fB\u000b:="],["😀",""],["\u000b",""]]},
+{"input_hex":"5c75303065395c5c215c6e5c0d0a0a0d215c3aeda080c3a9205c0a2020205c6e5c0d5c3a5c7a5c3a0a20202320630aff6b2e780c","entries":[["é\\!\n",""],["\n:z:",""],["�k.x",""]]},
+{"input":"\\\r\n\r\\z\\#\\u12\n\\u12\n  # c\n \r\n","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"5c74ff5c0d0a5c7530303431e2825c75444530305c745c0d0aeda0805c7530306539","entries":[["\t�A��\t�é",""]]},
+{"input":"\r\n\\#B\\\\uD83Dé\f\n  # c\n\t\n! c\n\r\n \\\n   \u000b","entries":[["",""],["#B\\uD83Dé",""],["",""],["\u000b",""]]},
+{"input":"\u2028","entries":[["\u2028",""]]},
+{"input_hex":"5c5c7544453030205c0a2020205c5c6b2e78203d205c0a2020200ac28520eda0805c5c753132206b2e785c0c0c5c75443833445c7a425c7531320a5c205c0a090a2120630af09f98","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"0a20202320630a5c5c5c0d0a3d5c0d0a5c6e230a205c0a202020e2820a2120630aeda080235c23090a2120630a3d5c205c0ae2820b0a5c7a5c205c5c3d0c23","entries":[["\\","\n#"],["�",""],["�##",""],[""," �\u000b"],["z \\","#"]]},
+{"input_hex":"5c75444530305c3de2825c20095c0d0a3d202342420c0a5c6e5c75303034313d5c200a0d0a5c3a5c3a5c5c0d0a0c3a205c0a202020","entries":[["�=� ","#BB\f"],["\nA"," "],["::\\",""],["",""]]},
+{"input_hex":"0c5c0d5c75443833445c75444530305c6e5c75443833445c7544453030095c205c235c235c3aeda080e282c285205c0a2020200c0a5c3dc3a9e280a85c3a5c7530306539ff23e2825c754438334461205c0a202020","entries":[["😀\n😀"," ##:�� "],["=é\u2028:é�#��a",""]]},
+{"input_hex":"c3a90a23e2820d5c75443833445c7544453030e2825c3a5c75443833445c7544453030ff5c7a0c5c5c0d0a5c236b2e78095c75444530305c5c61c285205c75303034315c0d","entries":[["é",""],["😀�:😀�z","\\"],["#k.x","�\\a A"]]},
+{"input":"\\ \\zB\\:\f\\\\\\u12 a\n\\u0041\\\\\\\r \\\n   \\u00e9=\\\r\\#\u2028","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"5c235c7530306539e280a85c75303034310a0a20202320630a5c753132c3a95c746b2e780a20202320630ae2825c7a3a235c0d5c3d5c235c0a215c7544453030f09f985c0d","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"205c0a2020205c0a61615c7aff5c0d0a","entries":[["aaz�",""]]},
+{"input_hex":"0a20ff5c0a5c7530306539eda08061","entries":[["�é�a",""]]},
+{"input_hex":"0b5c3d42210a0a2120630a3a5c5cf09f980d0a6b2e785c74","entries":[["\u000b=B!",""],["","\\�"],["k.x\t",""]]},
+{"input_hex":"0c5c75303065390d5c3d3af09f980be282425c3d3a422142eda0805c3d5c6e5c3d5c3af09f986b2e786b2e785c200d0a5c7530303431","entries":[["é",""],["=","�\u000b�B=:B!B�=\n=:�k.xk.x "],["A",""]]},
+{"input_hex":"5c7544383344095c200d5c74ff5c745c3a3d5c5c5c230b615c3d","entries":[["�"," "],["\t�\t:","\\#\u000ba="]]},
+{"input_hex":"3d5c20205c235c7531325c5c5c75444530303d42ff","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"0a20202320630a61c3a90dff3a3a5c75303065395c23ff5c7544383344f09f980a5c7530306539205c0a202020c2850a20202320630a213a5c6e","entries":[["aé",""],["�",":é#���"],["é",""]]},
+{"input":"\n\\t","entries":[["\t",""]]},
+{"input":" \\\n   \\\r\n\\\n\\u0041\\uD83D\\uDE00#\\u12#","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"0b205c0a2020205c5c5c3a0c095c5c5c235c7544383344095c75443833445c75444530300d0a5c3dc3a95c7a0a0a2120630a0ce2825c5c0c5c200d","entries":[["\u000b","\\:\f\t\\#�\t😀"],["=éz",""],["�\\"," "]]},
+{"input_hex":"090c09eda0805c235c3a0deda080c3a95c75303065395c753030653961f09f98205c75303034315c75443833445c75444530305c75303034315c75443833445c75444530300a20202320630a5c23eda0805c7a0a0a5c0d0c5c235c0d","entries":[["�#:",""],["�éééa�","A😀A😀"],["#�z",""],["#",""]]},
+{"input_hex":"425c75443833443d5c0d0d5c5c0a20202320630a205c0a2020205c75443833445c75444530305c235c3d0a2120630a6b2e78f09f986b2e785c0a0a20202320630aeda0800d0a42f09f985c75443833445c75444530300a5c5c0d5c74","entries":[["B�",""],["\\",""],["😀#=",""],["k.x�k.x",""],["�",""],["B�😀",""],["\\",""],["\t",""]]},
+{"input_hex":"5c0af09f980a5c0d0c5c3d5c7544383344","entries":[["�",""],["=�",""]]},
+{"input_hex":"5c7a5c0c5c7544383344425c0df09f98e280a85c75443833445c75444530305c3d5c7a0d0a5c0d610a5c205c75303065395c6e0a0a20202320630a61","entries":[["z\f�B�\u2028😀=z",""],["a",""],[" é\n",""],["a",""]]},
+{"input_hex":"23095c425c5c7544383344610b235c0d5c5c3d5c75444530300b5c3a5c235c75443833445c75444530300dff6b2e785c7a0d5c7a0a2120630a5c203d0a2120630af09f983a","entries":[["\\","�\u000b:#😀"],["�k.xz",""],["z",""],[" ",""],["�",""]]},
+{"input_hex":"205c0a5c3d5c7531320d0aff5c75444530305c0d0a5c0d0a0b233d","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"5c74095c5c09c2850beda080","entries":[["\t","\\\t\u000b�"]]},
+{"input_hex":"5c0d0a210a095c3d5c75444530303a5c3a425c75443833445c7544453030ff3d5c74c2850c5c745c75303034310d0a0d0c5c75303065395c200a095c75443833445c754445303023","entries":[["=�",":B😀�=\t\f\tA"],["é ",""],["😀#",""]]},
+{"input_hex":"5c5cf09f98c3a9","entries":[["\\�é",""]]},
+{"input_hex":"235c75303065390a42205c0a2020200a2120630a0d0af09f985c0a5c0a0bf09f985c75303065396b2e78205c205c75443833445c75444530300ae280a8c3a95c236b2e78f09f985c205c0a","entries":[["B",""],["�\u000b�ék.x"," 😀"],["\u2028é#k.x� ",""]]},
+{"input_hex":"c3a9ffe2820d","entries":[["é��",""]]},
+{"input_hex":"c3a95c75443833445c0a6b2e78e2825c75303065395c5c5c75443833445c75444530303d5c7531320a200d5c0d0a6b2e785c0d0a5c740a2120630a5c7531320b5c3a","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"6b2e78420a2120630a5c20ff0b5c6ec28521205c0a202020c3a95c75443833445c75444530305c75444530305c6e5c7a5c7531323d6b2e78","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"5c7a090d0aff205c0a20202020230b420b090d0a5c745c3a0d0a420a2120630ac2853a095c75443833445c7530303431f09f985c7530306539c285c2855c75303034315c3a5c7530306539","entries":[["z",""],["�","#\u000bB\u000b\t"],["\t:",""],["B",""],["","�A�éA:é"]]},
+{"input_hex":"5c3d0a5c6e5c0a5c75303034316b2e785c754445303009235c0d5c6e3a0a0a2120630aff5c3a5c7544453030f09f985c0d0b0b5c","entries":[["=",""],["\nAk.x�","#\n:"],["�:��\u000b\u000b",""]]},
+{"input":"\f\\z\n  # c\n#\\uD83D\\#\u2028\n  # c\n","entries":[["z",""]]},
+{"input_hex":"0a5c6e3aeda080420a2120630a0ac2853d5c0a5cff","entries":[["\n","�B"],["","�"]]},
+{"input_hex":"ff","entries":[["�",""]]},
+{"input_hex":"5c7544453030215c0af09f98e280a8c285205c0a0a20202320630ac3a96b2e78235c75443833445c743d0a20202320630ae2820d0a420d0a5c7531325c0d5c754438334423e280a85c7544383344205c0a202020","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"c2850c61eda0805c3d","entries":[["","a�="]]},
+{"input_hex":"ff425c75443833445c7544453030615c3d5c75443833445c7531325c75313209205c0a202020","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"5c7544383344e280a8210b5c74e2820a2120630a5c75443833445c7aeda0805c7531325c7a5c235c75443833445c7544453030c2850c5c7a5c3a5c","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"5c7531325c235c74ffc3a95c230a20202320630a","refused":"Malformed \\uxxxx encoding."},
+{"input":"!\r \n  # c\né\\u00e9\\uD83D \\\n    é\\t\t\\u00e9\\t\\t\\#\r\\","entries":[["éé�","é\t\té\t\t#"],["",""]]},
+{"input_hex":"5c7544383344c285e2820a09e280a8","entries":[["��",""],["\u2028",""]]},
+{"input":"\f\t"},
+{"input_hex":"420d0affe2825c7ac3a93dc2855c6e5c75443833445c75444530305c3a5c75443833440c215c745c75443833445c75444530305c7530306539f09f98ffc2855c753132eda080c3a95c7531320d0ac3a9","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"5c0aeda080e280a85c23e2820a2120630aeda0805c205c0a5c0d0a5c3d5c203d42425c75303034315c205c205c5c0a0bc3a9","entries":[["�\u2028#�",""],["� = ","BBA  \\"],["\u000bé",""]]},
+{"input":"\\uDE00\r\\uDE00\\:  \\\n   \\u12 a:","refused":"Malformed \\uxxxx encoding."},
+{"input":"k.x#=\n  # c\n\\t\n! c\n\\\n\n! c\n:\n  # c\n\\uDE00\n\r\n\u2028\n\nk.xé\r\n a","entries":[["k.x#",""],["\t",""],["",""],["�",""],["\u2028",""],["k.xé",""],["a",""]]},
+{"input":"\u000b","entries":[["\u000b",""]]},
+{"input_hex":"5c205c0a5c0d0a5c74e280a85c745c3d0d5c6e0a2120630a0b095c753132205c0a2020205c74ff3d","refused":"Malformed \\uxxxx encoding."},
+{"input":"\n! c\n"},
+{"input":"k.x\r\né\r\n\\\r\\z\\\\\r","entries":[["k.x",""],["é",""],["z\\",""]]},
+{"input":"\\t\n  # c\n\\t:\n  # c\n\\\n\\\n\\=\\:\n\\uD83D\u000b","entries":[["\t",""],["\t",""],["=:",""],["�\u000b",""]]},
+{"input":"\\=\\u12\\uD83D\\uDE00\u2028\\uD83D\\uDE00é\r\n#\r\\\r\\u0041\r\\=#\r\n\\#\\\r\n\\u0041\u000b\n  # c\n\\:é\\t\u2028 \\\n   ","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"0a20202320630aeda0805c75443833445c7544453030","entries":[["�😀",""]]},
+{"input":"\\uD83D\u2028\\u12\\\r\n\\t=\\u12 \r\n\t\\n","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"0a0a20202320630ae280a8095c235c75443833445c75444530305c6eff0d5c5c5c233a5c745c75443833445c5c75443833445c75303034315c75303065395c0a","entries":[["\u2028","#😀\n�"],["\\#","\t�\\uD83DAé"]]},
+{"input_hex":"095c6e0a0d0a3d2009eda080205c0a2020205c7544383344215c7544383344235c75443833445c7544453030203d","entries":[["\n",""],["","� �!�#😀 ="]]},
+{"input_hex":"c3a93a5c7a5c235c230a20202320630a095c235c75443833440cf09f983a0a20202320630a5c75303065390a2120630a5c6e5c75443833445c75444530300a2120630a42","entries":[["é","z##"],["#�","�:"],["é",""],["\n😀",""],["B",""]]},
+{"input_hex":"e280a823eda080","entries":[["\u2028#�",""]]},
+{"input_hex":"5c3a5c7a3a205c0a202020095c23e2820beda080","entries":[[":z","#�\u000b�"]]},
+{},
+{"input_hex":"0a5c74235c6e5c0d0a20202320630a5c0a5c233de28242c285205c0a2020205c7530303431eda0800a5c74","entries":[["\t#\n#","c"],["#","�B A�"],["\t",""]]},
+{"input_hex":"6b2e78eda080095c3d21f09f983ae280a83d3d0c0d0b5c75443833445c75444530300d0a0a210a2120630a0a20202320630a5cc3a95c7531320d0a3a420b","refused":"Malformed \\uxxxx encoding."},
+{},
+{"input_hex":"0d0a215c6e205c0a2020200ae280a85c75303034310d0a0deda0805c7544383344","entries":[["\u2028A",""],["��",""]]},
+{"input":"!Ba\\=\\tk.x\n\\=","entries":[["=",""]]},
+{"input":"\n\\\r\n:\\\r! \\\n   \\uD83D\\uDE00\n\r\n\\u0041\r","entries":[["","! 😀"],["A",""],["",""]]},
+{"input_hex":"0a61ff5c5c0d0a5c5c754438334423","entries":[["a�\\",""],["\\uD83D#",""]]},
+{"input_hex":"5c0d5c7531325c7530303431213ac3a90a2120630a205c0a202020e280a83d0beda0805c7531320d0a0a2120630a5c75443833445c0a0a20202320630a0a20202320630a205c0a5c75444530305c235c7544453030c2856b2e78","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"0b5c0a5c5c5c5c0a3d0b5c3a5c75443833445c75444530305c0d5c753132eda080205c0a2020205c740d0a0a205c0de282205c0a202020eda080eda0805c3d0a2120630a5c0d0a090a5c0a20202320630a","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"615c5c235c75303034315c205c5c210af09f985c230b5ce2825c3d0b0c5c7530306539205c0d0af09f980c5c7a5c75443833445c754445303009","entries":[["a\\#A \\!",""],["�#\u000b�=\u000b","é �\fz😀\t"]]},
+{"input":"\\:\\t","entries":[[":\t",""]]},
+{"input_hex":"0a0a2120630a5c205c5c0a5c235c7530306539f09f98","entries":[[" \\",""],["#é�",""]]},
+{"input":" \\\n   \\u00e9k.x \\\n    \n","entries":[["ék.x",""]]},
+{"input_hex":"610a5c75303034313d5c6e5c75443833445c7544453030425c75303034310d0a0a210ce280a85c23e280a85c3d3d5c75443833445c75444530305c23205c0a2020205c74eda0805c3a5c3a5c6e","entries":[["a",""],["A","\n😀BA"],["\t�::\n",""]]},
+{"input_hex":"f09f985c3d5c5c5c75443833440ae282","entries":[["�=\\�",""],["�",""]]},
+{"input_hex":"230ac2856b2e78425c0d0a5c0de280a85c5c5c3de280a85c74205c0a202020205c0a2020205c75443833445c7544453030205c0a2020205ceda080e280a820","entries":[["k.xB\u2028\\=\u2028\t","😀 �\u2028 "]]},
+{"input":"=\u000b\n! c\n","entries":[["","\u000b"]]},
+{"input_hex":"0d0a3a0d0a5c7544453030230a205c0a2020200a20202320630ae280a85c20c2855c20e2825c74c2855cf09f980a6b2e78","entries":[["",""],["�#",""],["\u2028  �\t�",""],["k.x",""]]},
+{"input_hex":"e280a80a20202320630a6b2e785c0a20202320630a5c206b2e78ff0cc2855c6e0a20202320630a0d0ae280a86b2e780a5c7a615c75443833445c745c3d5c0d","entries":[["\u2028",""],["k.x#","c"],[" k.x�","\n"],["\u2028k.x",""],["za�\t=",""]]},
+{"input_hex":"5c75303034310d0aeda080e2825c75303034310a20202320630aeda0805c23","entries":[["A",""],["��A",""],["�#",""]]},
+{"input_hex":"5c3d5c7544383344615c5c0a20202320630a5c75303034315c5c0d5c75303034310c09f09f980d0a0de280a85c0d0ae282eda080205c753132235c75443833445c75444530305c0d5c75444530305c75443833445c75443833445c0a","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"e2825c205c5c0a20202320630a0d3d615c75443833445c75444530305c0a5c75443833440d5c3a3a5c7544453030eda080c2855c75444530305c3a210a215c75444530305c200d0a6b2e78","entries":[["� \\",""],["","a😀�"],[":","���:!"],["k.x",""]]},
+{"input":"B\r\\=","entries":[["B",""],["=",""]]},
+{"input":"\\:\f \\\n   ","entries":[[":",""]]},
+{"input_hex":"5c0d0a5c203d20c3a9ff5c5c3d5c7530306539c3a90d5c0d0a09","entries":[[" ","é�\\=éé"]]},
+{"input":" \n\\u0041=","entries":[["A",""]]},
+{"input_hex":"5c0de282c3a9e282c285093d0a5c75303034310a20202320630a5c7530303431425c6e0cf09f980a20202320630a0a5c7544383344c285c3a9e280a8f09f980b6b2e783a5c3aff","entries":[["�é�",""],["A",""],["AB\n","�"],["�é\u2028�\u000bk.x",":�"]]},
+{"input_hex":"6b2e780a20202320630a5c0ac3a95c7530306539e282c3a9e280a85c5c5c0d0a205c75443833445c75444530305c7544453030","entries":[["k.x",""],["éé�é\u2028\\😀�",""]]},
+{"input_hex":"5c7544383344205c3a3d42c3a96b2e78e2825c753132ff5c20ff5c75303065390b3a5c203a5c23eda0805c7530303431c285","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"ff0a205c0a2020200d0a2120630a0c215c75303065390c5c230b5c3a3a","entries":[["�",""]]},
+{"input_hex":"5c200a0a20202320630aeda0806b2e785c7544453030615c745c7544453030230a2120630a6b2e780c5c0a5c745c75444530303dff5c75444530303a5c75443833445c75444530305c745c0d0a5c75303034310a2120630a5c7a5c75443833445c75444530305c75443833443a","entries":[[" ",""],["�k.x�a\t�#",""],["k.x","\t�=��:😀\tA"],["z😀�",""]]},
+{"input_hex":"e2820a5c6e20e280a80a2120630a5c75444530305c75443833445c5c3ac3a93a5c6e3a5c753030653920613a42615c0a5c75303034315c3d","entries":[["�",""],["\n","\u2028"],["��\\","é:\n:é a:BaA="]]},
+{"input":"\\:\r\n\\#\\=k.x\néa\n! c\n \\\n   \\uDE00a\n\\uD83D","entries":[[":",""],["#=k.x",""],["éa",""],["�a",""],["�",""]]},
+{"input_hex":"5c75443833445c7544453030ff5c3d0d0c5c6e3d215c5cc3a95c75303065395c0d0a0d0ac2850a2120630a61","entries":[["😀�=",""],["\n","!\\éé"],["",""],["a",""]]},
+{"input":"\u2028\\\\\\ \\uDE00Bé \\\n   é#","entries":[["\u2028\\ �Bé","é#"]]},
+{"input":"\\z\tk.x\\:\\u12\n\tk.x\\\r\\\r\n\\=","refused":"Malformed \\uxxxx encoding."},
+{"input":"\\n\\n!\\uD83D\\uDE00\\t \n  # c\n\\:","entries":[["\n\n!😀\t",""],[":",""]]},
+{"input_hex":"c285203dff093d0dff5c0d0a5c0d0a5cc3a95c75443833445c3d6b2e78c2855c7544453030615c7a5cf09f985c3a5c61","entries":[["","�\t="],["�é�=k.x�az�:a",""]]},
+{"input":"\\uD83D\r\n\r\n\tB \\\n   \\t\\tk.x\\n\r\n","entries":[["�",""],["B","\t\tk.x\n"]]},
+{"input_hex":"5c7531325c75444530300a2120630a5c75443833445c75444530300a20202320630a5cffe280a85c20230a","refused":"Malformed \\uxxxx encoding."},
+{"input":"\\\r","entries":[["",""]]},
+{"input_hex":"c2855c0d0a3a5c3a5c0d610a5c0d0a5c7531320a5c0de282e280a80d0a0d5c7530306539ffe280a8","refused":"Malformed \\uxxxx encoding."},
+{"input":"\\\n\f\\\r\u2028\f\u000b \\\\ ","entries":[["\u2028","\u000b \\ "]]},
+{"input_hex":"0d0a205c0a2020200a20202320630a5c0d0a21f09f98e2825c75444530305c0d0a3d5c74c285c3a96b2e785c75443833445c7544453030","entries":[["","\ték.x😀"]]},
+{"input":"\\u12\\=aa","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"f09f985c754438334423205c0a2020200b0ac2856b2e785c230a2120630a","entries":[["��#","\u000b"],["k.x#",""]]},
+{"input":"\\uD83D\\uDE00\n! c\n \\ :#a\\\\uD83D\\#\\u0041\\t\n  # c\n","entries":[["😀",""],[" ","#a\\uD83D#A\t"]]},
+{"input_hex":"5c75303034310d0a5c7544453030090bff5c0a5c75303034315c7544383344425c0d5c5c5c0a5c6e09","entries":[["A",""],["�","\u000b�A�B\\\n\t"]]},
+{"input_hex":"f09f985c235c5c75443833443a3d5c0d0c6b2e780a2120630a0a0a5c75443833445c7544453030615c20c3a95c753132215c23216b2e780a20202320630a5c6e0d0a5c0d0a0a2120630a","refused":"Malformed \\uxxxx encoding."},
+{},
+{"input":"k.x\n  # c\n \\\n    \\\n   ","entries":[["k.x",""]]},
+{"input_hex":"ff5c75444530300a3d5c75444530305c0ac2855c3a0d0b6b2e785c7a610a20202320630a5c0a5c75443833445c7544453030c2850a2120630a5c75303065395c23c3a95c0deda0805c09095c75443833445c3d","entries":[["��",""],["","�:"],["\u000bk.xza",""],["😀",""],["é#é�\t","�="]]},
+{"input_hex":"f09f985c235c232323205c0a2020205c7a5c75443833445c75303065395c75444530300c215c75443833445c75444530305c75443833440c0a2120630a5c5c203ae280a80a20202320630a215c7530303431","entries":[["�####","z�é�\f!😀�\f"],["\\","\u2028"]]},
+{"input":"\\uDE00\f\r\n\\zB \\\n   \\u00e9\\\r\r\n\f\\\n:\\\n\\n\n  # c\n\\uD83D\u2028 \u2028\n\n! c\n","entries":[["�",""],["zB","é"],["","\n"],["�\u2028","\u2028"]]},
+{"input_hex":"0a2120630ac2855c3a0a3deda0806b2e785c753132eda080","refused":"Malformed \\uxxxx encoding."},
+{"input":"\\\r \\\ra\nk.x\\uD83D\\u12","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"c3a95c75443833445c75444530300d0d0a235c753132c2856b2e785c6e3a6b2e780d5c3a09eda0800b205c0a2020200c5c75443833445c75444530300a2120630a5ce280a85c7530306539","entries":[["é😀",""],[":","�\u000b 😀"],["\u2028é",""]]},
+{"input":"=a\\t\n\\uDE00\\#\\uDE00\r\n\\u00e9\f!=:\\","entries":[["","a\t"],["�#�",""],["é","!=:"]]},
+{},
+{"input_hex":"5c6ec2850d5c6ef09f98e280a85c5c0a5c74200b425c75443833445c75444530305c75443833445c5c0a5c0d205c0a2020205c75303034313a6b2e78","entries":[["\n",""],["\n�\u2028\\",""],["\t","\u000bB😀�\\"],["A","k.x"]]},
+{"input_hex":"5c7a5c6e5c75303065395c754438334423f09f985c3d200a2120630a0deda0805c75443833445c75444530303a5c230a6b2e785c7531325c7a5c5c5c0d0a215c7a5c75303065395c75303034315c75303065393a205c0a202020","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"c2855c75443833445c75444530300d0ae280a80d0d0a0ae282","entries":[["😀",""],["\u2028",""],["�",""]]},
+{"input":"\\=\\\\\\u12\\\\\\é\\u00e9\\uD83D\\uDE00\\uD83D\\uDE00","refused":"Malformed \\uxxxx encoding."},
+{"input":"\\uDE00\\uD83D\\uDE00","entries":[["�😀",""]]},
+{"input_hex":"5c75303065390b5c75443833445c75444530305c205c75303034315c75443833445c75444530300a5c206b2e786b2e785c0d0a215c75303065390a20202320630a5c0d210a20202320630a0a5c75303065395c3d615c230d6b2e785c235c20c3a9ff5c3a","entries":[["é\u000b😀 A😀",""],[" k.xk.x!é",""],["é=a#",""],["k.x# é�:",""]]},
+{"input":"\\u0041\u2028\\n","entries":[["A\u2028\n",""]]},
+{"input_hex":"425c6e5c7544383344235c5c0a5c75443833445c75443833445c75444530305c5c3a0a20202320630a5c23205c0a2020205ce280a80a235c0d0ce2825c0d0ae282c2855c0d5c3d5c75443833445c75444530305c75303065390d0a5c0d","entries":[["B\n�#\\",""],["�😀\\",""],["#","\u2028"],["��=😀é",""],["",""]]},
+{"input":"\\u0041","entries":[["A",""]]},
+{"input_hex":"215c0d0af09f98ffe280a80a0a20215c75443833440a0d0a5c75313221","refused":"Malformed \\uxxxx encoding."},
+{"input":"\\\\=\\n\\n\\\u2028","entries":[["\\","\n\n\u2028"]]},
+{"input_hex":"3a205c233d0a0a20202320630a61215c3d205c0a2020205c745c75303065395c745c5cc285610d0a213ac3a95c3a5c20f09f98","entries":[["","#="],["a!=","\té\t\\a"]]},
+{"input":"\\u00e9 \\\n   \\uD83D\\uDE00:\f\\\\tB\\z\\n\\uD83D\\uDE00 \\ \\t\f\f\n\\n\\\n \\\n   \\\r\\u12\\u0041","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"0a20202320630a5c75303034310a20202320630af09f98f09f985c75303065395c0aeda0805c3d5c7531325c6b2e783d610b5c0a5c0d230a20202320630a5c3d0d0a5c0d0a42","refused":"Malformed \\uxxxx encoding."},
+{"input":"\\uD83D\\uDE00","entries":[["😀",""]]},
+{"input_hex":"205c0a2020205c7aff5c75443833445c75444530300d0ac3a92161e2825c75443833440a20202320630a5c3d5c20e280a80a2120630a3a6b2e785c75303034313d5c7531323aeda080c3a9","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"5c753132205c0a2020205c5c5c75444530305c75444530305c3a095c0d0a5c6e5c233d5c75443833445c7544453030c2855c75443833445c75444530305c235c3a230d0a61ff5c0aeda080215c7af09f980b5c7544383344","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"205c0a2020205c745c0d0a5c7544383344095c75443833443a0a2120630a090d5c75443833445c7531325c7a5c753132e282","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"e2820be280a85c5c6e5c745c7530303431615c7544383344c2850a5c3d5c75303034315c6e5c75303065395c3d5c7a0d205c0a2020200d5c6e200d0a","entries":[["�\u000b\u2028\\n\tAa�",""],["=A\né=z",""],["\n",""]]},
+{"input_hex":"5c75443833445c75444530305c206b2e785c23f09f98f09f985c0b5c745c7544383344095c7a0a200d0a235c5c0d0a","entries":[["😀 k.x#��\u000b\t�","z"]]},
+{"input_hex":"09235c2342205c3d20c2855c5c5c740a0a2120630a425c0d5c75303034315c7a0ae2825c0d0a6b2e78","entries":[["BAz",""],["�k.x",""]]},
+{"input_hex":"5c75443833440de280a80a205c0a2020205c740aeda0800a2120630a09c3a95c0a5c7544453030","entries":[["�",""],["\u2028",""],["\t",""],["�",""],["é�",""]]},
+{"input_hex":"20ff0ac3a95c75443833445c75444530305c6e5c5c0a5c20","entries":[["�",""],["é😀\n\\",""],[" ",""]]},
+{"input_hex":"c2850d09f09f985c0d0a5c75303034310b5c7530303431","entries":[["",""],["�A\u000bA",""]]},
+{"input_hex":"6b2e785c0ac2855c3a5c75443833445c75444530305c7a5c75303065395c745c0a215c7530306539f09f985c0d0a20202320630a5c0a0d0a3d5c235c7531325c7544383344f09f98202342","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"205c0a2020200a2120630a5c6ee280a85c7a3aeda080e280a85c0a0a0a2120630a0b0b0a20202320630a095c6e3a0b5c7544453030230ae2825c7a0d5c7a5c7a5c0d3a5c20","entries":[["\n\u2028z","�\u2028"],["\u000b\u000b",""],["\n","\u000b�#"],["�z",""],["zz"," "]]},
+{"input_hex":"210a2120630aff0d0a0a5c200c0b5c75443833445c7544453030c2855c75444530305c745c205c75303034315c74c2856b2e78","entries":[["�",""],[" ","\u000b😀�\t A\tk.x"]]},
+{"input_hex":"5c3ac2855c75443833445c7544453030e280a8425c75443833445c7544453030205c0a2020205c0a5c745c7530303431200c5c6e5c235c3a0a0a6b2e78ff0a5c745c75444530300a0d0a0a","entries":[[":😀\u2028B😀","\tA \f\n#:"],["k.x�",""],["\t�",""]]},
+{"input_hex":"095c75303065390a5c6e5c75303034315c74f09f98612042200a2120630a0a2120630a5c7544453030615c0a6b2e785c7531325c3dff5c0d0a0a2120630a0a2120630ae280a8","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"3d0b5c203ae280a85c235c205c75443833440b0a5c7544383344ff5c0d0a0a20202320630a3df09f985c0df09f98c3a9","entries":[["","\u000b :\u2028# �\u000b"],["��",""],["","��é"]]},
+{"input_hex":"e2825c3de280a85c3a5c5c5c74e282","entries":[["�=\u2028:\\\t�",""]]},
+{"input":"#\\\r\n"},
+{"input":"\\\r\nk.x\\:\n","entries":[["k.x:",""]]},
+{"input_hex":"420d0af09f98205c6e0a615c0d5c0d0a","entries":[["B",""],["�","\n"],["a",""]]},
+{"input_hex":"5c230d0a205c0a2020206b2e785c75303034315c0a5c200a0a5c75443833445cff","entries":[["#",""],["k.xA ",""],["��",""]]},
+{"input_hex":"090a2120630a205c0d5c7ac3a95c75443833445c75444530305c7530306539610d0a0deda080c3a95c0d","entries":[["zé😀éa",""],["�é",""]]},
+{"input":"\n\\ ","entries":[[" ",""]]},
+{"input":"\\\n\\z","entries":[["z",""]]},
+{"input_hex":"3d6b2e78c3a90a2120630ae280a8610b5c5ce280a85c7544453030425c0d0a6b2e78233d5c7544453030095c75303034315c745c7530303431e280a80a2120630aff0b20","entries":[["","k.xé"],["\u2028a\u000b\\\u2028�Bk.x#","�\tA\tA\u2028"],["�\u000b",""]]},
+{"input_hex":"6b2e78613d5c5c5c0d0a0a5c20eda0805c0d0a5c7a5c7544453030c2855c75443833445c75444530305c200a42e2825c7544383344235c7a","entries":[["k.xa","\\"],[" �z�😀 ",""],["B��#z",""]]},
+{"input_hex":"205c0a202020425ce282c2855c7ae280a8205c0a2020205c75443833445c75444530300a2120630af09f985c235c7ac2850a6123205c0a2020205c0d6b2e780bc3a95c75443833440d5c0ac285","entries":[["B�z\u2028","😀"],["�#z",""],["a#","k.x\u000bé�"],["",""]]},
+{"input":":\\uD83D\n  # c\nBa\n  # c\n!\n! c\n\u000b\\uD83D\\uDE00\n  # c\n\\uD83D\f\\=","entries":[["","�"],["Ba",""],["\u000b😀",""],["�","="]]},
+{"input_hex":"5c6e0a2120630a5c0d5c5c0d0a5c205c235c3a6b2e780b5c745c0ae280a85c0d0aeda0805c75303034315c235c0d0a","entries":[["\n",""],["\\",""],[" #:k.x\u000b\t\u2028�A#",""]]},
+{"input_hex":"5c7544383344f09f98235c754438334409c3a96b2e78f09f98e282e2825c235c","entries":[["��#�","ék.x���#"]]},
+{"input_hex":"5c3a5c205c7531325c0de280a8e280a85c3a3ae2823d3d0de280a85c75303065395c7a3a5c0d206b2e78c2855c75443833440a20202320630a0a","refused":"Malformed \\uxxxx encoding."},
+{"input":"\\\\#\t\u000b\\","entries":[["\\#","\u000b"]]},
+{"input_hex":"5c6e6b2e785c5c6b2e785c75303034313d5c75443833440a23e282610c5c745c3d0a5c7531325c3d5c7544453030c2855c5c205c6e5c3a","refused":"Malformed \\uxxxx encoding."},
+{"input":"\\uDE00\t\\ \\uD83D\\uDE00=\\z\\\u000b\n  # c\n\\\r\n","entries":[["�"," 😀=z\u000b"]]},
+{"input":"\\\r\n\n  # c\n\n\u2028\\t\n! c\n\\uD83D\n  # c\n","entries":[["\u2028\t",""],["�",""]]},
+{"input_hex":"5c230a2120630a5c3ae280a85c75303065395c74213d0d3ac2855c0d3d5c753132615c75303034315c75443833445c3d3aeda080","refused":"Malformed \\uxxxx encoding."},
+{"input_hex":"e2825c7a5c205c75443833446b2e7820c2855c75444530306b2e785c0d0ae2820a20202320630a5c7531325c0d5c75443833445c75444530305c7530306539425c2361ff5c753132205c0a2020205c205c745c6e3d205c0a202020eda080","refused":"Malformed \\uxxxx encoding."},
+{"input":"k.x\\\\\n  # c\né\\t= !\n  # c\n\\\r\n  # c\n\\\r\u000b","entries":[["k.x\\",""],["é\t","!"],["\u000b",""]]},
+{},
+{"input":"\\=!B\\u12\\:","refused":"Malformed \\uxxxx encoding."}
+]

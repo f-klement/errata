@@ -1,0 +1,55 @@
+# In SARIF an agree erratum is placed at the first value outside the majority,
+# with every other value as a related location. A program check's result is
+# placed at the line its entry starts on in the config file, relative to the
+# root, and the driver names errata's version.
+! exec errata check --format sarif
+stdout '"version": "dev",$'
+stdout -count=1 '"uri": "config/other.yaml",'
+stdout '"text": "agree: the values differ\\n  \\"10.43.0.5\\" at deploy/service.yaml:6 \(service\), config/client.yaml:2 \(client\)\\n  \\"s3.internal\\" at config/other.yaml:1 \(other\)\\nThe other values, as \[related locations\]: \[value 1\]\(1\), \[value 2\]\(2\)."'
+stdin stdout
+exec tr -d ' \n'
+stdout '"locations":\[\{"physicalLocation":\{"artifactLocation":\{"uri":"config/other.yaml","uriBaseId":"%SRCROOT%"\},"region":\{"startLine":1\}\}\}\],"relatedLocations":\[\{"id":1,"physicalLocation":\{"artifactLocation":\{"uri":"deploy/service.yaml","uriBaseId":"%SRCROOT%"\},"region":\{"startLine":6\}\},"message":\{"text":"\\"10.43.0.5\\"\(service\)"\}\},\{"id":2,"physicalLocation":\{"artifactLocation":\{"uri":"config/client.yaml","uriBaseId":"%SRCROOT%"\},"region":\{"startLine":2\}\}'
+stdout '"ruleId":"drifted","ruleIndex":1,"level":"error","message":\{"text":"saysatlas"\},"locations":\[\{"physicalLocation":\{"artifactLocation":\{"uri":"errata.yaml","uriBaseId":"%SRCROOT%"\},"region":\{"startLine":11\}\}\}\]'
+
+# A config file elsewhere in the repository is named by its path from the root.
+! exec errata check --format sarif -c ci/checks.yaml
+stdin stdout
+exec tr -d ' \n'
+stdout '"ruleId":"drifted","ruleIndex":0,"level":"error","message":\{"text":"saysatlas"\},"locations":\[\{"physicalLocation":\{"artifactLocation":\{"uri":"ci/checks.yaml","uriBaseId":"%SRCROOT%"\},"region":\{"startLine":3\}\}\}\]'
+
+# A config outside the root, given relative to the working directory, is no
+# path from the root: ci/checks.yaml under %SRCROOT% would name deploy's file
+# of that name. The result names the config as given and places nothing.
+! exec errata check --format sarif --root deploy -c ci/checks.yaml
+! stdout '"uri": "ci/checks.yaml"'
+stdout '"locations": \[\s*\{\s*"message": \{\s*"text": "the check is in ci/checks.yaml, outside the repository"'
+stdout '"text": "says atlas\\nThe check is in ci/checks.yaml, outside the repository, so this result has no place in a file."'
+
+-- errata.yaml --
+checks:
+  - id: endpoint-agrees
+    reason: Every client must name the Service's address.
+    scope: repo
+    extract:
+      service: {yaml: {file: deploy/service.yaml, path: spec.clusterIP}}
+      client:  {regex: {file: config/client.yaml, pattern: 'endpoint: "([^:]+):'}}
+      other:   {regex: {file: config/other.yaml, pattern: 'endpoint: "([^:]+):'}}
+    agree: [service, client, other]
+
+  - {id: drifted, reason: r, scope: repo, run: [sh, -c, 'echo says atlas; exit 1']}
+-- ci/checks.yaml --
+# Checks kept beside the pipeline.
+checks:
+  - {id: drifted, reason: r, scope: repo, run: [sh, -c, 'echo says atlas; exit 1']}
+-- deploy/service.yaml --
+apiVersion: v1
+kind: Service
+metadata:
+  name: s3
+spec:
+  clusterIP: 10.43.0.5
+-- config/client.yaml --
+# the client
+endpoint: "10.43.0.5:9000"
+-- config/other.yaml --
+endpoint: "s3.internal:9000"

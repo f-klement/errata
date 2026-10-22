@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/f-klement/errata/internal/check"
 	"github.com/f-klement/errata/internal/config"
 	"github.com/f-klement/errata/internal/engine"
 	"github.com/f-klement/errata/internal/report"
@@ -36,7 +37,18 @@ var errErrata = errors.New("errata found")
 // Execute runs the CLI with args and returns the process exit code. It takes
 // its streams as arguments so tests drive it without a subprocess.
 func Execute(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	root := newRoot()
+	return execute(ctx, args, stdout, stderr, config.Load)
+}
+
+// loader reads the config at path under root into checks, as config.Load
+// does.
+type loader func(root, path string) ([]check.Check, error)
+
+// execute is Execute with the loader as an argument. The testscripts pass
+// one that wraps config.Load, to run a reader that the extract package does
+// not have yet, such as one that marks a value not literal.
+func execute(ctx context.Context, args []string, stdout, stderr io.Writer, load loader) int {
+	root := newRoot(load)
 	root.SetArgs(args)
 	root.SetOut(stdout)
 	root.SetErr(stderr)
@@ -48,19 +60,22 @@ func Execute(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	case errors.Is(err, errErrata):
 		return ExitErrata
 	default:
-		fmt.Fprintln(stderr, "errata:", err)
+		// A load error can quote the config file, such as a CEL or a regular
+		// expression, so it reaches the terminal through the text output's
+		// escapes.
+		fmt.Fprintln(stderr, "errata:", report.QuoteControls(err.Error()))
 		return ExitUsage
 	}
 }
 
-func newRoot() *cobra.Command {
+func newRoot(load loader) *cobra.Command {
 	root := &cobra.Command{
 		Use:           "errata",
 		Short:         "Check the claims a repository makes about itself",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	root.AddCommand(newCheckCmd(), newVersionCmd())
+	root.AddCommand(newCheckCmd(load), newVersionCmd())
 	return root
 }
 
@@ -90,7 +105,7 @@ func resolveVersion(stamped string, buildInfo func() (*debug.BuildInfo, bool)) s
 	return stamped
 }
 
-func newCheckCmd() *cobra.Command {
+func newCheckCmd(load loader) *cobra.Command {
 	var (
 		repoRoot   string
 		configPath string
@@ -103,10 +118,11 @@ func newCheckCmd() *cobra.Command {
 			"and print the errata and the coverage. errata never applies anything.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			reporter, ok := report.Formats[format]
+			newReporter, ok := report.Formats[format]
 			if !ok {
 				return fmt.Errorf("unknown --format %q, want one of %s", format, strings.Join(report.FormatNames(), ", "))
 			}
+			reporter := newReporter(resolveVersion(Version, debug.ReadBuildInfo))
 			absRoot, err := filepath.Abs(repoRoot)
 			if err != nil {
 				return err
@@ -114,7 +130,7 @@ func newCheckCmd() *cobra.Command {
 			if configPath == "" {
 				configPath = filepath.Join(absRoot, config.DefaultFile)
 			}
-			checks, err := config.Load(configPath)
+			checks, err := load(absRoot, configPath)
 			if err != nil {
 				return fmt.Errorf("load %s: %w", configPath, err)
 			}

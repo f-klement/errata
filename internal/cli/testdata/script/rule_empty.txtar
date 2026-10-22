@@ -1,0 +1,86 @@
+# An extractor that finds nothing makes the rule unknown, so a rule over a key
+# that moved does not pass on nothing. allow_empty lists an extractor that may
+# find nothing: the same rules are then true, agree with the one value left
+# and assert on an empty list.
+! exec errata check -c strict.yaml
+stdout '^UNKNOWN image-pinned \(repo\)$'
+stdout '^  said: extractor "override" found no value$'
+stdout '^UNKNOWN no-override \(repo\)$'
+stdout -count=2 'extractor "override" found no value'
+stdout '^0 errata, 2 unknown. Coverage: ran 2, skipped 0.$'
+
+exec errata check -c allowed.yaml
+stdout '^0 errata, 0 unknown. Coverage: ran 2, skipped 0.$'
+! stdout UNKNOWN
+
+# agree needs a value, and two unless allow_empty let one extractor come back
+# empty; assert has no such floor and decides on empty lists.
+! exec errata check -c none.yaml
+stdout '^UNKNOWN agree-none \(repo\)$'
+stdout '^  said: no extractor found a value, so agree has nothing to compare$'
+stdout '^UNKNOWN agree-one \(repo\)$'
+stdout '^  said: agree found one value, so it has nothing to compare: "alpine:3.22" at Dockerfile:1 \(base\)$'
+! stdout 'assert-none'
+stdout '^0 errata, 2 unknown. Coverage: ran 3, skipped 0.$'
+
+-- strict.yaml --
+checks:
+  - id: image-pinned
+    reason: The override, where there is one, pins the same image.
+    scope: repo
+    extract:
+      base:     {regex: {file: Dockerfile, pattern: '^FROM (\S+)'}}
+      override: {yaml: {file: values.yaml, path: image.override}}
+    agree: [base, override]
+  - id: no-override
+    reason: Nothing overrides the image.
+    scope: repo
+    extract:
+      override: {yaml: {file: values.yaml, path: image.override}}
+    assert: size(override) == 0
+-- allowed.yaml --
+checks:
+  - id: image-pinned
+    reason: The override, where there is one, pins the same image.
+    scope: repo
+    extract:
+      base:     {regex: {file: Dockerfile, pattern: '^FROM (\S+)'}}
+      override: {yaml: {file: values.yaml, path: image.override}}
+    agree: [base, override]
+    allow_empty: [override]
+  - id: no-override
+    reason: Nothing overrides the image.
+    scope: repo
+    extract:
+      override: {yaml: {file: values.yaml, path: image.override}}
+    assert: size(override) == 0
+    allow_empty: [override]
+-- none.yaml --
+checks:
+  - id: agree-none
+    reason: Neither override is set.
+    scope: repo
+    extract:
+      a: {yaml: {file: values.yaml, path: image.override}}
+      b: {yaml: {file: values.yaml, path: image.digest}}
+    agree: [a, b]
+    allow_empty: [a, b]
+  - id: agree-one
+    reason: One value compares with nothing.
+    scope: repo
+    extract:
+      base: {regex: {file: Dockerfile, pattern: '^FROM (\S+)'}}
+    agree: [base]
+  - id: assert-none
+    reason: Neither override is set.
+    scope: repo
+    extract:
+      a: {yaml: {file: values.yaml, path: image.override}}
+      b: {yaml: {file: values.yaml, path: image.digest}}
+    assert: size(a) + size(b) == 0
+    allow_empty: [a, b]
+-- Dockerfile --
+FROM alpine:3.22
+-- values.yaml --
+image:
+  tag: "3.22"

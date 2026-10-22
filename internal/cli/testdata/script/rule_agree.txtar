@@ -1,0 +1,63 @@
+# An agree rule over real files: a YAML path, a regex capture and a JSON path.
+# One that holds prints nothing; one whose values differ is an erratum that
+# lists each distinct value with every file:line it was found at, and exits 1.
+exec errata check -c holds.yaml
+stdout '^0 errata, 0 unknown. Coverage: ran 1, skipped 0.$'
+! stdout 'FALSE|UNKNOWN'
+! stderr .
+
+! exec errata check -c differs.yaml
+cmp stdout differs.txt
+! stderr .
+
+-- holds.yaml --
+checks:
+  - id: endpoint-agrees
+    reason: Clients read the endpoint from their config.
+    scope: repo
+    extract:
+      service: {yaml: {file: deploy/service.yaml, path: spec.clusterIP}}
+      client:  {regex: {file: config/client.yaml, pattern: 'endpoint: "([^:]+):'}}
+      app:     {json: {file: app.json, path: "s3.host"}}
+    agree: [service, client, app]
+-- differs.yaml --
+checks:
+  - id: endpoint-agrees
+    reason: Every client must name the Service's address.
+    scope: repo
+    extract:
+      service: {yaml: {file: deploy/service.yaml, path: spec.clusterIP}}
+      client:  {regex: {file: config/client.yaml, pattern: 'endpoint: "([^:]+):'}}
+      other:   {regex: {file: config/other.yaml, pattern: 'endpoint: "([^:]+):'}}
+      ports:   {toml: {file: runner.toml, path: "s3[*].host"}}
+    agree: [service, client, other, ports]
+-- differs.txt --
+FALSE endpoint-agrees (repo)
+  why:  Every client must name the Service's address.
+  said: agree: the values differ
+          "10.43.0.5" at deploy/service.yaml:6 (service), config/client.yaml:2 (client), runner.toml:2 (ports)
+          "s3.internal" at config/other.yaml:1 (other), runner.toml:5 (ports)
+
+1 erratum, 0 unknown. Coverage: ran 1, skipped 0.
+-- deploy/service.yaml --
+apiVersion: v1
+kind: Service
+metadata:
+  name: s3
+spec:
+  clusterIP: 10.43.0.5
+-- config/client.yaml --
+# the client
+endpoint: "10.43.0.5:9000"
+-- config/other.yaml --
+endpoint: "s3.internal:9000"
+-- app.json --
+{
+  "s3": {"host": "10.43.0.5"}
+}
+-- runner.toml --
+[[s3]]
+host = "10.43.0.5"
+
+[[s3]]
+host = "s3.internal"

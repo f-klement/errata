@@ -1,0 +1,16 @@
+# The YAML library reads only the first document, so a check after a second
+# --- used to be dropped and the run passed without it. A file of more than
+# one document does not load, and nothing runs.
+exec sh -c 'errata check -c two.yaml 2>/dev/null; echo code=$?'
+stdout code=2
+
+! exec errata check -c two.yaml
+stderr 'the file holds 2 YAML documents; errata reads one, so put every check in one document under checks'
+! stdout .
+
+-- two.yaml --
+checks:
+  - {id: first, reason: r, scope: repo, run: ['true']}
+---
+checks:
+  - {id: gate, reason: r, scope: repo, run: ['false']}

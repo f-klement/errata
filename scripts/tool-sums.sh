@@ -36,4 +36,9 @@ curl -sSfL -o "$T/c" "https://github.com/anchore/syft/releases/download/v$v/syft
 set_sum SYFT_SHA256_linux_amd64 "$(sum "$T/c" "syft_${v}_linux_amd64.tar.gz")"
 set_sum SYFT_SHA256_linux_arm64 "$(sum "$T/c" "syft_${v}_linux_arm64.tar.gz")"
 
+v=$(ver KO)
+curl -sSfL -o "$T/c" "https://github.com/ko-build/ko/releases/download/v$v/checksums.txt"
+set_sum KO_SHA256_linux_amd64 "$(sum "$T/c" "ko_${v}_Linux_x86_64.tar.gz")"
+set_sum KO_SHA256_linux_arm64 "$(sum "$T/c" "ko_${v}_Linux_arm64.tar.gz")"
+
 echo "checksums match the published files for the pinned versions"

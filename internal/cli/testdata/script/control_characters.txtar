@@ -1,0 +1,68 @@
+# A program's output and a repository file reach the text output with every
+# control character written as its escape, so neither can clear the screen,
+# overwrite the FALSE line or set a terminal link.
+exec sh -c 'printf "note: \033]8;;https://evil.example\a\n" > notes.txt'
+! exec errata check
+stdout '^  said: \\x1b\[2Jall clear\\rTRUE$'
+stdout '^          "\\x1b\]8;;https://evil.example\\a" at notes.txt:1 \(note\)$'
+! stdout '\x1b'
+! stdout '\r'
+
+# JUnit and SARIF go to stdout too. encoding/xml and encoding/json escape the
+# C0 controls but write DEL, the C1 controls (CSI here) and the direction
+# controls raw, so errata writes those as character references in JUnit and
+# as \u escapes in SARIF.
+! exec errata check -c c1.yaml -f junit
+! stdout '\x{9b}|\x{202e}|\x{7f}'
+stdout 'message="&#x9B;31mred&#x202E;txt.exe&#x7F;"'
+! exec errata check -c c1.yaml -f sarif
+! stdout '\x{9b}|\x{202e}|\x{7f}'
+stdout '"text": "\\u009b31mred\\u202etxt.exe\\u007f"'
+! exec errata check -c c1.yaml
+stdout '^  said: \\u009b31mred\\u202etxt.exe\\x7f$'
+
+# A load error quotes what the file holds, a CEL expression or a regular
+# expression, and goes to stderr through the same escapes.
+! exec errata check -c bad.yaml
+! stdout .
+stderr '\\x1b\[2J\\u202e'
+stderr '\\u2066\(\\x1b'
+! stderr '\x1b'
+! stderr '\x{202e}'
+! stderr '\x{2066}'
+
+-- errata.yaml --
+checks:
+  - id: clean-output
+    reason: r
+    scope: repo
+    run: [sh, -c, 'printf "\033[2Jall clear\rTRUE"; exit 1']
+  - id: notes-agree
+    reason: r
+    scope: repo
+    extract:
+      note: {regex: {file: notes.txt, pattern: 'note: (.*)'}}
+      readme: {regex: {file: README, pattern: 'note: (.*)'}}
+    agree: [note, readme]
+-- README --
+note: plain
+-- bad.yaml --
+checks:
+  - id: bad-assert
+    reason: r
+    scope: repo
+    extract:
+      v: {regex: {file: README, pattern: 'note: (.*)'}}
+    assert: "\e[2J\u202e =="
+  - id: bad-pattern
+    reason: r
+    scope: repo
+    extract:
+      v: {regex: {file: README, pattern: "\u2066(\e"}}
+    assert: size(v) > 0
+-- c1.yaml --
+checks:
+  - id: c1-output
+    reason: r
+    scope: repo
+    run: [sh, -c, 'printf "\302\23331mred\342\200\256txt.exe\177"; exit 1']

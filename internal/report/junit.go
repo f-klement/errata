@@ -1,8 +1,11 @@
 package report
 
 import (
+	"bytes"
 	"encoding/xml"
+	"fmt"
 	"io"
+	"strings"
 
 	"github.com/f-klement/errata/internal/check"
 )
@@ -11,6 +14,8 @@ import (
 // per check without a plugin. An erratum is a <failure>, an unknown is an
 // <error> (JUnit's word for a test that could not run to a result), and a
 // skipped check is <skipped> with its gap, so the CI view shows the coverage.
+// A rule that left not literal values out names each in <system-out>,
+// whatever its verdict.
 type JUnit struct{}
 
 type junitSuite struct {
@@ -30,6 +35,7 @@ type junitCase struct {
 	Failure   *junitProblem `xml:"failure,omitempty"`
 	Error     *junitProblem `xml:"error,omitempty"`
 	Skipped   *junitProblem `xml:"skipped,omitempty"`
+	SystemOut string        `xml:"system-out,omitempty"`
 }
 
 type junitProblem struct {
@@ -57,17 +63,27 @@ func (JUnit) Write(w io.Writer, r check.Report) error {
 			s.Errors++
 			c.Error = problem
 		}
+		if left := leftOut(res); len(left) > 0 {
+			lines := []string{"skip_not_literal left out these values, which are not literal:"}
+			for _, f := range left {
+				lines = append(lines, "  "+where(f))
+			}
+			c.SystemOut = strings.Join(lines, "\n")
+		}
 		s.Cases = append(s.Cases, c)
 	}
 
-	if _, err := io.WriteString(w, xml.Header); err != nil {
-		return err
-	}
-	enc := xml.NewEncoder(w)
+	var buf bytes.Buffer
+	buf.WriteString(xml.Header)
+	enc := xml.NewEncoder(&buf)
 	enc.Indent("", "  ")
 	if err := enc.Encode(s); err != nil {
 		return err
 	}
-	_, err := io.WriteString(w, "\n")
+	buf.WriteString("\n")
+	// encoding/xml writes C1 controls and direction controls as they are,
+	// and the file goes to stdout, so they are written as character
+	// references, which XML 1.0 allows for each of them.
+	_, err := w.Write(escapeActedOn(buf.Bytes(), func(r rune) string { return fmt.Sprintf("&#x%X;", r) }))
 	return err
 }

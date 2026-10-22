@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"pgregory.net/rapid"
 
@@ -87,14 +89,14 @@ func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("disk ful
 
 func TestWriteErrorsPropagate(t *testing.T) {
 	for name, r := range Formats {
-		if err := r.Write(failingWriter{}, sample); err == nil {
+		if err := r("v1.2.3").Write(failingWriter{}, sample); err == nil {
 			t.Errorf("%s: write error swallowed", name)
 		}
 	}
 }
 
 func TestFormatNames(t *testing.T) {
-	if got := strings.Join(FormatNames(), ","); got != "junit,text" {
+	if got := strings.Join(FormatNames(), ","); got != "junit,sarif,text" {
 		t.Fatalf("FormatNames = %s", got)
 	}
 }
@@ -139,17 +141,27 @@ func genReport(t *rapid.T) check.Report {
 
 // Whatever strings a check prints, the JUnit output is valid XML whose counts
 // agree with the report. A CI system that cannot parse the file shows nothing.
+// Each case with a value left out says so in its system-out.
 func TestPropertyJUnitIsValidAndCountsAgree(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
-		rep := genReport(t)
+		rep := genSARIFReport(t)
 		var buf bytes.Buffer
 		if err := (JUnit{}).Write(&buf, rep); err != nil {
 			t.Fatal(err)
+		}
+		if r := rawActedOn(buf.Bytes()); r >= 0 {
+			t.Fatalf("output holds %U raw, which a terminal acts on", r)
 		}
 		s := decode(t, buf.Bytes())
 		ran, skipped := rep.Coverage()
 		if s.Tests != len(rep.Results) || s.Skipped != skipped || s.Failures != len(rep.Errata()) || s.Errors != len(rep.Unknowns()) || len(s.Cases) != ran+skipped {
 			t.Fatalf("suite %+v disagrees with report (ran %d, skipped %d, errata %d, unknown %d)", s, ran, skipped, len(rep.Errata()), len(rep.Unknowns()))
+		}
+		for i, c := range s.Cases {
+			left := len(leftOut(rep.Results[i]))
+			if strings.HasPrefix(c.SystemOut, "skip_not_literal left out these values") != (left > 0) {
+				t.Fatalf("case %d has %d values left out and system-out %q", i, left, c.SystemOut)
+			}
 		}
 	})
 }
@@ -174,9 +186,103 @@ func TestPropertyTextAlwaysPrintsCoverage(t *testing.T) {
 	})
 }
 
+// A message, a reason or a gap can come from a repository file or a program's
+// output, so the text output writes each control character as its escape:
+// a file cannot clear the screen, set a link or overwrite a FALSE line.
+func TestTextQuotesControlCharacters(t *testing.T) {
+	rep := check.Report{Results: []check.Result{
+		{
+			Check:   check.Check{ID: "x", Scope: check.ScopeRepo, Reason: "why\x1b[2J\x00"},
+			Verdict: check.VerdictFalse,
+			Message: "\x1b]8;;https://evil.example\x07click\x1b]8;;\x07 ok\rTRUE \u009b31m \xff\xfe tab\there\r\nnext\x7f",
+		},
+		{Check: check.Check{ID: "y", Scope: check.ScopeLive, Reason: "r"}, Gap: "gap\x1bc"},
+		// Direction controls reorder what a terminal or a web log shows, and
+		// a line or paragraph separator breaks a line where none is seen.
+		{
+			Check:   check.Check{ID: "z\u202e", Scope: check.ScopeRepo, Reason: "\u202atrue\u202c \u202b\u202d"},
+			Verdict: check.VerdictUnknown,
+			Message: "\u2066a\u2067b\u2068c\u2069 \u200e\u200f\u061c line\u2028para\u2029end",
+		},
+		{Check: check.Check{ID: "w", Scope: check.ScopeLive, Reason: "r"}, Gap: "gap\u202eevil"},
+	}}
+	var buf bytes.Buffer
+	if err := (Text{}).Write(&buf, rep); err != nil {
+		t.Fatal(err)
+	}
+	want := `FALSE x (repo)
+  why:  why\x1b[2J\x00
+  said: \x1b]8;;https://evil.example\aclick\x1b]8;;\a ok\rTRUE \u009b31m \xff\xfe tab` + "\t" + `here
+        next\x7f
+
+UNKNOWN z\u202e (repo)
+  why:  \u202atrue\u202c \u202b\u202d
+  said: \u2066a\u2067b\u2068c\u2069 \u200e\u200f\u061c line\u2028para\u2029end
+
+1 erratum, 1 unknown. Coverage: ran 2, skipped 2.
+  skipped y (live): gap\x1bc
+  skipped w (live): gap\u202eevil
+`
+	if got := buf.String(); got != want {
+		t.Fatalf("text output differs.\ngot:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// Whatever bytes a check's fields hold, the text output is UTF-8 with no
+// control character but newline and tab, and text without one passes through
+// unchanged.
+func TestPropertyTextQuotesControls(t *testing.T) {
+	// Arbitrary bytes rarely spell a C1 character, which takes two, or a
+	// direction control, which takes three, so half the strings mix
+	// printable text with the runes a terminal acts on.
+	bytesOf := rapid.OneOf(
+		rapid.Custom(func(t *rapid.T) string { return string(rapid.SliceOf(rapid.Byte()).Draw(t, "b")) }),
+		rapid.StringOf(rapid.OneOf(acted, rapid.RuneFrom([]rune("aZ 9\\\n\t")))),
+	)
+	rapid.Check(t, func(t *rapid.T) {
+		res := check.Result{
+			Check:   check.Check{ID: bytesOf.Draw(t, "id"), Scope: check.Scope(bytesOf.Draw(t, "scope")), Reason: bytesOf.Draw(t, "reason")},
+			Verdict: check.VerdictUnknown,
+			Message: bytesOf.Draw(t, "message"),
+			Extracted: []check.Extracted{{Extractor: bytesOf.Draw(t, "extractor"), LeftOut: []check.Value{{
+				Text: bytesOf.Draw(t, "left out"), At: check.Location{File: bytesOf.Draw(t, "file")}, NotLiteral: true,
+			}}}},
+		}
+		skip := check.Result{Check: check.Check{ID: "s", Scope: check.ScopeLive}, Gap: bytesOf.Draw(t, "gap")}
+		var buf bytes.Buffer
+		if err := (Text{}).Write(&buf, check.Report{Results: []check.Result{res, skip}}); err != nil {
+			t.Fatal(err)
+		}
+		out := buf.String()
+		if !utf8.ValidString(out) {
+			t.Fatalf("output is not UTF-8: %q", out)
+		}
+		for _, r := range out {
+			if r != '\n' && r != '\t' && isActedOn(r) {
+				t.Fatalf("output holds %U, which a terminal acts on: %q", r, out)
+			}
+		}
+		plain := rapid.StringMatching(`[ -~\p{L}\p{N}]{0,20}`).Draw(t, "plain")
+		if got := QuoteControls(plain); got != plain {
+			t.Fatalf("QuoteControls(%q) = %q, want it unchanged", plain, got)
+		}
+	})
+}
+
+// acted draws the runes a terminal or a viewer acts on instead of showing:
+// control characters, direction controls, and line and paragraph separators.
+var acted = rapid.RuneFrom(nil, unicode.Cc, unicode.Bidi_Control, unicode.Zl, unicode.Zp)
+
+// isActedOn is the test's own statement of what no output may hold raw,
+// written apart from the reporters so a change to theirs does not move it.
+func isActedOn(r rune) bool {
+	return unicode.In(r, unicode.Cc, unicode.Bidi_Control, unicode.Zl, unicode.Zp)
+}
+
 func FuzzJUnit(f *testing.F) {
 	f.Add("ok", "message", "reason")
 	f.Add("x", "\x00\x1b]8;;", "<![CDATA[")
+	f.Add("x", actedOnRunes, "\xc2\x9b31m")
 	f.Fuzz(func(t *testing.T, id, msg, reason string) {
 		rep := check.Report{Results: []check.Result{{
 			Check:   check.Check{ID: id, Reason: reason, Scope: check.ScopeRepo},
@@ -185,6 +291,9 @@ func FuzzJUnit(f *testing.F) {
 		var buf bytes.Buffer
 		if err := (JUnit{}).Write(&buf, rep); err != nil {
 			t.Fatal(err)
+		}
+		if r := rawActedOn(buf.Bytes()); r >= 0 {
+			t.Fatalf("output holds %U raw, which a terminal acts on", r)
 		}
 		decode(t, buf.Bytes())
 	})

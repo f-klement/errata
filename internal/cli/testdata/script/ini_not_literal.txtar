@@ -1,0 +1,121 @@
+# The ini extractor marks a value the file's tool computes as not literal:
+# PHP reads error_reporting = E_ALL as a number, so a rule never compares
+# the text E_ALL. The rule is unknown, naming the value.
+! exec errata check -c unlisted.yaml
+stdout '^UNKNOWN reporting-agrees \(repo\)$'
+stdout '^  said: extractor "php" returned 1 not literal value, which a rule does not compare as text'
+stdout '^          "E_ALL" at php.ini:2$'
+
+# skip_not_literal leaves it out, and the rule holds on the number left.
+exec errata check -c listed.yaml
+stdout '^0 errata, 0 unknown. Coverage: ran 1, skipped 0.$'
+stdout '^  left out of reporting-agrees \(repo\), not literal: "E_ALL" at php.ini:2 \(php\)$'
+
+# A false rule counts the values it left out.
+! exec errata check -c drifted.yaml
+stdout '^FALSE reporting-drifted \(repo\)$'
+stdout '^        skip_not_literal left out 1 not literal value of extractor "php"$'
+
+# tox selects a line with a factor condition per environment, so its value
+# is not literal either. With every value of an extractor left out, it
+# found no literal value: unknown, unless allow_empty lists it.
+! exec errata check -c every.yaml
+stdout '^  said: extractor "tox" found no literal value$'
+stdout '^        skip_not_literal left out the one value of extractor "tox", which is not literal, so the rule compared nothing from it$'
+exec errata check -c every-allowed.yaml
+stdout '^0 errata, 0 unknown. Coverage: ran 1, skipped 0.$'
+stdout '^  left out of deps-agree \(repo\), not literal: "py311: mock" at tox.ini:2 \(tox\)$'
+
+# A value PHP reads as written, such as 128M, is literal and compared.
+! exec errata check -c memory.yaml
+stdout '^FALSE memory-agrees \(repo\)$'
+! stdout 'not literal'
+
+# git computes none of the values errata reads, so skip_not_literal over a
+# git extractor does not load, and the message names its kind and dialect.
+! exec errata check -c git.yaml
+stderr 'check "git-skips": skip_not_literal names "git", whose kind of extractor, ini, git dialect on .gitconfig, returns only literal values, so it has nothing to leave out'
+-- tox.ini --
+[testenv]
+deps = py311: mock
+-- php.ini --
+memory_limit = 128M
+error_reporting = E_ALL
+error_reporting = 32767
+-- values.yaml --
+reporting: "32767"
+drifted: "1"
+memory: 256M
+deps: mock
+-- .gitconfig --
+[core]
+	bare = false
+-- unlisted.yaml --
+checks:
+  - id: reporting-agrees
+    reason: The chart sets PHP's error reporting.
+    scope: repo
+    extract:
+      chart: {yaml: {file: values.yaml, path: reporting}}
+      php: {ini: {file: php.ini, key: error_reporting}}
+    agree: [chart, php]
+-- listed.yaml --
+checks:
+  - id: reporting-agrees
+    reason: The chart sets PHP's error reporting.
+    scope: repo
+    extract:
+      chart: {yaml: {file: values.yaml, path: reporting}}
+      php: {ini: {file: php.ini, key: error_reporting}}
+    agree: [chart, php]
+    skip_not_literal: [php]
+-- drifted.yaml --
+checks:
+  - id: reporting-drifted
+    reason: The chart sets PHP's error reporting.
+    scope: repo
+    extract:
+      chart: {yaml: {file: values.yaml, path: drifted}}
+      php: {ini: {file: php.ini, key: error_reporting}}
+    agree: [chart, php]
+    skip_not_literal: [php]
+-- every.yaml --
+checks:
+  - id: deps-agree
+    reason: The chart installs the test dependencies.
+    scope: repo
+    extract:
+      chart: {yaml: {file: values.yaml, path: deps}}
+      tox: {ini: {file: tox.ini, section: testenv, key: deps}}
+    agree: [chart, tox]
+    skip_not_literal: [tox]
+-- every-allowed.yaml --
+checks:
+  - id: deps-agree
+    reason: The chart installs the test dependencies.
+    scope: repo
+    extract:
+      chart: {yaml: {file: values.yaml, path: deps}}
+      tox: {ini: {file: tox.ini, section: testenv, key: deps}}
+    agree: [chart, tox]
+    skip_not_literal: [tox]
+    allow_empty: [tox]
+-- memory.yaml --
+checks:
+  - id: memory-agrees
+    reason: The chart sets PHP's memory limit.
+    scope: repo
+    extract:
+      chart: {yaml: {file: values.yaml, path: memory}}
+      php: {ini: {file: php.ini, key: memory_limit}}
+    agree: [chart, php]
+-- git.yaml --
+checks:
+  - id: git-skips
+    reason: r
+    scope: repo
+    extract:
+      git: {ini: {file: .gitconfig, section: core, key: bare}}
+      chart: {yaml: {file: values.yaml, path: memory}}
+    agree: [git, chart]
+    skip_not_literal: [git]
