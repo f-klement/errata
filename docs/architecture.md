@@ -6,7 +6,8 @@ How the code is split, and why. The vocabulary is [GLOSSARY.md](../GLOSSARY.md).
 
 Dependencies point one way: `cli` imports the packages below it, and `check` imports nothing from
 errata. `config` imports `extract` and `rule`, because loading a rule builds its extractors and
-compiles its assert. `rule` owns CEL and imports only `check`: it evaluates over the values its
+compiles its assert. `extract` imports one reader package for each kind of extractor, each reader
+imports `extract/core`, and no reader imports another, so a reader can become a program of its own. `rule` owns CEL and imports only `check`: it evaluates over the values its
 extractors return and never learns how a file is read. `check` holds the types that cross those
 seams, `Value`, `Location`, `Extractor` and `Assertion`, so `rule` and `report` read a value's
 place without importing `extract`. `report` takes errata's version as an argument and does not
@@ -20,7 +21,14 @@ import `cli`.
 | `internal/engine` | which checks run, in what order, and which are skipped | the check protocol's details, output formats |
 | `internal/protocol` | the check protocol: run a program, map its exit code to a verdict | config, providers, output |
 | `internal/rule` | evaluating a rule: run its extractors, compare their values or evaluate its assert, fail closed; the CEL environment, the assert helpers, the embedded time zone database and the limits | how an extractor reads a file, config, output |
-| `internal/extract` | building and running the extractors a rule names: the path grammar and its filters, the YAML, JSON, TOML, regex, Markdown prose, XML (an XPath 1.0 subset), INI (plain, git, ansible, tox and php dialects) and Java properties readers, and their bounds | rules, config, output |
+| `internal/extract` | the kinds of extractor a rule names: the `Spec` a rule decodes into, the kinds table, `Build`, `Place` and `Kind`, which see every kind and dispatch to its reader | how any kind reads a file; rules, config, output |
+| `internal/extract/core` | what every reader shares: the source held inside the repository and to its size cap, the limits on nodes, values, depth and bytes, the tree and the path grammar with its filters, the line index, quoting, the clocked regex search, and the entry extractor and work meter of the INI and properties readers | any one format |
+| `internal/extract/yaml`, `json`, `toml` | one reader each that parses its format into core's tree, for core's path to select from | each other |
+| `internal/extract/regex` | the regex extractor, which is core's search over the file | the other readers |
+| `internal/extract/text` | Markdown prose, searched with core's search | the other readers |
+| `internal/extract/xml` | XML, with an XPath 1.0 subset of its own | the other readers |
+| `internal/extract/ini`, `properties` | one reader each of entries for core's entry extractor: INI in the plain, git, ansible, tox and php dialects, and Java properties | each other |
+| `internal/extract/extracttest`, `coretest` | what the extractors' tests share; only test files import them, and Gremlins and the `make cover` total leave them alone | any reader: `coretest` imports `core` alone, and `extracttest` nothing of errata's but `check`, since `core`'s own tests import it |
 | `internal/provider` | the provider interface, capabilities, the reconciler model, scope gating | any concrete live system (none yet) |
 | `internal/report` | output formats: `text`, `junit` and `sarif` | where the results came from |
 | `internal/heapcap` | the heap watchdog that every package's tests link under the `mutation` tag only | errata's own code: only test files built with the tag import it |
@@ -40,7 +48,9 @@ Four seams carry the design:
    `check.Report`; an interactive view would be a fourth. `report.Formats` makes each with
    errata's version, which SARIF writes as the driver's version.
 4. **`check.Extractor`.** `extract.Build` turns a spec into one, and `rule` calls it with the
-   repository root. A new file format is a new kind in `extract`; `rule` does not change.
+   repository root. A new file format is a new reader, a package under `internal/extract` with a
+   `Spec` and a `Build` that import `core` and no other reader, and one row of the kinds table;
+   `rule` does not change.
 
 ## Decisions taken in the code
 
@@ -129,7 +139,12 @@ counts agree with the report, whatever strings a check prints". When rapid finds
 copy the shrunk input into an ordinary unit test so it stays fixed.
 
 Gremlins builds the tests with the `mutation` tag and reruns a package's tests once for every
-mutant, so a test that takes seconds costs seconds per mutant. Such a test skips under the tag:
+mutant, so a test that takes seconds costs seconds per mutant. That is why each reader is a package
+of its own: a mutant of one reader reruns that reader's tests, not every reader's. A test belongs to
+the package of the code it checks, so a mutant there is killed where it is: the tests that read
+files through every kind to check a bound of `core`, such as the source checks or the path's
+filters, are `core`'s external tests (`package core_test`), which import the readers and reach what
+only they need through `export_test.go`. Such a test skips under the tag:
 `make test` runs it, or `make slow` when it skips under `-race` too. The replay of measured inputs
 keeps its cases that stop on the regex clock under the tag, since the clock's counter is a mutant
 only they kill.
@@ -141,6 +156,10 @@ which bounds each goroutine's stack; Gremlins counts that failure as the mutant 
 `TestEveryTestedPackageLinksTheWatchdog` holds every package with tests to the link, and
 `.gremlins.yaml` leaves the watchdog unmutated.
 
-The mutation thresholds are 85% efficacy and 85% mutant coverage. The coverage figure is not 100%
-because Go's coverage profile starts a `switch` case's block after its colon, so Gremlins reports a
-mutant in a case expression as not covered even when a test runs that arm.
+`make mutation` judges each package alone, the facade, `core` and every reader each in a pass of
+its own, so a mutant of a reader counts as killed only when that reader's own tests fail. The
+thresholds are 85% efficacy and 85% mutant coverage. The coverage figure is not 100% because Go's
+coverage profile starts a `switch` case's block after its colon, so Gremlins reports a mutant in a
+case expression as not covered even when a test runs that arm. Where such mutants cap a package,
+the facade, `core`, `ini`, `properties` and `xml` among them, its floor is the figure it reaches;
+`ci/README.md` (Floors per package) has the table.

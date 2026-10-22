@@ -5,13 +5,24 @@
 #   make mutation                                   every package, as locally and nightly
 #   make mutation MUTATION_SCOPE="internal/config"  the packages listed
 #
-# Each package is one pass, `gremlins unleash internal/<pkg>`, judged alone against its floors
-# below. The path scopes gremlins' coverage pass, its mutants and so its timeout per mutant to
-# that package. `all` is every package `go list` finds under internal/, so the nightly pass
-# judges each package exactly as a push that touches it does. `none` mutates nothing and
-# passes. CI's test job passes the scope ci/mutation-scope.sh computes; that script says which
-# packages a pipeline puts in it. A package .gremlins.yaml excludes whole, such as
+# Each package is one pass, `gremlins unleash <package directory>`, judged alone against its
+# floors below. A package directory is one under internal/ that holds Go files, nested or not:
+# internal/config, internal/extract, internal/extract/ini. The path scopes gremlins' coverage
+# pass, its mutants and so its timeout per mutant to that package. `all` is every package
+# `go list` finds under internal/, so the nightly pass judges each package exactly as a push
+# that touches it does. `none` mutates nothing and passes. CI's test job passes the scope
+# ci/mutation-scope.sh computes; that script says which packages a pipeline puts in it. A
+# package .gremlins.yaml excludes whole, or one under a directory it excludes whole, such as
 # internal/heapcap, is listed and skipped.
+#
+# Gremlins mutates every Go file under the path it is given, and matches exclude-files against
+# each file's path relative to that path (gremlins v0.6.0, internal/engine/engine.go walks
+# os.DirFS of the path). So a pass over internal/extract would also mutate internal/extract/ini,
+# and a pattern such as ^internal/extract/coretest/ matches nothing in it. Each pass's config
+# therefore excludes every file below the package's own directory, and repeats each pattern of
+# .gremlins.yaml anchored under the package with the package's path taken off (config_for).
+# Gremlins' coverage pass still runs the tests under the whole path, ./<path>/..., so a package
+# with packages below it has a longer pass, and so a longer timeout per mutant.
 #
 # Gremlins runs in a copy of the tracked tree under TMPDIR, not in the project directory. It
 # copies the module root once per worker, and in CI that root holds Go's module and build
@@ -32,6 +43,14 @@ refuse() {
     exit 2
 }
 
+# has_go <directory>: it holds a Go file.
+has_go() {
+    for f in "$1"/*.go; do
+        [ -e "$f" ] && return 0
+    done
+    return 1
+}
+
 [ "$#" -gt 0 ] || refuse "no scope given. Usage: scripts/mutation.sh all | none | <package directory>..."
 cd "$(dirname "$0")/.."
 case "$*" in
@@ -40,8 +59,10 @@ case "$*" in
         for p in "$@"; do
             case "$p" in
                 all|none) refuse "'$p' stands alone; the scope was: $*" ;;
-                internal/*/*|internal/) refuse "'$p' is not a package directory such as internal/config" ;;
-                internal/*) [ -d "$p" ] || refuse "$p is not a package directory in this tree" ;;
+                */|*//*|./*|*/./*|*/.|../*|*/../*|*/..) refuse "'$p' is not a package directory such as internal/config" ;;
+                internal/*)
+                    [ -d "$p" ] || refuse "$p is not a package directory in this tree"
+                    has_go "$p" || refuse "$p holds no Go file, so it is not a package directory" ;;
                 *) refuse "'$p' is not a package directory such as internal/config" ;;
             esac
         done ;;
@@ -93,18 +114,31 @@ EFFICACY_FLOOR=85
 # Mutant coverage, mutants some test reaches, is 85 but where Go's coverage profile cannot
 # see a test reach them. It leaves case expressions, package-level declarations and code
 # after a statement's first func literal outside every block, so their mutants always read
-# as not covered, however the tests run them. Counted at e43c2ef:
-#   check     72  9 of its 33 mutants, case expressions in Validate and LeftOutCount
-#   protocol  78  3 of its 14 mutants
-#   extract   83  520 of its 2671 at 715dc01 (436 case expressions, 77 package level, 7
-#                 after a func literal), a ceiling of 83.74%; it read 83.49% once every
-#                 reachable INI mutant was covered
+# as not covered, however the tests run them. Such a package's floor is its measured figure
+# rounded down, and one under it when the figure is whole, since a figure at its floor
+# fails. check and protocol were counted at e43c2ef, the extract packages at the split into
+# one package per reader (#105), on 2026-10-22, each scoped alone:
+#   check               72  9 of its 33 mutants, case expressions in Validate and LeftOutCount
+#   protocol            78  3 of its 14 mutants
+#   extract             64  7 of its 20, after the first func literal of kinds' return
+#                           statement: 65.00%
+#   extract/core        79  116 of its 571 (115 case expressions, 1 package level): 79.68%
+#   extract/ini         82  253 of its 1500 (178 case expressions, 75 package level), and 7
+#                           in dead code (php.go 163 twice, 374, 548, 552, 554, 628): 82.67%
+#   extract/properties  79  34 of its 167, case expressions: 79.64%
+#   extract/xml         82  94 of its 527, case expressions: 82.16%
+# text (6 such mutants of 239, 97.49%) and toml (10 of 78, 87.18%) clear 85, and json, regex
+# and yaml have none. Before the split, extract as one package had 83 (520 of its 2671).
 mcover_floor() {
     case "$1" in
-        internal/check)    echo 72 ;;
-        internal/protocol) echo 78 ;;
-        internal/extract)  echo 83 ;;
-        *)                 echo 85 ;;
+        internal/check)              echo 72 ;;
+        internal/protocol)           echo 78 ;;
+        internal/extract)            echo 64 ;;
+        internal/extract/core)       echo 79 ;;
+        internal/extract/ini)        echo 82 ;;
+        internal/extract/properties) echo 79 ;;
+        internal/extract/xml)        echo 82 ;;
+        *)                           echo 85 ;;
     esac
 }
 # A package fails when more than this percent of its mutants that ran timed out. A timed
@@ -123,16 +157,32 @@ TIMEOUT_CAP=5
 # were killed at 10, with 1.5 s to spare. 20 gives about 14 s. It costs nothing, because a
 # killed mutant ends when its test fails, not at the timeout.
 #
-# internal/extract: its coverage pass takes 2.4 s, but a mutant that lives reruns all its
-# tests, 3.2 to 4.9 s alone on two cores, and several running side by side take longer
-# still. At 5, its 12 s limit read mutants as timed out that live: properties.go:375 and
-# ini_ansible_values.go:142 pass every test in 4.6 and 4.4 s by hand (2026-10-18, the build
-# node at a load of 10), so a timeout there hid two survivors. At 10, about 24 s, the two
-# files' 581 mutants that ran gave both as lived, and 6 timeouts against 33 at 5.
+# internal/extract/ini: its coverage pass takes 1.0 to 1.4 s on the build node, and its tests
+# with one change rebuilt 0.9 to 1.0 s alone, but two mutants running side by side on a node
+# under other load take several times that. At 5, a limit of 6.7 s, 34 of its 1240 mutants
+# timed out on 2026-10-22, the build node running CI's whole module pass beside it. Applied by
+# hand one at a time on the fallback node, 14 ran past 60 s, 12 lived in 1.7 to 2.7 s
+# (ansible_values.go:812, :1026, :1028, :1039, git.go:40, ini.go:317, notliteral.go:78, :138,
+# :249, :268, php.go:399, :400) and 6 were killed, two of them only after 11 s
+# (ansible_values.go:1046); two could not be applied by hand. So a timeout at 5 hid 12
+# survivors. At 10, about 14 s, the next run's 15 timeouts were the 14 that ran past 60 s and
+# the other mutant of one of them (ini.go:306), and those 12 read as lived.
+#
+# internal/extract/core and internal/extract/xml: on a quiet build node at 5, a mutant that
+# lives by hand in 1.4 s (core path.go:640) and one that lives in 0.8 s (xml xpath.go:231)
+# each timed out, against limits of 8.9 s and 4.7 s; the same xml mutant read as lived in
+# another run. Their property tests draw random inputs, so a mutant's run time varies from
+# run to run. Each package's other timeouts at 5 ran past 60 s by hand or were killed.
+#
+# Before the split into one package per reader, internal/extract had 10: its pass took 2.4 s
+# and a mutant that lived 3.2 to 4.9 s. The facade's pass now runs every reader's tests, 3 to
+# 5 s against 0.3 s for its own, so 5 is ample there.
 coefficient_for() {
     case "$1" in
         internal/protocol) echo 20 ;;
-        internal/extract)  echo 10 ;;
+        internal/extract/core) echo 10 ;;
+        internal/extract/ini)  echo 10 ;;
+        internal/extract/xml)  echo 10 ;;
     esac
 }
 
@@ -143,15 +193,42 @@ count() {
 }
 
 # config_for <package>: .gremlins.yaml with both thresholds at 0 and that package's
-# coefficient, as a file.
+# coefficient, as a file. Its exclude-files gain, first, the pattern `/`: gremlins matches a
+# path relative to the package, so a path with a slash is a file below the package's own
+# directory, in a package nested under it or in testdata. Then each pattern .gremlins.yaml
+# anchors under the package, ^<package>/<rest>, as ^<rest>, so it excludes in this pass what
+# it excludes in a run from the module root.
 config_for() {
     coef=$(coefficient_for "$1")
     sed -e "s/^    efficacy: [0-9]*/    efficacy: 0/" \
         -e "s/^    mutant-coverage: [0-9]*/    mutant-coverage: 0/" \
         ${coef:+-e "s/^  timeout-coefficient: [0-9]*/  timeout-coefficient: $coef/"} \
-        .gremlins.yaml >"$work/gremlins.yaml"
+        .gremlins.yaml >"$work/gremlins.base"
+    {
+        echo "    - /"
+        awk -v pre="    - ^$1/" 'index($0, pre) == 1 && length($0) > length(pre) { print "    - ^" substr($0, length(pre) + 1) }' .gremlins.yaml
+    } >"$work/excludes"
+    awk -v extra="$work/excludes" '
+        { print }
+        /^  exclude-files:$/ { while ((getline line < extra) > 0) print line; n++ }
+        END { if (n != 1) exit 1 }
+    ' "$work/gremlins.base" >"$work/gremlins.yaml" \
+        || refuse "a copy of .gremlins.yaml has no single '  exclude-files:' line to add the package's exclusions to"
     for key in "    efficacy: 0" "    mutant-coverage: 0" ${coef:+"  timeout-coefficient: $coef"}; do
         grep -q "^$key\( \|\$\)" "$work/gremlins.yaml" || refuse "could not write '$key' into a copy of .gremlins.yaml"
+    done
+}
+
+# excluded_whole <package>: .gremlins.yaml excludes the package's directory, or one above
+# it, whole.
+excluded_whole() {
+    d=$1
+    while :; do
+        grep -qxF "    - ^$d/" .gremlins.yaml && return 0
+        case "$d" in
+            */*) d=${d%/*} ;;
+            *) return 1 ;;
+        esac
     done
 }
 
@@ -219,7 +296,7 @@ fi
 
 failed=0
 for p in "$@"; do
-    if grep -qxF "    - ^$p/" .gremlins.yaml; then
+    if excluded_whole "$p"; then
         echo "$p: skipped, .gremlins.yaml excludes it whole." >>"$work/summary"
         continue
     fi

@@ -98,6 +98,9 @@ linters:
     rules:
       - path: _test\.go
         linters: [gosec, forbidigo]
+      # What only the extractors' tests import, built as packages of their own.
+      - path: internal/extract/(extracttest|coretest)/
+        linters: [gosec, forbidigo]
 
 formatters:
   enable: [gofmt, goimports]

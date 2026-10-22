@@ -45,6 +45,10 @@ unleash:
     # The heap watchdog every test binary links under the mutation tag: a
     # mutant of it would only change when other mutants stop.
     - ^internal/heapcap/
+    # What the extractor packages' tests share; only test files import them,
+    # and they have no tests of their own.
+    - ^internal/extract/extracttest/
+    - ^internal/extract/coretest/
     # Generated copies of the sources: make public-dry and make release-dry.
     - ^public/
     - ^dist/

@@ -11,21 +11,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
-)
 
-// slowOnly skips t under -race, -short and Gremlins' mutation tag: t reads
-// a large input, which the race detector slows about ninefold and which
-// make test's two minute timeout cannot hold, and which costs seconds for
-// every mutant. make slow runs it once, plain, from the Makefile's
-// SLOW_TESTS, and TestEverySlowTestIsInMakeSlow holds that list to the tests
-// that call slowOnly. A small input that reaches the same limit stays in
-// make test beside each one.
-func slowOnly(t *testing.T) {
-	t.Helper()
-	if testing.Short() || raceEnabled || mutationRun {
-		t.Skip("reads a large input; make slow runs it")
-	}
-}
+	"github.com/f-klement/errata/internal/extract/extracttest"
+)
 
 // Every test that calls slowOnly, in any package, is named in SLOW_TESTS,
 // and SLOW_TESTS names only such tests: a slow test the Makefile leaves out
@@ -58,8 +46,8 @@ func TestSameSlowTestsRefuses(t *testing.T) {
 	if err := sameSlowTests(both, both); err != nil {
 		t.Errorf("the same tests: %v", err)
 	}
-	wantError(t, sameSlowTests(both[:1], both), "./internal/b:TestY calls slowOnly, so make test skips it, and SLOW_TESTS in the Makefile leaves it out: add it there")
-	wantError(t, sameSlowTests(both, both[1:]), "SLOW_TESTS in the Makefile names ./internal/a:TestX, which is no test that calls slowOnly: rename it there, or drop it")
+	extracttest.WantError(t, sameSlowTests(both[:1], both), "./internal/b:TestY calls slowOnly, so make test skips it, and SLOW_TESTS in the Makefile leaves it out: add it there")
+	extracttest.WantError(t, sameSlowTests(both, both[1:]), "SLOW_TESTS in the Makefile names ./internal/a:TestX, which is no test that calls slowOnly: rename it there, or drop it")
 	listed := slowTestsListed("A := 1\nSLOW_TESTS := ./internal/a:TestX \\\n\t./internal/b:TestY\nslow:\n")
 	if !slices.Equal(listed, both) {
 		t.Errorf("listed %v, want %v", listed, both)

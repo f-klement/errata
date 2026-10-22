@@ -32,13 +32,13 @@ checks:
   - id: docs-state-the-max-bytes-bounds
     reason: >
       The README and ADR 0003 tell a user the file size an extractor reads by default and the
-      most max_bytes accepts. A bound changed in internal/extract/limits.go and not in them has a
+      most max_bytes accepts. A bound changed in internal/extract/core/limits.go and not in them has a
       user pick max_bytes from a number errata no longer enforces, and a file the documentation
       says loads is refused.
     scope: repo
     extract:
-      code_default: {regex: {file: internal/extract/limits.go, pattern: '^\s*defaultMaxBytes = (\d+) << 20$'}}
-      code_ceiling: {regex: {file: internal/extract/limits.go, pattern: '^\s*maxMaxBytes = (\d+) << 20$'}}
+      code_default: {regex: {file: internal/extract/core/limits.go, pattern: '^\s*DefaultMaxBytes = (\d+) << 20$'}}
+      code_ceiling: {regex: {file: internal/extract/core/limits.go, pattern: '^\s*MaxMaxBytes = (\d+) << 20$'}}
       readme_default: {regex: {file: README.md, pattern: '(?:\| file size \| |writing 0, keeps )(\d+) MiB'}}
       readme_ceiling: {regex: {file: README.md, pattern: 'or one over \d+ \((\d+) MiB\)'}}
       readme_ceiling_bytes: {regex: {file: README.md, pattern: 'or one over (\d+) \(\d+ MiB\)'}}

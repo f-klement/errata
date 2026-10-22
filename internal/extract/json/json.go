@@ -1,0 +1,137 @@
+// Package json is the json extractor: it reads a path in a JSON file, from
+// the tree of core.Node the file parses into.
+package json
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"strconv"
+
+	"github.com/f-klement/errata/internal/check"
+	"github.com/f-klement/errata/internal/extract/core"
+)
+
+// Spec reads a path in a JSON file.
+type Spec struct {
+	File     string `json:"file"`
+	Path     string `json:"path"`
+	MaxBytes int64  `json:"max_bytes,omitempty"`
+}
+
+// Build checks s and returns its extractor.
+func Build(s Spec) (check.Extractor, error) {
+	return core.BuildTree("json", s.File, s.Path, s.MaxBytes, core.JSONFormat, Parse)
+}
+
+// Parse reads one JSON value into a tree. encoding/json's Decoder.Token
+// gives the tokens and InputOffset the byte after each one, which is enough to
+// find where every value starts. A number keeps the text the file wrote, so
+// 1e3 stays 1e3. An object that repeats a key is an error, since JSON readers
+// disagree on which of the two counts.
+func Parse(data []byte) (*core.Node, error) {
+	r := jsonReader{dec: json.NewDecoder(bytes.NewReader(data)), data: data, lines: core.NewLineCursor(data)}
+	r.dec.UseNumber()
+	root, err := r.value(0)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := r.dec.Token(); !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("line %d: data after the top-level value", r.lines.At(r.start()))
+	}
+	return root, nil
+}
+
+type jsonReader struct {
+	dec   *json.Decoder
+	data  []byte
+	lines *core.LineCursor // every offset it is asked comes after the one before
+}
+
+// start returns the offset of the next token: the decoder's offset after the
+// previous token, past the white space and the , or : that separate tokens.
+func (r *jsonReader) start() int {
+	i := int(r.dec.InputOffset())
+	for i < len(r.data) {
+		switch r.data[i] {
+		case ' ', '\t', '\n', '\r', ',', ':':
+			i++
+		default:
+			return i
+		}
+	}
+	return i
+}
+
+// token is the decoder's next token. The file ending before a value is
+// complete is an error here, since parseJSON reads only the one value.
+func (r *jsonReader) token() (json.Token, error) {
+	tok, err := r.dec.Token()
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return nil, errors.New("the file ends before the JSON value is complete")
+	}
+	return tok, err
+}
+
+func (r *jsonReader) value(depth int) (*core.Node, error) {
+	line := r.lines.At(r.start())
+	if depth > core.MaxDepth {
+		return nil, core.TooDeep(line)
+	}
+	tok, err := r.token()
+	if err != nil {
+		return nil, err
+	}
+	switch t := tok.(type) {
+	case json.Delim:
+		if t == '{' {
+			return r.object(line, depth)
+		}
+		return r.array(line, depth)
+	case string:
+		return &core.Node{Text: t, Line: line}, nil
+	case json.Number:
+		return &core.Node{Type: core.TypeNumber, Text: string(t), Line: line}, nil
+	case bool:
+		return &core.Node{Type: core.TypeBool, Text: strconv.FormatBool(t), Line: line}, nil
+	default: // nil, the JSON null
+		return &core.Node{Type: core.TypeNull, Text: "null", Line: line}, nil
+	}
+}
+
+func (r *jsonReader) object(line, depth int) (*core.Node, error) {
+	n := core.NewMapping(line)
+	for r.dec.More() {
+		keyLine := r.lines.At(r.start())
+		tok, err := r.token()
+		if err != nil {
+			return nil, err
+		}
+		key, _ := tok.(string) // Token returns only a string in key position
+		if _, dup := n.Field[key]; dup {
+			return nil, fmt.Errorf("line %d: key %s is repeated", keyLine, core.Quote(key))
+		}
+		v, err := r.value(depth + 1)
+		if err != nil {
+			return nil, err
+		}
+		n.Set(key, v)
+	}
+	_, err := r.token() // the closing }
+	return n, err
+}
+
+func (r *jsonReader) array(line, depth int) (*core.Node, error) {
+	n := &core.Node{Shape: core.Sequence, Line: line}
+	for r.dec.More() {
+		v, err := r.value(depth + 1)
+		if err != nil {
+			return nil, err
+		}
+		n.Items = append(n.Items, v)
+	}
+	_, err := r.token() // the closing ]
+	return n, err
+}

@@ -1284,7 +1284,7 @@ Each package has one job, and the domain types import nothing else:
 | `internal/engine` | decides which checks run and which are skipped |
 | `internal/protocol` | runs a check program and turns its exit code into a verdict |
 | `internal/rule` | evaluates a rule: runs its extractors, compares their values or evaluates its assert in CEL |
-| `internal/extract` | builds the extractors a rule names and reads their values from files |
+| `internal/extract` | builds the extractors a rule names and reads their values from files, one reader package beneath it for each kind |
 | `internal/provider` | the interface for running systems, and the reconciler model |
 | `internal/report` | the text, JUnit and SARIF outputs |
 | `internal/cli` | flags, wiring and exit codes |

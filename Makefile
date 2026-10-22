@@ -57,12 +57,12 @@ FUZZMINIMIZETIME ?= 100x
 # Each fuzz target as package:Name. `go test -fuzz` takes one target per run.
 FUZZ_TARGETS := ./internal/config:FuzzParse ./internal/protocol:FuzzMessage \
                 ./internal/report:FuzzJUnit ./internal/rule:FuzzAssert ./internal/report:FuzzSARIF \
-                ./internal/extract:FuzzPath ./internal/extract:FuzzYAML \
-                ./internal/extract:FuzzJSON ./internal/extract:FuzzTOML \
-                ./internal/extract:FuzzRegex ./internal/extract:FuzzExtract \
-                ./internal/extract:FuzzText ./internal/extract:FuzzNumber \
-                ./internal/extract:FuzzXPath ./internal/extract:FuzzXML \
-                ./internal/extract:FuzzINI ./internal/extract:FuzzProperties
+                ./internal/extract/core:FuzzPath ./internal/extract/yaml:FuzzYAML \
+                ./internal/extract/json:FuzzJSON ./internal/extract/toml:FuzzTOML \
+                ./internal/extract/core:FuzzRegex ./internal/extract/core:FuzzExtract \
+                ./internal/extract/text:FuzzText ./internal/extract/core:FuzzNumber \
+                ./internal/extract/xml:FuzzXPath ./internal/extract/xml:FuzzXML \
+                ./internal/extract/ini:FuzzINI ./internal/extract/properties:FuzzProperties
 
 .PHONY: check gate build tools lint fmt test cover slow fuzz mutation vuln dogfood public-dry release-dry image-dry ci-local ci-test tool-sums hooks clean
 
@@ -147,20 +147,22 @@ test:
 # on this machine than it can elsewhere logs a line with "narrowed: ", and
 # make slow shows it.
 SLOW_TESTS := ./internal/report:TestSARIFBoundsTheReviewersUpload \
-              ./internal/extract:TestFilterLimitsAtTheCheapestCost \
-              ./internal/extract:TestReplayMeasuredInputsAtFullSize \
-              ./internal/extract:TestMarkdownBoundsOnLargeInputs \
-              ./internal/extract:TestExcusedYAMLIsLinear \
-              ./internal/extract:TestMessagesQuoteAShortPartOfALargeFile \
-              ./internal/extract:TestFilterReadsALargeNumberOnce \
-              ./internal/extract:TestXMLValueLimitAtItsSize \
-              ./internal/extract:TestXMLComparisonsStopAtTheFilterLimitAtItsSize \
-              ./internal/extract:TestXMLDeclarationsLookAtALargeFileOnce \
-              ./internal/extract:TestGitAgreesWithGitConfig \
-              ./internal/extract:TestGitConfigReadsNoRepositoryAround \
-              ./internal/extract:TestINIValueLimitAtItsSize \
-              ./internal/extract:TestReplayINIShapesAtFullSize \
-              ./internal/extract:TestPHPDeepReferenceCopiesItsTextOnce
+              ./internal/extract/core:TestFilterLimitsAtTheCheapestCost \
+              ./internal/extract/toml:TestReplayMeasuredInputsAtFullSize \
+              ./internal/extract/yaml:TestReplayMeasuredInputsAtFullSize \
+              ./internal/extract/text:TestMarkdownBoundsOnLargeInputs \
+              ./internal/extract/yaml:TestExcusedYAMLIsLinear \
+              ./internal/extract/core:TestMessagesQuoteAShortPartOfALargeFile \
+              ./internal/extract/core:TestFilterReadsALargeNumberOnce \
+              ./internal/extract/xml:TestXMLValueLimitAtItsSize \
+              ./internal/extract/xml:TestXMLComparisonsStopAtTheFilterLimitAtItsSize \
+              ./internal/extract/xml:TestXMLDeclarationsLookAtALargeFileOnce \
+              ./internal/extract/ini:TestGitAgreesWithGitConfig \
+              ./internal/extract/ini:TestGitConfigReadsNoRepositoryAround \
+              ./internal/extract/core:TestINIValueLimitAtItsSize \
+              ./internal/extract/ini:TestReplayINIShapesAtFullSize \
+              ./internal/extract/properties:TestReplayPropertiesShapesAtFullSize \
+              ./internal/extract/ini:TestPHPDeepReferenceCopiesItsTextOnce
 slow:
 	@for t in $(SLOW_TESTS); do \
 		pkg=$${t%%:*}; name=$${t##*:}; \
@@ -171,8 +173,12 @@ slow:
 		  { echo "make slow: $$name did not pass in $$pkg; it is skipped there, or SLOW_TESTS names a test that does not exist" >&2; exit 1; }; \
 	done
 
+# The total leaves out the packages named like httptest, extracttest and
+# coretest: only tests import them, and their failure branches run only
+# when a test fails. Gremlins leaves them out too (.gremlins.yaml).
 cover: test
-	@total=$$($(GO) tool cover -func=coverage.out | awk '/^total:/ {sub("%","",$$3); print $$3}'); \
+	@grep -vE '^[^:]*test/[^/:]*\.go:' coverage.out > coverage.product.out; \
+	total=$$($(GO) tool cover -func=coverage.product.out | awk '/^total:/ {sub("%","",$$3); print $$3}'); \
 	echo "coverage $$total% (minimum $(COVERAGE_MIN)%)"; \
 	awk -v t=$$total -v m=$(COVERAGE_MIN) 'BEGIN { exit !(t >= m) }'
 
@@ -280,4 +286,4 @@ tool-sums:
 	scripts/tool-sums.sh
 
 clean:
-	rm -rf errata bin coverage.out public dist
+	rm -rf errata bin coverage.out coverage.product.out public dist
