@@ -5,8 +5,6 @@
 # elsewhere (the exported public tree has no .git). Never dependency sources
 # such as a module cache inside the project directory. No file at all means
 # the check found nothing to test, which is unknown (exit 2), not a pass.
-# Inline code is not a link: `[value 1](1)` shows the syntax and links nothing,
-# so each code span is removed before the links are read.
 markdown_files() {
     if [ -e .git ]; then
         git ls-files --cached --others --exclude-standard -- '*.md' ':!:*/testdata/*'
@@ -17,7 +15,7 @@ markdown_files() {
 [ -n "$(markdown_files)" ] || { echo "no Markdown files to check"; exit 2; }
 bad=$(markdown_files | while read -r f; do
   dir=$(dirname "$f")
-  sed 's/`[^`]*`//g' "$f" | grep -o '\]([^)#]*' | sed 's/^](//' | grep -v -e '^[a-z][a-z]*:' -e '^$' |
+  grep -o '\]([^)#]*' "$f" | sed 's/^](//' | grep -v -e '^[a-z][a-z]*:' -e '^$' |
   while read -r target; do
     [ -e "$dir/$target" ] || echo "$f: $target"
   done

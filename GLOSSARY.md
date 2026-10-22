@@ -18,16 +18,10 @@ gap, not a reason.
 **Verdict.** The result of a check that ran: true, false or unknown. A verdict says whether the
 claim holds. It is not the same as an observation, which only says that a difference exists.
 
-**Unknown.** The verdict of a check that could not evaluate. A program check is unknown when its
-program crashed, did not finish in time, or could not be found. A rule is unknown when an extractor
-could not read its file, reached a limit such as the file size or the regex time, or found no value
-while `allow_empty` does not list it. A rule is also unknown when an extractor returned a not
-literal value while `skip_not_literal` does not list it. An agree rule is also unknown when it has
-no value at all, or one value while no extractor that `allow_empty` lists came back empty. An assert
-rule is also unknown when its expression could not decide: an error anywhere in the expression while
-it ran, or its cost or time limit reached. The claim was not shown false, so an unknown is not an
-erratum. It still fails the run, because a suite that passes on what it could not test passes on a
-subset. Do not call it an error.
+**Unknown.** The verdict of a check that could not evaluate: its program crashed, did not finish in
+time, or could not be found, or an extractor found no value. The claim was not shown false, so an unknown is not an erratum. It
+still fails the run, because a suite that passes on what it could not test passes on a subset. Do
+not call it an error.
 
 **Errata.** The output of a run: the claims its checks showed to be false. One of them is an
 erratum. A run that ends with an unknown and no errata still fails.
@@ -88,15 +82,8 @@ relate: all equal, or a CEL expression that must hold.
 **Program check.** A check the user writes as a program, run through the check protocol. Every check
 is either a rule or a program check. Do not call it a script, an exec check or a command check.
 
-**Extractor.** The part of a rule that gets values from one place. A YAML path, an XPath into an
-XML file, a key in an INI or properties file, a regular expression capture, a sentence of Markdown
-prose, an image digest, a field on a live object.
-
-**Not literal.** A value a file only computes, such as `E_ALL` in php.ini, which PHP reads as a
-number, or `{posargs}` in tox.ini. Its text is what the file wrote, not what the file means, so a
-rule never compares it. A rule that lists the extractor in `skip_not_literal` leaves such values
-out; any other rule with one is unknown. The `ini` extractor marks them, and `properties` in a
-template file.
+**Extractor.** The part of a rule that gets values from one place. A YAML path, a JSON path, a
+regular expression capture, an image digest, a field on a live object.
 
 **Check protocol.** The way errata runs a program check. errata runs the
 program and reads its result. The program can be in any language.

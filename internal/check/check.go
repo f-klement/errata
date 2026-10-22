@@ -22,18 +22,7 @@ const (
 	ScopeApplied Scope = "applied"
 )
 
-// known reports whether s is one of the three scopes.
-func (s Scope) known() bool {
-	switch s {
-	case ScopeRepo, ScopeLive, ScopeApplied:
-		return true
-	default:
-		return false
-	}
-}
-
-// Check is one test of one claim. It is a program check when Run is set and a
-// rule when Rule is set; Validate refuses both and neither.
+// Check is one test of one claim.
 type Check struct {
 	ID     string
 	Reason string
@@ -42,14 +31,7 @@ type Check struct {
 	// so a path with spaces needs no quoting.
 	Run     []string
 	Timeout time.Duration
-	Rule    *Rule
-	// At is where the check is written: the config file and the line its
-	// entry starts on. The loader sets it; a line of 0 is not known.
-	At Location
 }
-
-// IsRule reports whether c is a rule rather than a program check.
-func (c Check) IsRule() bool { return c.Rule != nil }
 
 var idPattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 
@@ -63,14 +45,13 @@ func (c Check) Validate() error {
 	if strings.TrimSpace(c.Reason) == "" {
 		errs = append(errs, errors.New("reason is required: say why the check exists and what breaks without it"))
 	}
-	if !c.Scope.known() {
+	switch c.Scope {
+	case ScopeRepo, ScopeLive, ScopeApplied:
+	default:
 		errs = append(errs, fmt.Errorf("scope %q must be one of repo, live, applied", c.Scope))
 	}
-	switch {
-	case c.Rule != nil:
-		errs = append(errs, c.Rule.validate(c)...)
-	case len(c.Run) == 0:
-		errs = append(errs, errors.New("run or extract is required: a program check has run, a rule has extract"))
+	if len(c.Run) == 0 {
+		errs = append(errs, errors.New("run is required"))
 	}
 	if c.Timeout < 0 {
 		errs = append(errs, errors.New("timeout must not be negative"))
@@ -103,11 +84,6 @@ type Result struct {
 	Message  string
 	Gap      string
 	Duration time.Duration
-	// Extracted holds the raw values a rule evaluated, one entry per
-	// extractor that ran without an error, in the order the rule ran them.
-	// Rule.Normalized gives the form they were compared in. A program check
-	// leaves it empty.
-	Extracted []Extracted
 }
 
 // Skipped reports whether the check did not run.

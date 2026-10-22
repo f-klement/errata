@@ -62,40 +62,6 @@ func TestNewUsesTheCheckProtocol(t *testing.T) {
 	}
 }
 
-type value string
-
-func (v value) Extract(string) ([]check.Value, error) {
-	return []check.Value{{Text: string(v), At: check.Location{File: "f.yaml", Line: 1}}}, nil
-}
-
-func agreeing(id string, a, b value) check.Check {
-	return check.Check{ID: id, Scope: check.ScopeRepo, Rule: &check.Rule{
-		Extractors: []check.NamedExtractor{{Name: "a", Extractor: a}, {Name: "b", Extractor: b}},
-		Agree:      []string{"a", "b"},
-	}}
-}
-
-// One run holds program checks and rules: New sends each to its runner, and
-// the report has one result per check and one coverage count.
-func TestNewRunsRulesAndProgramChecks(t *testing.T) {
-	e := New(t.TempDir(), nil)
-	rep := e.Execute(context.Background(), []check.Check{
-		{ID: "program", Scope: check.ScopeRepo, Run: []string{"false"}},
-		agreeing("agrees", "x", "x"),
-		agreeing("differs", "x", "y"),
-		{ID: "live-program", Scope: check.ScopeLive, Run: []string{"true"}},
-	})
-	want := []check.Verdict{check.VerdictFalse, check.VerdictTrue, check.VerdictFalse, ""}
-	for i, res := range rep.Results {
-		if res.Verdict != want[i] {
-			t.Errorf("%s: verdict %q, want %q (%s)", res.Check.ID, res.Verdict, want[i], res.Message)
-		}
-	}
-	if r, s := rep.Coverage(); r != 3 || s != 1 {
-		t.Fatalf("coverage = ran %d skipped %d, want 3 and 1", r, s)
-	}
-}
-
 // For any checks and providers: one result per check, in input order, and a
 // check is skipped exactly when the providers cannot reach its scope.
 func TestPropertyOneResultPerCheckInOrder(t *testing.T) {

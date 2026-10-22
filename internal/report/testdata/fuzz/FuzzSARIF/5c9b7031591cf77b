@@ -1,8 +1,0 @@
-go test fuzz v1
-string("\xb1")
-string("\xff")
-string("0")
-string("0")
-string("0")
-int(2)
-byte('\f')

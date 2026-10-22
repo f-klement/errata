@@ -1,9 +1,9 @@
 # errata
 
 [![license](https://img.shields.io/badge/license-MIT-blue)](https://github.com/f-klement/errata/blob/main/LICENSE)
-[![release](https://img.shields.io/github/v/tag/f-klement/errata?sort=semver&label=release)](https://github.com/f-klement/errata/releases)
-[![docker hub](https://img.shields.io/docker/v/fklement/errata?sort=semver&label=docker%20hub&logo=docker&cacheSeconds=3600)](https://hub.docker.com/r/fklement/errata/tags)
-[![docker pulls](https://img.shields.io/docker/pulls/fklement/errata?cacheSeconds=21600)](https://hub.docker.com/r/fklement/errata)
+[![release](https://img.shields.io/github/v/tag/f-klement/errata?label=release)](https://github.com/f-klement/errata/releases)
+[![docker hub](https://img.shields.io/docker/v/fklement/errata?sort=semver&label=docker%20hub&logo=docker)](https://hub.docker.com/r/fklement/errata/tags)
+[![docker pulls](https://img.shields.io/docker/pulls/fklement/errata)](https://hub.docker.com/r/fklement/errata)
 [![Ko-fi](https://img.shields.io/badge/Ko--fi-buy%20me%20a%20coffee-FF5E5B?logo=kofi&logoColor=white)](https://ko-fi.com/fklement)
 
 Like errata or find it useful? Offer me a coffee. All features are free either way.
@@ -130,7 +130,6 @@ CRITICAL vulnerability turns up in the last release.
 |---|---|
 | `latest` | the newest release |
 | `X.Y.Z` | one release |
-| `X.Y.Z-rc.N` | a release candidate, for trying a release before it ships; `latest` never points at one |
 
 ## Notes
 

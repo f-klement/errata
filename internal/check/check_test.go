@@ -28,7 +28,7 @@ func TestValidate(t *testing.T) {
 		{"trailing hyphen", func(c *Check) { c.ID = "docs-" }, "lower-case words"},
 		{"double hyphen", func(c *Check) { c.ID = "a--b" }, "lower-case words"},
 		{"unknown scope", func(c *Check) { c.Scope = "cluster" }, `scope "cluster"`},
-		{"no run", func(c *Check) { c.Run = nil }, "run or extract is required"},
+		{"no run", func(c *Check) { c.Run = nil }, "run is required"},
 		{"negative timeout", func(c *Check) { c.Timeout = -time.Second }, "timeout must not be negative"},
 		{"zero timeout", func(c *Check) { c.Timeout = 0 }, ""},
 	}
@@ -55,7 +55,7 @@ func TestValidateReportsEveryProblem(t *testing.T) {
 	if err == nil {
 		t.Fatal("empty check validated")
 	}
-	for _, want := range []string{"id", "reason", "scope", "run or extract"} {
+	for _, want := range []string{"id", "reason", "scope", "run"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not mention %s", err, want)
 		}

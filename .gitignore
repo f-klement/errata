@@ -8,5 +8,3 @@ coverage.out
 /public
 /.gopath
 /.cache
-# rapid writes a failing case here; it is a local repro, not a fixture
-**/testdata/rapid/

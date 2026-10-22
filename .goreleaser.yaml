@@ -36,11 +36,7 @@ kos:
     # from, not the image's working directory, and setting it to /repo broke
     # the v0.1.0 release. ko cannot set an image working directory, so the
     # docs run the image with `docker run -w /repo`.
-    # latest only for a final release. A release candidate such as
-    # v0.2.0-rc.1 has a Prerelease of rc.1, so the second tag renders empty,
-    # and GoReleaser drops an empty tag before ko pushes (removeEmpty in its
-    # ko pipe). The candidate gets its version tag alone.
-    tags: ["{{ .Version }}", "{{ if not .Prerelease }}latest{{ end }}"]
+    tags: ["{{ .Version }}", latest]
     # Root, because the image is mostly a CI job image: GitHub Actions and
     # GitLab mount a workspace owned by the runner's user, which a non root
     # container cannot write. `docker run --user` still narrows it.
@@ -82,6 +78,3 @@ release:
   github:
     owner: f-klement
     name: errata
-  # A tag with a semver prerelease part, such as v0.2.0-rc.1, makes a GitHub
-  # prerelease, which GitHub does not show as the latest release.
-  prerelease: auto

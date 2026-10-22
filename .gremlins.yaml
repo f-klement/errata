@@ -8,9 +8,6 @@ unleash:
     # expression always reads as not covered even when tests run that arm.
     mutant-coverage: 85
   integration: false
-  # Built with this tag, a test too slow to rerun for every mutant skips, and
-  # make slow runs it once instead (Makefile, SLOW_TESTS).
-  tags: mutation
   # Each mutant's time limit is this multiple of the baseline test time. The
   # protocol tests run real subprocesses, so on a loaded machine the default
   # turns slow mutants into timeouts, which count against mutant coverage.
@@ -18,9 +15,6 @@ unleash:
   workers: 2
   exclude-files:
     - cmd/errata/main.go
-    # The heap watchdog every test binary links under the mutation tag: a
-    # mutant of it would only change when other mutants stop.
-    - ^internal/heapcap/
     # Generated copies of the sources: make public-dry and make release-dry.
     - ^public/
     - ^dist/
