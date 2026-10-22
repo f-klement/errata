@@ -11,7 +11,7 @@ require (
 	github.com/rogpeppe/go-internal v1.16.0
 	github.com/spf13/cobra v1.10.2
 	github.com/theory/jsonpath v0.12.2
-	github.com/yuin/goldmark v1.8.6
+	github.com/yuin/goldmark/v2 v2.1.6
 	go.yaml.in/yaml/v2 v2.4.4
 	go.yaml.in/yaml/v3 v3.0.5
 	pgregory.net/rapid v1.3.0

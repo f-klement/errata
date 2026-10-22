@@ -8,7 +8,7 @@
 # or a toolchain that differs from the CI image's, so the two recipes cannot
 # drift apart.
 
-FROM golang:1.27.2-bookworm@sha256:5cf287a799e6b94384bad13d16b14904c531f51ba65792237e122ce42b392f61 AS build
+FROM golang:1.27.2-trixie@sha256:47667934874913a449b96faa7ef4777fa285d9ec29126ee80ed61c45b7cccf0e AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download

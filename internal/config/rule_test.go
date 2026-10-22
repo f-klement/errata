@@ -271,6 +271,25 @@ func TestParseRejectsRules(t *testing.T) {
 			head + ex + "  agree: [v]\n  skip_not_literal: " + strings.Repeat("x", 100) + "\n",
 			`skip_not_literal: [name]; "` + strings.Repeat("x", 64) + `"... is not accepted`,
 		},
+		// At maxQuotedKey, 64 bytes, a value is quoted whole and without
+		// "...": a string by its text, which its quotes take to 66 bytes of
+		// JSON, and any other value by its JSON. One byte more is cut.
+		"skip_not_literal as a string of 64 bytes": {
+			head + ex + "  agree: [v]\n  skip_not_literal: " + strings.Repeat("x", 64) + "\n",
+			`skip_not_literal: [name]; "` + strings.Repeat("x", 64) + `" is not accepted`,
+		},
+		"skip_not_literal as a string of 65 bytes": {
+			head + ex + "  agree: [v]\n  skip_not_literal: " + strings.Repeat("x", 65) + "\n",
+			`skip_not_literal: [name]; "` + strings.Repeat("x", 64) + `"... is not accepted`,
+		},
+		"skip_not_literal as a mapping of 64 bytes": {
+			head + ex + "  agree: [v]\n  skip_not_literal: {v: " + strings.Repeat("x", 56) + "}\n",
+			`skip_not_literal: [name]; {"v":"` + strings.Repeat("x", 56) + `"} is not accepted`,
+		},
+		"skip_not_literal as a mapping of 65 bytes": {
+			head + ex + "  agree: [v]\n  skip_not_literal: {v: " + strings.Repeat("x", 57) + "}\n",
+			`skip_not_literal: [name]; {"v":"` + strings.Repeat("x", 57) + `"... is not accepted`,
+		},
 		// The value as JSON is {"v":"xxx...é...}, and its byte 64 is inside
 		// é, so the cut falls before é rather than on half of it.
 		"skip_not_literal as a long mapping": {

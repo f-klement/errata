@@ -1,0 +1,44 @@
+# The README's two examples of a config that does not load, run with the
+# command the README shows. errata.yaml's check readme-load-errors-are-run
+# holds the README's commands and outputs equal to the exec lines and the
+# .txt files here. Run without -c, errata names the config by its absolute
+# path, which no example shows.
+cp staleness.yaml errata.yaml
+! exec errata check -c errata.yaml
+cmp stderr staleness.txt
+! stdout .
+
+cp pytest.yaml errata.yaml
+! exec errata check -c errata.yaml
+cmp stderr pytest.txt
+! stdout .
+
+-- staleness.yaml --
+checks:
+  - id: staleness-threshold
+    reason: >
+      The alert fires when no backup finished within the threshold. Below one interval it fires
+      between healthy runs; above two it stays quiet through a missed run.
+    scope: repo
+    extract:
+      schedule:  {yaml: {file: deploy/backup-cronjob.yaml, path: spec.schedule}}
+      threshold: {regex: {file: monitoring/backup-rules.yaml, pattern: 'for: (\S+)'}}
+    assert: |
+      duration(treshold[0]) >= cron_interval(schedule[0]) &&
+      duration(threshold[0]) <= cron_interval(schedule[0]) * 2
+-- staleness.txt --
+errata: load errata.yaml: checks[0]: check "staleness-threshold": assert: undeclared reference to 'treshold', at line 1 column 10 of the expression:
+    duration(treshold[0]) >= cron_interval(schedule[0]) &&
+             ^
+-- pytest.yaml --
+checks:
+  - id: pytest-agrees
+    reason: The CI job passes the options pytest.ini sets.
+    scope: repo
+    extract:
+      opts: {ini: {file: pytest.ini, section: pytest, key: addopts}}
+      ci: {yaml: {file: .gitlab-ci.yml, path: test.variables.PYTEST_ADDOPTS}}
+    agree: [opts, ci]
+    skip_not_literal: [opts]
+-- pytest.txt --
+errata: load errata.yaml: checks[0]: check "pytest-agrees": skip_not_literal names "opts", whose kind of extractor, ini, plain dialect on pytest.ini, returns only literal values, so it has nothing to leave out

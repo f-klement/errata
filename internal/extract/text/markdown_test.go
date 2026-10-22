@@ -2,40 +2,52 @@ package text
 
 import (
 	"fmt"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/yuin/goldmark"
-	"github.com/yuin/goldmark/ast"
-	"github.com/yuin/goldmark/extension"
-	"github.com/yuin/goldmark/text"
+	"github.com/yuin/goldmark/v2/ast"
+	"github.com/yuin/goldmark/v2/extension"
+	"github.com/yuin/goldmark/v2/parser"
+	"github.com/yuin/goldmark/v2/text"
 
 	"github.com/f-klement/errata/internal/extract/core"
 	"github.com/f-klement/errata/internal/extract/extracttest"
 )
 
 // treeString writes the tree from n with every offset in it: each node's
-// kind and position, a text node's segment and line break, and a block's
-// lines. Two parses that agree on it agree on every offset errata reads.
+// kind and position, a text node's index and line break, a code span's and
+// an inline HTML's indices, an autolink's label, and a block's lines. Two
+// parses that agree on it agree on every offset errata reads.
 func treeString(n ast.Node, src []byte) string {
 	var b strings.Builder
+	segments := func(segs []text.Segment) {
+		for _, s := range segs {
+			fmt.Fprintf(&b, " %d:%d+%d", s.Start, s.Stop, s.Padding)
+		}
+	}
 	var walk func(n ast.Node, depth int)
 	walk = func(n ast.Node, depth int) {
 		fmt.Fprintf(&b, "%*s%s@%d", depth, "", n.Kind(), n.Pos())
 		switch t := n.(type) {
 		case *ast.Text:
-			fmt.Fprintf(&b, " %d:%d soft=%v hard=%v raw=%v", t.Segment.Start, t.Segment.Stop, t.SoftLineBreak(), t.HardLineBreak(), t.IsRaw())
+			fmt.Fprintf(&b, " %d:%d soft=%v hard=%v", t.Value.Index().Start, t.Value.Index().Stop, t.SoftLineBreak(), t.HardLineBreak())
+		case *ast.CodeSpan:
+			fmt.Fprintf(&b, " %v %q", t.Value.Indices(), t.Value.Bytes(src))
+		case *ast.RawHTML:
+			fmt.Fprintf(&b, " %v", t.Value.Indices())
 		case *ast.AutoLink:
-			fmt.Fprintf(&b, " %q", t.Label(src))
+			fmt.Fprintf(&b, " %v", t.Label.Index())
+		case *ast.CodeBlock:
+			segments(t.Value.Segments())
 		case *ast.HTMLBlock:
-			fmt.Fprintf(&b, " closure %d:%d", t.ClosureLine.Start, t.ClosureLine.Stop)
+			fmt.Fprintf(&b, " %s", t.HTMLBlockKind)
+			segments(t.Value.Segments())
 		}
-		if n.Type() == ast.TypeBlock {
-			for i := range n.Lines().Len() {
-				s := n.Lines().At(i)
-				fmt.Fprintf(&b, " %d:%d+%d", s.Start, s.Stop, s.Padding)
-			}
+		if bn, ok := n.(ast.BlockNode); ok {
+			segments(bn.Source())
 		}
 		b.WriteString("\n")
 		for c := n.FirstChild(); c != nil; c = c.NextSibling() {
@@ -68,9 +80,77 @@ func TestGuardedParseIsGoldmarks(t *testing.T) {
 			t.Fatal(err)
 		}
 		// doc.src is the file as both parses read it, its front matter blanked.
-		want := treeString(goldmark.DefaultParser().Parse(text.NewReader(doc.src)), doc.src)
+		want := treeString(parser.New().Parse(doc.src), doc.src)
 		if got := treeString(doc.root, doc.src); got != want {
 			t.Errorf("%q:\nguarded\n%s\ngoldmark\n%s", s, got, want)
+		}
+	}
+}
+
+// The parsers errata wraps are goldmark's CommonMark, each type at its
+// priority. goldmark's list is in the options parser.CommonMark gives, which
+// are opaque, so the test reads them by reflection: a list of prioritized
+// values in each option's one field. The planted break was the list without
+// the HTML block parser, and then the emphasis parser at 600.
+func TestCommonMarkParsersAreGoldmarks(t *testing.T) {
+	list := func(v reflect.Value) []string {
+		var out []string
+		for i := range v.Len() {
+			out = append(out, fmt.Sprintf("%v %d", v.Index(i).Field(0).Elem().Type(), v.Index(i).Field(1).Int()))
+		}
+		return out
+	}
+	var goldmarks []string
+	for _, o := range parser.CommonMark.ParserOptions(&parser.Config{}) {
+		goldmarks = append(goldmarks, list(reflect.ValueOf(o).Elem().Field(0))...)
+	}
+	errata := slices.Concat(list(reflect.ValueOf(commonMarkBlocks)), list(reflect.ValueOf(commonMarkInlines)),
+		list(reflect.ValueOf(commonMarkTransformers)))
+	if !slices.Equal(errata, goldmarks) {
+		t.Errorf("errata's\n%s\ngoldmark's\n%s", strings.Join(errata, "\n"), strings.Join(goldmarks, "\n"))
+	}
+}
+
+// goldmark matches a pair of runs of * on one line at once and returns the
+// emphasis whole: twenty nodes nested for runs of forty. The guard counts
+// each, so the tree holds no more nodes than it counted. The planted break,
+// the emphasis counted as one node, counted 9 for a tree of 23.
+func TestGuardCountsEmphasisMatchedAtOnce(t *testing.T) {
+	src := strings.Repeat("*", 40) + "a" + strings.Repeat("*", 40) + "\n"
+	doc, err := parseMarkdown("f", []byte(src), core.DefaultMaxBytes, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := countTree(doc.root); n != 23 || int64(n) > doc.nodes {
+		t.Errorf("the tree holds %d nodes and the guard counted %d", n, doc.nodes)
+	}
+}
+
+// A code span's prose is its text less the space CommonMark strips from
+// each end when both ends have one, so a space after the span maps to the
+// file's space after it. A span with a space at one end only keeps it. The
+// planted breaks: never stripping (the space maps to offset 5, in the span),
+// stripping always (the second span loses its text), and either end moved
+// the other way (a backtick in the prose).
+func TestProseOfACodeSpan(t *testing.T) {
+	for _, c := range []struct {
+		src, text string
+		at, from  int
+	}{
+		{"a ` b ` c", "a b c", 3, 7},
+		{"x` a`y", "x ay", 1, 2},
+		{"` a\nb ` c", "a b c", 3, 7},
+	} {
+		doc, err := parseMarkdown("f", []byte(c.src), core.DefaultMaxBytes, time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p, err := doc.prose(false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(p.text) != c.text || p.offset(c.at) != c.from {
+			t.Errorf("%q: prose %q, offset(%d) %d, want %q and %d", c.src, p.text, c.at, p.offset(c.at), c.text, c.from)
 		}
 	}
 }
@@ -122,9 +202,24 @@ func markdownBounds(t *testing.T, large bool) {
 		{name: "5000 runs", body: runs(5000)},
 		{name: "two paragraphs of 3000 runs", body: runs(3000) + "\n" + runs(3000)},
 		{name: "5001 runs", body: "x\n\n" + runs(5001), refused: "README.md: line 3: a paragraph holds more than 5000 runs of * and _, the limit" + tail},
-		// Runs that close nothing, which goldmark matched against every run
+		// Runs that close nothing, which goldmark v1 matched against every run
 		// before them: 256 KB took over a minute.
-		{name: "100000 runs that match nothing", body: strings.Repeat("*a_ ", 100_000), refused: "README.md: line 1: a paragraph holds more than 5000 runs of * and _, the limit" + tail, bound: time.Second},
+		{name: "5001 runs that match nothing", body: strings.Repeat("*a_ ", 2501), refused: "README.md: line 1: a paragraph holds more than 5000 runs of * and _, the limit" + tail, bound: time.Second},
+		// The bytes goldmark scans for runs that close emphasis: max_bytes
+		// times two. goldmark v2 looks from each * that opens to the end of
+		// its line, so runs that close nothing cost the rest of the line
+		// each: 2500 of them on a line of 400 KB took 2.2 s under the run
+		// limit alone. Four runs that open on a line of 399 bytes, as
+		// goldmark trims its end, scan 996 bytes, the limit at 498; an
+		// emphasis matched at once scans up to its closing run, three bytes
+		// more. The planted breaks: >= in
+		// place of > refuses the case at the limit, and either count left
+		// out reads the case over it.
+		{name: "scans at the limit", body: strings.Repeat("*"+strings.Repeat("a", 98)+" ", 4) + "\n", limit: 498},
+		{name: "an emphasis more", body: "x\n\n*b*\n" + strings.Repeat("*"+strings.Repeat("a", 98)+" ", 4) + "\n", limit: 498,
+			refused: "README.md: line 4: the Markdown parse scans more than 996 bytes for runs of * and _ that close emphasis, the limit, 2 for every byte of max_bytes" + tail},
+		{name: "emphasis matched at once along a line", body: strings.Repeat("*ab* ", 20_000)},
+		{name: "100000 runs that match nothing", body: strings.Repeat("*a_ ", 100_000), refused: "README.md: line 1: the Markdown parse scans more than 67108864 bytes for runs of * and _ that close emphasis, the limit, 2 for every byte of max_bytes" + tail, bound: time.Second, large: true},
 		// Link reference definitions times the paragraph's lines.
 		{name: "3162 definitions", body: defs(3162)},
 		// 3125 definitions in 3200 lines multiply to the limit exactly, and
@@ -174,14 +269,17 @@ func markdownBounds(t *testing.T, large bool) {
 			refused: "README.md: parsing the Markdown took more than 100ms, the limit" + tail, bound: time.Second},
 		{name: "unclosed link destinations", body: strings.Repeat("[a](<b ", 50_000), parse: 100 * time.Millisecond,
 			refused: "README.md: parsing the Markdown took more than 100ms, the limit" + tail, bound: time.Second},
-		// One tag whose attributes run over a line of 16 MiB: one match of a
-		// regular expression, which reads through the guard. The planted
-		// break, the parser given the block's own reader, took 14 s; at a
-		// million attributes, 4 MiB, 1.3 s, and 26 s under -race.
+		// One tag whose attributes run over a line of 16 MiB. goldmark v1
+		// matched it with a regular expression, which took 14 s, and errata
+		// read it through a reader that looked at the guard. goldmark v2
+		// scans the attributes by hand in one pass, about 0.07 s for 4 MiB on
+		// the build node: the guard looks before and after that call, and
+		// the parse ends within the bound. The smaller tag's time limit is
+		// well under its scan, so the parse always runs past it.
 		{name: "a tag of four million attributes", body: "z <x" + strings.Repeat(" a=b", 4<<20), parse: 100 * time.Millisecond,
 			refused: "README.md: parsing the Markdown took more than 100ms, the limit" + tail, bound: time.Second, large: true},
-		{name: "a tag of a million attributes", body: "z <x" + strings.Repeat(" a=b", 1<<20), parse: 100 * time.Millisecond,
-			refused: "README.md: parsing the Markdown took more than 100ms, the limit" + tail, bound: time.Second},
+		{name: "a tag of a million attributes", body: "z <x" + strings.Repeat(" a=b", 1<<20), parse: 10 * time.Millisecond,
+			refused: "README.md: parsing the Markdown took more than 10ms, the limit" + tail, bound: time.Second},
 		// The search reuses the regex extractor's, its time limit and its
 		// cap on values with it; TestExtractValueLimit reaches the cap in
 		// make test.
@@ -240,8 +338,8 @@ func quoteLines(depth, n int) string {
 // its children, which read the table as nothing.
 func TestProseRefusesABlockItDoesNotKnow(t *testing.T) {
 	src := []byte("x\n\n| a | b |\n|---|---|\n| CI runs on node | builder |\n\nafter\n")
-	md := goldmark.New(goldmark.WithExtensions(extension.Table))
-	doc := &markdownDoc{src: src, root: md.Parser().Parse(text.NewReader(src)), maxPieces: 1000}
+	md := parser.New(parser.WithExtensions(extension.TableParser))
+	doc := &markdownDoc{src: src, root: md.Parse(src), maxPieces: 1000}
 	_, err := doc.prose(false)
 	want := "line 3: a block of kind Table, which the text extractor does not read"
 	if err == nil || err.Error() != want {

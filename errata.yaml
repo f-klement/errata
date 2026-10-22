@@ -60,3 +60,18 @@ checks:
       embedded: {regex: {file: internal/rule/zoneinfo.version, pattern: '^(\w+)$'}}
       readme: {regex: {file: README.md, pattern: '\(release (\w+) in this version\)'}}
     agree: [embedded, readme]
+
+  - id: readme-load-errors-are-run
+    reason: >
+      The README shows the errors errata prints for two configs that do not load, each under the
+      command that prints it. internal/cli/testdata/script/readme_load_errors.txtar runs those
+      commands on those configs and compares what errata prints. A README example that differs
+      from the script's shows output nobody ran: the README once showed errata.yaml, the name
+      only -c prints, where its plain errata check prints the absolute path.
+    scope: repo
+    extract:
+      readme_commands: {regex: {file: README.md, pattern: '^\$ (errata check[^\n]*)\nerrata: load '}}
+      readme_errors: {regex: {file: README.md, pattern: '^\$ errata check[^\n]*\n(errata: load [^\n]*(?:\n    [^\n]*)*)$'}}
+      script_commands: {regex: {file: internal/cli/testdata/script/readme_load_errors.txtar, pattern: '^! exec (errata check[^\n]*)\ncmp stderr \w+\.txt$'}}
+      script_errors: {regex: {file: internal/cli/testdata/script/readme_load_errors.txtar, pattern: '^-- \w+\.txt --\n(errata: load [^\n]*(?:\n    [^\n]*)*)$'}}
+    assert: readme_commands == script_commands && readme_errors == script_errors

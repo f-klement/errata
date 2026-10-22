@@ -323,8 +323,14 @@ func TestGitAgreesWithGitConfig(t *testing.T) {
 	// errata reads values as git 2.45 and later do. Against older git the
 	// files hold no tab or carriage return that could land outside quotes
 	// in a value (changesInOldGit), and the comparison stays exact. make
-	// slow shows the narrowed line.
+	// slow shows the narrowed line. In a GitLab job the comparison must be
+	// exact, so old git there fails: the CI image carries a newer one
+	// (ci/image/Dockerfile), and an image that lost it would otherwise
+	// narrow the comparison with only a log line to say so.
 	old := !gitKeepsWhitespace(t, git)
+	if old && os.Getenv("GITLAB_CI") == "true" {
+		t.Fatal("git is older than 2.45 in a GitLab job; the CI image must carry 2.45 or later (ci/image/Dockerfile), or this comparison is narrowed")
+	}
 	if old {
 		t.Log("narrowed: git is older than 2.45, so no tab or carriage return outside quotes is drawn inside a value")
 	}

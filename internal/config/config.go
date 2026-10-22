@@ -312,26 +312,34 @@ const maxQuotedKey = 64
 
 // clip is s, a value as JSON, cut at maxQuotedKey bytes with "..." when it
 // was cut. A JSON string is cut as text and quoted again, so the quote closes
-// and no escape is cut in two; any other value is cut on a rune boundary.
+// and no escape is cut in two; any other value is cut on a rune boundary. A
+// string whose text fits is quoted whole, with no "...", although its quotes
+// take its JSON over the limit.
 func clip(s string) string {
 	if len(s) <= maxQuotedKey {
 		return s
 	}
 	var text string
 	if json.Unmarshal([]byte(s), &text) == nil {
-		return strconv.Quote(cutBytes(text)) + "..."
+		cut, more := cutBytes(text)
+		if !more {
+			return strconv.Quote(text)
+		}
+		return strconv.Quote(cut) + "..."
 	}
-	return cutBytes(s) + "..."
+	cut, _ := cutBytes(s)
+	return cut + "..."
 }
 
-// cutBytes is s cut at maxQuotedKey bytes, on a rune boundary.
-func cutBytes(s string) string {
+// cutBytes is s cut at maxQuotedKey bytes, on a rune boundary, and whether
+// that cut anything.
+func cutBytes(s string) (string, bool) {
 	if len(s) <= maxQuotedKey {
-		return s
+		return s, false
 	}
 	end := maxQuotedKey
 	for end > 0 && !utf8.RuneStart(s[end]) {
 		end--
 	}
-	return s[:end]
+	return s[:end], true
 }

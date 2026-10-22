@@ -3,14 +3,14 @@ package text
 import (
 	"bytes"
 	"fmt"
-	"regexp"
+	"slices"
 	"strings"
 	"time"
 
-	"github.com/yuin/goldmark/ast"
-	"github.com/yuin/goldmark/parser"
-	"github.com/yuin/goldmark/text"
-	"github.com/yuin/goldmark/util"
+	"github.com/yuin/goldmark/v2/ast"
+	"github.com/yuin/goldmark/v2/parser"
+	"github.com/yuin/goldmark/v2/text"
+	"github.com/yuin/goldmark/v2/util"
 
 	"github.com/f-klement/errata/internal/extract/core"
 )
@@ -25,12 +25,11 @@ import (
 // quadratic in the file on several shapes, unclosed comments and link
 // destinations, deep block quotes and long lists among them, and nothing
 // outside it can stop it. So errata gives it parsers that wrap goldmark's own
-// and look at a guard on every call, and a reader that looks at the guard as
-// a regular expression reads it. The guard stops the parse, by a panic that
-// parseMarkdown recovers, once it has run past its time limit or past one of
-// the bounds below. Between two looks at the guard, goldmark does at most one
-// pass over a paragraph, one set of regular expressions over a line, or one
-// of the bounded costs the bounds below name.
+// and look at a guard on every call. The guard stops the parse, by a panic
+// that parseMarkdown recovers, once it has run past its time limit or past
+// one of the bounds below. Between two looks at the guard, goldmark does at
+// most one pass over a paragraph or one of the bounded costs the bounds below
+// name: it scans HTML and link destinations by hand, a byte at a time.
 const (
 	// markdownBytesPerNode is how many bytes of max_bytes allow one node,
 	// counted as the guard counts them: three for each inline node, two for
@@ -46,11 +45,27 @@ const (
 	markdownBytesPerNode = 4
 
 	// maxDelimiters is the most runs of * and _ one paragraph or heading may
-	// hold. goldmark matches each closing run against every run open before
-	// it, so a paragraph costs the square of its runs, some of it between
-	// two looks at the guard: 5000 runs take 0.5 s. The most in one
-	// paragraph of the real files measured is 797.
+	// hold. goldmark matches each closing run against the runs open before
+	// it, so a paragraph costs up to the square of its runs, some of it
+	// between two looks at the guard: the slowest of four shapes of 5000
+	// runs measured takes 0.11 s. The most in one paragraph of the real
+	// files measured is 797.
 	maxDelimiters = 5000
+
+	// markdownScanPerByte is how many bytes goldmark may scan for runs of *
+	// and _ that close emphasis, for each byte of max_bytes. goldmark looks
+	// from each run that opens to the end of its line for a run to close
+	// it, so runs that close nothing cost the square of their line: under
+	// maxDelimiters alone, 2500 of them on a line of 400 KB took 2.2 s, and
+	// lines of them at 32 MiB ran to the 30 s time limit. The guard counts
+	// the rest of the line for each run that may open and is left open, and
+	// the bytes up to the closing run for each emphasis matched at once. Of
+	// seven such shapes at 32 MiB, the slowest, a run that opens before ten
+	// that cannot close, over and over, is refused in 0.44 s on the build
+	// node. Of 3127 real files measured, the most is 168063 bytes, from a
+	// changelog of 1.6 MB, and the densest scans 0.62 bytes for each of
+	// its own.
+	markdownScanPerByte = 2
 
 	// maxDefinitionCopies bounds the link reference definitions at the start
 	// of a paragraph. goldmark takes each one out by copying the lines of
@@ -67,10 +82,10 @@ const (
 	markdownTimeLimit = 30 * time.Second
 
 	// maxHTMLLine is the longest line that may start or continue an HTML
-	// block. goldmark matches such a line against up to seven regular
-	// expressions, in calls the guard cannot stop: one of them took 20 s
-	// over a line of 32 MiB, and they take about 1 s over a line at the
-	// limit. The longest line of HTML in the real files measured is 1801
+	// block. goldmark scans such a line in calls the guard cannot stop: a
+	// tag of 32 MiB took 0.59 s, and 0.02 s at the limit. The limit dates
+	// from goldmark v1, whose regular expressions took 11 s over the same
+	// line. The longest line of HTML in the real files measured is 1801
 	// bytes.
 	maxHTMLLine = 1 << 20
 
@@ -108,26 +123,56 @@ func markdownTime(limit int64) time.Duration {
 	return markdownTimeLimit * time.Duration(limit) / core.DefaultMaxBytes
 }
 
-// markdownParser is goldmark's CommonMark parser with every block parser,
-// inline parser and paragraph transformer wrapped to look at the guard.
-var markdownParser = func() parser.Parser {
-	var blocks, inlines, transformers []util.PrioritizedValue
-	for _, v := range parser.DefaultBlockParsers() {
-		bp := v.Value.(parser.BlockParser)
-		blocks = append(blocks, util.Prioritized(guardedBlock{BlockParser: bp, html: bp == parser.NewHTMLBlockParser()}, v.Priority))
+// The parsers of goldmark's CommonMark, with their priorities: the list that
+// parser.CommonMark gives parser.New, which keeps it out of reach.
+// TestCommonMarkParsersAreGoldmarks holds these lists equal to it.
+var (
+	commonMarkBlocks = []util.PrioritizedValue[parser.BlockParser]{
+		util.Prioritized(parser.NewSetextHeadingParser(), 100),
+		util.Prioritized(parser.NewThematicBreakParser(), 200),
+		util.Prioritized(parser.NewListParser(), 300),
+		util.Prioritized(parser.NewListItemParser(), 400),
+		util.Prioritized(parser.NewCodeBlockParser(), 500),
+		util.Prioritized(parser.NewATXHeadingParser(), 600),
+		util.Prioritized(parser.NewFencedCodeBlockParser(), 700),
+		util.Prioritized(parser.NewBlockquoteParser(), 800),
+		util.Prioritized(parser.NewHTMLBlockParser(), 900),
+		util.Prioritized(parser.NewParagraphParser(), 1000),
 	}
-	for _, v := range parser.DefaultInlineParsers() {
-		var p parser.InlineParser = guardedInline{v.Value.(parser.InlineParser)}
+	commonMarkInlines = []util.PrioritizedValue[parser.InlineParser]{
+		util.Prioritized(parser.NewCodeSpanParser(), 100),
+		util.Prioritized(parser.NewLinkParser(), 200),
+		util.Prioritized(parser.NewAutoLinkParser(), 300),
+		util.Prioritized(parser.NewRawHTMLParser(), 400),
+		util.Prioritized(parser.NewEmphasisParser(), 500),
+	}
+	commonMarkTransformers = []util.PrioritizedValue[parser.ParagraphTransformer]{
+		util.Prioritized(parser.LinkReferenceParagraphTransformer, 100),
+	}
+)
+
+// markdownParser is goldmark's CommonMark parser with every block parser,
+// inline parser and paragraph transformer wrapped to look at the guard, in
+// place of goldmark's own, which WithDefaultParsers(false) leaves out.
+var markdownParser = func() parser.Parser {
+	var blocks []util.PrioritizedValue[parser.BlockParser]
+	var inlines []util.PrioritizedValue[parser.InlineParser]
+	var transformers []util.PrioritizedValue[parser.ParagraphTransformer]
+	for _, v := range commonMarkBlocks {
+		blocks = append(blocks, util.Prioritized[parser.BlockParser](guardedBlock{BlockParser: v.Value, html: v.Value == parser.NewHTMLBlockParser()}, v.Priority))
+	}
+	for _, v := range commonMarkInlines {
+		var p parser.InlineParser = guardedInline{v.Value}
 		if _, ok := v.Value.(parser.CloseBlocker); ok {
 			p = guardedCloser{p.(guardedInline)}
 		}
 		inlines = append(inlines, util.Prioritized(p, v.Priority))
 	}
-	for _, v := range parser.DefaultParagraphTransformers() {
-		transformers = append(transformers, util.Prioritized(guardedTransformer{v.Value.(parser.ParagraphTransformer)}, v.Priority))
+	for _, v := range commonMarkTransformers {
+		transformers = append(transformers, util.Prioritized[parser.ParagraphTransformer](guardedTransformer{v.Value}, v.Priority))
 	}
-	return parser.NewParser(parser.WithBlockParsers(blocks...), parser.WithInlineParsers(inlines...),
-		parser.WithParagraphTransformers(transformers...))
+	return parser.New(parser.WithDefaultParsers(false), parser.WithBlockParsers(blocks...),
+		parser.WithInlineParsers(inlines...), parser.WithParagraphTransformers(transformers...))
 }()
 
 // markdownDoc is a Markdown file parsed. Every node's offsets index src.
@@ -175,8 +220,8 @@ func parseMarkdown(file string, data []byte, limit int64, timeLimit time.Duratio
 		timeLimit: timeLimit,
 		maxNodes:  limit / markdownBytesPerNode,
 		maxGoOn:   limit / markdownBytesPerContinuation,
+		maxScan:   limit * markdownScanPerByte,
 	}
-	g.reader.g = g
 	defer func() {
 		if r := recover(); r != nil {
 			if _, ok := r.(stopParse); !ok {
@@ -186,12 +231,14 @@ func parseMarkdown(file string, data []byte, limit int64, timeLimit time.Duratio
 		}
 	}()
 	// A line holds at most two text nodes that the guard does not count with
-	// an inline node: the one that ends it, and a code span's. The document
-	// is one node more.
+	// an inline node: the one that ends it, and the one before that, after
+	// the line's last inline node, which goldmark starts at a < or another
+	// character for an inline parser that then makes no node. The document is
+	// one node more.
 	g.add(2*int64(bytes.Count(data, newline)) + 3)
 	pc := parser.NewContext()
 	pc.Set(guardKey, g)
-	doc.root = markdownParser.Parse(text.NewReader(data), parser.WithContext(pc))
+	doc.root = markdownParser.Parse(data, parser.WithContext(pc))
 	doc.nodes, doc.goOn = g.nodes, g.goOn
 	if err := checkDepth(doc.root, data); err != nil {
 		return nil, fmt.Errorf("%s: %w", file, err)
@@ -283,9 +330,11 @@ type guard struct {
 	// delimiters the runs of * and _ in it so far.
 	block      ast.Node
 	delimiters int
-	// reader is the block an inline parser reads, read through the guard.
-	reader guardedReader
-	err    error
+	// scanned counts the bytes goldmark scans for runs that close
+	// emphasis, up to maxScan.
+	scanned int64
+	maxScan int64
+	err     error
 }
 
 // stopParse is the panic that ends a parse the guard has refused.
@@ -371,64 +420,57 @@ func (b guardedBlock) Close(n ast.Node, reader text.Reader, pc parser.Context) {
 	b.BlockParser.Close(n, reader, pc)
 }
 
-// guardedInline is an inline parser that looks at the guard on every call,
-// and gives the parser it wraps the guard's reader. A node it returns counts
-// three: itself, the text before it, and the text a code span holds on the
-// line it starts. A run of * or _ it returns counts against maxDelimiters,
-// and gets a processor that looks at the guard when goldmark matches runs.
+// guardedInline is an inline parser that looks at the guard on every call. A
+// node it returns counts three: itself, the text before it, and the text of
+// a link's label that goldmark reads with the link in one call. A run of * or
+// _ it returns counts against maxDelimiters, and gets a processor that looks
+// at the guard when goldmark matches runs. goldmark matches a pair of runs on
+// one line at once when nothing between them is for another parser, and
+// returns the emphasis whole: one node for every two characters of the
+// closing run, nested around a text. Each node below the first counts one
+// more. Before either, goldmark scans the line for the closing run, and the
+// guard counts that scan against maxScan.
 type guardedInline struct{ parser.InlineParser }
 
 func (p guardedInline) Parse(parent ast.Node, block text.Reader, pc parser.Context) ast.Node {
 	g := guardOf(pc)
 	g.tick()
-	g.reader.Reader = block
-	n := p.InlineParser.Parse(parent, &g.reader, pc)
+	line, seg := block.PeekLine()
+	n := p.InlineParser.Parse(parent, block, pc)
 	if n == nil {
 		return nil
 	}
 	g.add(3)
-	if d, ok := n.(*parser.Delimiter); ok {
+	switch d := n.(type) {
+	case *parser.Delimiter:
+		if d.CanOpen {
+			g.scan(len(line), seg.Start)
+		}
 		if parent != g.block {
 			g.block, g.delimiters = parent, 0
 		}
 		if g.delimiters++; g.delimiters > maxDelimiters {
 			g.stop(fmt.Errorf("%s: line %d: a paragraph holds more than %d runs of * and _, the limit; %s",
-				g.file, lineOf(g.src, d.Segment.Start), maxDelimiters, core.OtherWay))
+				g.file, lineOf(g.src, d.Value.Index().Start), maxDelimiters, core.OtherWay))
 		}
 		d.Processor = guardedProcessor{d.Processor, g}
+	case *ast.Emphasis, *ast.Strong:
+		rest, _ := block.PeekLine()
+		g.scan(len(line)-len(rest), seg.Start)
+		for c := n.FirstChild(); c != nil; c = c.FirstChild() {
+			g.add(1)
+		}
 	}
 	return n
 }
 
-// guardedReader is the reader of a block's text that an inline parser
-// gets. A regular expression it matches reads the text a rune at a time
-// through it, and it looks at the guard every clockEvery runes, so a match
-// over the rest of a long paragraph stops too. goldmark's raw HTML parser
-// matches one from every <.
-type guardedReader struct {
-	text.Reader
-	g     *guard
-	runes int
-}
-
-func (r *guardedReader) ReadRune() (rune, int, error) {
-	if r.runes++; r.runes == core.ClockEvery {
-		r.runes = 0
-		r.g.tick()
+// scan counts n bytes that goldmark scanned from offset at for a run that
+// closes emphasis, and stops the parse past maxScan.
+func (g *guard) scan(n, at int) {
+	if g.scanned += int64(n); g.scanned > g.maxScan {
+		g.stop(fmt.Errorf("%s: line %d: the Markdown parse scans more than %d bytes for runs of * and _ that close emphasis, the limit, %d for every byte of max_bytes; %s",
+			g.file, lineOf(g.src, at), g.maxScan, markdownScanPerByte, core.OtherWay))
 	}
-	return r.Reader.ReadRune()
-}
-
-// Match is goldmark's own, reading through r.
-func (r *guardedReader) Match(reg *regexp.Regexp) bool {
-	line, seg := r.Position()
-	m := reg.FindReaderSubmatchIndex(r)
-	r.SetPosition(line, seg)
-	if m == nil {
-		return false
-	}
-	r.Advance(m[1] - m[0])
-	return true
 }
 
 // guardedCloser is guardedInline for a parser that goldmark also calls when
@@ -465,10 +507,10 @@ type guardedTransformer struct{ parser.ParagraphTransformer }
 func (t guardedTransformer) Transform(n *ast.Paragraph, reader text.Reader, pc parser.Context) {
 	g := guardOf(pc)
 	g.tick()
-	lines := n.Lines()
-	if defs := definitions(lines, g.src); defs*lines.Len() > maxDefinitionCopies {
+	lines := n.Source()
+	if defs := definitions(lines, g.src); defs*len(lines) > maxDefinitionCopies {
 		g.stop(fmt.Errorf("%s: line %d: a paragraph of %d lines may hold %d link reference definitions, and the two multiplied are over the limit of %d; put blank lines between the definitions",
-			g.file, lineOf(g.src, lines.At(0).Start), lines.Len(), defs, maxDefinitionCopies))
+			g.file, lineOf(g.src, lines[0].Start), len(lines), defs, maxDefinitionCopies))
 	}
 	t.ParagraphTransformer.Transform(n, reader, pc)
 }
@@ -477,11 +519,10 @@ func (t guardedTransformer) Transform(n *ast.Paragraph, reader text.Reader, pc p
 // start of a paragraph of these lines: none unless the first line starts
 // with [, and otherwise the lines that do, after an indent of up to three
 // spaces.
-func definitions(lines *text.Segments, src []byte) int {
+func definitions(lines []text.Segment, src []byte) int {
 	n := 0
-	for i := range lines.Len() {
-		s := lines.At(i)
-		v := s.Value(src)
+	for i, s := range lines {
+		v := s.Bytes(src)
 		line := bytes.TrimLeft(v, " ")
 		if len(line) > 0 && line[0] == '[' && len(v)-len(line) <= 3 {
 			n++
@@ -667,16 +708,16 @@ func (d *markdownDoc) prose(code bool) (*prose, error) {
 func (p *prose) blocks(src []byte, n ast.Node, code bool) error {
 	for c := n.FirstChild(); c != nil; c = c.NextSibling() {
 		switch c.Kind() {
-		case ast.KindParagraph, ast.KindTextBlock, ast.KindHeading:
+		case ast.KindParagraph, ast.KindHeading:
 			p.inline(src, c)
 			p.endBlock()
-		case ast.KindFencedCodeBlock, ast.KindCodeBlock:
+		case ast.KindCodeBlock:
 			if code {
-				p.lines(src, c)
+				p.lines(src, c.(*ast.CodeBlock).Value.Segments())
 			}
 		case ast.KindHTMLBlock:
 			if code {
-				p.lines(src, c)
+				p.lines(src, c.(*ast.HTMLBlock).Value.Segments())
 			} else {
 				p.htmlTail(src, c.(*ast.HTMLBlock))
 			}
@@ -696,11 +737,11 @@ func (p *prose) blocks(src []byte, n ast.Node, code bool) error {
 // holds, or where the nearest node above it starts.
 func firstOffset(n ast.Node) int {
 	for c := n; c != nil; c = c.FirstChild() {
-		if c.Type() == ast.TypeBlock && c.Lines().Len() > 0 {
-			return c.Lines().At(0).Start
+		if b, ok := c.(ast.BlockNode); ok && len(b.Source()) > 0 {
+			return b.Source()[0].Start
 		}
 		if t, ok := c.(*ast.Text); ok {
-			return t.Segment.Start
+			return t.Value.Index().Start
 		}
 	}
 	return nodeStart(n)
@@ -709,63 +750,48 @@ func firstOffset(n ast.Node) int {
 // lines appends the lines of a code or HTML block as the block holds them,
 // without fences or the markers and indent of the blocks around it, a tab
 // that the block's indent splits as the spaces left of it.
-func (p *prose) lines(src []byte, n ast.Node) {
-	segs := n.Lines()
-	for i := range segs.Len() {
-		s := segs.At(i)
+func (p *prose) lines(src []byte, segs []text.Segment) {
+	for _, s := range segs {
 		for range s.Padding {
 			p.write(' ', s.Start)
 		}
 		p.copyFrom(src[s.Start:s.Stop], s.Start)
 	}
-	if h, ok := n.(*ast.HTMLBlock); ok && h.HasClosure() {
-		p.copyFrom(src[h.ClosureLine.Start:h.ClosureLine.Stop], h.ClosureLine.Start)
-	}
 	p.endBlock()
 }
 
 // htmlEnds is, for each HTML block that ends on the line holding its end,
-// what it opens with and what ends it, in lower case. CommonMark's types 1
-// to 5: a script, pre, style or textarea element, a comment, a processing
-// instruction, a declaration and CDATA.
-var htmlEnds = map[ast.HTMLBlockType]struct {
-	open string
-	ends []string
-}{
-	ast.HTMLBlockType1: {"<", []string{"</script>", "</pre>", "</style>", "</textarea>"}},
-	ast.HTMLBlockType2: {"<!", []string{"-->"}}, // <!--> and <!---> end at once
-	ast.HTMLBlockType3: {"<?", []string{"?>"}},
-	ast.HTMLBlockType4: {"<!", []string{">"}},
-	ast.HTMLBlockType5: {"<![cdata[", []string{"]]>"}},
+// what ends it, in lower case. CommonMark's types 1 to 5: a script, pre,
+// style or textarea element, a comment, a processing instruction, a
+// declaration and CDATA.
+var htmlEnds = map[ast.HTMLBlockKind][]string{
+	ast.HTMLBlockKind1: {"</script>", "</pre>", "</style>", "</textarea>"},
+	ast.HTMLBlockKind2: {"-->"}, // <!--> and <!---> end at once
+	ast.HTMLBlockKind3: {"?>"},  // and <?>, as in goldmark and a browser
+	ast.HTMLBlockKind4: {">"},
+	ast.HTMLBlockKind5: {"]]>"},
 }
 
 // htmlTail appends what a browser shows after the end of an HTML block of
 // types 1 to 5, on the line that holds the end, as a line of prose of its
 // own. A block of type 6 or 7, which a blank line ends, gives nothing.
 func (p *prose) htmlTail(src []byte, h *ast.HTMLBlock) {
-	e, ok := htmlEnds[h.HTMLBlockType]
+	ends, ok := htmlEnds[h.HTMLBlockKind]
 	if !ok {
 		return
 	}
-	// The end is on the closing line, or else on the first line, after the
-	// opening; a block of more lines without one ran to the end of its
-	// container unclosed.
-	var last text.Segment
-	from := 0
-	switch {
-	case h.HasClosure():
-		last = h.ClosureLine
-	case h.Lines().Len() == 1:
-		last = h.Lines().At(0)
-		from = bytes.IndexByte(src[last.Start:last.Stop], '<') + len(e.open)
-	default:
-		return
-	}
+	// The end is on the block's last line. A block of one line holds it
+	// there or nowhere, and may share the opening's bytes, as <?> does. A
+	// block of more lines ends at the first line after its first that holds
+	// an end; a last line without one ran to the end of its container
+	// unclosed.
+	segs := h.Value.Segments()
+	last := segs[len(segs)-1]
 	line := asciiLower(src[last.Start:last.Stop]) // as long as the line: end indexes it
 	end := -1
-	for _, m := range e.ends {
-		if i := bytes.Index(line[min(from, len(line)):], []byte(m)); i >= 0 && (end < 0 || from+i+len(m) < end) {
-			end = from + i + len(m)
+	for _, m := range ends {
+		if i := bytes.Index(line, []byte(m)); i >= 0 && (end < 0 || i+len(m) < end) {
+			end = i + len(m)
 		}
 	}
 	if end < 0 {
@@ -868,20 +894,43 @@ func (p *prose) inline(src []byte, n ast.Node) {
 	for c := n.FirstChild(); c != nil; c = c.NextSibling() {
 		switch c := c.(type) {
 		case *ast.Text:
-			p.copyText(src[c.Segment.Start:c.Segment.Stop], c.Segment.Start)
+			s := c.Value.Index()
+			p.copyText(src[s.Start:s.Stop], s.Start)
 			if c.SoftLineBreak() || c.HardLineBreak() {
-				p.space(c.Segment.Stop)
+				p.space(s.Stop)
 			}
-		case *ast.AutoLink: // <address>, so the address starts after <
-			p.copyFrom(c.Label(src), c.Pos()+1)
+		case *ast.CodeSpan:
+			for _, s := range codeSpanText(c, src) {
+				p.copyText(src[s.Start:s.Stop], s.Start)
+			}
+		case *ast.AutoLink:
+			s := c.Label.Index()
+			p.copyFrom(src[s.Start:s.Stop], s.Start)
 		case *ast.RawHTML:
-			if s := c.Segments; s.Len() > 0 && breaksLine(src[s.At(0).Start:s.At(0).Stop]) {
+			if s := c.Value.Index(); breaksLine(src[s.Start:s.Stop]) {
 				p.space(nodeStart(c))
 			}
 		default:
 			p.inline(src, c)
 		}
 	}
+}
+
+// codeSpanText is the text of a code span: its lines between the backtick
+// strings, less the space or newline that CommonMark strips from each end
+// when both ends have one and the text is not all blanks. goldmark's Value
+// strips them in what it gives, two bytes fewer than its indices hold.
+func codeSpanText(c *ast.CodeSpan, src []byte) []text.Index {
+	ix := slices.Clone(c.Value.Indices())
+	n := 0
+	for _, s := range ix {
+		n += s.Stop - s.Start
+	}
+	if len(c.Value.Bytes(src)) == n-2 {
+		ix[0].Start++
+		ix[len(ix)-1].Stop--
+	}
+	return ix
 }
 
 // newline is a line break, as bytes.Count takes it.

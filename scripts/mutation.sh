@@ -127,8 +127,9 @@ EFFICACY_FLOOR=85
 #                           in dead code (php.go 163 twice, 374, 548, 552, 554, 628): 82.67%
 #   extract/properties  79  34 of its 167, case expressions: 79.64%
 #   extract/xml         82  94 of its 527, case expressions: 82.16%
-# text (6 such mutants of 239, 97.49%) and toml (10 of 78, 87.18%) clear 85, and json, regex
-# and yaml have none. Before the split, extract as one package had 83 (520 of its 2671).
+# text (5 such mutants of 238, 97.90%, after goldmark v2) and toml (10 of 78, 87.18%) clear
+# 85, and json, regex and yaml have none. Before the split, extract as one package had 83 (520
+# of its 2671).
 mcover_floor() {
     case "$1" in
         internal/check)              echo 72 ;;
@@ -177,12 +178,16 @@ TIMEOUT_CAP=5
 # Before the split into one package per reader, internal/extract had 10: its pass took 2.4 s
 # and a mutant that lived 3.2 to 4.9 s. The facade's pass now runs every reader's tests, 3 to
 # 5 s against 0.3 s for its own, so 5 is ample there.
+#
+# Every other reader under internal/extract has 10 as well. Their passes are short, so 5 gives
+# a limit of a second or two, and a mutant a test kills can run past it on a node under CI's
+# load. A small package cannot absorb that under TIMEOUT_CAP: json had 2 of its 13 mutants
+# time out in main's pipeline on 2026-10-22 (json.go:38 and :57), 15%, where both earlier
+# full runs that day timed out none. 10 costs a killed mutant nothing.
 coefficient_for() {
     case "$1" in
         internal/protocol) echo 20 ;;
-        internal/extract/core) echo 10 ;;
-        internal/extract/ini)  echo 10 ;;
-        internal/extract/xml)  echo 10 ;;
+        internal/extract/*) echo 10 ;;
     esac
 }
 

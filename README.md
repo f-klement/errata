@@ -306,13 +306,17 @@ FALSE staleness-threshold (repo)
 
 errata type checks the expression when it loads the file. A name that is not one of the rule's
 extractors, a type error such as comparing a list with a string, a result that is not a bool and a
-syntax error each stop the load with exit code 2, naming the check and pointing at the column:
+syntax error each stop the load with exit code 2, naming the check and pointing at the column.
+Here the first line of the assert above reads `treshold`:
 
-```text
+```console
+$ errata check -c errata.yaml
 errata: load errata.yaml: checks[0]: check "staleness-threshold": assert: undeclared reference to 'treshold', at line 1 column 10 of the expression:
-    duration(treshold[0]) >= cron_interval(schedule[0])
+    duration(treshold[0]) >= cron_interval(schedule[0]) &&
              ^
 ```
+
+The error names the config as `-c` gave it. A plain `errata check` names it by its absolute path.
 
 So does an extractor that the expression never uses, since the rule would then hold or fail
 without testing the place it was added for.
@@ -594,7 +598,8 @@ and `properties`, for an `ini` extractor whose file errata models no transform f
 `pytest.ini`, and for a `properties` file that is not a template. The message names the kind, and
 for `ini` the dialect and the file:
 
-```text
+```console
+$ errata check -c errata.yaml
 errata: load errata.yaml: checks[0]: check "pytest-agrees": skip_not_literal names "opts", whose kind of extractor, ini, plain dialect on pytest.ini, returns only literal values, so it has nothing to leave out
 ```
 
@@ -980,14 +985,15 @@ what to do. Times and memory below were measured on a loaded 4 core machine.
 | regex capture groups | 32 | a search tracks every group for every thread it keeps alive; 100000 matches of a pattern of 32 groups take 0.5 s and 29 MB |
 | filter work | 4000000000 bytes for the filters of one path | for each member tested, each comparison and each step after `@` counts 256, plus the bytes of each key it looks up and of the literal it compares, counted before the members are tested. At the limit, with 64 comparisons on each member, the worst shapes measured take 0.36 s to 1.42 s |
 | XML path terms | 32 steps and predicates | each step reads at most every node of the file once, and each predicate the nodes its step keeps, so a path costs the file's nodes times its terms. 32 `//` steps over 8.4 million elements take 2.4 s after the parse. A comparison is counted against the filter work: 256 for each child or attribute it looks at, and the literal's length for each value of the same length it compares |
-| Markdown parse time | 30 s for each 32 MiB of `max_bytes`, and never less than 30 s | goldmark is quadratic on some shapes and cannot be stopped from outside, so errata looks at the clock on every call goldmark makes into its parsers. 32 MiB of express's changelog, repeated, parsed in 15 s on a loaded 4 core machine. Of 39 hostile shapes at 32 MiB, each was read or refused at most 0.61 s after the limit |
+| Markdown parse time | 30 s for each 32 MiB of `max_bytes`, and never less than 30 s | goldmark is quadratic on some shapes and cannot be stopped from outside, so errata looks at the clock on every call goldmark makes into its parsers. 32 MiB of express's changelog, repeated, parsed in 15 s on a loaded 4 core machine and in 1.9 s on the build node. Of 42 hostile shapes at 32 MiB, each was read or refused at most 0.08 s after the limit on the build node. Three of them, lines of `*` and `_` runs, ran to the limit until the scan for closing runs below had a limit of its own |
 | Markdown nodes | `max_bytes` divided by 4 | counted as the parse builds them: three for each inline node, two for each line, one for each block and each emphasis. The aws-sdk-go-v2 changelog of 2.9 MB makes the most of 5962 real Markdown files, 321763, 4% of the limit at the default |
 | Markdown open blocks from line to line | `max_bytes` divided by 4 | goldmark records each block other than a paragraph that goes on to the next line and makes no node for it: 32 MiB of lines of 100 block quotes made 33 million and took 3.3 GB without the limit. The most in a real file is 56921 |
 | pieces of the prose | `max_bytes` divided by 4 | a run of the file's bytes, or a space or newline errata writes. A run of blanks rewritten as one space starts two, so 32 MiB of a letter and a tab took 3.3 GB without the limit. The most in a real file is 92147 |
 | Markdown nesting | 1000 levels | the text of a paragraph in 998 block quotes is at the limit |
-| runs of `*` and `_` in one paragraph | 5000 | goldmark matches each closing run against every run open before it, so a paragraph costs the square of its runs: 5000 take 0.5 s. The most in a real paragraph is 797 |
+| runs of `*` and `_` in one paragraph | 5000 | goldmark matches each closing run against the runs open before it, so a paragraph costs up to the square of its runs: the slowest of four shapes of 5000 measured takes 0.11 s. The most in a real paragraph is 797 |
+| Markdown scan for closing runs | `max_bytes` times 2 | goldmark looks from each run of `*` or `_` that opens to the end of its line for a run to close it, so runs that close nothing cost the square of their line: lines of them at 32 MiB ran to the time limit, and 2500 on a line of 400 KB took 2.2 s. errata counts the rest of the line for each run left open, and the bytes up to the closing run for each emphasis goldmark matches at once. Of seven such shapes at 32 MiB, the slowest is refused in 0.44 s on the build node. Of 3127 real Markdown files, the most is 168063 bytes, 0.3% of the limit at the default, and the densest scans 0.62 bytes for each of its own; express's changelog scans 791 bytes of its 122540 |
 | link reference definitions | 10000000, the definitions at the start of a paragraph times its lines | goldmark copies the paragraph's lines once for each definition it takes out: 3162 definitions, at the limit, take 0.08 s. The most in a row in a real file is 343. Put blank lines between the definitions |
-| a line of an HTML block | 1 MiB | goldmark matches such a line against up to seven regular expressions in calls errata cannot stop: one took 20 s over a line of 32 MiB, about 1 s at the limit. The longest in a real file is 1801 bytes |
+| a line of an HTML block | 1 MiB | goldmark scans such a line in calls errata cannot stop: a tag of 32 MiB took 0.59 s, and 0.02 s at the limit. The limit dates from goldmark v1, whose regular expressions took 11 s over the same line. The longest in a real file is 1801 bytes |
 | prose | twice the size of the file | the regex time limit, which scales with the file, then holds for the prose too |
 | ini and properties work | 128 units for each byte of the file and of the spec's names, and 1048576 more | each read makes one pass over the file and keeps only the values it selects, so it needs no node limit. Every loop that reads a line, compares a name or matches an ansible host against a range charges the budget; a unit is 0.3 to 2.6 ns on the dense shapes measured, so a read that spends the whole budget at 32 MiB (about 4.3 billion units) takes 1.5 s to 11 s. Real files spend 2 to 8 units a byte. The slowest shape that reads at 32 MiB takes 3.8 s (tox, a key of each letter in each of a million sections). The worst shape found, lines of ten 17 digit ranges against a spec host of 1024 bytes, is refused at the budget in 5.9 s, where it would have run for about 350 s; a range bound of 4 million digits is refused in 0.1 s, and php fallbacks nested 131000 deep in under 0.01 s |
 | file name | 4096 bytes | the longest path Linux opens. A longer `file:` in an extractor is a load error, since every message about a file names it whole |

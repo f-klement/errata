@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -442,6 +443,34 @@ func TestWindowsKeepWholeRunes(t *testing.T) {
 			fmt.Sprintf("%q... (%d bytes)", end[:maxQuoted-1], len(end))},
 		{"start", []string{x, y}, x,
 			fmt.Sprintf("...%q (from byte 100 of %d)", x[100:], len(x))},
+	} {
+		if got := newQuoter(tc.values).quote(tc.v); got != tc.want {
+			t.Errorf("%s: quoted\n%s\nwant\n%s", tc.name, got, tc.want)
+		}
+	}
+}
+
+// A value of exactly maxQuoted bytes is quoted whole, without marks, whether
+// or not the quoter was given it; one byte more is clipped. A long value
+// whose first byte does not start a rune, as a file that is not UTF-8 can
+// hold, is quoted from byte 0. The planted breaks are < for <= in newQuoter,
+// which marks the whole value with its length; >= for > in quote, which
+// recurses without end on a value it was not given; and start >= 0 in the
+// loop that moves a window's start back to a rune, which starts it at -1.
+func TestQuotesAtMaxQuoted(t *testing.T) {
+	exact := strings.Repeat("v", maxQuoted)
+	over := exact + "v"
+	invalid := "\x80" + over
+	for _, tc := range []struct {
+		name   string
+		values []string
+		v      string
+		want   string
+	}{
+		{"exactly maxQuoted", []string{exact}, exact, strconv.Quote(exact)},
+		{"exactly maxQuoted, not given", nil, exact, strconv.Quote(exact)},
+		{"one byte over", []string{over}, over, fmt.Sprintf("%q... (%d bytes)", exact, len(over))},
+		{"first byte not a rune start", []string{invalid}, invalid, fmt.Sprintf("%q... (%d bytes)", invalid[:maxQuoted], len(invalid))},
 	} {
 		if got := newQuoter(tc.values).quote(tc.v); got != tc.want {
 			t.Errorf("%s: quoted\n%s\nwant\n%s", tc.name, got, tc.want)

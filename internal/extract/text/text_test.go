@@ -278,7 +278,8 @@ func TestTextSpacesAsABrowserDoes(t *testing.T) {
 // a declaration, CDATA, or a script, style, pre or textarea element. Text
 // inside a <div> and the other blocks that end at a blank line is left out,
 // as is everything with code: true but the lines themselves. The planted
-// break is the remainder left out, which hid every claim below.
+// break is the remainder left out, which hid every claim below; and the end
+// looked for only after the opening, which hid the claim after <?>.
 func TestTextReadsTextAfterAnHTMLBlockEnds(t *testing.T) {
 	for name, c := range map[string]struct {
 		body, want string
@@ -298,6 +299,7 @@ func TestTextReadsTextAfterAnHTMLBlockEnds(t *testing.T) {
 		"tag alone":          {"<span>\nCI runs on node hidden\n", ""},
 		"empty comment":      {"<!--> CI runs on node builder\n", "builder@3"},
 		"empty comment dash": {"<!---> CI runs on node builder\n", "builder@3"},
+		"empty processing":   {"<?> CI runs on node builder\n", "builder@3"},
 		"inline tag in tail": {"<!-- a --> CI runs on node b<i>uild</i>er\n", "builder@3"},
 		"br in tail":         {"<!-- a --> CI runs on node<br>builder\n", "builder@3"},
 		"folds longer":       {"<!-- ȺȺȺ -->x CI runs on node builder\n", "builder@3"},
