@@ -1,6 +1,9 @@
 # Mutation testing: gremlins changes one operator at a time and reruns the
 # tests. A mutant that survives is a behaviour no test pins.
 unleash:
+  # make mutation does not use these two: scripts/mutation.sh hands gremlins a
+  # copy of this file with both at 0 and judges each package against its own
+  # floors from the counts. They apply to gremlins run by hand.
   threshold:
     efficacy: 85        # killed / (killed + lived), percent
     # Mutants reached by any test, percent. Not 100: Go's coverage profile
@@ -11,10 +14,31 @@ unleash:
   # Built with this tag, a test too slow to rerun for every mutant skips, and
   # make slow runs it once instead (Makefile, SLOW_TESTS).
   tags: mutation
-  # Each mutant's time limit is this multiple of the baseline test time. The
-  # protocol tests run real subprocesses, so on a loaded machine the default
-  # turns slow mutants into timeouts, which count against mutant coverage.
-  timeout-coefficient: 10
+  # Each mutant's time limit is this multiple of the coverage pass, the first
+  # thing gremlins runs. scripts/mutation.sh runs one pass per package, so the
+  # base is that package's pass alone, 0.4 to 1.8 s on the build node outside
+  # extract. Gremlins counts a timed out mutant in neither threshold and
+  # scripts/mutation.sh counts it as killed; either way it holds a worker for
+  # the whole limit, and scripts/mutation.sh fails a package when more than 5%
+  # of the mutants that ran timed out.
+  #
+  # Measured 2026-10-18 on the six core build node at a load of 5 to 7, each
+  # package scoped and pinned to two cores at GOMAXPROCS=2, as the CI job pod
+  # is. On a quiet pod, 10 and 3 gave check, provider, cli, config and report
+  # the same verdicts, and report's 6 runaway mutants fell from 25% of worker
+  # time to 8%. With a CPU burner on the same two cores, twice: at 3, check lost
+  # 2 of its 24 mutants to false timeouts in one run (a 2.1 s limit for mutants
+  # that take about 1 s), which took it under its floor; at 5, check, provider,
+  # cli and config had none, and report one in one run (sarif.go:330, killed
+  # at 3 both times), inside the 5% cap. Hence 5: report's 6 genuine timeouts
+  # cost 7 s each, against 11 s at 10 and 3.3 s at 3.
+  #
+  # It was 10 for internal/protocol, whose tests wait on a real 5 s sleep. Its
+  # pass takes 0.7 s, so no coefficient near 5 covers that: three of its
+  # mutants timed out at 2, 3 and 5. internal/extract's mutants take twice its
+  # pass and more, and at 5 two that live read as timed out. scripts/mutation.sh
+  # gives both their own, with the figures.
+  timeout-coefficient: 5
   workers: 2
   exclude-files:
     - cmd/errata/main.go

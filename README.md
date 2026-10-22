@@ -1252,7 +1252,7 @@ layer in it catches a different kind of defect:
 | `make cover` | the same, failing below 90% statement coverage |
 | `make slow` | the tests too slow to run under the race detector or once per mutant, run once; it fails when one of them does not run and pass |
 | `make fuzz` | the fuzz targets for the config parser, the check protocol, the JUnit and SARIF writers, assert, the path grammar and each extractor |
-| `make mutation` | Gremlins: changes one operator at a time and fails if the tests still pass |
+| `make mutation` | Gremlins: changes one operator at a time and fails if the tests still pass, each package judged alone against its floors in `scripts/mutation.sh`. `MUTATION_SCOPE="internal/config internal/cli"` mutates those packages only, and limits `make fuzz` to their targets |
 | `make lint` | golangci-lint with the linters listed, and justified, in `.golangci.yml`, once for each of linux, windows and darwin |
 | `make vuln` | govulncheck over the code paths errata actually calls |
 | `make dogfood` | errata checks this repository |

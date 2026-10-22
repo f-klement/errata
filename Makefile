@@ -48,6 +48,12 @@ endef
 
 COVERAGE_MIN := 90
 FUZZTIME     ?= 15s
+# How long Go minimizes each input that adds coverage, as a time or a count. A worker that
+# minimizes does not fuzz, and the coordinator counts its execs only when it returns, so a
+# pass reads 0/sec meanwhile. Go's default of 60 s let one minimization take most of a 10 s
+# pass at one worker (measured 2026-10-22: 3 to 34 thousand execs, against 42 to 49 thousand
+# at 100x). The nightly campaigns pass 60s, where the time for a smaller corpus is there.
+FUZZMINIMIZETIME ?= 100x
 # Each fuzz target as package:Name. `go test -fuzz` takes one target per run.
 FUZZ_TARGETS := ./internal/config:FuzzParse ./internal/protocol:FuzzMessage \
                 ./internal/report:FuzzJUnit ./internal/rule:FuzzAssert ./internal/report:FuzzSARIF \
@@ -64,10 +70,10 @@ FUZZ_TARGETS := ./internal/config:FuzzParse ./internal/protocol:FuzzMessage \
 # without the publish and autopatch targets.
 INTERNAL := $(if $(wildcard ci/public-tree.sh),public-dry ci-test)
 
-# `gate` is everything but mutation testing, and CI's test job runs it: Gremlins
-# over the whole module takes hours, longer than the job's limit, and the
-# module is below the threshold. It stays in `check` until scoped mutation
-# with a floor per package replaces it; meanwhile run `make mutation` by hand.
+# `gate` is everything but mutation testing, for a quick run by hand: Gremlins
+# over the whole module takes hours. CI's test job runs `check` with
+# MUTATION_SCOPE set to the packages a push changed (ci/mutation-scope.sh), and
+# the nightly runs every package.
 gate: lint test cover slow fuzz vuln dogfood image-dry $(INTERNAL)
 
 check: gate mutation
@@ -170,15 +176,37 @@ cover: test
 	echo "coverage $$total% (minimum $(COVERAGE_MIN)%)"; \
 	awk -v t=$$total -v m=$(COVERAGE_MIN) 'BEGIN { exit !(t >= m) }'
 
-fuzz:
-	@for t in $(FUZZ_TARGETS); do \
-		pkg=$${t%%:*}; name=$${t##*:}; \
-		echo "fuzz $$name for $(FUZZTIME)"; \
-		$(GO) test -run '^$$' -fuzz "^$$name$$" -fuzztime $(FUZZTIME) $$pkg || exit 1; \
-	done
+# The packages fuzz and mutation cover: all, none, or package directories such as
+# "internal/config internal/cli". CI's test job sets it from ci/mutation-scope.sh and passes
+# FUZZ_FLAGS=-parallel=1 (one fuzz worker, measured at 43% less CPU for the same wall clock).
+# Left as they are, both steps cover every package, as locally and nightly.
+#
+# Only a value given on make's command line counts. make exports command-line variables
+# to every recipe, so `make check MUTATION_SCOPE=x` reaches each make a recipe starts, the
+# tests' own included, as an environment variable; and a shell that exported
+# MUTATION_SCOPE=none would make `make check` mutate and fuzz nothing, and pass. A value
+# from the environment is therefore dropped.
+ifeq ($(origin MUTATION_SCOPE),environment)
+override MUTATION_SCOPE := all
+endif
+ifeq ($(origin FUZZ_FLAGS),environment)
+override FUZZ_FLAGS :=
+endif
+MUTATION_SCOPE ?= all
+FUZZ_FLAGS     ?=
 
+fuzz:
+	@ran=0; for t in $(FUZZ_TARGETS); do \
+		pkg=$${t%%:*}; name=$${t##*:}; \
+		case " $(MUTATION_SCOPE) " in *" all "*|*" $${pkg#./} "*) ;; *) continue ;; esac; \
+		echo "fuzz $$name for $(FUZZTIME)"; ran=$$((ran + 1)); \
+		$(GO) test -run '^$$' -fuzz "^$$name$$" -fuzztime $(FUZZTIME) -fuzzminimizetime $(FUZZMINIMIZETIME) $(FUZZ_FLAGS) $$pkg || exit 1; \
+	done; echo "fuzz: $$ran targets in scope ($(MUTATION_SCOPE))"
+
+# scripts/mutation.sh runs gremlins from a copy of the tracked tree, one pass per package of
+# MUTATION_SCOPE, each held to its own floors; it says why.
 mutation: $(BIN)/gremlins
-	$(BIN)/gremlins unleash -S lt
+	GREMLINS=$(BIN)/gremlins scripts/mutation.sh $(MUTATION_SCOPE)
 
 vuln: $(BIN)/govulncheck
 	$(BIN)/govulncheck ./...
@@ -224,10 +252,10 @@ image-dry: $(BIN)/ko
 # only CI saw came from that layout (a cache directory named like a source
 # file, and checks reading dependency sources), so run this before pushing a
 # change to the pipeline, the Makefile or the checks.
-# TMPDIR is on disk and outside the project, for when mutation is back in
-# CI's gate: Gremlins copies the project, caches included, once per worker
-# into it, which on a tmpfs /tmp fills memory, and a TMPDIR inside the
-# project would be copied into itself.
+# TMPDIR is on disk and outside the project, as in CI: the gate's tests and
+# builds write their temporary files there, and `make mutation` run the same
+# way copies the tracked tree into it once per worker, which on a tmpfs /tmp
+# would sit in memory.
 CI_LOCAL_TMP ?= $(HOME)/.cache/errata-ci-local
 ci-local:
 	@mkdir -p $(CI_LOCAL_TMP)
