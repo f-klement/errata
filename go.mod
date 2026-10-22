@@ -2,6 +2,8 @@ module github.com/f-klement/errata
 
 go 1.27.2
 
+toolchain go1.27.3
+
 require (
 	cel.dev/cel-go v0.32.0
 	github.com/antchfx/xpath v1.3.9
