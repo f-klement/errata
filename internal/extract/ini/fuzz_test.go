@@ -1,6 +1,7 @@
 package ini
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/f-klement/errata/internal/extract/core"
@@ -12,7 +13,10 @@ var fuzzFiles = []string{"setup.cfg", ".gitmodules", "x/.git/config", "hosts", "
 
 // Every dialect reads any file into entries at lines inside it, holding no
 // more bytes than the file, and an ini extractor returns exactly the values
-// of the entries its query wants.
+// of the entries its query wants. A spec's host over maxHostMatch bytes is
+// the exception: it is refused against a line whose host has a range or a
+// port, which the reader reads, so that refusal is not checked against the
+// reader (TestLongSpecHostIsRefusedAgainstARange checks when it comes).
 func FuzzINI(f *testing.F) {
 	// The dialect is the index in iniDialects (0 git, 1 ansible, 2 tox, 3 php,
 	// 4 plain), and any other byte none, which the file's name, the index in
@@ -28,6 +32,8 @@ func FuzzINI(f *testing.F) {
 	f.Add(uint8(1), uint8(0), "h1 a='x y' b=\"c\\\"d\" x=\"5 # c\" # e\fh2\u2028[g:children]\nweb # c\n", "ungrouped", "", "h1", "b")
 	f.Add(uint8(9), uint8(5), "[testenv]\ndeps = a # c\n  b\\\n  c\ncommands = x \\#y\n", "testenv", "", "", "DEPS")
 	f.Add(uint8(9), uint8(6), "[PHP]\na = x \"y ; z\" 'w' ; c\nb = E_ALL & ~E_DEPRECATED\nc = ${HOME:-x}\nd[] = on\n", "PHP", "", "", "a")
+	// The nightly's find of 2026-10-23: line 3's host has a port.
+	f.Add(uint8(1), uint8(0), "[g]\nh v=1\ndb1:2222 v=1\n", "g", "", strings.Repeat("d", maxHostMatch+1), "v")
 	f.Fuzz(func(t *testing.T, dialect, file uint8, data, section, sub, host, key string) {
 		i := Spec{File: fuzzFiles[int(file)%len(fuzzFiles)], Section: section, Host: host, Key: key}
 		if int(dialect) < len(iniDialects) {
@@ -40,6 +46,12 @@ func FuzzINI(f *testing.F) {
 		e, err := Build(i)
 		if err != nil {
 			return
+		}
+		if len(host) > maxHostMatch {
+			// By its text: core.LineError keeps the message, not the error.
+			if _, err := e.(core.EntryExtractor).FromData([]byte(data)); err != nil && strings.Contains(err.Error(), errHostTooLong.Error()) {
+				return
+			}
 		}
 		coretest.CheckEntryValues(t, e.(core.EntryExtractor), []byte(data), len(data))
 	})

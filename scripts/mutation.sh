@@ -113,7 +113,8 @@ export GOFLAGS
 # under its floor; here a timed out mutant counts as covered and killed:
 #   mutant coverage  (killed + lived + timed out) / (those + not covered)
 #   efficacy         (killed + timed out) / (killed + lived + timed out)
-# The timeout cap below keeps a limit that is too short from passing on timeouts. A figure at
+# The timeout cap below keeps a limit that is too short from passing on timeouts, judged on a
+# second pass when the first is over it (unleash). A figure at
 # or below its floor fails. A floor may only rise: ci/test-ci.sh refuses one lowered.
 #
 # Efficacy is 85 for every package.
@@ -249,7 +250,24 @@ percent() {
     awk -v p="$1" -v w="$2" 'BEGIN { printf "%.2f%%", 100 * p / w }'
 }
 
-# unleash <package>: one gremlins pass, its output shown and kept for the summary.
+# pass_once <package>: one gremlins pass, its output shown and kept, and its counts.
+pass_once() {
+    rm -f "$work/rc"
+    {
+        rc=0
+        "$GREMLINS" unleash --config "$work/gremlins.yaml" -S lt "$1" || rc=$?
+        echo "$rc" >"$work/rc"
+    } 2>&1 | tee "$work/out"
+    rc=$(cat "$work/rc")
+    killed=$(count Killed) lived=$(count Lived) timedout=$(count "Timed out") uncovered=$(count "Not covered")
+    ran=$((killed + lived + timedout))
+}
+
+# unleash <package>: a gremlins pass judged against the package's floors. A package over the
+# timeout cap runs once more, and the second pass is judged: a mutant times out when the node
+# is busy as well as when it hangs, and one that hangs times out on both passes. On the build
+# node, CI's test jobs and image builds running side by side timed out 2 of json's 13 mutants
+# on 2026-10-22 and 14 and 20 of config's 110 on 2026-10-23; each package had none on a rerun.
 unleash() {
     p=$1
     mcover=$(mcover_floor "$p")
@@ -257,15 +275,13 @@ unleash() {
     name="$p (floors: efficacy $EFFICACY_FLOOR, mutant coverage $mcover${coef:+; timeout coefficient $coef})"
     echo "==> mutation: $name"
     config_for "$p"
-    rm -f "$work/rc"
-    {
-        rc=0
-        "$GREMLINS" unleash --config "$work/gremlins.yaml" -S lt "$p" || rc=$?
-        echo "$rc" >"$work/rc"
-    } 2>&1 | tee "$work/out"
-    rc=$(cat "$work/rc")
-    killed=$(count Killed) lived=$(count Lived) timedout=$(count "Timed out") uncovered=$(count "Not covered")
-    ran=$((killed + lived + timedout))
+    pass_once "$p"
+    again=""
+    if [ "$rc" -eq 0 ] && grep -q 'Killed: [0-9]' "$work/out" && [ $((timedout * 100)) -gt $((ran * TIMEOUT_CAP)) ]; then
+        echo "==> mutation: $p: $timedout of $ran mutants timed out, over $TIMEOUT_CAP%; running the package once more"
+        pass_once "$p"
+        again=", on its second pass too"
+    fi
     all=$((ran + uncovered))
     if [ "$all" -gt 0 ]; then
         figures="Mutant coverage: $(percent "$ran" "$all")."
@@ -291,7 +307,7 @@ unleash() {
         verdict="FAILED, efficacy at or below $EFFICACY_FLOOR"
         rc=1
     elif [ $((timedout * 100)) -gt $((ran * TIMEOUT_CAP)) ]; then
-        verdict="FAILED, $timedout of $ran mutants timed out, over $TIMEOUT_CAP%"
+        verdict="FAILED, $timedout of $ran mutants timed out, over $TIMEOUT_CAP%$again"
         rc=1
     fi
     echo "$p: $verdict. $figures Timed out: $timedout of $ran." >>"$work/summary"
