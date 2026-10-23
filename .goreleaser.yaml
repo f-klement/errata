@@ -74,8 +74,9 @@ checksum:
   name_template: checksums.txt
 
 changelog:
-  # GitHub writes the notes from the commits between tags, which works on the
-  # shallow clone a release builds from.
+  # A release gets its notes from --release-notes, which replaces this. Without
+  # that flag GitHub writes them from the commits between tags, which works on
+  # the shallow clone a release builds from.
   use: github-native
 
 release:
