@@ -93,6 +93,13 @@ fi
 # Gremlins' own working copies go under the same directory, and leave with it.
 TMPDIR=$work
 export TMPDIR
+# So does a build cache of its own. Each mutant is a build no later run repeats, and Go keeps
+# an entry 5 days after its last use, so in the caller's cache a full pass left gigabytes
+# behind: on 2026-10-22 the build node's suite cache held 123.6 GB written since 2026-10-18,
+# and CI's restored cache held 196,255 files, against 1,375 for a warm build and test of
+# toml. A toml pass grew a cache by 1 MiB a mutant.
+GOCACHE=$work/go-build
+export GOCACHE
 GOFLAGS="${GOFLAGS:+$GOFLAGS }-vet=off -count=1"
 export GOFLAGS
 
