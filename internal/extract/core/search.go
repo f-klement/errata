@@ -7,6 +7,7 @@ import (
 	"io"
 	"regexp"
 	"regexp/syntax"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -22,6 +23,14 @@ type Search struct {
 	Source
 	re    *regexp.Regexp // the pattern, with the m flag
 	after *regexp.Regexp // the same, matched from the rune before a position; nil when the pattern looks at none
+	// prefix is the literal every match starts with, nil when the pattern
+	// has none. anchored compiles the pattern anchored where a try starts
+	// on the first try, so a pattern whose prefix never occurs costs no
+	// second program. atStart is whether the pattern holds \A, or ^
+	// without the m flag, which parses to the same.
+	prefix   []byte
+	anchored func() *anchors
+	atStart  bool
 	// TimeLimit bounds the matching. CompileSearch sets it from the limit
 	// (regexTime); a test shortens it, so a refusal on time comes fast.
 	TimeLimit time.Duration
@@ -52,37 +61,67 @@ func CompileSearch(kind, file, pattern string, maxBytes int64) (Search, error) {
 			kind, Quote(pattern), n, MaxGroups)
 	}
 	e := Search{Source: src, re: re, TimeLimit: regexTime(src.Limit)}
-	if looksBack(pattern) {
+	back, atStart := looksBack(pattern)
+	if back {
 		if e.after, err = compileAfter(pattern); err != nil {
 			return Search{}, fmt.Errorf("%s: pattern %s: %w", kind, Quote(pattern), ClipError(err))
 		}
 	}
+	if prefix, _ := re.LiteralPrefix(); prefix != "" {
+		e.prefix, e.atStart = []byte(prefix), atStart
+		e.anchored = sync.OnceValue(func() *anchors { return anchor(pattern, back) })
+	}
 	return e, nil
 }
 
+// anchors is the pattern anchored at the start of the text a try reads,
+// and, when the pattern looks back, anchored after the rune before it.
+type anchors struct{ at, after *regexp.Regexp }
+
+// anchor compiles the anchors of the pattern, or returns nil when one does
+// not compile; the pattern is then searched with its prefix but no tries.
+// That happens when the pattern nests as deeply as RE2 allows and its
+// outermost node is a group or a repeat, which the anchoring nests one
+// level deeper; after, when the pattern looks back, nests it as deeply, so
+// such a pattern is refused before.
+func anchor(pattern string, back bool) *anchors {
+	at, err := wrap(`\A(?:(?m)`, pattern)
+	var after *regexp.Regexp
+	if err == nil && back {
+		after, err = wrap(`\A(?s:.)((?m)`, pattern)
+	}
+	if err != nil {
+		return nil
+	}
+	return &anchors{at, after}
+}
+
 // looksBack reports whether the pattern holds ^, \A, \b or \B, which look
-// at the text before a position. A pattern without them matches the same
-// from a position whether or not the text before it is there.
-func looksBack(pattern string) bool {
+// at the text before a position, and whether it holds \A (or (?-m)^, the
+// same op), which tells the
+// start of the text from the start of a line. A pattern without them
+// matches the same from a position whether or not the text before it is
+// there.
+func looksBack(pattern string) (back, atStart bool) {
 	parsed, err := syntax.Parse("(?m)"+pattern, syntax.Perl)
 	if err != nil {
-		return true
+		return true, true
 	}
-	var walk func(*syntax.Regexp) bool
-	walk = func(r *syntax.Regexp) bool {
+	var walk func(*syntax.Regexp)
+	walk = func(r *syntax.Regexp) {
 		switch r.Op {
-		case syntax.OpBeginLine, syntax.OpBeginText, syntax.OpWordBoundary, syntax.OpNoWordBoundary:
-			return true
+		case syntax.OpBeginText:
+			back, atStart = true, true
+		case syntax.OpBeginLine, syntax.OpWordBoundary, syntax.OpNoWordBoundary:
+			back = true
 		default: // every other op looks at the text from where it starts
 		}
 		for _, sub := range r.Sub {
-			if walk(sub) {
-				return true
-			}
+			walk(sub)
 		}
-		return false
 	}
-	return walk(parsed)
+	walk(parsed)
+	return back, atStart
 }
 
 // compileAfter compiles the pattern to search from a position past the
@@ -92,17 +131,26 @@ func looksBack(pattern string) bool {
 // before the group closes. A pattern nested as deeply as RE2 allows is
 // refused here, since the wrapping nests it two levels deeper.
 func compileAfter(pattern string) (*regexp.Regexp, error) {
-	const head = `\A(?s:.)(?s:.)*?((?m)`
+	re, err := wrap(`\A(?s:.)(?s:.)*?((?m)`, pattern)
+	if err == nil {
+		return re, nil
+	}
+	var perr *syntax.Error
+	if errors.As(err, &perr) && perr.Code == syntax.ErrNestingDepth {
+		return nil, errors.New("it nests within two levels of the deepest nesting RE2 allows; errata needs those two to search after a match")
+	}
+	return nil, err
+}
+
+// wrap compiles head, the pattern and a closing parenthesis, with \E
+// before it when the pattern ends inside \Q.
+func wrap(head, pattern string) (*regexp.Regexp, error) {
 	re, err := regexp.Compile(head + pattern + `)`)
 	if err == nil {
 		return re, nil
 	}
 	if re, errQ := regexp.Compile(head + pattern + `\E)`); errQ == nil {
 		return re, nil
-	}
-	var perr *syntax.Error
-	if errors.As(err, &perr) && perr.Code == syntax.ErrNestingDepth {
-		return nil, errors.New("it nests within two levels of the deepest nesting RE2 allows; errata needs those two to search after a match")
 	}
 	return nil, err
 }
@@ -156,7 +204,17 @@ type Match [4]int
 // search reads the file through a clock that ends it once the time limit has
 // passed, so one search that finds nothing is stopped too.
 func (e Search) Matches(data []byte) ([]Match, error) {
-	clock := &clockedReader{deadline: time.Now().Add(e.TimeLimit)}
+	return e.matches(data, newClock(e.TimeLimit))
+}
+
+// newClock is the clock of one Matches: its deadline limit from now, and
+// maxTry bytes spare for find.
+func newClock(limit time.Duration) *clockedReader {
+	return &clockedReader{deadline: time.Now().Add(limit), spare: maxTry}
+}
+
+// matches is Matches through clock, which a test reads after.
+func (e Search) matches(data []byte, clock *clockedReader) ([]Match, error) {
 	var out []Match
 	for pos, prevEnd := 0, -1; pos <= len(data); {
 		m := e.find(data, pos, clock)
@@ -192,20 +250,110 @@ func (e Search) Matches(data []byte) ([]Match, error) {
 	return out, nil
 }
 
-// find returns the first match at or after pos. Past the start, a pattern
-// that looks back searches with after from the rune before pos, so ^, \A and
-// \b see what comes before pos, as in a search of the whole file; any other
-// pattern searches the text from pos. The search reads through clock.
-func (e Search) find(data []byte, pos int, clock *clockedReader) []int {
-	from, re, skip := pos, e.re, 0
-	if pos > 0 && e.after != nil {
+// find returns the first match at or after start, through clock. A
+// pattern with a literal prefix can only match where the prefix starts, so
+// find looks for it with bytes.Index, as regexp does over bytes, and tries
+// the anchored pattern at each place it occurs. find searches on
+// unanchored, as it does a pattern without a prefix, from a place less
+// than minGap bytes past the text the last try read, where a try costs
+// more than the reading it skips, and from a place whose try read to where
+// it was cut off, since its match may not be the one the whole text gives.
+//
+// No shape reads more than a search of every place does, but for the
+// clock.spare bytes, maxTry for the whole of Matches, that a search after
+// the tries may read again: a try reads no more than the bytes still
+// spare, and the search after it takes from them what it reads again.
+// Once they are spent, find skips to the next place and searches on
+// unanchored from there. A pattern that
+// looks back is searched from the start, before its first match, with re,
+// which costs about half what after costs; so a search after the tries
+// starts at the start of the line, where ^ and \b see the newline before
+// it as they see the start of the text, or at the start of the text for a
+// pattern that holds \A, and reads the tries since again.
+//
+// The clock counts the runes of every try, so the deadline stops a run of
+// them too. It does not count the bytes.Index scans: they start where the
+// last one stopped, so in all they read the file once, about 0.1 s at
+// 32 MiB at worst. The first try compiles the anchored form inside the
+// time limit: the 23 KB pattern of a{1000} measured, the largest, takes
+// 0.78 s on the build node, against the 10 s the limit is at least.
+func (e Search) find(data []byte, start int, clock *clockedReader) []int {
+	if e.prefix == nil {
+		m, _ := e.search(data, start, e.re, e.after, clock)
+		return m
+	}
+	first := start == 0 && e.after != nil
+	pos, from, end, tried := start, start, -minGap, 0
+	for {
+		i := bytes.Index(data[pos:], e.prefix)
+		if i < 0 {
+			return nil
+		}
+		if first && !e.atStart {
+			if nl := bytes.LastIndexByte(data[pos:pos+i], '\n'); nl >= 0 {
+				from, tried = pos+nl+1, 0
+			}
+		}
+		pos += i
+		if !first {
+			from = pos
+		}
+		a, spare := e.anchored(), clock.spare-tried
+		if a == nil || spare <= 0 || pos < end+minGap {
+			break
+		}
+		stop, read := min(pos+spare, len(data)), clock.read
+		var m []int
+		m, end = e.search(data[:stop], pos, a.at, a.after, clock)
+		if first {
+			tried += clock.read - read
+		}
+		if end == stop && stop < len(data) {
+			break
+		}
+		if m != nil || clock.stopped {
+			return m
+		}
+		pos++
+	}
+	if first {
+		clock.spare -= tried
+		m, _ := e.search(data, from, e.re, nil, clock)
+		return m
+	}
+	clock.spare -= max(0, end-pos)
+	m, _ := e.search(data, pos, e.re, e.after, clock)
+	return m
+}
+
+// minGap is the fewest bytes the prefix scan must skip for find to try the
+// anchored pattern at the next place rather than search on unanchored, and
+// maxTry the most bytes a search after the tries may read again in one
+// Matches. A try costs about as much as reading three bytes: on the build
+// node, 262144 tries of x(\d), one every 128 bytes, took 0.02 s, and
+// reading the same 32 MiB 0.81 s. The reader reads a rune past where a try
+// fails, so an x every 66 bytes is still searched on unanchored.
+const (
+	minGap = 64
+	maxTry = 4096
+)
+
+// search returns the first match of re at or after pos, and where it
+// stopped reading. Past the start, a pattern that looks back searches with
+// after from the rune before pos, so ^, \A and \b see what comes before pos,
+// as in a search of the whole file; any other pattern searches the text
+// from pos.
+func (e Search) search(data []byte, pos int, re, after *regexp.Regexp, clock *clockedReader) ([]int, int) {
+	from, skip := pos, 0
+	if pos > 0 && after != nil {
 		_, w := utf8.DecodeLastRune(data[:pos])
-		from, re, skip = pos-w, e.after, 2
+		from, re, skip = pos-w, after, 2
 	}
 	clock.data, clock.pos = data[from:], 0
 	m := re.FindReaderSubmatchIndex(clock)
+	end := from + clock.pos
 	if m == nil {
-		return nil
+		return nil, end
 	}
 	m = m[skip:]
 	for i := range m {
@@ -213,7 +361,7 @@ func (e Search) find(data []byte, pos int, clock *clockedReader) []int {
 			m[i] += from
 		}
 	}
-	return m
+	return m, end
 }
 
 // ClockEvery is how many runes a search reads between two looks at the
@@ -232,6 +380,8 @@ type clockedReader struct {
 	deadline time.Time
 	runes    int // runes read since the last look at the clock
 	stopped  bool
+	read     int // bytes read in all
+	spare    int // bytes a search after the tries may still read again (find)
 }
 
 func (r *clockedReader) ReadRune() (rune, int, error) {
@@ -247,10 +397,12 @@ func (r *clockedReader) ReadRune() (rune, int, error) {
 	}
 	if c := r.data[r.pos]; c < utf8.RuneSelf {
 		r.pos++
+		r.read++
 		return rune(c), 1, nil
 	}
 	c, w := utf8.DecodeRune(r.data[r.pos:])
 	r.pos += w
+	r.read += w
 	return c, w, nil
 }
 

@@ -128,21 +128,21 @@ EFFICACY_FLOOR=85
 # one package per reader (#105), on 2026-10-22, each scoped alone:
 #   check               72  9 of its 33 mutants, case expressions in Validate and LeftOutCount
 #   protocol            78  3 of its 14 mutants
-#   extract             64  7 of its 20, after the first func literal of kinds' return
-#                           statement: 65.00%
 #   extract/core        79  116 of its 571 (115 case expressions, 1 package level): 79.68%
 #   extract/ini         82  253 of its 1500 (178 case expressions, 75 package level), and 7
 #                           in dead code (php.go 163 twice, 374, 548, 552, 554, 628): 82.67%
 #   extract/properties  79  34 of its 167, case expressions: 79.64%
 #   extract/xml         82  94 of its 527, case expressions: 82.16%
-# text (5 such mutants of 238, 97.90%, after goldmark v2) and toml (10 of 78, 87.18%) clear
-# 85, and json, regex and yaml have none. Before the split, extract as one package had 83 (520
+# text (5 such mutants of 238, 97.90%, after goldmark v2), toml (10 of 78, 87.18%) and
+# toolversion (9 of 117, 92.31%, on 2026-10-23) clear 85, and json, regex and yaml have none.
+# The facade had 64, 7 of its 20 after the first func literal of kinds' return statement
+# (65.00%), until tool_version (#46) worked out which kinds are set before that statement: 22
+# of 22 since, so it has 85 too. Before the split, extract as one package had 83 (520
 # of its 2671).
 mcover_floor() {
     case "$1" in
         internal/check)              echo 72 ;;
         internal/protocol)           echo 78 ;;
-        internal/extract)            echo 64 ;;
         internal/extract/core)       echo 79 ;;
         internal/extract/ini)        echo 82 ;;
         internal/extract/properties) echo 79 ;;

@@ -31,6 +31,18 @@ stderr '\\u2066\(\\x1b'
 ! stderr '\x{202e}'
 ! stderr '\x{2066}'
 
+# errata list prints the config's own text, a reason and a pattern here, and
+# writes it through the same escapes: the text listing as the text output
+# does, the JSON as SARIF does.
+exec errata list -c listed.yaml
+! stdout '\x1b|\x{9b}|\x{202e}'
+stdout '^  why: \\x1b\[2Jok\\u009b31m$'
+stdout 'pattern "\\u202e\(\.\*\)", '
+exec errata list -c listed.yaml -f json
+! stdout '\x1b|\x{9b}|\x{202e}'
+stdout '"reason": "\\u001b\[2Jok\\u009b31m"'
+stdout '"pattern": "\\u202e\(\.\*\)"'
+
 -- errata.yaml --
 checks:
   - id: clean-output
@@ -66,3 +78,11 @@ checks:
     reason: r
     scope: repo
     run: [sh, -c, 'printf "\302\23331mred\342\200\256txt.exe\177"; exit 1']
+-- listed.yaml --
+checks:
+  - id: listed
+    reason: "\e[2Jok\u009b31m"
+    scope: repo
+    extract:
+      v: {regex: {file: README, pattern: "\u202e(.*)"}}
+    assert: size(v) > 0

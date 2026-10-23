@@ -86,13 +86,16 @@ func TestPathUnicodeEscapeEdges(t *testing.T) {
 }
 
 // looksBack is true only for a pattern that reads the text before a
-// position, which is when the search needs its second, anchored form.
+// position, which is when the search needs its second, anchored form, and
+// atStart only for one that holds \A, whose search before the first match
+// cannot start at the start of a line.
 func TestLooksBack(t *testing.T) {
-	for pattern, want := range map[string]bool{
-		`v(\d)`: false, `(?s)a(.)`: false, `^v(\d)`: true, `\bv(\d)`: true, `\Bv(\d)`: true, `(?-m)^v(\d)`: true,
+	for pattern, want := range map[string][2]bool{
+		`v(\d)`: {false, false}, `(?s)a(.)`: {false, false}, `^v(\d)`: {true, false}, `\bv(\d)`: {true, false},
+		`\Bv(\d)`: {true, false}, `(?-m)^v(\d)`: {true, true}, `v(?:\A|w)(\d)`: {true, true},
 	} {
-		if got := looksBack(pattern); got != want {
-			t.Errorf("looksBack(%s) = %v, want %v", pattern, got, want)
+		if back, atStart := looksBack(pattern); back != want[0] || atStart != want[1] {
+			t.Errorf("looksBack(%s) = %v, %v, want %v", pattern, back, atStart, want)
 		}
 	}
 }

@@ -1,0 +1,57 @@
+# A config that does not load: errata list exits 2, prints nothing on
+# stdout, and prints on stderr exactly what errata check prints for it, in
+# either format. Both read the config with one loader, so a config that one
+# refuses the other refuses with the same message.
+! exec errata check -c invalid.yaml
+cp stderr check.err
+! exec errata list -c invalid.yaml
+! stdout .
+cmp stderr check.err
+! exec errata list -c invalid.yaml -f json
+! stdout .
+cmp stderr check.err
+stderr 'checks\[0\]: check "a": reason is required'
+stderr 'checks\[1\]: check "b": extractor "v": yaml: path is required'
+
+# A key errata does not know, a file with no checks, a file that is not
+# there, and the default config of a root that has none.
+! exec errata check -c typo.yaml
+cp stderr check.err
+! exec errata list -c typo.yaml -f json
+cmp stderr check.err
+stderr 'unknown field "why"'
+
+! exec errata check -c empty.yaml
+cp stderr check.err
+! exec errata list -c empty.yaml -f json
+cmp stderr check.err
+stderr 'the file holds no checks'
+
+! exec errata check -c absent.yaml
+cp stderr check.err
+! exec errata list -c absent.yaml -f json
+cmp stderr check.err
+stderr 'absent.yaml'
+
+mkdir bare
+! exec errata check --root bare
+cp stderr check.err
+! exec errata list --root bare -f json
+! stdout .
+cmp stderr check.err
+stderr 'bare.errata.yaml: no such file'
+
+-- invalid.yaml --
+checks:
+  - {id: a, scope: repo, run: ['true']}
+  - id: b
+    reason: r
+    scope: repo
+    extract:
+      v: {yaml: {file: f.yaml}}
+    agree: [v]
+-- typo.yaml --
+checks:
+  - {id: a, why: r, scope: repo, run: ['true']}
+-- empty.yaml --
+checks: []

@@ -12,6 +12,15 @@ stderr 'absent.yaml'
 ! exec errata check --format html -c no-reason.yaml
 stderr 'unknown --format "html", want one of junit, sarif, text'
 
+# A program check's timeout is a positive duration. The protocol reads zero
+# as no limit, so 0s does not load rather than run without one.
+! exec errata check -c zero-timeout.yaml
+stderr 'check "a": timeout is 0s: write a positive duration such as 10s, or leave the key out for the default of 30s'
+! stdout .
+
+-- zero-timeout.yaml --
+checks:
+  - {id: a, reason: r, scope: repo, run: [sleep, '5'], timeout: 0s}
 -- no-reason.yaml --
 checks:
   - {id: a, scope: repo, run: ['true']}

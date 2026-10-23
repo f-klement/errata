@@ -75,7 +75,7 @@ func newRoot(load loader) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	root.AddCommand(newCheckCmd(load), newVersionCmd())
+	root.AddCommand(newCheckCmd(load), newListCmd(load), newVersionCmd())
 	return root
 }
 
@@ -105,11 +105,43 @@ func resolveVersion(stamped string, buildInfo func() (*debug.BuildInfo, bool)) s
 	return stamped
 }
 
+// configFlags are the flags that say which config a command loads. check
+// and list declare them with one function and load with loadChecks, so the
+// two read one config the same way.
+type configFlags struct {
+	repoRoot   string
+	configPath string
+}
+
+func (f *configFlags) add(cmd *cobra.Command) {
+	cmd.Flags().StringVar(&f.repoRoot, "root", ".", "repository root; checks run with this as their working directory")
+	cmd.Flags().StringVarP(&f.configPath, "config", "c", "", "config file (default <root>/"+config.DefaultFile+")")
+}
+
+// loadChecks is the one way a command reads its config: check runs the checks
+// it returns, and list prints them. It returns the absolute root as well,
+// which check runs the checks from. A config that does not load is an error
+// that names the file, which Execute prints and exits 2 on.
+func loadChecks(load loader, f configFlags) (string, []check.Check, error) {
+	absRoot, err := filepath.Abs(f.repoRoot)
+	if err != nil {
+		return "", nil, err
+	}
+	path := f.configPath
+	if path == "" {
+		path = filepath.Join(absRoot, config.DefaultFile)
+	}
+	checks, err := load(absRoot, path)
+	if err != nil {
+		return "", nil, fmt.Errorf("load %s: %w", path, err)
+	}
+	return absRoot, checks, nil
+}
+
 func newCheckCmd(load loader) *cobra.Command {
 	var (
-		repoRoot   string
-		configPath string
-		format     string
+		flags  configFlags
+		format string
 	)
 	cmd := &cobra.Command{
 		Use:   "check",
@@ -123,16 +155,9 @@ func newCheckCmd(load loader) *cobra.Command {
 				return fmt.Errorf("unknown --format %q, want one of %s", format, strings.Join(report.FormatNames(), ", "))
 			}
 			reporter := newReporter(resolveVersion(Version, debug.ReadBuildInfo))
-			absRoot, err := filepath.Abs(repoRoot)
+			absRoot, checks, err := loadChecks(load, flags)
 			if err != nil {
 				return err
-			}
-			if configPath == "" {
-				configPath = filepath.Join(absRoot, config.DefaultFile)
-			}
-			checks, err := load(absRoot, configPath)
-			if err != nil {
-				return fmt.Errorf("load %s: %w", configPath, err)
 			}
 
 			rep := engine.New(absRoot, nil).Execute(cmd.Context(), checks)
@@ -145,8 +170,35 @@ func newCheckCmd(load loader) *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&repoRoot, "root", ".", "repository root; checks run with this as their working directory")
-	cmd.Flags().StringVarP(&configPath, "config", "c", "", "config file (default <root>/"+config.DefaultFile+")")
+	flags.add(cmd)
 	cmd.Flags().StringVarP(&format, "format", "f", "text", "output format: "+strings.Join(report.FormatNames(), ", "))
+	return cmd
+}
+
+func newListCmd(load loader) *cobra.Command {
+	var (
+		flags  configFlags
+		format string
+	)
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "Print the checks errata.yaml holds, as errata check loads them",
+		Long: "Print every check the config holds, with the values errata check would run it with,\n" +
+			"defaults filled in. It runs nothing. A config that does not load exits 2, as with check.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			lister, ok := report.ListFormats[format]
+			if !ok {
+				return fmt.Errorf("unknown --format %q, want one of %s", format, strings.Join(report.ListFormatNames(), ", "))
+			}
+			_, checks, err := loadChecks(load, flags)
+			if err != nil {
+				return err
+			}
+			return lister.WriteList(cmd.OutOrStdout(), checks)
+		},
+	}
+	flags.add(cmd)
+	cmd.Flags().StringVarP(&format, "format", "f", "text", "output format: "+strings.Join(report.ListFormatNames(), ", "))
 	return cmd
 }

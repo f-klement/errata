@@ -1,0 +1,348 @@
+# errata list prints each kind of check as errata check loads it, with the
+# defaults the loader fills in written out: a program check's timeout of 30s,
+# an extractor's max_bytes of 33554432 and an ini extractor's dialect, which
+# the file's name chooses. It reads none of the files the checks name, so
+# none is here, and it exits 0.
+exec errata list -c program.yaml -f json
+cmp stdout program.json
+! stderr .
+
+# An agree rule: its relation is agree with compare text, beside its
+# normalize, allow_empty and skip_not_literal, and a path filter and a yaml
+# kind are printed as written.
+exec errata list -c agree.yaml -f json
+cmp stdout agree.json
+! stderr .
+
+# An assert rule, with one extractor of each other kind, and no normalize,
+# allow_empty or skip_not_literal: each is an empty list, not left out.
+exec errata list -c assert.yaml --format json
+cmp stdout assert.json
+! stderr .
+
+# A tool_version extractor: with files it lists them as written; without, it
+# walks the repository, which the listing shows by leaving files out. Each
+# has its max_bytes, the budget of every file it reads together.
+exec errata list -c tool.yaml -f json
+cmp stdout tool.json
+! stderr .
+
+# The text listing says the same for a person to read.
+exec errata list -c agree.yaml
+cmp stdout agree.txt
+exec errata list -c program.yaml
+cmp stdout program.txt
+
+# Each check is where the config holds it, relative to the root; a config
+# outside the root is named as given and marked outside.
+mkdir repo
+exec errata list --root repo -c program.yaml -f json
+stdout '"file": "program.yaml",\n        "line": 2,\n        "outside": true'
+
+# list takes text and json only: a report format of check is refused.
+! exec errata list -c program.yaml -f sarif
+stderr '^errata: unknown --format "sarif", want one of json, text$'
+! stdout .
+
+-- program.yaml --
+checks:
+  - id: lint-passes
+    reason: The linter guards the style.
+    scope: repo
+    run: [make, lint]
+  - id: slow-probe
+    reason: |
+      The probe takes long.
+      A second line.
+    scope: live
+    run: [sh, -c, 'echo "a b" > out']
+    timeout: 2m
+-- program.json --
+{
+  "version": 1,
+  "checks": [
+    {
+      "id": "lint-passes",
+      "reason": "The linter guards the style.",
+      "scope": "repo",
+      "at": {
+        "file": "program.yaml",
+        "line": 2,
+        "outside": false
+      },
+      "type": "program",
+      "run": [
+        "make",
+        "lint"
+      ],
+      "timeout": "30s"
+    },
+    {
+      "id": "slow-probe",
+      "reason": "The probe takes long.\nA second line.\n",
+      "scope": "live",
+      "at": {
+        "file": "program.yaml",
+        "line": 6,
+        "outside": false
+      },
+      "type": "program",
+      "run": [
+        "sh",
+        "-c",
+        "echo \"a b\" > out"
+      ],
+      "timeout": "2m0s"
+    }
+  ]
+}
+-- agree.yaml --
+checks:
+  - id: version-agrees
+    reason: Every manifest names one version.
+    scope: repo
+    extract:
+      chart: {yaml: {file: deploy/Chart.yaml, path: 'entries[?@.name == "app"].version', kind: Chart, max_bytes: 1024}}
+      app:   {json: {file: package.json, path: version}}
+      deps:  {ini: {file: tox.ini, section: testenv, key: deps}}
+      php:   {ini: {file: php.ini, section: PHP, key: error_reporting}}
+    agree: [app, chart, deps, php]
+    allow_empty: [deps]
+    skip_not_literal: [php, deps]
+    normalize: [trim, lower]
+-- agree.json --
+{
+  "version": 1,
+  "checks": [
+    {
+      "id": "version-agrees",
+      "reason": "Every manifest names one version.",
+      "scope": "repo",
+      "at": {
+        "file": "agree.yaml",
+        "line": 2,
+        "outside": false
+      },
+      "type": "rule",
+      "extract": {
+        "app": {
+          "json": {
+            "file": "package.json",
+            "path": "version",
+            "max_bytes": 33554432
+          }
+        },
+        "chart": {
+          "yaml": {
+            "file": "deploy/Chart.yaml",
+            "path": "entries[?@.name == \"app\"].version",
+            "kind": "Chart",
+            "max_bytes": 1024
+          }
+        },
+        "deps": {
+          "ini": {
+            "file": "tox.ini",
+            "dialect": "tox",
+            "section": "testenv",
+            "key": "deps",
+            "max_bytes": 33554432
+          }
+        },
+        "php": {
+          "ini": {
+            "file": "php.ini",
+            "dialect": "php",
+            "section": "PHP",
+            "key": "error_reporting",
+            "max_bytes": 33554432
+          }
+        }
+      },
+      "relation": {
+        "agree": [
+          "app",
+          "chart",
+          "deps",
+          "php"
+        ],
+        "compare": "text"
+      },
+      "normalize": [
+        "trim",
+        "lower"
+      ],
+      "allow_empty": [
+        "deps"
+      ],
+      "skip_not_literal": [
+        "php",
+        "deps"
+      ]
+    }
+  ]
+}
+-- assert.yaml --
+checks:
+  - id: replicas-fit
+    reason: The replicas fit the nodes.
+    scope: repo
+    extract:
+      replicas: {yaml: {file: deploy.yaml, path: spec.replicas}}
+      nodes:    {regex: {file: README.md, pattern: '(\d+) nodes'}}
+      prose:    {text: {file: README.md, pattern: 'runs on (\w+)', code: true}}
+      pom:      {xml: {file: pom.xml, path: '/m:project/m:version', namespaces: {m: 'http://maven.apache.org/POM/4.0.0'}}}
+      port:     {properties: {file: app.properties, key: server.port}}
+      cfg:      {toml: {file: cfg.toml, path: 'server.port'}}
+    assert: int(replicas[0]) <= int(nodes[0]) && size(prose) + size(pom) + size(port) + size(cfg) > 0
+-- assert.json --
+{
+  "version": 1,
+  "checks": [
+    {
+      "id": "replicas-fit",
+      "reason": "The replicas fit the nodes.",
+      "scope": "repo",
+      "at": {
+        "file": "assert.yaml",
+        "line": 2,
+        "outside": false
+      },
+      "type": "rule",
+      "extract": {
+        "cfg": {
+          "toml": {
+            "file": "cfg.toml",
+            "path": "server.port",
+            "max_bytes": 33554432
+          }
+        },
+        "nodes": {
+          "regex": {
+            "file": "README.md",
+            "pattern": "(\\d+) nodes",
+            "max_bytes": 33554432
+          }
+        },
+        "pom": {
+          "xml": {
+            "file": "pom.xml",
+            "path": "/m:project/m:version",
+            "namespaces": {
+              "m": "http://maven.apache.org/POM/4.0.0"
+            },
+            "max_bytes": 33554432
+          }
+        },
+        "port": {
+          "properties": {
+            "file": "app.properties",
+            "key": "server.port",
+            "max_bytes": 33554432
+          }
+        },
+        "prose": {
+          "text": {
+            "file": "README.md",
+            "pattern": "runs on (\\w+)",
+            "code": true,
+            "max_bytes": 33554432
+          }
+        },
+        "replicas": {
+          "yaml": {
+            "file": "deploy.yaml",
+            "path": "spec.replicas",
+            "max_bytes": 33554432
+          }
+        }
+      },
+      "relation": {
+        "assert": "int(replicas[0]) <= int(nodes[0]) && size(prose) + size(pom) + size(port) + size(cfg) > 0"
+      },
+      "normalize": [],
+      "allow_empty": [],
+      "skip_not_literal": []
+    }
+  ]
+}
+-- agree.txt --
+version-agrees (repo) rule
+  why: Every manifest names one version.
+  extract: app: json file package.json, path version, max_bytes 33554432
+           chart: yaml file deploy/Chart.yaml, path `entries[?@.name == "app"].version`, kind Chart, max_bytes 1024
+           deps: ini file tox.ini, dialect tox, section testenv, key deps, max_bytes 33554432
+           php: ini file php.ini, dialect php, section PHP, key error_reporting, max_bytes 33554432
+  agree: app, chart, deps, php (compare text)
+  normalize: trim, lower
+  allow_empty: deps
+  skip_not_literal: php, deps
+
+1 check: 1 rule, 0 program checks.
+-- program.txt --
+lint-passes (repo) program check
+  why: The linter guards the style.
+  run: make lint
+  timeout: 30s
+
+slow-probe (live) program check
+  why: The probe takes long.
+       A second line.
+  run: sh -c `echo "a b" > out`
+  timeout: 2m0s
+
+2 checks: 0 rules, 2 program checks.
+-- tool.yaml --
+checks:
+  - id: node-pinned-alike
+    reason: Every pin of Node names one version.
+    scope: repo
+    extract:
+      walked: {tool_version: {tool: node}}
+      named:  {tool_version: {tool: node, files: [web/.nvmrc, package.json], max_bytes: 4096}}
+    agree: [walked, named]
+-- tool.json --
+{
+  "version": 1,
+  "checks": [
+    {
+      "id": "node-pinned-alike",
+      "reason": "Every pin of Node names one version.",
+      "scope": "repo",
+      "at": {
+        "file": "tool.yaml",
+        "line": 2,
+        "outside": false
+      },
+      "type": "rule",
+      "extract": {
+        "named": {
+          "tool_version": {
+            "tool": "node",
+            "files": [
+              "web/.nvmrc",
+              "package.json"
+            ],
+            "max_bytes": 4096
+          }
+        },
+        "walked": {
+          "tool_version": {
+            "tool": "node",
+            "max_bytes": 33554432
+          }
+        }
+      },
+      "relation": {
+        "agree": [
+          "walked",
+          "named"
+        ],
+        "compare": "text"
+      },
+      "normalize": [],
+      "allow_empty": [],
+      "skip_not_literal": []
+    }
+  ]
+}

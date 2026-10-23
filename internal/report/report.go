@@ -1,4 +1,5 @@
-// Package report renders a check.Report. Each format is one Reporter; the
+// Package report renders a check.Report, and the checks errata list prints.
+// Each format of a run is one Reporter and each of a listing one Lister; the
 // engine never knows which one runs.
 package report
 

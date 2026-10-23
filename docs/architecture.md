@@ -21,16 +21,17 @@ import `cli`.
 | `internal/engine` | which checks run, in what order, and which are skipped | the check protocol's details, output formats |
 | `internal/protocol` | the check protocol: run a program, map its exit code to a verdict | config, providers, output |
 | `internal/rule` | evaluating a rule: run its extractors, compare their values or evaluate its assert, fail closed; the CEL environment, the assert helpers, the embedded time zone database and the limits | how an extractor reads a file, config, output |
-| `internal/extract` | the kinds of extractor a rule names: the `Spec` a rule decodes into, the kinds table, `Build`, `Place` and `Kind`, which see every kind and dispatch to its reader | how any kind reads a file; rules, config, output |
-| `internal/extract/core` | what every reader shares: the source held inside the repository and to its size cap, the limits on nodes, values, depth and bytes, the tree and the path grammar with its filters, the line index, quoting, the clocked regex search, and the entry extractor and work meter of the INI and properties readers | any one format |
+| `internal/extract` | the kinds of extractor a rule names: the `Spec` a rule decodes into, the kinds table, `Build`, `Place`, `Resolved` and `Kind`, which see every kind and dispatch to its reader | how any kind reads a file; rules, config, output |
+| `internal/extract/core` | what every reader shares: the source held inside the repository and to its size cap, the walk of the repository and the directories it passes over, the limits on nodes, values, depth and bytes, the tree and the path grammar with its filters, the line index, quoting, the clocked regex search, and the entry extractor and work meter of the INI and properties readers | any one format |
 | `internal/extract/yaml`, `json`, `toml` | one reader each that parses its format into core's tree, for core's path to select from | each other |
 | `internal/extract/regex` | the regex extractor, which is core's search over the file | the other readers |
 | `internal/extract/text` | Markdown prose, searched with core's search | the other readers |
 | `internal/extract/xml` | XML, with an XPath 1.0 subset of its own | the other readers |
 | `internal/extract/ini`, `properties` | one reader each of entries for core's entry extractor: INI in the plain, git, ansible, tox and php dialects, and Java properties | each other |
+| `internal/extract/toolversion` | the files that pin a tool's version, read by their names: its own line reader, golang.org/x/mod/modfile for go.mod, and the JSON and TOML parsers the facade hands it for the manifests and rust-toolchain.toml | the other readers, whose parsers it gets from the facade |
 | `internal/extract/extracttest`, `coretest` | what the extractors' tests share; only test files import them, and Gremlins and the `make cover` total leave them alone | any reader: `coretest` imports `core` alone, and `extracttest` nothing of errata's but `check`, since `core`'s own tests import it |
 | `internal/provider` | the provider interface, capabilities, the reconciler model, scope gating | any concrete live system (none yet) |
-| `internal/report` | output formats: `text`, `junit` and `sarif` | where the results came from |
+| `internal/report` | output formats: `text`, `junit` and `sarif` for a run, `text` and `json` for `errata list` | where the results came from |
 | `internal/heapcap` | the heap watchdog that every package's tests link under the `mutation` tag only | errata's own code: only test files built with the tag import it |
 | `internal/check` | the domain types: `Check`, `Rule`, `Extractor`, `Assertion`, `Value`, `Location`, `Extracted`, `Scope`, `Verdict`, `Result`, `Report` | every other package |
 
@@ -106,9 +107,9 @@ Two packages on it can read a file, `time` with `LoadLocation` and `archive/zip`
 input errata does not control. Every pass over a file is linear in its size or has a bound of its
 own, and errata enforces named bounds: the file size (`max_bytes`), a node count scaled from it,
 the nodes YAML aliases add, the values per extractor, the depth, the capture groups, the regex
-time, the work of a path's filters, the Markdown parse's time and counts, and the work of an INI
-or properties read. A file past a
-bound makes the rule unknown. Peak memory is not promised, since it depends on a file's shape; a
+time, the work of a path's filters, the Markdown parse's time and counts, the work of an INI
+or properties read, the lines and tokens of a go.mod, and the entries and depth of a walk of
+the repository. A file or a walk past a bound makes the rule unknown. Peak memory is not promised, since it depends on a file's shape; a
 file that exhausts it ends the process, which fails the job. ADR
 [0003](adr/0003-extractors-bound-time-and-size-and-let-memory-fail-closed.md) has the reasons.
 
@@ -161,5 +162,5 @@ its own, so a mutant of a reader counts as killed only when that reader's own te
 thresholds are 85% efficacy and 85% mutant coverage. The coverage figure is not 100% because Go's
 coverage profile starts a `switch` case's block after its colon, so Gremlins reports a mutant in a
 case expression as not covered even when a test runs that arm. Where such mutants cap a package,
-the facade, `core`, `ini`, `properties` and `xml` among them, its floor is the figure it reaches;
+`core`, `ini`, `properties` and `xml` among them, its floor is the figure it reaches;
 `ci/README.md` (Floors per package) has the table.

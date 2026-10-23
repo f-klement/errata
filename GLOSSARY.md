@@ -90,13 +90,19 @@ is either a rule or a program check. Do not call it a script, an exec check or a
 
 **Extractor.** The part of a rule that gets values from one place. A YAML path, an XPath into an
 XML file, a key in an INI or properties file, a regular expression capture, a sentence of Markdown
-prose, an image digest, a field on a live object.
+prose, the versions of a tool in the files that pin it, an image digest, a field on a live object.
+
+**Pin.** A file's statement of the version of a tool the repository uses, such as `20.11.1` in
+`.nvmrc` or `nodejs 20.11.1` in `.tool-versions`. The `tool_version` extractor reads every pin of
+one tool. A range a tool must satisfy, such as `"node": ">=20"` under `engines` in package.json, is
+not a pin.
 
 **Not literal.** A value a file only computes, such as `E_ALL` in php.ini, which PHP reads as a
 number, or `{posargs}` in tox.ini. Its text is what the file wrote, not what the file means, so a
 rule never compares it. A rule that lists the extractor in `skip_not_literal` leaves such values
-out; any other rule with one is unknown. The `ini` extractor marks them, and `properties` in a
-template file.
+out; any other rule with one is unknown. The `ini` extractor marks them, `properties` in a
+template file, and `tool_version` a version such as `lts/*` or `system`, which a version manager
+resolves.
 
 **Check protocol.** The way errata runs a program check. errata runs the
 program and reads its result. The program can be in any language.

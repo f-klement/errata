@@ -103,12 +103,15 @@ docker run --rm -v "$PWD:/repo" -w /repo fklement/errata check
   the run lacked. A run in CI with no
   cluster says out loud which checks it could not reach.
 - **Rules in YAML.** A rule reads values out of YAML, JSON, TOML, XML, INI and Java properties
-  files, regular expression captures and the prose of Markdown files, and states that they agree
+  files, the files that pin a tool's version, regular expression captures and the prose of
+  Markdown files, and states that they agree
   or that a [CEL](https://cel.dev) expression over them holds.
   An erratum names every value with the `file:line` it came from.
 - **Output for people and for CI.** Readable text, JUnit XML that GitLab, GitHub Actions and
   Jenkins render per check, or SARIF that GitHub code scanning turns into alerts on the line that
   disagrees.
+- **The suite as data.** `errata list --format json` prints every check as `errata check` loads
+  it, defaults filled in, for a program that wants to know what errata will run.
 - **One static binary**, for Linux, macOS and Windows on amd64 and arm64, and a container image.
 
 Designed and not built yet, in the order of [ROADMAP.md](ROADMAP.md):
@@ -157,7 +160,7 @@ nothing and pass. Every check has these keys:
 | `reason` | yes | why the check exists and what breaks without it |
 | `scope` | yes | `repo`, `live` or `applied`; a rule is always `repo` |
 | `run` | program check | the command, as a list of arguments, run from the repository root |
-| `timeout` | no | program check only: a Go duration such as `10s` or `2m`; default `30s` |
+| `timeout` | no | program check only: a positive Go duration such as `10s` or `2m`; default `30s`. Zero or less does not load |
 | `extract` | rule | the rule's extractors, each under a name of its own |
 | `agree` | rule: this or `assert` | the extractors whose values must all be equal |
 | `assert` | rule: this or `agree` | a [CEL](https://cel.dev) expression over the extracted values that must be true |
@@ -218,20 +221,22 @@ tests one relation, so two relations are two checks.
 
 A rule fails closed. An extractor that cannot read its source makes the rule unknown, with the
 extractor's error in the message. So does an extractor that finds no value, unless `allow_empty`
-lists it, and one that returns a not literal value, unless `skip_not_literal` lists it (see
-[Values a file only computes](#values-a-file-only-computes)). An agree rule that has fewer than two values
+lists it, and one that returns a not literal value, unless `skip_not_literal` lists it (see [Values
+a file only computes](#values-a-file-only-computes)). An agree rule that has fewer than two values
 to compare is unknown too, so `agree: [tags]` over a regular expression with one match is unknown
 and over two matches compares them. The exception is an agree rule where an extractor that
 `allow_empty` lists came back empty: one value left is true. With no value at all an agree rule is
 unknown, even when `allow_empty` lists every extractor. An assert rule has no such floor: an
 extractor that `allow_empty` lists and that finds nothing is an empty list, and the expression
 decides, even when every extractor came back empty. Two extractors that read the same place, or a
-name listed twice in `agree` or `allow_empty`, do not load. The same place is the same file, however
-its path is spelt (`f`, `./f` and `d/../f` are one file), read by the same kind with the same
-fields; a different `max_bytes` does not make a second place. An INI entry is one place however the
-spec spells it, as its tool reads it: `section: remote, subsection: origin` and
-`section: remote.origin` are one git entry. A rule takes no `timeout`, because its extractors read files
-inside errata rather than running a program, and its scope is `repo` for the same reason.
+name listed twice in `agree` or `allow_empty`, do not load. The same place is the same file,
+however its path is spelt (`f`, `./f` and `d/../f` are one file), read by the same kind with the
+same fields; a different `max_bytes` does not make a second place. An INI entry is one place
+however the spec spells it, as its tool reads it: `section: remote, subsection: origin` and
+`section: remote.origin` are one git entry. The load error names each extractor that reads a place
+an extractor before it in name order reads, beside the first one, at most 8 of them, and then
+counts the rest. A rule takes no `timeout`, because its extractors read files inside errata rather
+than running a program, and its scope is `repo` for the same reason.
 
 #### assert
 
@@ -358,8 +363,8 @@ expression in a repository's configuration can stall CI.
 ### Extractors
 
 An extractor reads one file of the repository and returns a list of values, each with the file and
-the line where it starts. A rule names its extractors under `extract:` and sets exactly one of the
-eight keys in each:
+the line where it starts; `tool_version` reads every file that pins one tool. A rule names its
+extractors under `extract:` and sets exactly one of the nine keys in each:
 
 ```yaml
 extract:
@@ -384,6 +389,8 @@ extract:
     ini: {file: .gitmodules, section: submodule, subsection: vendor/lib, key: url}
   port:
     properties: {file: src/main/resources/application.properties, key: server.port}
+  node:
+    tool_version: {tool: node}
 ```
 
 | Key | Fields | Returns |
@@ -396,21 +403,23 @@ extract:
 | `xml` | `file`, `path`, and `namespaces` for a file with namespaces | every node the path selects: an element's text, an attribute's value or a text node |
 | `ini` | `file`, `key`, `section`, and `dialect`, `subsection` (git) or `host` (ansible) | every value of the key in the section, or the hosts or child groups of an ansible group |
 | `properties` | `file`, `key` | every value of the key |
+| `tool_version` | `tool`, and `files` to name the files | every version of the tool in the files that pin it (see [Tool versions](#tool-versions)) |
 
-Each key also takes `max_bytes`, the largest file it reads (see Limits).
+Each key also takes `max_bytes`, the largest file it reads; for `tool_version`, the files it reads
+in all (see Limits).
 
-`file` is relative to the repository root. An absolute path, or one whose `..` leaves the root,
-does not load. A `..` in `file` is resolved by name, before any symlink: `link/../f.yaml` reads the
-repository's `f.yaml`, wherever `link` points. errata then follows the symlinks on the way to the
-file as the operating system does, so a `..` in a link's target goes up from where the link
-points. A link that ends inside the repository is read, whether it is relative or absolute, and
-so is one whose route goes up through the repository's parent directories and back. A link that
-ends outside is refused when the file is read, which makes the rule unknown. So is a link whose
-route passes through any other directory outside the repository, even when it ends inside, and an
-absolute link written through a symlink, such as one to `/tmp/...` on a machine where `/tmp` is a
-link. The message says only that a symlink leads outside the repository: not where it points, nor
-whether that exists. errata looks at nothing outside the repository to decide. A location, and
-every message, names the file as `file` wrote it.
+`file`, and each of `files`, is relative to the repository root. An absolute path, or one whose `..`
+leaves the root, does not load. A `..` in `file` is resolved by name, before any symlink:
+`link/../f.yaml` reads the repository's `f.yaml`, wherever `link` points. errata then follows the
+symlinks on the way to the file as the operating system does, so a `..` in a link's target goes up
+from where the link points. A link that ends inside the repository is read, whether it is relative
+or absolute, and so is one whose route goes up through the repository's parent directories and back.
+A link that ends outside is refused when the file is read, which makes the rule unknown. So is a
+link whose route passes through any other directory outside the repository, even when it ends
+inside, and an absolute link written through a symlink, such as one to `/tmp/...` on a machine where
+`/tmp` is a link. The message says only that a symlink leads outside the repository: not where it
+points, nor whether that exists. errata looks at nothing outside the repository to decide. A
+location, and every message, names the file as `file` wrote it.
 
 #### Paths
 
@@ -532,8 +541,9 @@ Some files hold a value that only running them produces: `$(git describe)` in a 
 for such a file marks the value as not literal. Its text is what the file wrote, not the value the
 file means, so a rule never compares it. Each extractor's documentation says whether it can return
 a not literal value. Of errata's kinds only `ini` can, for the files and sections that
-[INI files](#ini-files) lists, and `properties` for a template file; a `${{ }}` read with `yaml:`
-is still plain text, and two workflows that use the same expression agree.
+[INI files](#ini-files) lists, `properties` for a template file, and `tool_version` for a version
+that names none, such as `lts/*` or `system` ([Tool versions](#tool-versions)); a `${{ }}` read
+with `yaml:` is still plain text, and two workflows that use the same expression agree.
 
 PHP reads `error_reporting = E_ALL` as the number the constant stands for, so the text `E_ALL` is
 not literal:
@@ -592,11 +602,11 @@ nothing, so an agree rule compares the one value left and an assert rule decides
 message then says the rule compared nothing from that extractor. The floor of two values for agree
 counts only the values left.
 
-`skip_not_literal` may list only an extractor that can return a not literal value: for any other
-the key would load and leave nothing out, so it does not load. That holds for every kind but `ini`
-and `properties`, for an `ini` extractor whose file errata models no transform for, such as
-`pytest.ini`, and for a `properties` file that is not a template. The message names the kind, and
-for `ini` the dialect and the file:
+`skip_not_literal` may list only an extractor that can return a not literal value: for any other the
+key would load and leave nothing out, so it does not load. That holds for every kind but `ini`,
+`properties` and `tool_version`, for an `ini` extractor whose file errata models no transform for,
+such as `pytest.ini`, and for a `properties` file that is not a template. The message names the
+kind, and for `ini` the dialect and the file:
 
 ```console
 $ errata check -c errata.yaml
@@ -957,13 +967,131 @@ files are plain files: name the one to read, errata does not merge profiles. err
 value Java reads, so every value is literal, but in a template file, as [INI files](#ini-files)
 says.
 
+#### Tool versions
+
+`tool_version` returns every version of one tool that the repository pins, each with its file
+and line, so one rule says that the Node version of the image and of every pin agree:
+
+```yaml
+checks:
+  - id: node-agrees
+    reason: The image and a developer's shell run one Node.
+    scope: repo
+    extract:
+      pins: {tool_version: {tool: node}}
+      image: {regex: {file: Dockerfile, pattern: '^FROM node:([\d.]+)'}}
+    agree: [pins, image]
+```
+
+Without `files`, it walks the repository and reads every file of the table below that pins the
+tool, wherever it is: a directory's files in the table's order, then its subdirectories, each by
+name. The walk enters no directory of the list below, wherever it is, since each holds files the
+repository installs, downloads, builds or keeps for its tools, and a pin there is another
+project's. Nor does it enter a directory below the root that holds an entry named `.git`, a file
+or a directory: a submodule, a worktree or a repository of its own, whose pins are another
+project's too. It does not read `.gitignore`. It does not enter a symlink to a directory, so a pin
+below one is not found; a symlink at a pin's name is read as `file` reads one, followed when it
+ends inside the repository and refused when it leads out, and passed over when it dangles inside.
+Several links to one file read it once, and give its versions at each link's path. A walk that
+passes a limit, meets a path over 4096 bytes or a directory it cannot open or read makes the rule
+unknown (see Limits). `files` names the files instead, and each one it names must exist, inside a
+skipped directory or a submodule too. errata reads a file by its name, so a file the table does
+not name, or one that pins another tool, does not load. The files one extractor reads hold at most
+its `max_bytes` in all, as one file does: a repository's pins are small files, and a walk that
+finds many, or copies of one large file, costs no more than reading one file of that size.
+
+| Directory | Why |
+|---|---|
+| `.git` | git's own store: objects, refs and hooks, no file of the working tree |
+| `node_modules` | the packages npm, Yarn and pnpm install, each with pins of its own |
+| `bower_components` | the packages Bower installs |
+| `.yarn` | Yarn's cache and its own releases |
+| `.pnpm-store` | pnpm's store of packages |
+| `vendor` | dependencies Go, Composer and Bundler copy into the repository, each with its own go.mod or version files |
+| `.venv` | a Python virtual environment, with the packages installed in it |
+| `venv` | a Python virtual environment, by the other name python -m venv is given |
+| `.tox` | the virtual environments tox builds |
+| `.nox` | the virtual environments nox builds |
+| `.direnv` | the environments direnv builds |
+| `__pycache__` | Python's compiled files |
+| `.terraform` | the providers and modules terraform init downloads |
+| `.gradle` | Gradle's caches |
+| `.cache` | the caches tools keep in the repository |
+| `testdata` | test fixtures, which the go command passes over too: a fixture is no claim of the repository |
+
+| File | Tool | Read as |
+|---|---|---|
+| `.tool-versions` | the tool each line names | asdf and mise: a tool, then its versions, the first wanted and each after it a fallback; every version is a value |
+| `.sdkmanrc` | the candidate each line names | SDKMAN!: `candidate=version` on each line |
+| `.nvmrc`, `.node-version` | `node` | the first version |
+| `.python-version` | `python` | pyenv: the first word of every line, each a version pyenv activates |
+| `runtime.txt` | `python` | Heroku: `python-3.12.1` on the first line; the value is `3.12.1` |
+| `.ruby-version` | `ruby` | the first version, `ruby-3.3.0` as written |
+| `.go-version` | `go` | the first version |
+| `go.mod` | `go` | as the go command picks its Go: the `toolchain` directive's version when there is one (`toolchain go1.22.3` gives `1.22.3`, `default` stays `default`), and the `go` directive's when there is none |
+| `.terraform-version` | `terraform` | the first version |
+| `.java-version` | `java` | the first version |
+| `rust-toolchain` | `rust` | rustup: a file that parses as TOML is read as `rust-toolchain.toml` is; a file of one line that does not is the legacy form, that line the channel |
+| `rust-toolchain.toml` | `rust` | `toolchain.channel`; a toolchain given by `path` has none |
+| `.bazelversion` | `bazel` | the first version |
+| `.bun-version` | `bun` | the first version |
+| `VERSION` | the tool the spec names | the first version; only when `files` names it, since the file names no tool |
+| `package.json` | the tool `engines` names, and the package manager | `engines.<tool>`, and `packageManager`'s version when its name is the tool (`pnpm@9.1.0+sha512...` gives `9.1.0`); only when `files` names it |
+| `pyproject.toml` | `python` | `project.requires-python` and Poetry's `tool.poetry.dependencies.python`; only when `files` names it |
+| `Cargo.toml` | `rust` | `package.rust-version` and `workspace.package.rust-version`; `rust-version.workspace = true` gives nothing, since the workspace's line holds the version; only when `files` names it |
+
+The search leaves the three manifests out because they state a range a tool must satisfy, such as
+`>=20`, not the version a repository pins. A file of one version gives the first field of its
+first line that holds one, and a later line is no value, since nvm, rbenv, goenv, tfenv, jenv,
+bazelisk and bun read nothing after it. In every file of lines a `#` starts a comment, a blank line
+is passed over, and fields are split at white space, so a CRLF file reads as an LF one. A version
+comes back as the file wrote it: `v20.11.1`, `20` and `>=20` are three texts, and comparing them as
+versions is a comparison's work, not the reader's.
+
+`tool` is spelled as the tool's command is: `node` and `go`. asdf's plugins are named `nodejs` and
+`golang`, and a `.tool-versions` line under either name pins the tool; `tool: nodejs` and
+`tool: golang` do not load, and the message names the spelling to write. A tool the table does not
+name, such as `maven`, is read from `.tool-versions` and `.sdkmanrc`. `tool` holds letters, digits
+and the characters `._-:/@+`, so a mise backend such as `npm:@biomejs/biome` loads, and at most 64
+bytes.
+
+A version that names no version until a tool resolves it is not literal (see
+[Values a file only computes](#values-a-file-only-computes)):
+
+| Version | Read by |
+|---|---|
+| `system` | asdf, mise, pyenv, rbenv, nvm, goenv, jenv: the version installed outside the version manager |
+| `latest`, `latest:18`, `latest-1` | asdf and mise, tfenv, bazelisk |
+| `lts`, `lts/*`, `lts/iron`, `node`, `stable`, `unstable`, `iojs` | nvm and mise: an alias that moves with each release |
+| `ref:v1.2`, `path:~/src/node`, `prefix:1.2`, `sub-1:latest` | asdf and mise: a build from a git ref or a directory, or the newest of a prefix |
+| `min-required`, `latest-allowed` | tfenv: read from the Terraform code |
+| `rolling`, `last_green`, `last_rc`, `last_downstream_green` | bazelisk |
+| `stable`, `beta`, `nightly`, and each with a host such as `stable-x86_64-unknown-linux-gnu` | rustup: a channel that moves; `nightly-2024-01-01` names one build and is literal |
+| `default` | go.mod's `toolchain default` |
+
+A file its tool refuses makes the rule unknown: a `go.mod` the go command refuses, as
+golang.org/x/mod/modfile parses it (an unknown directive, a second `go` line), an `.sdkmanrc` line
+without `=` or with no version, a `runtime.txt` that does not start with `python-`, a TOML or JSON
+file that does not parse, a file of one version (each file the table reads as the first version,
+`.python-version`, `runtime.txt`, a legacy `rust-toolchain`) that holds none, only blank lines and
+comments, and a version that is empty or holds a control character, a direction control such as
+U+202E, a line separator or a byte that is not UTF-8. A byte order mark at the start of a file of
+lines is dropped, as errata's other readers drop it.
+
+Each file is read up to `max_bytes`, and the versions of all the files hold at most `max_bytes`
+bytes and 100000 values in all. A file of lines is read in one pass that keeps only the versions,
+so it needs no node limit: at 32 MiB on the build node the densest shapes take 0.2 s to 1.1 s and
+at most 110 MB, a line of 16 million versions refused at the value limit among them. The JSON and
+TOML files have the node limit of their format, and a `go.mod` a limit of its own, under Limits.
+
 #### Limits
 
 A file in a pull request can be large or hostile, and an extractor must not stall or kill the run
 over it. errata enforces the limits below on what it reads: the file size, the nodes a file can
 hold, the nodes YAML aliases add, the values, the depth, a pattern's capture groups, the regex time,
 the work of a path's filters and an XML path's terms, what a Markdown parse may build and how long
-it may run, and the work of an INI or properties read. It does not bound the memory a read takes.
+it may run, the work of an INI or properties read, the lines and tokens of a go.mod, and the
+entries and depth of a walk of the repository. It does not bound the memory a read takes.
 Peak memory depends on the file's shape within those limits, and the figures below are the densest
 shapes measured so far, as examples, not as a ceiling; a file that needs more memory than the runner
 has kills the run, which fails it rather than passing it. Every pass errata makes over a file takes
@@ -976,12 +1104,13 @@ what to do. Times and memory below were measured on a loaded 4 core machine.
 
 | Limit | Value | Why |
 |---|---|---|
+| the config file | 1 MiB (1048576 bytes) | checked while reading, so a pipe given with `--config` is held to it too. YAML aliases may expand it to at most 4 MiB, counted as the bytes of every scalar and one for each node before anything is expanded: one scalar of 64 KiB aliased by 8000 checks, 528 KB of config, ran the loader out of memory, since the YAML library's own guard counts aliased nodes, not their bytes. Unlike the limits below, a config over it does not load, and errata exits 2. The largest real config known, a GitOps repository's, is 37 KB for 72 checks, 28 times under the limit. Loading costs memory in proportion to the config: the densest shape measured, one rule of thousands of regex extractors, allocates about 630 bytes for each byte of config |
 | file size | 32 MiB, or `max_bytes` | checked before reading. An ordinary file costs about 27 times its size in memory: an 8.2 MB OpenAPI document takes 0.95 s and 223 MB |
 | nodes | `max_bytes` divided by 7 (YAML), 3 (TOML), 8 (JSON) or 3 (XML) | checked before parsing, since the YAML and TOML parsers build a whole document or expression before errata sees it. errata counts in one pass an upper bound on the nodes the parser can build: two for each byte after which a key, a value or an item can start, with YAML's NEL, LS and PS line breaks among them, and a UTF-16 YAML file counted as the UTF-8 the parser reads. A file of one-character items counts one for each byte, an ordinary file one for every 3 to 16: a 6.3 MB Helm index has 6 times room at the default, a 7.9 MB uv.lock 4.8 times, a 7.4 MB Google API document 8 times. The limit bounds nodes, not memory, since a node costs more or less by its shape. The densest files measured so far at the default peak at 2.0 GB in YAML (mappings of 62 anchored, tagged keys), 2.55 GB in TOML (inline tables of dotted keys of 500 parts) and 0.42 GB in JSON (objects nested 900 deep), and grow in proportion to `max_bytes`; 32 MiB of one-character items ran out of 4.7 GB in YAML without the limit. Raise `max_bytes` to read a denser file. For XML errata counts each element, attribute, namespace declaration and text node as it builds them from encoding/xml's tokens, since it builds the tree itself. The densest of 39 real XML files, MARC library records, holds a node for every 11.5 bytes, almost 4 times the room at the default. The densest file XML can write, text between empty elements (`x<a/>`), reaches the limit at 28 MB, which takes 1.0 GB; 32 MiB of empty elements takes 1.3 GB. An attribute costs more memory than an element, since encoding/xml builds a whole start tag before errata counts it: the densest XML measured so far, one start tag of 8.4 million attributes in 32 MiB, peaks at 1.94 GB before it is refused |
 | values per extractor | 100000 | every value is kept in memory and printed; a regex `(\d*)` matches at every byte. A path that selects more nodes at any step stops there. The values of one extractor also hold at most `max_bytes` bytes in all, since YAML aliases can repeat a value, decoding can lengthen one, and an XML element's value holds the text of every element inside it: `//a` over 1000 nested elements around 30 MB would return 30 GB, and is refused. 100000 regex matches in 4.3 MB take 0.8 s and 45 MB |
 | depth | 1000 | each key, each part of a dotted TOML key or table header, and each element is one level, and an array table's element one more. The deepest of 56 real files measured nests 25 |
 | YAML aliases and merge keys | 1000000 nodes | each alias adds the nodes of its anchor, and so does each mapping a merge key names, counted for the whole file before anything is built from them. A key counts by its length too: each 64 bytes of a key that a merge key copies count as one node more, and an alias used as a key counts one node and one more for each 64 bytes of its anchor's text, so a file that merges or repeats long keys many times reaches the limit instead of taking minutes. errata keeps one copy of an anchor, so 5000 mappings that merge one of 99 keys, at the limit, take 0.15 s and 51 MB |
-| regex time | 10 s for each 32 MiB of `max_bytes`, and never less than 10 s | the search looks at the clock every 256 characters it reads, so one long search is stopped too. A pattern whose optional tail scans the rest of the line, such as `(\d)(?:.*x)?`, searches the line again after every match: 40 KB of one line took 27 s. One search that finds nothing costs the file times the pattern's width: `([0-9a-f]{40})` over 32 MiB of hex words took 28 s, and `([ab]{0,1000}c)` over 1 MiB 62 s; each is refused at 10 s. The slowest ordinary pattern measured over 32 MiB, `([A-Za-z0-9+/]{64,}={0,2})`, takes 4.7 s, and a pattern that starts with a literal about 2 s |
+| regex time | 10 s for each 32 MiB of `max_bytes`, and never less than 10 s | the search looks at the clock every 256 characters it reads, so one long search is stopped too. A pattern whose optional tail scans the rest of the line, such as `(\d)(?:.*x)?`, searches the line again after every match: 40 KB of one line took 27 s. One search that finds nothing costs the file times the pattern's width: `([0-9a-f]{40})` over 32 MiB of hex words took 28 s, and `([ab]{0,1000}c)` over 1 MiB 62 s; each is refused at 10 s. The slowest ordinary pattern measured over 32 MiB, `([A-Za-z0-9+/]{64,}={0,2})`, takes 4.7 s. A pattern that starts with a literal skips to each place the literal occurs and tries the pattern there. Where the next place is less than 64 bytes past the text the last try read, or a try reads more than 4 KiB, it searches every place from there on, as it does a pattern without a literal, so it reads at most 4 KiB more than a search of every place does. Over 32 MiB of this README, repeated, on the build node, `commit ([0-9a-f]{40})` takes 0.01 s, where a search of every place takes 0.82 s, and `(\d+\.\d+\.\d+)`, which starts with no literal, 1.2 s |
 | regex capture groups | 32 | a search tracks every group for every thread it keeps alive; 100000 matches of a pattern of 32 groups take 0.5 s and 29 MB |
 | filter work | 4000000000 bytes for the filters of one path | for each member tested, each comparison and each step after `@` counts 256, plus the bytes of each key it looks up and of the literal it compares, counted before the members are tested. At the limit, with 64 comparisons on each member, the worst shapes measured take 0.36 s to 1.42 s |
 | XML path terms | 32 steps and predicates | each step reads at most every node of the file once, and each predicate the nodes its step keeps, so a path costs the file's nodes times its terms. 32 `//` steps over 8.4 million elements take 2.4 s after the parse. A comparison is counted against the filter work: 256 for each child or attribute it looks at, and the literal's length for each value of the same length it compares |
@@ -996,6 +1125,12 @@ what to do. Times and memory below were measured on a loaded 4 core machine.
 | a line of an HTML block | 1 MiB | goldmark scans such a line in calls errata cannot stop: a tag of 32 MiB took 0.59 s, and 0.02 s at the limit. The limit dates from goldmark v1, whose regular expressions took 11 s over the same line. The longest in a real file is 1801 bytes |
 | prose | twice the size of the file | the regex time limit, which scales with the file, then holds for the prose too |
 | ini and properties work | 128 units for each byte of the file and of the spec's names, and 1048576 more | each read makes one pass over the file and keeps only the values it selects, so it needs no node limit. Every loop that reads a line, compares a name or matches an ansible host against a range charges the budget; a unit is 0.3 to 2.6 ns on the dense shapes measured, so a read that spends the whole budget at 32 MiB (about 4.3 billion units) takes 1.5 s to 11 s. Real files spend 2 to 8 units a byte. The slowest shape that reads at 32 MiB takes 3.8 s (tox, a key of each letter in each of a million sections). The worst shape found, lines of ten 17 digit ranges against a spec host of 1024 bytes, is refused at the budget in 5.9 s, where it would have run for about 350 s; a range bound of 4 million digits is refused in 0.1 s, and php fallbacks nested 131000 deep in under 0.01 s |
+| go.mod lines and tokens | `max_bytes` divided by 64 | checked before golang.org/x/mod/modfile parses the file, since it builds the syntax of the whole file first, at 150 to 440 bytes a line or token: without the limit, 32 MiB of lines of one short token took 2.1 GB and 4.1 s, and of commas on one line 1.9 GB. errata counts an upper bound in one pass: each line end, each `(`, `)`, `[`, `]`, `{`, `}` and comma, each quote and backquote that can start a string, and each start of a word. A go.mod of requirements holds one for every 7 bytes, so at the default the limit reads one of about 3.5 MB. The densest files measured at the limit take about 0.5 to 0.75 s and up to about 320 MB: 32 MiB of unknown directives of 129 bytes, or of lines ending in a comment, since modfile keeps an error for each line |
+| walk entries | 1000000 files and directories | a `tool_version` extractor without `files` walks the repository; the entries of the directories it passes over are counted, what is inside them is not. The largest tree measured, a Go module cache, holds 136007. One directory of 999999 files takes 3.0 s and 3 MB on the build node: a file costs the walk a few microseconds |
+| walk directories | 200000 | a directory costs the walk an open and a listing, and a pin in it a read, so this is the walk's bound on time: 199000 directories with a 144-byte `.tool-versions` of another tool in each take 26.3 to 30.0 s and 69 MB on the build node (66.4 s on a busier node), and 199999 empty ones, which git cannot check out, 7.0 to 9.2 s. A million empty directories took 82 s before the limit. The largest tree measured holds 27149 |
+| walk names | 16 MiB | the walk opens each directory from the one above it and holds the names of the directories it has still to walk, not their paths, so a long path costs its length once: 60000 directories of 250-byte names below a path of 3765 bytes take 8.2 s and 36 MB, where whole paths took 1.67 GB for 200000. Past the limit, as for 200000 such names in one directory, the walk is refused in 0.9 s |
+| walk depth | 64 directories | the deepest tree measured nests 17. A chain 64 deep with 15000 files in each directory takes 3.9 s and 3 MB |
+| files one extractor reads | `max_bytes` in all | a walk may find many files, and symlinks or copies may repeat one, so the files of one extractor are read up to its `max_bytes` together, as one file is; links that end at one file read it once. 100 links to a 32 MiB file take 0.4 to 0.7 s, where reading each link took 31 to 64 s in all before |
 | file name | 4096 bytes | the longest path Linux opens. A longer `file:` in an extractor is a load error, since every message about a file names it whole |
 | quoted text | 64 bytes | errata's message that quotes a key, an anchor or a number from a file, or a path, a pattern, a file or a selector from `errata.yaml`, cuts it there and writes `...`, since a message goes into the CI log and the JUnit report. A parser's message, such as yaml.v3's for an unknown anchor, which quotes the anchor's name, is cut at 256 bytes. A rule's message quotes a value of at most 256 bytes whole. Of a longer one it quotes 256 bytes, from 32 bytes before the first byte where it differs from the other values of the message, marked as in `(from byte 266 of 299)`, so two long values that differ only at the end still print differently |
 
@@ -1061,8 +1196,9 @@ declares, a `<!DOCTYPE>` without a name, after the root element starts or a seco
 mark may come before it) or a second one, and a processing instruction named `xml` in another
 case, such as `<?XML ...?>`.
 
-An INI or properties file makes the rule unknown for what its tool refuses, as the sections on
-them say. A Markdown file parses whatever it holds, so only a bound under Limits refuses one.
+An INI or properties file makes the rule unknown for what its tool refuses, as the sections on them
+say, and so does a file a `tool_version` extractor reads ([Tool versions](#tool-versions)). A
+Markdown file parses whatever it holds, so only a bound under Limits refuses one.
 
 ### The check protocol
 
@@ -1091,6 +1227,7 @@ checks are skipped by name, and the coverage line gives the gap for each.
 
 ```text
 errata check [--root DIR] [--config FILE] [--format text|junit|sarif]
+errata list [--root DIR] [--config FILE] [--format text|json]
 errata version
 ```
 
@@ -1098,23 +1235,157 @@ errata version
 |---|---|---|
 | `--root` | `.` | the repository root, and the checks' working directory |
 | `--config`, `-c` | `<root>/errata.yaml` | the config file |
-| `--format`, `-f` | `text` | `text`, `junit` or `sarif` |
+| `--format`, `-f` | `text` | `check`: `text`, `junit` or `sarif`; `list`: `text` or `json` |
 
 | Exit code | Meaning |
 |---|---|
-| 0 | every check that ran found its claim true |
+| 0 | every check that ran found its claim true; for `list`, the config loaded |
 | 1 | at least one erratum (a claim shown false) or unknown (a check that could not evaluate) |
 | 2 | bad flags, or a config that does not load |
 
-The text output writes every control character that a file or a program's output holds, such as
-ESC or a CR, as its escape (`\x1b`, `\r`), and every byte that is not UTF-8 as `\xNN`; a CR
-before a newline is dropped. The direction controls (U+061C, U+200E, U+200F, U+202A to U+202E and
-U+2066 to U+2069) and the line and paragraph separators U+2028 and U+2029 are written as escapes
-too (`\u202e`). An error errata prints on stderr, which can quote the config file, goes through
-the same escapes. No file in the repository can clear the terminal, overwrite a line, reorder one
-or set a link in it. JUnit and SARIF, which also go to stdout, write DEL, the C1 controls and the
-direction controls as character references (`&#x9B;`) and as JSON escapes (`\u009b`), and a
-reader of either format gets the text back as it was.
+The text output, and the text format of `errata list`, writes every control character that a file
+or a program's output holds, such as ESC or a CR, as its escape (`\x1b`, `\r`), and every byte that
+is not UTF-8 as `\xNN`; a CR before a newline is dropped. The direction controls (U+061C, U+200E,
+U+200F, U+202A to U+202E and U+2066 to U+2069) and the line and paragraph separators U+2028 and
+U+2029 are written as escapes too (`\u202e`). An error errata prints on stderr, which can quote the
+config file, goes through the same escapes. No file in the repository can clear the terminal,
+overwrite a line, reorder one or set a link in it. JUnit, SARIF and the JSON of `errata list`,
+which also go to stdout, write DEL, the C1 controls and the direction controls as character
+references (`&#x9B;`) in JUnit and as JSON escapes (`\u009b`) in the other two, and a reader of any
+of them gets the text back as it was.
+
+### Listing the checks
+
+`errata list` prints the checks a config holds, as `errata check` loads them, and runs none. It
+reads the config with the loader `check` uses, so a config that `check` refuses, `list` refuses
+with the same message and exit code 2. It reads none of the files the checks name. A program
+that needs to know what errata will run reads `errata list --format json` instead of parsing
+`errata.yaml` itself, and compares values rather than spellings.
+
+Every value is the one the loader resolved, with these defaults written out:
+
+- `timeout` of a program check: `30s` when the check sets none;
+- `max_bytes` of every extractor: 33554432 (32 MiB) when the extractor sets none;
+- `dialect` of an `ini` extractor: the one the file's name chooses when the extractor names none
+  (see [INI files](#ini-files));
+- `compare` of an `agree` rule: `text`;
+- `normalize`, `allow_empty` and `skip_not_literal` of a rule: an empty list when the rule sets
+  none.
+
+For this `errata.yaml`:
+
+```yaml
+checks:
+  - id: lint-passes
+    reason: The linter guards the style.
+    scope: repo
+    run: [make, lint]
+  - id: version-agrees
+    reason: Every manifest names one version.
+    scope: repo
+    extract:
+      app: {json: {file: package.json, path: version}}
+      deps: {ini: {file: tox.ini, section: testenv, key: deps}}
+    agree: [app, deps]
+    normalize: [trim]
+    skip_not_literal: [deps]
+  - id: replicas-fit
+    reason: The cluster has a node for every replica.
+    scope: repo
+    extract:
+      replicas: {yaml: {file: deploy.yaml, path: spec.replicas, max_bytes: 65536}}
+      nodes: {regex: {file: README.md, pattern: '(\d+) nodes'}}
+    assert: int(replicas[0]) <= int(nodes[0])
+```
+
+`errata list --format json` prints one object:
+
+```json
+{
+  "version": 1,
+  "checks": [
+    {
+      "id": "lint-passes",
+      "reason": "The linter guards the style.",
+      "scope": "repo",
+      "at": {"file": "errata.yaml", "line": 2, "outside": false},
+      "type": "program",
+      "run": ["make", "lint"],
+      "timeout": "30s"
+    },
+    {
+      "id": "version-agrees",
+      "reason": "Every manifest names one version.",
+      "scope": "repo",
+      "at": {"file": "errata.yaml", "line": 6, "outside": false},
+      "type": "rule",
+      "extract": {
+        "app": {"json": {"file": "package.json", "path": "version", "max_bytes": 33554432}},
+        "deps": {"ini": {"file": "tox.ini", "dialect": "tox", "section": "testenv", "key": "deps",
+                         "max_bytes": 33554432}}
+      },
+      "relation": {"agree": ["app", "deps"], "compare": "text"},
+      "normalize": ["trim"],
+      "allow_empty": [],
+      "skip_not_literal": ["deps"]
+    },
+    {
+      "id": "replicas-fit",
+      "reason": "The cluster has a node for every replica.",
+      "scope": "repo",
+      "at": {"file": "errata.yaml", "line": 15, "outside": false},
+      "type": "rule",
+      "extract": {
+        "nodes": {"regex": {"file": "README.md", "pattern": "(\\d+) nodes", "max_bytes": 33554432}},
+        "replicas": {"yaml": {"file": "deploy.yaml", "path": "spec.replicas", "max_bytes": 65536}}
+      },
+      "relation": {"assert": "int(replicas[0]) <= int(nodes[0])"},
+      "normalize": [],
+      "allow_empty": [],
+      "skip_not_literal": []
+    }
+  ]
+}
+```
+
+| Key | Meaning |
+|---|---|
+| `version` | the version of this shape, now `1` |
+| `checks` | every check, in the order the config holds them |
+| `id`, `reason`, `scope` | as the config writes them; a reason in a block keeps its last line break |
+| `at` | where the check is written |
+| `at.file` | the config's path relative to the root, or as given for a config outside the root |
+| `at.line` | the line the check starts on, counted from 1 |
+| `at.outside` | true for a config outside the root |
+| `type` | `program` or `rule` |
+| `run` | program check: the command, as a list of arguments |
+| `timeout` | program check: a Go duration as Go prints it, so `2m` reads `2m0s` |
+| `extract` | rule: each extractor under its name, as `errata.yaml` spells the entry, with the defaults above written out; a key at its zero value (false, 0, empty) that the defaults above do not name is left out |
+| `relation` | rule: what its values must satisfy, with exactly one of `agree` and `assert` |
+| `relation.agree` | the names, in the order `agree` lists them |
+| `relation.compare` | beside `agree`: how its values are compared; `text` is the one way today, the string form of each value after `normalize` |
+| `relation.assert` | the expression as written |
+| `normalize`, `allow_empty`, `skip_not_literal` | rule: as the config lists them |
+
+Values print as the config writes them, but for the defaults above. A file path, an ini section
+and a key are not cleaned or folded, so `./f` and `f`, or git's `Remote.Origin` and
+`remote.origin`, print differently although `check` reads them as one place: compare them by the
+rules of their kind (see [INI files](#ini-files) for each dialect's).
+
+`version` changes when a key is removed or renamed or a value changes its meaning. A new key does
+not change it, and neither does a new value of `type` or `compare`, or a new kind of
+extractor under `extract`. errata plans more of each, such as ways to compare versions and
+images, and more extractors. A program that meets a value or a kind it does not know should read
+that check as one that changed. Both formats write control characters as
+[Command line](#command-line) says.
+
+The text format prints the same checks for a person to read, each with its scope, its type and the
+labels of the text output, then a count. A name, an argument and a string of an extractor print as
+written when they hold only letters A to Z, digits and `_./@%+=:$*?^()\[]|-`; between backquotes,
+still as written, when they hold anything else that prints, such as a space, a comma or `é`; and
+quoted with Go's escapes when they are empty or hold a backquote or a character that does not
+print, such as a tab, a control character, a direction control or a line separator, so none reads
+as two. Its layout may change from one release to the next; a program reads the JSON.
 
 ### In CI
 

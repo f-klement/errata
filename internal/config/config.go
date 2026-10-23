@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"path/filepath"
@@ -16,6 +17,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	yamlv2 "go.yaml.in/yaml/v2"
 
 	"github.com/f-klement/errata/internal/check"
 	"github.com/f-klement/errata/internal/extract"
@@ -73,7 +76,7 @@ type Builder func(extract.Spec) (check.Extractor, error)
 // builder that wraps extract.Build in a reader of not literal values, which
 // no extractor errata has yet returns.
 func LoadWith(root, path string, build Builder) ([]check.Check, error) {
-	raw, err := os.ReadFile(path)
+	raw, err := readConfig(path)
 	if err != nil {
 		return nil, err
 	}
@@ -86,6 +89,32 @@ func LoadWith(root, path string, build Builder) ([]check.Check, error) {
 		checks[i].At.File, checks[i].At.Outside = at.File, at.Outside
 	}
 	return checks, nil
+}
+
+// MaxConfigBytes is the largest config errata reads. The largest real one
+// known, a GitOps repository's, is 37 KB for 72 checks, so this is 28 times
+// that. Loading costs memory in proportion to the config: the densest shape
+// measured, a rule of thousands of regex extractors, allocates about 630
+// bytes for each byte, so a config at the limit allocates about 650 MB.
+const MaxConfigBytes = 1 << 20
+
+// readConfig reads the config at path, refusing one over MaxConfigBytes
+// before it holds more than that. It reads rather than asks the size, so a
+// pipe or a device given with --config is held to the limit too.
+func readConfig(path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	raw, err := io.ReadAll(io.LimitReader(f, MaxConfigBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) > MaxConfigBytes {
+		return nil, fmt.Errorf("the file is over %d bytes (%d MiB), the largest config errata reads", MaxConfigBytes, MaxConfigBytes>>20)
+	}
+	return raw, nil
 }
 
 // place is where the config at path is: its path relative to root, with
@@ -105,6 +134,25 @@ func place(root, path string) check.Location {
 	return check.Location{File: filepath.ToSlash(rel)}
 }
 
+// firstDocumentError is the error for a file whose first document the
+// document tree, yaml.v3, cannot read. yaml.v3 names the line before a
+// syntax error's (the checks: line for an unclosed { on the line after it),
+// so the error is yaml.v2's when yaml.v2 refuses the file too, worded as
+// toJSON words it: yaml.v2 parses the whole document before it decodes any
+// of it, so a syntax error comes before any alias is expanded. Should
+// yaml.v2 read what yaml.v3 refused, the file is refused with yaml.v3's
+// error, as the alias bound counted nothing. yaml.v2 then decoded it into
+// plain values, not JSON: a scalar an alias names is shared, not copied, and
+// yaml.v2's own guard bounds the nodes aliases add, so the probe costs about
+// the file's own size (TestFirstDocumentProbeIsBounded).
+func firstDocumentError(raw []byte, v3err error) error {
+	var probe any
+	if err := yamlv2.UnmarshalStrict(raw, &probe); err != nil {
+		return fmt.Errorf("decode: error converting YAML to JSON: %w", err)
+	}
+	return fmt.Errorf("decode: %w", v3err)
+}
+
 // ErrNoChecks is the load error for a file that holds no checks. A suite of
 // none would run nothing and pass, so a gate on it would go green on nothing.
 var ErrNoChecks = errors.New("the file holds no checks: a config with none would run nothing and pass")
@@ -118,13 +166,26 @@ func Parse(raw []byte) ([]check.Check, error) {
 
 // ParseWith is Parse with the extractors made by build.
 func ParseWith(raw []byte, newExtractor Builder) ([]check.Check, error) {
+	// The document tree keeps each alias as a reference, so its expanded
+	// size is counted before toJSON expands it, whenever the first document
+	// decoded, even if a later one did not: toJSON reads only the first. A
+	// first document the tree cannot read is refused here, so toJSON never
+	// expands a tree nobody counted.
+	n, first, derr := documents(raw)
+	if first == nil && derr != nil {
+		return nil, firstDocumentError(raw, derr)
+	}
+	if first != nil {
+		if err := checkExpansion(first); err != nil {
+			return nil, fmt.Errorf("decode: %w", err)
+		}
+	}
 	doc, err := toJSON(raw)
 	if err != nil {
 		return nil, fmt.Errorf("decode: %w", err)
 	}
-	n, first, err := documents(raw)
-	if err != nil {
-		return nil, fmt.Errorf("decode: %w", err)
+	if derr != nil {
+		return nil, fmt.Errorf("decode: %w", derr)
 	}
 	if n > 1 {
 		return nil, fmt.Errorf("the file holds %d YAML documents; errata reads one, so put every check in one document under checks", n)
@@ -228,10 +289,23 @@ func build(raw json.RawMessage, newExtractor Builder) (c check.Check, decoded bo
 	}
 	if e.Timeout != "" {
 		d, perr := time.ParseDuration(e.Timeout)
-		if perr != nil {
+		switch {
+		case perr != nil:
 			errs = append(errs, fmt.Errorf("timeout: %w", perr))
+		case isRule:
+			// Refused whatever its value: a rule's timeout of 0s would load
+			// as a key that does nothing, which validation, reading the
+			// field, could not tell from no key.
+			errs = append(errs, errors.New("timeout applies to a program check only: a rule's extractors take no timeout"))
+		case d <= 0:
+			// The protocol reads a timeout of zero as no limit, so 0s would
+			// let a hung program hold the run for ever while reading as zero
+			// time. The check keeps the default, so validation does not
+			// refuse a negative one a second time.
+			errs = append(errs, fmt.Errorf("timeout is %s: write a positive duration such as 10s, or leave the key out for the default of %s", e.Timeout, DefaultTimeout))
+		default:
+			c.Timeout = d
 		}
-		c.Timeout = d
 	}
 	if _, ok := keys["assert"]; ok && strings.TrimSpace(e.Assert) == "" {
 		errs = append(errs, errors.New("assert is blank: write the expression or remove the key"))
@@ -271,16 +345,7 @@ func buildRule(e checkEntry, newExtractor Builder) (*check.Rule, []error) {
 	}
 	var errs []error
 	names := slices.Sorted(maps.Keys(e.Extract))
-	for i, a := range names {
-		for _, b := range names[i+1:] {
-			// Two names over one place return the same values at the same
-			// locations, so agree would be true without comparing two places.
-			// Place cleans each file, so f and ./f are one place.
-			if reflect.DeepEqual(e.Extract[a].Place(), e.Extract[b].Place()) {
-				errs = append(errs, fmt.Errorf("extractors %q and %q read the same place, so comparing them compares a value with itself", a, b))
-			}
-		}
-	}
+	errs = append(errs, samePlaces(e.Extract, names)...)
 	for _, name := range names {
 		x, err := newExtractor(e.Extract[name])
 		switch {
@@ -293,7 +358,9 @@ func buildRule(e checkEntry, newExtractor Builder) (*check.Rule, []error) {
 		}
 		// Declared even when it did not build, so validation does not also
 		// report agree naming an extractor that extract does not declare.
-		r.Extractors = append(r.Extractors, check.NamedExtractor{Name: name, Kind: e.Extract[name].Kind(), Extractor: x})
+		r.Extractors = append(r.Extractors, check.NamedExtractor{
+			Name: name, Kind: e.Extract[name].Kind(), Extractor: x, Spec: e.Extract[name].Resolved(),
+		})
 	}
 	// A rule with agree beside assert is refused by validation, so its
 	// expression is not compiled into a second error.
@@ -305,6 +372,43 @@ func buildRule(e checkEntry, newExtractor Builder) (*check.Rule, []error) {
 		r.Compiled = a
 	}
 	return r, errs
+}
+
+// maxSamePlace is the most extractors samePlaces names. A rule of thousands
+// of extractors over a few places would otherwise make an error for each.
+const maxSamePlace = 8
+
+// samePlaces refuses each extractor, in the order of names, that reads the
+// place an earlier one reads, naming the first. Two names over one place
+// return the same values at the same locations, so agree would be true
+// without comparing two places. Place cleans each file, so f and ./f are one
+// place. Each place is looked up once by its JSON, so a rule of n extractors
+// costs n lookups, not a comparison of every pair.
+func samePlaces(specs map[string]extract.Spec, names []string) []error {
+	var errs []error
+	first := make(map[string]string, len(names))
+	more := 0
+	for _, name := range names {
+		key, err := json.Marshal(specs[name].Place())
+		if err != nil {
+			// A spec is strings, numbers and maps of strings, which always
+			// marshal; one that did not would name no place to compare.
+			continue
+		}
+		a, seen := first[string(key)]
+		switch {
+		case !seen:
+			first[string(key)] = name
+		case len(errs) < maxSamePlace:
+			errs = append(errs, fmt.Errorf("extractors %q and %q read the same place, so comparing them compares a value with itself", a, name))
+		default:
+			more++
+		}
+	}
+	if more > 0 {
+		errs = append(errs, fmt.Errorf("and %d more extractors read a place an extractor above reads", more))
+	}
+	return errs
 }
 
 // maxQuotedKey is the most bytes of a key's value a load error quotes.

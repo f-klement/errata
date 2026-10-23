@@ -52,6 +52,11 @@ type NamedExtractor struct {
 	// for a message; "" when the config gave none.
 	Kind      string
 	Extractor Extractor
+	// Spec is the entry as the loader resolved it, with every default it
+	// fills in written out, for errata list to print. It marshals to JSON
+	// as errata.yaml spells the entry, such as {"yaml": {"file": ...}}; in
+	// errata it is an extract.Spec, which this package cannot name.
+	Spec any
 }
 
 // Extracted is what one extractor returned to a rule, in the order it found

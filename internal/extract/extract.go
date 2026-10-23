@@ -1,7 +1,7 @@
 // Package extract builds the extractors a rule names in errata.yaml. Each one
 // reads one file and returns every value it finds there, with its location.
 // Each kind is a reader in a package of its own below this one (yaml, json,
-// toml, regex, text, xml, ini, properties), and the readers share
+// toml, regex, text, xml, ini, properties, toolversion), and the readers share
 // internal/extract/core; no reader imports another. This package holds what
 // sees every kind: the Spec a rule decodes into, the kinds table, Build,
 // Place and Kind.
@@ -14,15 +14,18 @@ package extract
 import (
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/f-klement/errata/internal/check"
+	"github.com/f-klement/errata/internal/extract/core"
 	"github.com/f-klement/errata/internal/extract/ini"
 	"github.com/f-klement/errata/internal/extract/json"
 	"github.com/f-klement/errata/internal/extract/properties"
 	"github.com/f-klement/errata/internal/extract/regex"
 	"github.com/f-klement/errata/internal/extract/text"
 	"github.com/f-klement/errata/internal/extract/toml"
+	"github.com/f-klement/errata/internal/extract/toolversion"
 	"github.com/f-klement/errata/internal/extract/xml"
 	"github.com/f-klement/errata/internal/extract/yaml"
 )
@@ -38,6 +41,8 @@ type Spec struct {
 
 	INI        *INI        `json:"ini,omitempty"`
 	Properties *Properties `json:"properties,omitempty"`
+
+	ToolVersion *ToolVersion `json:"tool_version,omitempty"`
 }
 
 // Each kind takes MaxBytes, the largest file it reads. Zero, or the key
@@ -70,6 +75,10 @@ type INI = ini.Spec
 // Properties returns every value of a key in a Java .properties file, as
 // properties.Spec says.
 type Properties = properties.Spec
+
+// ToolVersion returns every version of a tool in the files that pin it, as
+// toolversion.Spec says.
+type ToolVersion = toolversion.Spec
 
 // Place returns s with only what decides where it reads: each file cleaned,
 // so f, ./f and a/../f are one file, and max_bytes left out, since a limit
@@ -116,7 +125,67 @@ func (s Spec) Place() Spec {
 		x.File, x.MaxBytes = filepath.Clean(x.File), 0
 		p.Properties = &x
 	}
+	if s.ToolVersion != nil {
+		t := toolversion.Place(*s.ToolVersion)
+		p.ToolVersion = &t
+	}
 	return p
+}
+
+// Resolved returns s with the defaults Build fills in written out: the
+// max_bytes of the kind it sets, core.DefaultMaxBytes when s leaves it out,
+// and for ini the dialect Build chooses by the file's name when s names none.
+// errata list prints it, so a consumer reads the limit and the dialect a
+// check runs with, not only what its author wrote. s is not changed.
+func (s Spec) Resolved() Spec {
+	var r Spec
+	if s.YAML != nil {
+		y := *s.YAML
+		y.MaxBytes = core.MaxBytes(y.MaxBytes)
+		r.YAML = &y
+	}
+	if s.JSON != nil {
+		j := *s.JSON
+		j.MaxBytes = core.MaxBytes(j.MaxBytes)
+		r.JSON = &j
+	}
+	if s.TOML != nil {
+		t := *s.TOML
+		t.MaxBytes = core.MaxBytes(t.MaxBytes)
+		r.TOML = &t
+	}
+	if s.Regex != nil {
+		x := *s.Regex
+		x.MaxBytes = core.MaxBytes(x.MaxBytes)
+		r.Regex = &x
+	}
+	if s.Text != nil {
+		x := *s.Text
+		x.MaxBytes = core.MaxBytes(x.MaxBytes)
+		r.Text = &x
+	}
+	if s.XML != nil {
+		x := *s.XML
+		x.MaxBytes = core.MaxBytes(x.MaxBytes)
+		r.XML = &x
+	}
+	if s.INI != nil {
+		i := ini.Resolve(*s.INI)
+		i.MaxBytes = core.MaxBytes(i.MaxBytes)
+		r.INI = &i
+	}
+	if s.Properties != nil {
+		x := *s.Properties
+		x.MaxBytes = core.MaxBytes(x.MaxBytes)
+		r.Properties = &x
+	}
+	if s.ToolVersion != nil {
+		x := *s.ToolVersion
+		x.Files = slices.Clone(x.Files)
+		x.MaxBytes = core.MaxBytes(x.MaxBytes)
+		r.ToolVersion = &x
+	}
+	return r
 }
 
 // Build checks s and returns its extractor. A Spec that sets no kind, or more
@@ -149,15 +218,26 @@ type extractorKind struct {
 }
 
 func (s Spec) kinds() []extractorKind {
+	// Which kinds are set is worked out before the rows: Go's coverage
+	// profile leaves code after a statement's first func literal outside
+	// every block, so a comparison written in a row after the first would
+	// read as not covered to Gremlins however the tests run it.
+	set := [...]bool{s.YAML != nil, s.JSON != nil, s.TOML != nil, s.Regex != nil, s.Text != nil,
+		s.XML != nil, s.INI != nil, s.Properties != nil, s.ToolVersion != nil}
 	return []extractorKind{
-		{"yaml", s.YAML != nil, func() (check.Extractor, error) { return yaml.Build(*s.YAML) }},
-		{"json", s.JSON != nil, func() (check.Extractor, error) { return json.Build(*s.JSON) }},
-		{"toml", s.TOML != nil, func() (check.Extractor, error) { return toml.Build(*s.TOML) }},
-		{"regex", s.Regex != nil, func() (check.Extractor, error) { return regex.Build(*s.Regex) }},
-		{"text", s.Text != nil, func() (check.Extractor, error) { return text.Build(*s.Text) }},
-		{"xml", s.XML != nil, func() (check.Extractor, error) { return xml.Build(*s.XML) }},
-		{"ini", s.INI != nil, func() (check.Extractor, error) { return ini.Build(*s.INI) }},
-		{"properties", s.Properties != nil, func() (check.Extractor, error) { return properties.Build(*s.Properties) }},
+		{"yaml", set[0], func() (check.Extractor, error) { return yaml.Build(*s.YAML) }},
+		{"json", set[1], func() (check.Extractor, error) { return json.Build(*s.JSON) }},
+		{"toml", set[2], func() (check.Extractor, error) { return toml.Build(*s.TOML) }},
+		{"regex", set[3], func() (check.Extractor, error) { return regex.Build(*s.Regex) }},
+		{"text", set[4], func() (check.Extractor, error) { return text.Build(*s.Text) }},
+		{"xml", set[5], func() (check.Extractor, error) { return xml.Build(*s.XML) }},
+		{"ini", set[6], func() (check.Extractor, error) { return ini.Build(*s.INI) }},
+		{"properties", set[7], func() (check.Extractor, error) { return properties.Build(*s.Properties) }},
+		{"tool_version", set[8], func() (check.Extractor, error) {
+			// The reader reads its JSON and TOML files with the json and
+			// toml readers' parsers, since it imports no other reader.
+			return toolversion.Build(*s.ToolVersion, toolversion.Parsers{JSON: json.Parse, TOML: toml.Parse})
+		}},
 	}
 }
 

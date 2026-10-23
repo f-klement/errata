@@ -50,8 +50,8 @@ func TestReadersImportNoOtherReader(t *testing.T) {
 			}
 		}
 	}
-	if len(imports) < 9 {
-		t.Fatalf("found the packages %v, want core and the eight readers", imports)
+	if len(imports) < 10 {
+		t.Fatalf("found the packages %v, want core and the nine readers", imports)
 	}
 	for _, p := range readerImports(imports) {
 		t.Error(p)

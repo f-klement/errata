@@ -205,9 +205,11 @@ func refParse(t *testing.T, data []byte) ([]*refElem, error) {
 			}
 			top := open[len(open)-1]
 			if inText {
+				// The line follows the last bar: the text may hold bars of
+				// its own, the line number none.
 				last := len(top.texts) - 1
-				text, line, _ := strings.Cut(top.texts[last], "|")
-				top.texts[last] = text + string(tk) + "|" + line
+				bar := strings.LastIndexByte(top.texts[last], '|')
+				top.texts[last] = top.texts[last][:bar] + string(tk) + top.texts[last][bar:]
 			} else {
 				top.texts = append(top.texts, string(tk)+"|"+strconv.Itoa(lineAt(off)))
 			}

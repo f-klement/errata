@@ -62,7 +62,8 @@ FUZZ_TARGETS := ./internal/config:FuzzParse ./internal/protocol:FuzzMessage \
                 ./internal/extract/core:FuzzRegex ./internal/extract/core:FuzzExtract \
                 ./internal/extract/text:FuzzText ./internal/extract/core:FuzzNumber \
                 ./internal/extract/xml:FuzzXPath ./internal/extract/xml:FuzzXML \
-                ./internal/extract/ini:FuzzINI ./internal/extract/properties:FuzzProperties
+                ./internal/extract/ini:FuzzINI ./internal/extract/properties:FuzzProperties \
+                ./internal/extract/toolversion:FuzzToolVersion
 
 .PHONY: check gate build tools lint fmt test cover slow fuzz mutation vuln dogfood public-dry release-dry image-dry ci-local ci-test tool-sums hooks clean
 
@@ -165,6 +166,7 @@ SLOW_TESTS := ./internal/report:TestSARIFBoundsTheReviewersUpload \
               ./internal/extract/core:TestINIValueLimitAtItsSize \
               ./internal/extract/ini:TestReplayINIShapesAtFullSize \
               ./internal/extract/properties:TestReplayPropertiesShapesAtFullSize \
+              ./internal/extract/toolversion:TestReplayToolVersionShapesAtFullSize \
               ./internal/extract/ini:TestPHPDeepReferenceCopiesItsTextOnce
 slow:
 	@for t in $(SLOW_TESTS); do \

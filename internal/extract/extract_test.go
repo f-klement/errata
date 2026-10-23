@@ -5,11 +5,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/f-klement/errata/internal/extract/core"
 	"github.com/f-klement/errata/internal/extract/extracttest"
 	"github.com/f-klement/errata/internal/extract/ini"
 	"github.com/f-klement/errata/internal/extract/json"
 	"github.com/f-klement/errata/internal/extract/properties"
 	"github.com/f-klement/errata/internal/extract/text"
+	"github.com/f-klement/errata/internal/extract/toolversion"
 	"github.com/f-klement/errata/internal/extract/xml"
 	"github.com/f-klement/errata/internal/extract/yaml"
 )
@@ -44,7 +46,11 @@ func TestKindsCoverSpec(t *testing.T) {
 		var s Spec
 		reflect.ValueOf(&s).Elem().Field(i).Set(reflect.New(f.Type.Elem()))
 		_, err := Build(s)
-		extracttest.WantError(t, err, name+": file is required")
+		required := "file"
+		if name == "tool_version" {
+			required = "tool" // it reads the files that pin the tool
+		}
+		extracttest.WantError(t, err, name+": "+required+" is required")
 	}
 }
 
@@ -56,13 +62,25 @@ func TestKindsCoverSpec(t *testing.T) {
 // text case, which gave every text extractor the empty place, so a rule of
 // two text extractors was refused as reading one place.
 func TestPlaceKeepsEveryKind(t *testing.T) {
+	// A kind that reads several files, tool_version, names its one in
+	// Files.
 	kindSpec := func(i int, file string) Spec {
 		var s Spec
 		f := reflect.ValueOf(&s).Elem().Field(i)
 		f.Set(reflect.New(f.Type().Elem()))
-		f.Elem().FieldByName("File").SetString(file)
+		if one := f.Elem().FieldByName("File"); one.IsValid() {
+			one.SetString(file)
+		} else {
+			f.Elem().FieldByName("Files").Set(reflect.ValueOf([]string{file}))
+		}
 		f.Elem().FieldByName("MaxBytes").SetInt(10)
 		return s
+	}
+	fileOf := func(v reflect.Value) string {
+		if one := v.FieldByName("File"); one.IsValid() {
+			return one.String()
+		}
+		return v.FieldByName("Files").Index(0).String()
 	}
 	for i, k := range (Spec{}).kinds() {
 		p := reflect.ValueOf(kindSpec(i, "a/../f").Place()).Field(i)
@@ -70,7 +88,7 @@ func TestPlaceKeepsEveryKind(t *testing.T) {
 			t.Errorf("%s: Place drops the kind", k.name)
 			continue
 		}
-		if file, n := p.Elem().FieldByName("File").String(), p.Elem().FieldByName("MaxBytes").Int(); file != "f" || n != 0 {
+		if file, n := fileOf(p.Elem()), p.Elem().FieldByName("MaxBytes").Int(); file != "f" || n != 0 {
 			t.Errorf("%s: Place keeps file %q and max_bytes %d, want f and 0", k.name, file, n)
 		}
 		if reflect.DeepEqual(kindSpec(i, "f").Place(), kindSpec(i, "g").Place()) {
@@ -136,6 +154,7 @@ func TestSpecKind(t *testing.T) {
 	}{
 		{Spec{JSON: &json.Spec{File: "a.json", Path: "$"}}, "json"},
 		{Spec{Properties: &properties.Spec{File: "a.properties", Key: "k"}}, "properties"},
+		{Spec{ToolVersion: &toolversion.Spec{Tool: "node"}}, "tool_version"},
 		{iniSpec("php.ini", "", "a"), "ini, php dialect on php.ini"},
 		{iniSpec("etc/php.ini-production", "", "a"), "ini, php dialect on php.ini-production"},
 		{gitINI(".gitconfig", "a", nil, "k"), "ini, git dialect on .gitconfig"},
@@ -160,3 +179,74 @@ func gitINI(file, section string, subsection *string, key string) Spec {
 }
 
 func strPtr(s string) *string { return &s }
+
+// Resolved keeps every kind and writes out the max_bytes Build reads to: for
+// each row of the kinds table, a Spec with only that kind set and no
+// max_bytes resolves to one with the same kind and core's default, a
+// max_bytes it sets stays, and the Spec it was called on is not changed. A
+// kind added to Spec without a case in Resolved fails here. The planted
+// break: Resolved without its toml case, which printed no extractor for a
+// toml entry.
+func TestResolvedKeepsEveryKind(t *testing.T) {
+	for i, k := range (Spec{}).kinds() {
+		for _, set := range []int64{0, 10} {
+			var s Spec
+			f := reflect.ValueOf(&s).Elem().Field(i)
+			f.Set(reflect.New(f.Type().Elem()))
+			// tool_version names its files in a list, every other kind in File.
+			file := func(v reflect.Value) string {
+				if fs := v.FieldByName("Files"); fs.IsValid() {
+					if fs.Len() != 1 {
+						return ""
+					}
+					return fs.Index(0).String()
+				}
+				return v.FieldByName("File").String()
+			}
+			if fs := f.Elem().FieldByName("Files"); fs.IsValid() {
+				fs.Set(reflect.ValueOf([]string{"f"}))
+			} else {
+				f.Elem().FieldByName("File").SetString("f")
+			}
+			f.Elem().FieldByName("MaxBytes").SetInt(set)
+			r := reflect.ValueOf(s.Resolved()).Field(i)
+			if r.IsNil() {
+				t.Errorf("%s: Resolved drops the kind", k.name)
+				continue
+			}
+			want := set
+			if set == 0 {
+				want = core.DefaultMaxBytes
+			}
+			if got := r.Elem().FieldByName("MaxBytes").Int(); got != want || file(r.Elem()) != "f" {
+				t.Errorf("%s with max_bytes %d: Resolved has max_bytes %d and file %q, want %d and f", k.name, set, got, file(r.Elem()), want)
+			}
+			if got := f.Elem().FieldByName("MaxBytes").Int(); got != set {
+				t.Errorf("%s: Resolved changed the spec's max_bytes to %d", k.name, got)
+			}
+		}
+	}
+}
+
+// Resolved writes out the dialect an ini spec's file chooses, keeps one the
+// spec names, and leaves one errata does not read as written, for Build to
+// refuse.
+func TestResolvedINIDialect(t *testing.T) {
+	for _, c := range []struct{ file, dialect, want string }{
+		{"tox.ini", "", "tox"},
+		{"php.ini", "", "php"},
+		{".gitconfig", "", "git"},
+		{"inventory/hosts", "", "ansible"},
+		{"setup.cfg", "", "plain"},
+		{"setup.cfg", "php", "php"},
+		{"setup.cfg", "nginx", "nginx"},
+	} {
+		s := Spec{INI: &ini.Spec{File: c.file, Dialect: c.dialect, Key: "k"}}
+		if got := s.Resolved().INI.Dialect; got != c.want {
+			t.Errorf("%s with dialect %q: Resolved has %q, want %q", c.file, c.dialect, got, c.want)
+		}
+		if s.INI.Dialect != c.dialect {
+			t.Errorf("%s: Resolved changed the spec's dialect to %q", c.file, s.INI.Dialect)
+		}
+	}
+}

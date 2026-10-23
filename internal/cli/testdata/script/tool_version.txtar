@@ -1,0 +1,90 @@
+# tool_version reads every file that pins the tool, so a rule
+# over it and the Dockerfile names each version with its file and line.
+! exec errata check -c drifted.yaml
+stdout '^FALSE node-agrees \(repo\)$'
+stdout '^          "20.11.1" at .tool-versions:2 \(pins\), Dockerfile:1 \(image\)$'
+stdout '^          "20.11.0" at .nvmrc:1 \(pins\)$'
+
+# files: narrows the search, and the rule holds.
+exec errata check -c narrowed.yaml
+stdout '^0 errata, 0 unknown. Coverage: ran 1, skipped 0.$'
+
+# A fallback such as system is not literal: unknown until skip_not_literal
+# lists the extractor.
+! exec errata check -c fallback.yaml
+stdout '^UNKNOWN python-agrees \(repo\)$'
+stdout '"system" at .tool-versions:3'
+exec errata check -c fallback-skipped.yaml
+stdout '^0 errata, 0 unknown. Coverage: ran 1, skipped 0.$'
+
+# The alias does not load, and names the spelling to write.
+! exec errata check -c alias.yaml
+stderr 'tool_version: write tool: node; a .tool-versions line under nodejs pins it too'
+# The key is tool_version. The old spelling, tool-version, which follows the
+# asdf file's name, is an unknown field, so a stray old spelling does not
+# load.
+! exec errata check -c old-key.yaml
+stderr 'check "node-agrees": decode: .*unknown field "tool-version"'
+-- .tool-versions --
+# pins
+nodejs 20.11.1
+python 3.12.1 system
+-- .nvmrc --
+20.11.0
+-- .python-version --
+3.12.1
+-- Dockerfile --
+FROM node:20.11.1-alpine
+-- drifted.yaml --
+checks:
+  - id: node-agrees
+    reason: CI and a developer's shell run one Node.
+    scope: repo
+    extract:
+      pins: {tool_version: {tool: node}}
+      image: {regex: {file: Dockerfile, pattern: '^FROM node:([\d.]+)'}}
+    agree: [pins, image]
+-- narrowed.yaml --
+checks:
+  - id: node-agrees
+    reason: CI and a developer's shell run one Node.
+    scope: repo
+    extract:
+      pins: {tool_version: {tool: node, files: [.tool-versions]}}
+      image: {regex: {file: Dockerfile, pattern: '^FROM node:([\d.]+)'}}
+    agree: [pins, image]
+-- fallback.yaml --
+checks:
+  - id: python-agrees
+    reason: One Python.
+    scope: repo
+    extract:
+      pins: {tool_version: {tool: python}}
+    agree: [pins]
+-- fallback-skipped.yaml --
+checks:
+  - id: python-agrees
+    reason: One Python.
+    scope: repo
+    extract:
+      pins: {tool_version: {tool: python}}
+    agree: [pins]
+    skip_not_literal: [pins]
+-- alias.yaml --
+checks:
+  - id: node-agrees
+    reason: r
+    scope: repo
+    extract:
+      pins: {tool_version: {tool: nodejs}}
+      image: {regex: {file: Dockerfile, pattern: '^FROM node:([\d.]+)'}}
+    agree: [pins, image]
+-- old-key.yaml --
+checks:
+  - id: node-agrees
+    reason: r
+    scope: repo
+    extract:
+      pins: {tool-version: {tool: node}}
+      image: {regex: {file: Dockerfile, pattern: '^FROM node:([\d.]+)'}}
+    agree: [pins, image]

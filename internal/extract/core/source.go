@@ -51,14 +51,21 @@ func CheckSource(kind, file string, maxBytes int64) (Source, error) {
 	if !filepath.IsLocal(file) {
 		return Source{}, fmt.Errorf("%s: file %s is outside the repository: write a path relative to the repository root that does not leave it", kind, Quote(file))
 	}
-	switch {
-	case maxBytes < 0 || maxBytes > MaxMaxBytes:
+	if maxBytes < 0 || maxBytes > MaxMaxBytes {
 		return Source{}, fmt.Errorf("%s: max_bytes is %d; write a number of bytes from 1 to %d, or leave it out for %d",
 			kind, maxBytes, MaxMaxBytes, DefaultMaxBytes)
-	case maxBytes == 0:
-		maxBytes = DefaultMaxBytes
 	}
-	return Source{File: file, Limit: maxBytes}, nil
+	return Source{File: file, Limit: MaxBytes(maxBytes)}, nil
+}
+
+// MaxBytes is the limit a max_bytes of n sets: n, or DefaultMaxBytes for a
+// zero, which is the key left out. CheckSource reads files to it, and
+// errata list prints it, so the two cannot name different limits.
+func MaxBytes(n int64) int64 {
+	if n == 0 {
+		return DefaultMaxBytes
+	}
+	return n
 }
 
 // errOutside refuses a symlink that leads out of the repository. It names
@@ -69,6 +76,22 @@ var errOutside = errors.New("a symlink leads outside the repository")
 // maxLinks is how many symlinks one read follows, as on Linux, before it
 // calls the chain a loop.
 const maxLinks = 40
+
+// Resolved is the path, relative to the root, where the file ends once its
+// symlinks are followed, or the refusal Read would give for a link that
+// leads out or a file that is not there. Two Sources with one Resolved read
+// one file.
+func (s Source) Resolved(root string) (string, error) {
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", fmt.Errorf("open the repository root: %w", bare(err))
+	}
+	rel, err := resolve(realRoot, s.File)
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", s.File, err)
+	}
+	return rel, nil
+}
 
 // Read reads the file under root. A file over the limit is refused before
 // it is read, and a file that grows past it while it is read is refused too.

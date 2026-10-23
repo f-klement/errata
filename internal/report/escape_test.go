@@ -2,6 +2,7 @@ package report
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -66,5 +67,50 @@ func TestJUnitAndSARIFEscapeWhatATerminalActsOn(t *testing.T) {
 	out := decodeSARIF(t, b)
 	if got := out.Runs[0].Results[0].Message.Text; got != payload {
 		t.Errorf("SARIF message reads back as %q, want %q", got, payload)
+	}
+}
+
+// errata list prints the config's own text: a reason, a run argument, an
+// extractor's pattern and an assert. The text listing writes the runes a
+// terminal acts on as the text output does, and the JSON as SARIF does, and
+// the JSON reads back as the config wrote it. The planted break: ListJSON
+// writing the encoder's bytes without escapeActedOn.
+func TestListEscapesWhatATerminalActsOn(t *testing.T) {
+	payload := "a" + actedOnRunes + "z"
+	checks := []check.Check{
+		{ID: "p", Scope: check.ScopeRepo, Reason: payload, Run: []string{"sh", payload}},
+		{ID: "r", Scope: check.ScopeRepo, Reason: "r", Rule: &check.Rule{
+			Extractors: []check.NamedExtractor{{Name: "x", Spec: map[string]any{"regex": map[string]any{"pattern": payload}}}},
+			Assert:     payload,
+		}},
+	}
+	var text bytes.Buffer
+	if err := (ListText{}).WriteList(&text, checks); err != nil {
+		t.Fatal(err)
+	}
+	if r := rawActedOn(text.Bytes()); r >= 0 {
+		t.Errorf("the text listing holds %U raw:\n%s", r, text.Bytes())
+	}
+	var b bytes.Buffer
+	if err := (ListJSON{}).WriteList(&b, checks); err != nil {
+		t.Fatal(err)
+	}
+	if r := rawActedOn(b.Bytes()); r >= 0 {
+		t.Errorf("the JSON listing holds %U raw:\n%s", r, b.Bytes())
+	}
+	var doc struct {
+		Checks []struct {
+			Reason   string
+			Run      []string
+			Extract  map[string]map[string]map[string]string
+			Relation struct{ Assert string }
+		}
+	}
+	if err := json.Unmarshal(b.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	p, r := doc.Checks[0], doc.Checks[1]
+	if p.Reason != payload || p.Run[1] != payload || r.Extract["x"]["regex"]["pattern"] != payload || r.Relation.Assert != payload {
+		t.Errorf("the JSON listing reads back as %+v, want the text as written", doc)
 	}
 }

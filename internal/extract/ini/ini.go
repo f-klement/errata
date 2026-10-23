@@ -336,6 +336,16 @@ func onlyDialect(i Spec, subsection, host bool) error {
 	return nil
 }
 
+// Resolve is i with the dialect it reads in written out: the one it names,
+// or the one Build chooses by the file's name. It is i unchanged when i names
+// no dialect errata reads, which Build refuses.
+func Resolve(i Spec) Spec {
+	if d, err := chooseDialect(i.Dialect, i.File); err == nil {
+		i.Dialect = d.name
+	}
+	return i
+}
+
 // Place is i with only what decides where it reads, for Spec.Place: the
 // file cleaned, no max_bytes, the dialect the file reads in, and the names
 // in the form the dialect compares them in.

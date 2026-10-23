@@ -31,10 +31,10 @@ checks:
 
   - id: docs-state-the-max-bytes-bounds
     reason: >
-      The README and ADR 0003 tell a user the file size an extractor reads by default and the
-      most max_bytes accepts. A bound changed in internal/extract/core/limits.go and not in them has a
-      user pick max_bytes from a number errata no longer enforces, and a file the documentation
-      says loads is refused.
+      The README and ADR 0003 tell a user the file size an extractor reads by default and the most
+      max_bytes accepts, and the README's errata list section gives the default in bytes. A bound
+      changed in internal/extract/core/limits.go and not in them has a user pick max_bytes from a
+      number errata no longer enforces, and a file the documentation says loads is refused.
     scope: repo
     extract:
       code_default: {regex: {file: internal/extract/core/limits.go, pattern: '^\s*DefaultMaxBytes = (\d+) << 20$'}}
@@ -42,12 +42,16 @@ checks:
       readme_default: {regex: {file: README.md, pattern: '(?:\| file size \| |writing 0, keeps )(\d+) MiB'}}
       readme_ceiling: {regex: {file: README.md, pattern: 'or one over \d+ \((\d+) MiB\)'}}
       readme_ceiling_bytes: {regex: {file: README.md, pattern: 'or one over (\d+) \(\d+ MiB\)'}}
+      readme_list_default: {regex: {file: README.md, pattern: '^- `max_bytes` of every extractor: (\d+) \(\d+ MiB\)'}}
+      readme_list_default_mib: {regex: {file: README.md, pattern: '^- `max_bytes` of every extractor: \d+ \((\d+) MiB\)'}}
       adr_default: {regex: {file: docs/adr/0003-extractors-bound-time-and-size-and-let-memory-fail-closed.md, pattern: 'a file size cap \((\d+) MiB by default'}}
       adr_ceiling: {regex: {file: docs/adr/0003-extractors-bound-time-and-size-and-let-memory-fail-closed.md, pattern: 'never above (\d+) MiB'}}
     assert: |
       readme_default.all(v, v == code_default[0]) && adr_default.all(v, v == code_default[0]) &&
       readme_ceiling.all(v, v == code_ceiling[0]) && adr_ceiling.all(v, v == code_ceiling[0]) &&
-      readme_ceiling_bytes.all(v, int(v) == int(code_ceiling[0]) * 1048576)
+      readme_ceiling_bytes.all(v, int(v) == int(code_ceiling[0]) * 1048576) &&
+      readme_list_default.all(v, int(v) == int(code_default[0]) * 1048576) &&
+      readme_list_default_mib.all(v, v == code_default[0])
 
   - id: readme-names-the-zone-database
     reason: >
@@ -75,3 +79,15 @@ checks:
       script_commands: {regex: {file: internal/cli/testdata/script/readme_load_errors.txtar, pattern: '^! exec (errata check[^\n]*)\ncmp stderr \w+\.txt$'}}
       script_errors: {regex: {file: internal/cli/testdata/script/readme_load_errors.txtar, pattern: '^-- \w+\.txt --\n(errata: load [^\n]*(?:\n    [^\n]*)*)$'}}
     assert: readme_commands == script_commands && readme_errors == script_errors
+
+  - id: readme-states-the-config-limit
+    reason: >
+      The README's Limits table tells a user the largest errata.yaml errata reads. A limit
+      changed in internal/config/config.go and not there has a user write a config the README
+      says loads and errata refuses, or keep a config small for a limit errata no longer has.
+    scope: repo
+    extract:
+      code: {regex: {file: internal/config/config.go, pattern: '^const MaxConfigBytes = (\d+) << 20$'}}
+      readme_mib: {regex: {file: README.md, pattern: '^\| the config file \| (\d+) MiB \(\d+ bytes\) \|'}}
+      readme_bytes: {regex: {file: README.md, pattern: '^\| the config file \| \d+ MiB \((\d+) bytes\) \|'}}
+    assert: readme_mib.all(v, v == code[0]) && readme_bytes.all(v, int(v) == int(code[0]) * 1048576)

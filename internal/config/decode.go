@@ -58,7 +58,8 @@ func toJSON(raw []byte) (json.RawMessage, error) {
 // encoding such as UTF-16. Empty documents at the end, such as the one a
 // last --- makes, are not counted: they hold no check, so none is lost. A
 // document after the first that does not decode, such as text after a ...
-// marker, is an error, since it may hold checks.
+// marker, is an error, since it may hold checks; the first document is
+// returned with it when it decoded.
 func documents(raw []byte) (int, *yaml.Node, error) {
 	dec := yaml.NewDecoder(bytes.NewReader(raw))
 	var (
@@ -73,7 +74,10 @@ func documents(raw []byte) (int, *yaml.Node, error) {
 			return kept, first, nil
 		}
 		if err != nil {
-			return 0, nil, err
+			// The first document stays with the error, so the alias bound
+			// still counts it: the YAML library that converts it reads only
+			// the first document and never sees this error.
+			return 0, first, err
 		}
 		n++
 		if first == nil {
@@ -412,4 +416,47 @@ func resolve(n *yaml.Node) *yaml.Node {
 		return n.Alias
 	}
 	return n
+}
+
+// MaxExpandedBytes is the most a config may hold once its aliases are
+// expanded: the bytes of every scalar it holds, and one for each node. A
+// config with no alias holds about its own size, at most MaxConfigBytes, so
+// only aliases reach this. One anchored scalar of 64 KiB aliased by 8000
+// checks, 528 KB of config, expanded to 512 MB and ran the loader out of
+// memory; the YAML library's own guard counts aliased nodes, not bytes.
+const MaxExpandedBytes = 4 * MaxConfigBytes
+
+// checkExpansion refuses a document whose aliases expand it past
+// MaxExpandedBytes. Each node's size is counted once and an alias adds the
+// size of the node it names, so a chain of aliases of aliases costs one pass
+// over the tree, not the expansion. Each node's count is held at one over
+// the limit, so a sum of its children, at most the nodes of a 1 MiB file
+// times that, cannot overflow.
+func checkExpansion(doc *yaml.Node) error {
+	sizes := map[*yaml.Node]int64{}
+	var size func(n *yaml.Node) int64
+	size = func(n *yaml.Node) int64 {
+		if s, ok := sizes[n]; ok {
+			return s
+		}
+		// An alias inside the anchor it names counts as one node here; the
+		// YAML library refuses it when it decodes.
+		sizes[n] = 1
+		s := int64(1) + int64(len(n.Value))
+		switch {
+		case n.Kind == yaml.AliasNode && n.Alias != nil:
+			s = 1 + size(n.Alias)
+		default:
+			for _, c := range n.Content {
+				s += size(c)
+			}
+		}
+		s = min(s, MaxExpandedBytes+1)
+		sizes[n] = s
+		return s
+	}
+	if size(doc) > MaxExpandedBytes {
+		return fmt.Errorf("aliases expand the file to more than %d bytes (%d MiB), the most a config may hold; write the repeated part out", MaxExpandedBytes, MaxExpandedBytes>>20)
+	}
+	return nil
 }

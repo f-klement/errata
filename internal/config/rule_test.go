@@ -2,8 +2,10 @@ package config
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"unicode/utf16"
@@ -216,6 +218,12 @@ func TestParseRejectsRules(t *testing.T) {
 		"timeout on a rule": {
 			head + ex + "  agree: [v]\n  timeout: 5s\n", "timeout applies to a program check only",
 		},
+		// A zero timeout left the field at zero, which validation reads as
+		// no key, so the rule loaded with a key that does nothing. The
+		// planted break: the case for a rule removed from build.
+		"zero timeout on a rule": {
+			head + ex + "  agree: [v]\n  timeout: 0s\n", "timeout applies to a program check only: a rule's extractors take no timeout",
+		},
 		"extractor with no kind": {
 			head + "  extract: {v: {}}\n  agree: [v]\n", `extractor "v": an extractor sets exactly one of yaml, json, toml, regex`,
 		},
@@ -362,6 +370,12 @@ func TestParseRejectsRules(t *testing.T) {
 		},
 		"one place under two limits": {
 			head + "  extract:\n    a: {toml: {file: f, path: x}}\n    b: {toml: {file: f, path: x, max_bytes: 10}}\n  agree: [a, b]\n",
+			`extractors "a" and "b" read the same place`,
+		},
+		// Since a72e292 a place is compared by its JSON, so no namespaces
+		// and an empty map of them are one place, as they read one.
+		"one xml place with and without an empty namespaces map": {
+			head + "  extract:\n    a: {xml: {file: f.xml, path: /a}}\n    b: {xml: {file: f.xml, path: /a, namespaces: {}}}\n  agree: [a, b]\n",
 			`extractors "a" and "b" read the same place`,
 		},
 		"one regex place spelt two ways": {
@@ -667,5 +681,56 @@ checks:
 	_, err := ParseWith([]byte(yaml), func(extract.Spec) (check.Extractor, error) { return nil, nil })
 	if want := `extractor "shell": built nothing, and gave no error`; err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("error = %v, want it to contain %q", err, want)
+	}
+}
+
+// manyExtractors is a rule of n extractors, e0 to e<n-1>, that agree over
+// all of them; with places of 8, they cycle through 8 places, and with 0
+// each reads a place of its own.
+func manyExtractors(n, places int) []byte {
+	var b strings.Builder
+	b.WriteString("checks:\n- id: a\n  reason: r\n  scope: repo\n  extract:\n")
+	names := make([]string, n)
+	for i := range n {
+		names[i] = fmt.Sprintf("e%d", i)
+		p := i
+		if places > 0 {
+			p = i % places
+		}
+		fmt.Fprintf(&b, "    e%d: {regex: {file: f%d, pattern: 'v(.*)'}}\n", i, p)
+	}
+	b.WriteString("  agree: [" + strings.Join(names, ", ") + "]\n")
+	return []byte(b.String())
+}
+
+// parseAllocs is the bytes Parse allocates for raw, and its error.
+func parseAllocs(raw []byte) (uint64, error) {
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	_, err := Parse(raw)
+	runtime.ReadMemStats(&after)
+	return after.TotalAlloc - before.TotalAlloc, err
+}
+
+// A rule of 5000 extractors loads, or is refused, in memory linear in their
+// number: one comparison of every pair, with an error for each pair over one
+// place, took 3 GB and more for 5000 over 8 places (security review of #90).
+// Four times the extractors may take at most six times the memory, where a
+// cost in the square of their number takes sixteen. The refusal names at
+// most maxSamePlace extractors and counts the rest. The planted break: the
+// pairwise loop with an error for each pair, which fails the ratio.
+func TestManyExtractorsLoadInLinearMemory(t *testing.T) {
+	small, _ := parseAllocs(manyExtractors(1250, 8))
+	large, err := parseAllocs(manyExtractors(5000, 8))
+	if large > 6*small || large > 1<<30 {
+		t.Errorf("1250 extractors over 8 places allocated %d MiB, 5000 allocated %d MiB", small>>20, large>>20)
+	}
+	if err == nil || strings.Count(err.Error(), "read the same place") != maxSamePlace ||
+		!strings.Contains(err.Error(), fmt.Sprintf("and %d more extractors read a place an extractor above reads", 5000-8-maxSamePlace)) {
+		t.Errorf("5000 extractors over 8 places: %v", err)
+	}
+	if _, err := Parse(manyExtractors(5000, 0)); err != nil {
+		t.Errorf("5000 extractors over 5000 places: %v", err)
 	}
 }
