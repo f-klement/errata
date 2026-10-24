@@ -72,9 +72,10 @@ FUZZ_TARGETS := ./internal/config:FuzzParse ./internal/protocol:FuzzMessage \
 INTERNAL := $(if $(wildcard ci/public-tree.sh),public-dry ci-test)
 
 # `gate` is everything but mutation testing, for a quick run by hand: Gremlins
-# over the whole module takes hours. CI's test job runs `check` with
-# MUTATION_SCOPE set to the packages a push changed (ci/mutation-scope.sh), and
-# the nightly runs every package.
+# over the whole module takes hours. CI's test job runs `gate` with fuzzing
+# scoped to the packages a push changed (ci/mutation-scope.sh), its mutation
+# job mutates the lines those packages changed (ci/push-mutation.sh), and the
+# weekly pass runs every package whole.
 gate: lint test cover slow fuzz vuln dogfood image-dry $(INTERNAL)
 
 check: gate mutation
@@ -190,7 +191,9 @@ cover: test
 # The packages fuzz and mutation cover: all, none, or package directories such as
 # "internal/config internal/cli". CI's test job sets it from ci/mutation-scope.sh and passes
 # FUZZ_FLAGS=-parallel=1 (one fuzz worker, measured at 43% less CPU for the same wall clock).
-# Left as they are, both steps cover every package, as locally and nightly.
+# Left as they are, both steps cover every package, as locally and weekly. MUTATION_DIFF, a
+# commit, narrows mutation to the lines each package in scope changed since it
+# (scripts/mutation.sh --diff); CI's mutation job sets it to the base of the scope.
 #
 # Only a value given on make's command line counts. make exports command-line variables
 # to every recipe, so `make check MUTATION_SCOPE=x` reaches each make a recipe starts, the
@@ -203,8 +206,12 @@ endif
 ifeq ($(origin FUZZ_FLAGS),environment)
 override FUZZ_FLAGS :=
 endif
+ifeq ($(origin MUTATION_DIFF),environment)
+override MUTATION_DIFF :=
+endif
 MUTATION_SCOPE ?= all
 FUZZ_FLAGS     ?=
+MUTATION_DIFF  ?=
 
 fuzz:
 	@ran=0; for t in $(FUZZ_TARGETS); do \
@@ -217,7 +224,7 @@ fuzz:
 # scripts/mutation.sh runs gremlins from a copy of the tracked tree, one pass per package of
 # MUTATION_SCOPE, each held to its own floors; it says why.
 mutation: $(BIN)/gremlins
-	GREMLINS=$(BIN)/gremlins scripts/mutation.sh $(MUTATION_SCOPE)
+	GREMLINS=$(BIN)/gremlins scripts/mutation.sh $(if $(MUTATION_DIFF),--diff $(MUTATION_DIFF) )$(MUTATION_SCOPE)
 
 vuln: $(BIN)/govulncheck
 	$(BIN)/govulncheck ./...
@@ -236,10 +243,11 @@ public-dry: build
 	rm -rf "$$(dirname $$idx)"; \
 	ci/public-tree.sh $$tree public && ./errata check --root public
 
-# The publish and autopatch scripts, against local repositories only.
-ci-test:
+# The publish and autopatch scripts, against local repositories only. Gremlins too: one test
+# runs it on a module of its own, to show what a diff run mutates.
+ci-test: $(BIN)/gremlins
 	cd ci/autopatch && $(GO) vet ./... && $(GO) test -count=1 ./...
-	ci/test-ci.sh
+	GREMLINS=$(BIN)/gremlins ci/test-ci.sh
 
 # The release image, built by ko with .goreleaser.yaml's base image and user
 # into a tarball, pushed nowhere, and its config checked against what the
@@ -262,7 +270,8 @@ image-dry: $(BIN)/ko
 # inside the project, as the shared runner cache needs them. Two defects that
 # only CI saw came from that layout (a cache directory named like a source
 # file, and checks reading dependency sources), so run this before pushing a
-# change to the pipeline, the Makefile or the checks.
+# change to the caches or the directory layout (the .go job's variables, this
+# target, GOFLAGS).
 # TMPDIR is on disk and outside the project, as in CI: the gate's tests and
 # builds write their temporary files there, and `make mutation` run the same
 # way copies the tracked tree into it once per worker, which on a tmpfs /tmp

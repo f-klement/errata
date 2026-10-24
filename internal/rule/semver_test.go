@@ -127,6 +127,39 @@ func TestAgreeSemver(t *testing.T) {
 	}
 }
 
+// refusesAfter reads as a semver.Reader does until its n values are read,
+// then refuses the next as a Reader past semver.MaxIntervals does.
+type refusesAfter struct{ n, read int }
+
+func (r *refusesAfter) Parse(s string) (semver.Value, error) {
+	r.read++
+	if r.read > r.n {
+		return semver.Value{}, &semver.BoundError{Values: r.read}
+	}
+	return semver.Parse(s)
+}
+
+// A value the reader refuses at its bound stops the comparison at once,
+// naming the value, its places and the bound, and no value after it is read.
+// semver's own tests reach the real bound by lowering it; this one stands in
+// for a reader that reached it. The planted break: the bound's message
+// changed, which this test names.
+func TestAgreeSemverStopsAtTheBound(t *testing.T) {
+	reader := &refusesAfter{n: 1}
+	newSemverReader = func() semverReader { return reader }
+	t.Cleanup(func() { newSemverReader = func() semverReader { return new(semver.Reader) } })
+	res := Run(context.Background(), "/repo", semverRule(
+		named("a", fake{values: []check.Value{at("^1", "a.txt", 1)}}),
+		named("b", fake{values: []check.Value{at("^2", "b.txt", 1), at(">=3", "b.txt", 2)}})))
+	want := `agree: compare semver stopped at "^2" at b.txt:1 (b): the ranges of the first 2 values hold more than 1000000 intervals, the most errata compares in one rule`
+	if res.Verdict != check.VerdictUnknown || res.Message != want || res.Note != "" {
+		t.Errorf("verdict %s, note %q, message:\n%s\nwant unknown:\n%s", res.Verdict, res.Note, res.Message, want)
+	}
+	if reader.read != 2 {
+		t.Errorf("the reader read %d values; it must stop at the one it refused, the 2nd", reader.read)
+	}
+}
+
 // normalize applies before a value is read as a version, and text compare
 // is unchanged: "20" and "20.11.1" differ as text.
 func TestAgreeSemverNormalizesAndTextStays(t *testing.T) {

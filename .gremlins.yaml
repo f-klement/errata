@@ -37,7 +37,9 @@ unleash:
   # pass takes 0.7 s, so no coefficient near 5 covers that: three of its
   # mutants timed out at 2, 3 and 5. internal/extract's mutants take twice its
   # pass and more, and at 5 two that live read as timed out. scripts/mutation.sh
-  # gives both their own, with the figures.
+  # gives protocol and extract/ini their own, with the figures, and raises the
+  # coefficient of any package whose pass is short, so that no mutant gets
+  # under 10 s (its LIMIT_FLOOR): 5 applies only to a pass of 3 s or more.
   timeout-coefficient: 5
   workers: 2
   exclude-files:

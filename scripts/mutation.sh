@@ -1,17 +1,20 @@
 #!/bin/sh
 # mutation.sh: run gremlins over each package of a scope, each held to its own floors.
 #
-# Usage: scripts/mutation.sh all | none | <package directory>...
-#   make mutation                                   every package, as locally and nightly
+# Usage: scripts/mutation.sh [--diff <base>] all | none | <package directory>...
+#   make mutation                                   every package, as locally and weekly
 #   make mutation MUTATION_SCOPE="internal/config"  the packages listed
+#   make mutation MUTATION_SCOPE="internal/config" MUTATION_DIFF=<commit>
+#                                                   the lines those packages changed since it
 #
 # Each package is one pass, `gremlins unleash <package directory>`, judged alone against its
 # floors below. A package directory is one under internal/ that holds Go files, nested or not:
 # internal/config, internal/extract, internal/extract/ini. The path scopes gremlins' coverage
 # pass, its mutants and so its timeout per mutant to that package. `all` is every package
-# `go list` finds under internal/, so the nightly pass judges each package exactly as a push
-# that touches it does. `none` mutates nothing and passes. CI's test job passes the scope
-# ci/mutation-scope.sh computes; that script says which packages a pipeline puts in it. A
+# `go list` finds under internal/, so the weekly pass judges each package exactly as a run by
+# hand does. `none` mutates nothing and passes. CI's mutation job passes the scope
+# ci/mutation-scope.sh computes, with --diff (ci/push-mutation.sh); that script says which
+# packages a pipeline puts in it. A
 # package .gremlins.yaml excludes whole, or one under a directory it excludes whole, such as
 # internal/heapcap, is listed and skipped.
 #
@@ -35,6 +38,21 @@
 # cost. -count=1: the timeout per mutant is a multiple of the coverage pass's duration, and a
 # coverage pass answered from Go's test cache takes a fraction of a second, which would turn
 # every slow mutant into a timeout.
+#
+# --diff <base> mutates only the lines a package changed since <base>: gremlins' own --diff, which
+# marks every mutant outside the changed lines Skipped. As gremlins v0.6.0 wires it, it skips
+# every mutant here. It runs `git diff --merge-base <base>` in the directory it runs in
+# (internal/diff/parse.go), and the copy under TMPDIR has no .git; and it looks a mutant's file up
+# in that diff by its path relative to the package (internal/engine/engine.go walks os.DirFS of
+# the package, and diff.go keys on the diff's new name), while git names files from the
+# repository root. So this script makes each package's diff itself, in the checkout, with
+# --relative, and a `git` on PATH for the gremlins call prints it (the shim). A package whose
+# own Go code did not change, in scope through its tests, its testdata or a module bump, is
+# skipped and left to the weekly pass: an empty diff would make gremlins mutate all of it
+# (diff.go: an empty Diff counts every position as changed), and a whole pass can take most of
+# an hour (extract/ini, 1500 mutants), past a push's 25 minutes (owner decision 2026-10-24).
+# ci/test-ci.sh runs the real gremlins on a module of its own to show that a diff run mutates
+# the changed lines and skips the rest.
 set -eu
 GREMLINS=${GREMLINS:-gremlins}
 
@@ -51,10 +69,20 @@ has_go() {
     return 1
 }
 
-[ "$#" -gt 0 ] || refuse "no scope given. Usage: scripts/mutation.sh all | none | <package directory>..."
+diff_base=""
+if [ "${1:-}" = --diff ]; then
+    [ "$#" -ge 2 ] || refuse "--diff takes a base commit"
+    diff_base=$2
+    shift 2
+    case "$diff_base" in
+        ''|-*) refuse "--diff takes a base commit, not '$diff_base'" ;;
+    esac
+fi
+[ "$#" -gt 0 ] || refuse "no scope given. Usage: scripts/mutation.sh [--diff <base>] all | none | <package directory>..."
 cd "$(dirname "$0")/.."
 case "$*" in
-    all|none) ;;
+    all) [ -z "$diff_base" ] || refuse "--diff takes the packages that changed, not all, which the weekly pass mutates" ;;
+    none) ;;
     *)
         for p in "$@"; do
             case "$p" in
@@ -78,6 +106,52 @@ work=$(mktemp -d "${TMPDIR:-/tmp}/errata-mutation.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+
+# diff_file <package>: where that package's diff goes.
+diff_file() {
+    echo "$work/diff/$(echo "$1" | tr / _).diff"
+}
+# diff_for <package>: when the package's own Go code changed since the base, write its diff, with
+# paths relative to the package, to diff_file; nothing otherwise. Run in the checkout, before the
+# copy, which has no .git. The diff compares the base with the files as the copy below will hold them: a scratch index
+# (GIT_INDEX_FILE) gets every tracked file and every untracked file git does not ignore, so new
+# work not yet committed is a change too, and the checkout's own index is left alone.
+# --no-renames: a file moved into the package is new code there, so all of it is mutated.
+diff_for() {
+    : >"$work/diff.names"
+    GIT_INDEX_FILE=$work/diff.index git diff --cached --merge-base --no-renames --name-only "$diff_base" -- "$1" >"$work/diff.names"
+    if awk -v pre="$1/" 'index($0, pre) == 1 { f = substr($0, length(pre) + 1); if (f !~ /\// && f ~ /\.go$/ && f !~ /_test\.go$/) found = 1 } END { exit !found }' "$work/diff.names"; then
+        GIT_INDEX_FILE=$work/diff.index git diff --cached --merge-base --no-renames --relative="$1/" "$diff_base" -- "$1" >"$(diff_file "$1")"
+    fi
+}
+if [ -n "$diff_base" ]; then
+    git rev-parse --is-inside-work-tree >/dev/null 2>&1 || refuse "--diff needs a git checkout to compare with $diff_base"
+    git rev-parse -q --verify "$diff_base^{commit}" >/dev/null || refuse "--diff $diff_base names no commit in this checkout"
+    real_git=$(command -v git)
+    mkdir "$work/diff"
+    GIT_INDEX_FILE=$work/diff.index git read-tree HEAD
+    GIT_INDEX_FILE=$work/diff.index git add -A
+    for p in "$@"; do
+        diff_for "$p"
+    done
+    # The `git` gremlins finds first on PATH. It answers the one call gremlins makes, `git diff
+    # --merge-base <base>`, with the package's diff from diff_for, and leaves a mark that it did,
+    # so a gremlins that stopped asking cannot pass as a diff run; it hands anything else to git.
+    mkdir "$work/shim"
+    cat >"$work/shim/git" <<'SHIM'
+#!/bin/sh
+if [ "$#" -eq 3 ] && [ "$1" = diff ] && [ "$2" = --merge-base ]; then
+    if [ "$3" != "$ERRATA_MUTATION_BASE" ]; then
+        echo "mutation: git shim: asked for a diff from $3, but the base is $ERRATA_MUTATION_BASE" >&2
+        exit 1
+    fi
+    : >"$ERRATA_MUTATION_ASKED"
+    exec cat "$ERRATA_MUTATION_DIFF"
+fi
+exec "$ERRATA_REAL_GIT" "$@"
+SHIM
+    chmod +x "$work/shim/git"
+fi
 if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     mkdir "$work/tree"
     # A tracked file deleted from the working tree is still listed; tar would stop on it.
@@ -117,6 +191,19 @@ export GOFLAGS
 # second pass when the first is over it (unleash). A figure at
 # or below its floor fails. A floor may only rise: ci/test-ci.sh refuses one lowered.
 #
+# On a diff run (--diff) the same floors judge only the mutants on the changed lines, so the
+# figures are those of the new code alone, over a denominator that may be a handful: one lived
+# mutant of six is 83.33% efficacy, under 85, and fails the run until a test kills it. That is
+# the intent: new code meets the bar the package meets. The other side of a small denominator:
+# a mutant in a case expression always reads as not covered (below), so a change made only of
+# such lines can fall under its package's mutant coverage floor with every arm tested. So a diff
+# run judges mutant coverage only from MCOVER_MIN_DIFF mutants on its changed lines, and
+# efficacy always (owner decision 2026-10-24); a whole run judges both at any count. Efficacy
+# needs a mutant some test reaches, so a diff run whose changed lines hold mutants and no test
+# reaches any of them, new code with no test, fails, naming those lines: gremlins prints each
+# mutant not covered on a diff run (-S ltc).
+MCOVER_MIN_DIFF=10
+#
 # Efficacy is 85 for every package.
 EFFICACY_FLOOR=85
 # Mutant coverage, mutants some test reaches, is 85 but where Go's coverage profile cannot
@@ -150,63 +237,113 @@ mcover_floor() {
         *)                           echo 85 ;;
     esac
 }
-# A package fails when more than this percent of its mutants that ran timed out. A timed
-# out mutant counts as killed, so without a cap a run whose limit is too short would pass on
-# mutants no test failed.
+# A package fails when more than TIMEOUT_CAP percent of its mutants that ran timed out, and
+# more than TIMEOUT_MIN of them. A timed out mutant counts as killed, so without a cap a run
+# whose limit is too short would pass on mutants no test failed. The minimum count is for small
+# runs, a diff run above all: 1 timeout of 12 is 8%, and a mutant that hangs (a loop condition
+# turned so it never ends) times out at any limit, so the percentage alone would fail a run on
+# one or two genuine hangs. Three timeouts in any run is over the cap when they are over 5%.
 TIMEOUT_CAP=5
+TIMEOUT_MIN=2
 
-# coefficient_for <package>: a timeout coefficient above .gremlins.yaml's, for a package whose
-# tests wait on a fixed time that its coverage pass does not show. The timeout is the
-# coefficient times that pass, so a scoped run of a fast package gets a short one.
+# over_cap: the pass's timeouts are over both TIMEOUT_CAP and TIMEOUT_MIN.
+over_cap() {
+    [ "$timedout" -gt "$TIMEOUT_MIN" ] && [ $((timedout * 100)) -gt $((ran * TIMEOUT_CAP)) ]
+}
+
+# The limit per mutant. Gremlins gives each mutant its timeout coefficient times the duration
+# of its coverage pass, the first thing it runs, so a short pass gives a short limit: on
+# 2026-10-24 a warm build cache made internal/semver's pass 0.24 s, coefficient 5 gave 1.2 s,
+# and 297 of its 314 mutants timed out, though they take 1.2 to 2.7 s. So every package gets at
+# least LIMIT_FLOOR seconds a mutant. Gremlins takes no limit in seconds, only a coefficient, so
+# the script measures the pass first, the same `go test -tags <tags> -cover -coverprofile
+# ./<package>/...` with the same GOFLAGS and GOCACHE, and gives gremlins the coefficient that
+# makes LIMIT_AIM seconds of it (measure_pass, coefficient_for). The measured run comes after
+# a run with the same flags that runs no test (-run '^$'), so it and gremlins' own pass after
+# it both find every test binary built. The flags must match: -cover builds other binaries,
+# and a warm-up without it left the measured run compiling them, twice gremlins' pass
+# (internal/rule 1.64 s against 0.86 s, semver 0.54 against 0.23, on 2026-10-24), so the
+# limit came out at 8.6 s. LIMIT_AIM is half again the floor because
+# gremlins' pass is a second measurement of the same thing and comes out shorter as often as
+# longer; on top of that, a pass that ends with a timeout under LIMIT_FLOOR, from gremlins'
+# own figure, runs once more with the coefficient taken from that figure (unleash).
+LIMIT_FLOOR=10
+LIMIT_AIM=15
+
+# base_coefficient_for <package>: the least coefficient for a package whose tests wait on more
+# than the floor gives, measured; .gremlins.yaml's 5 otherwise. The floor made the others
+# redundant on 2026-10-24: the extract readers' 10 (mutants killed in a second or two, under
+# limits of 1 to 9 s on a busy node) and semver's 20 (mutants of 1.2 to 2.7 s against 1.2 s).
 #
 # internal/protocol: TestRunTimeout runs `sleep 5` under a 50 ms check timeout. The mutants
 # that break the timeout (exec.go:38, proc_unix.go:16) are killed only when the sleep ends,
 # 5 to 6 s after they start, against a coverage pass of 0.7 s. Measured on the build node
 # on 2026-10-18, pinned to two cores: all three timed out at coefficients 2, 3 and 5, and
-# were killed at 10, with 1.5 s to spare. 20 gives about 14 s. It costs nothing, because a
-# killed mutant ends when its test fails, not at the timeout.
+# were killed at 10, with 1.5 s to spare. 20 gives about 14 s, room the floor's 10 s does not
+# leave on a node under load. It costs nothing, because a killed mutant ends when its test
+# fails, not at the timeout.
 #
-# internal/extract/ini: its coverage pass takes 1.0 to 1.4 s on the build node, and its tests
-# with one change rebuilt 0.9 to 1.0 s alone, but two mutants running side by side on a node
-# under other load take several times that. At 5, a limit of 6.7 s, 34 of its 1240 mutants
-# timed out on 2026-10-22, the build node running CI's whole module pass beside it. Applied by
-# hand one at a time on the fallback node, 14 ran past 60 s, 12 lived in 1.7 to 2.7 s
-# (ansible_values.go:812, :1026, :1028, :1039, git.go:40, ini.go:317, notliteral.go:78, :138,
-# :249, :268, php.go:399, :400) and 6 were killed, two of them only after 11 s
-# (ansible_values.go:1046); two could not be applied by hand. So a timeout at 5 hid 12
-# survivors. At 10, about 14 s, the next run's 15 timeouts were the 14 that ran past 60 s and
-# the other mutant of one of them (ini.go:306), and those 12 read as lived.
-#
-# internal/extract/core and internal/extract/xml: on a quiet build node at 5, a mutant that
-# lives by hand in 1.4 s (core path.go:640) and one that lives in 0.8 s (xml xpath.go:231)
-# each timed out, against limits of 8.9 s and 4.7 s; the same xml mutant read as lived in
-# another run. Their property tests draw random inputs, so a mutant's run time varies from
-# run to run. Each package's other timeouts at 5 ran past 60 s by hand or were killed.
-#
-# Before the split into one package per reader, internal/extract had 10: its pass took 2.4 s
-# and a mutant that lived 3.2 to 4.9 s. The facade's pass now runs every reader's tests, 3 to
-# 5 s against 0.3 s for its own, so 5 is ample there.
-#
-# Every other reader under internal/extract has 10 as well. Their passes are short, so 5 gives
-# a limit of a second or two, and a mutant a test kills can run past it on a node under CI's
-# load. A small package cannot absorb that under TIMEOUT_CAP: json had 2 of its 13 mutants
-# time out in main's pipeline on 2026-10-22 (json.go:38 and :57), 15%, where both earlier
-# full runs that day timed out none. 10 costs a killed mutant nothing.
-#
-# internal/semver: a warm build cache makes its coverage pass short, 0.53 s and 0.24 s in the
-# two passes of main's pipeline on 2026-10-24, and a mutant's rebuild is not in it. At 5, the
-# first pass's limit of 2.7 s timed out 16 of 314 mutants and the second's of 1.2 s timed out
-# 297. Six time out at any limit: they turn a loop's condition so it never ends (range.go:234,
-# :669 twice, version.go:225 twice, :388); with a cold cache on builder, a pass of 8 s and so
-# a limit of 80 s, those six timed out in each of four runs and every other mutant ended. So
-# the rest take between about 1.2 and 2.7 s and more under load, where 10 after a short pass
-# is 2.4 s. 20 gives 4.7 s after the shortest pass seen, and the six cost about 10 s each.
-coefficient_for() {
+# internal/extract/ini: applied by hand one at a time on the fallback node on 2026-10-22, two
+# mutants were killed only after 11 s (ansible_values.go:1046), past the floor. Its pass takes
+# 1.0 to 1.4 s, so 10 gives 10 to 14 s.
+base_coefficient_for() {
     case "$1" in
         internal/protocol) echo 20 ;;
-        internal/extract/*) echo 10 ;;
-        internal/semver) echo 20 ;;
+        internal/extract/ini) echo 10 ;;
+        *) sed -n 's/^  timeout-coefficient: \([0-9]*\).*/\1/p' .gremlins.yaml ;;
     esac
+}
+
+# measure_pass <package>: pass_s, the seconds of the package's coverage pass as gremlins runs
+# it, the shorter of two runs after one that builds it; empty when the tests fail, which
+# gremlins then reports itself. The shorter, because gremlins' pass came out shorter than one
+# measured run: internal/semver's 0.23 s against 0.88 s on 2026-10-24, which put its limit at
+# 4.2 s and cost a second pass of 3.3 minutes.
+measure_pass() {
+    tags=$(sed -n 's/^  tags: *\([^ #]*\).*/\1/p' .gremlins.yaml)
+    go test ${tags:+-tags "$tags"} -cover -coverprofile "$work/measure.cov" -run '^$' "./$1/..." >/dev/null 2>&1 || true
+    pass_s=""
+    for _ in 1 2; do
+        start=$(date +%s%N)
+        go test ${tags:+-tags "$tags"} -cover -coverprofile "$work/measure.cov" "./$1/..." >/dev/null 2>&1 || { pass_s=""; return 0; }
+        pass_s=$(awk -v a="$start" -v b="$(date +%s%N)" -v p="$pass_s" 'BEGIN { s = (b - a) / 1e9; if (p != "" && p + 0 < s) s = p; printf "%.3f", s }')
+    done
+}
+
+# coefficient_for <package> <pass seconds>: the larger of the package's base coefficient and
+# the one that makes LIMIT_AIM seconds of a pass that long. A pass under 10 ms counts as 10 ms.
+coefficient_for() {
+    base=$(base_coefficient_for "$1")
+    if [ -z "$2" ]; then
+        echo "$base"
+        return
+    fi
+    awk -v b="$base" -v aim="$LIMIT_AIM" -v s="$2" 'BEGIN {
+        if (s < 0.01) s = 0.01
+        c = int(aim / s); if (c < aim / s) c++
+        print (c > b ? c : b)
+    }'
+}
+
+# gremlins_pass_s: the seconds of the coverage pass gremlins timed, from its "done in" line, a
+# Go duration such as 812.3ms, 4.3s or 1m2.5s; empty when it printed none.
+gremlins_pass_s() {
+    sed -n 's/.*Gathering coverage\.\.\. *done in \([0-9.hmsµun]*\).*/\1/p; s/^done in \([0-9.hmsµun]*\)$/\1/p' "$work/out" | head -n 1 | awk '
+        NF {
+            d = $0; t = 0
+            while (match(d, /^[0-9.]+(h|ms|µs|us|ns|m|s)/)) {
+                part = substr(d, 1, RLENGTH); d = substr(d, RLENGTH + 1)
+                match(part, /[0-9.]+/); v = substr(part, 1, RLENGTH) + 0; u = substr(part, RLENGTH + 1)
+                if (u == "h") t += v * 3600; else if (u == "m") t += v * 60; else if (u == "s") t += v
+                else if (u == "ms") t += v / 1000; else t += v / 1000000
+            }
+            printf "%.3f", t
+        }'
+}
+
+# seconds <coefficient> <pass seconds>: the limit they give, with one decimal.
+seconds() {
+    awk -v c="$1" -v s="$2" 'BEGIN { printf "%.1f", c * s }'
 }
 
 # count <label>: the number gremlins printed after "<label>: ", or 0.
@@ -215,17 +352,17 @@ count() {
     echo "${n:-0}"
 }
 
-# config_for <package>: .gremlins.yaml with both thresholds at 0 and that package's
+# config_for <package> <coefficient>: .gremlins.yaml with both thresholds at 0 and that
 # coefficient, as a file. Its exclude-files gain, first, the pattern `/`: gremlins matches a
 # path relative to the package, so a path with a slash is a file below the package's own
 # directory, in a package nested under it or in testdata. Then each pattern .gremlins.yaml
 # anchors under the package, ^<package>/<rest>, as ^<rest>, so it excludes in this pass what
 # it excludes in a run from the module root.
 config_for() {
-    coef=$(coefficient_for "$1")
+    coef=$2
     sed -e "s/^    efficacy: [0-9]*/    efficacy: 0/" \
         -e "s/^    mutant-coverage: [0-9]*/    mutant-coverage: 0/" \
-        ${coef:+-e "s/^  timeout-coefficient: [0-9]*/  timeout-coefficient: $coef/"} \
+        -e "s/^  timeout-coefficient: [0-9]*/  timeout-coefficient: $coef/" \
         .gremlins.yaml >"$work/gremlins.base"
     {
         echo "    - /"
@@ -237,7 +374,7 @@ config_for() {
         END { if (n != 1) exit 1 }
     ' "$work/gremlins.base" >"$work/gremlins.yaml" \
         || refuse "a copy of .gremlins.yaml has no single '  exclude-files:' line to add the package's exclusions to"
-    for key in "    efficacy: 0" "    mutant-coverage: 0" ${coef:+"  timeout-coefficient: $coef"}; do
+    for key in "    efficacy: 0" "    mutant-coverage: 0" "  timeout-coefficient: $coef"; do
         grep -q "^$key\( \|\$\)" "$work/gremlins.yaml" || refuse "could not write '$key' into a copy of .gremlins.yaml"
     done
 }
@@ -260,16 +397,24 @@ percent() {
     awk -v p="$1" -v w="$2" 'BEGIN { printf "%.2f%%", 100 * p / w }'
 }
 
-# pass_once <package>: one gremlins pass, its output shown and kept, and its counts.
+# pass_once <package> [<diff file>]: one gremlins pass, its output shown and kept, and its
+# counts. With a diff file, gremlins runs with --diff and the shim first on PATH.
 pass_once() {
-    rm -f "$work/rc"
+    rm -f "$work/rc" "$work/asked"
     {
         rc=0
-        "$GREMLINS" unleash --config "$work/gremlins.yaml" -S lt "$1" || rc=$?
+        if [ -n "${2:-}" ]; then
+            PATH="$work/shim:$PATH" ERRATA_MUTATION_BASE=$diff_base ERRATA_MUTATION_DIFF=$2 \
+                ERRATA_MUTATION_ASKED="$work/asked" ERRATA_REAL_GIT=$real_git \
+                "$GREMLINS" unleash --config "$work/gremlins.yaml" --diff "$diff_base" -S ltc "$1" || rc=$?
+        else
+            "$GREMLINS" unleash --config "$work/gremlins.yaml" -S lt "$1" || rc=$?
+        fi
         echo "$rc" >"$work/rc"
     } 2>&1 | tee "$work/out"
     rc=$(cat "$work/rc")
     killed=$(count Killed) lived=$(count Lived) timedout=$(count "Timed out") uncovered=$(count "Not covered")
+    skipped=$(count Skipped)
     ran=$((killed + lived + timedout))
 }
 
@@ -281,16 +426,47 @@ pass_once() {
 unleash() {
     p=$1
     mcover=$(mcover_floor "$p")
-    coef=$(coefficient_for "$p")
-    name="$p (floors: efficacy $EFFICACY_FLOOR, mutant coverage $mcover${coef:+; timeout coefficient $coef})"
+    measure_pass "$p"
+    coef=$(coefficient_for "$p" "$pass_s")
+    if [ -n "$pass_s" ]; then
+        limit="limit per mutant $(seconds "$coef" "$pass_s") s: coefficient $coef times a pass of $pass_s s"
+    else
+        limit="limit per mutant unknown: the tests failed when measured; coefficient $coef"
+    fi
+    name="$p (floors: efficacy $EFFICACY_FLOOR, mutant coverage $mcover; $limit)"
+    diff="" how=""
+    if [ -n "$diff_base" ]; then
+        diff=$(diff_file "$p")
+        name="$name, the lines changed since $diff_base"
+    fi
     echo "==> mutation: $name"
-    config_for "$p"
-    pass_once "$p"
+    config_for "$p" "$coef"
+    pass_once "$p" "$diff"
     again=""
-    if [ "$rc" -eq 0 ] && grep -q 'Killed: [0-9]' "$work/out" && [ $((timedout * 100)) -gt $((ran * TIMEOUT_CAP)) ]; then
-        echo "==> mutation: $p: $timedout of $ran mutants timed out, over $TIMEOUT_CAP%; running the package once more"
-        pass_once "$p"
+    # The limit gremlins gave, from its own pass. Under the floor with a mutant timed out, the
+    # timeout may be the short limit's: the package runs once more, its coefficient taken from
+    # gremlins' figure, and the second pass is judged.
+    short=""
+    gpass=$(gremlins_pass_s)
+    if [ -n "$gpass" ] && [ "$timedout" -gt 0 ] \
+        && awk -v l="$(seconds "$coef" "$gpass")" -v f="$LIMIT_FLOOR" 'BEGIN { exit !(l < f) }'; then
+        short=yes
+    fi
+    if [ "$rc" -eq 0 ] && grep -q 'Killed: [0-9]' "$work/out" && { over_cap || [ -n "$short" ]; }; then
+        if [ -n "$short" ]; then
+            was=$(seconds "$coef" "$gpass")
+            coef=$(coefficient_for "$p" "$gpass")
+            config_for "$p" "$coef"
+            echo "==> mutation: $p: $timedout of $ran mutants timed out under a limit of $was s, below the floor of $LIMIT_FLOOR s; running the package once more at coefficient $coef"
+        else
+            echo "==> mutation: $p: $timedout of $ran mutants timed out, over $TIMEOUT_CAP% and over $TIMEOUT_MIN; running the package once more"
+        fi
+        pass_once "$p" "$diff"
+        gpass=$(gremlins_pass_s)
         again=", on its second pass too"
+    fi
+    if [ -n "$gpass" ]; then
+        echo "==> mutation: $p: limit per mutant $(seconds "$coef" "$gpass") s: coefficient $coef times gremlins' pass of $gpass s"
     fi
     all=$((ran + uncovered))
     if [ "$all" -gt 0 ]; then
@@ -310,17 +486,32 @@ unleash() {
     elif ! grep -q 'Killed: [0-9]' "$work/out"; then
         verdict="FAILED, gremlins printed no counts"
         rc=1
-    elif [ "$all" -gt 0 ] && [ $((ran * 100)) -le $((all * mcover)) ]; then
+    elif [ -n "$diff" ] && [ "$ran" -eq 0 ] && [ "$uncovered" -gt 0 ]; then
+        lines=$(sed -n 's/.*NOT COVERED .* at \([^ ]*\):[0-9]*$/\1/p' "$work/out" | sort -u | head -n 10 | tr '\n' ' ' | sed 's/ $//; s/ /, /g')
+        verdict="FAILED, no test reaches any of its $uncovered mutants on the changed lines (${lines:-lines not printed})"
+        rc=1
+    elif [ "$all" -gt 0 ] && { [ -z "$diff" ] || [ "$all" -ge "$MCOVER_MIN_DIFF" ]; } && [ $((ran * 100)) -le $((all * mcover)) ]; then
         verdict="FAILED, mutant coverage at or below $mcover"
         rc=1
     elif [ "$ran" -gt 0 ] && [ $(((killed + timedout) * 100)) -le $((ran * EFFICACY_FLOOR)) ]; then
         verdict="FAILED, efficacy at or below $EFFICACY_FLOOR"
         rc=1
-    elif [ $((timedout * 100)) -gt $((ran * TIMEOUT_CAP)) ]; then
-        verdict="FAILED, $timedout of $ran mutants timed out, over $TIMEOUT_CAP%$again"
+    elif over_cap; then
+        verdict="FAILED, $timedout of $ran mutants timed out, over $TIMEOUT_CAP% and over $TIMEOUT_MIN$again"
+        rc=1
+    elif [ -n "$diff" ] && [ ! -e "$work/asked" ]; then
+        # The shim was not asked for the diff, so gremlins judged every mutant, not the changed
+        # lines: it no longer calls git as the shim expects.
+        verdict="FAILED, gremlins never asked the git shim for the diff"
         rc=1
     fi
-    echo "$p: $verdict. $figures Timed out: $timedout of $ran." >>"$work/summary"
+    if [ -n "$diff" ]; then
+        how=" Outside the changed lines: $skipped skipped."
+        if [ "$all" -gt 0 ] && [ "$all" -lt "$MCOVER_MIN_DIFF" ]; then
+            how="$how Mutant coverage not judged: the changed lines hold $all of the $MCOVER_MIN_DIFF mutants it needs."
+        fi
+    fi
+    echo "$p: $verdict. $figures Timed out: $timedout of $ran.$how" >>"$work/summary"
     [ "$rc" -eq 0 ]
 }
 
@@ -336,6 +527,11 @@ failed=0
 for p in "$@"; do
     if excluded_whole "$p"; then
         echo "$p: skipped, .gremlins.yaml excludes it whole." >>"$work/summary"
+        continue
+    fi
+    if [ -n "$diff_base" ] && [ ! -e "$(diff_file "$p")" ]; then
+        echo "==> mutation: $p: its Go code is as at $diff_base, so there are no changed lines to mutate; the weekly pass judges it whole"
+        echo "$p: skipped, its Go code is as at $diff_base; left to the weekly pass." >>"$work/summary"
         continue
     fi
     unleash "$p" || failed=1

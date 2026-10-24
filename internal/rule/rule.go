@@ -400,6 +400,17 @@ func differ(groups []distinct) string {
 	return b.String()
 }
 
+// semverReader reads the values of one comparison and refuses, with a
+// *semver.BoundError, the one that takes their ranges past the bound.
+type semverReader interface {
+	Parse(s string) (semver.Value, error)
+}
+
+// newSemverReader gives agreeSemver its reader. A test replaces it with one
+// that refuses within a few values, since semver's own bound is a million
+// intervals, too slow to reach once per mutant.
+var newSemverReader = func() semverReader { return new(semver.Reader) }
+
 // agreeSemver is agree with compare: semver over the distinct values. Each
 // must read as a version or a range, or the rule is unknown, naming each
 // one that does not; a value is never compared as text. A semver.Reader
@@ -417,7 +428,7 @@ func agreeSemver(groups []distinct) (verdict check.Verdict, message, note string
 	values := make([]semver.Value, len(groups))
 	var (
 		unread []string
-		reader semver.Reader
+		reader = newSemverReader()
 		bound  *semver.BoundError
 	)
 	for i, g := range groups {
