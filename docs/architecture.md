@@ -21,6 +21,7 @@ import `cli`.
 | `internal/engine` | which checks run, in what order, and which are skipped | the check protocol's details, output formats |
 | `internal/protocol` | the check protocol: run a program, map its exit code to a verdict | config, providers, output |
 | `internal/rule` | evaluating a rule: run its extractors, compare their values or evaluate its assert, fail closed; the CEL environment, the assert helpers, the embedded time zone database and the limits | how an extractor reads a file, config, output |
+| `internal/semver` | versions and ranges as npm, Cargo, PEP 440, Go modules and RubyGems write them: their order, precision, satisfaction and overlap, for agree's `compare: semver` and the assert helpers alike | files, rules, CEL |
 | `internal/extract` | the kinds of extractor a rule names: the `Spec` a rule decodes into, the kinds table, `Build`, `Place`, `Resolved` and `Kind`, which see every kind and dispatch to its reader | how any kind reads a file; rules, config, output |
 | `internal/extract/core` | what every reader shares: the source held inside the repository and to its size cap, the walk of the repository and the directories it passes over, the limits on nodes, values, depth and bytes, the tree and the path grammar with its filters, the line index, quoting, the clocked regex search, and the entry extractor and work meter of the INI and properties readers | any one format |
 | `internal/extract/yaml`, `json`, `toml` | one reader each that parses its format into core's tree, for core's path to select from | each other |
@@ -99,7 +100,7 @@ would decide around: each of their operands is rewritten into a hidden note that
 for that evaluation, and `exists` and `all` run every member, so the verdict does not depend on
 the order of the values. A helper reads at most 1024 bytes. Named time zones come from an IANA
 database embedded from the Go toolchain errata is built with, never from the machine, so a
-verdict is the same on every runner. depguard holds `internal/rule` to an allow list of imports.
+verdict is the same on every runner. depguard holds `internal/rule` and `internal/semver`, which it reads versions with, to an allow list of imports.
 Two packages on it can read a file, `time` with `LoadLocation` and `archive/zip` with
 `OpenReader`, and forbidigo, not depguard, refuses those two calls.
 

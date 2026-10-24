@@ -152,7 +152,7 @@ func compile(expr string, extractors []string, lim limits, extra ...cel.EnvOptio
 	}
 	program, err := env.Program(noted,
 		cel.CostLimit(lim.cost),
-		cel.CostTrackerOptions(append(setCosts(), noteCost)...),
+		cel.CostTrackerOptions(append(append(setCosts(), semverCosts()...), noteCost)...),
 		cel.InterruptCheckFrequency(interruptEvery),
 	)
 	if err != nil {

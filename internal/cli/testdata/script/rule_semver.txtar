@@ -1,0 +1,93 @@
+# compare: semver over real files. The Node version agrees at the precision
+# each file states, and satisfies package.json's engines range. A version
+# that does not satisfy it is an erratum that lists each value with what it
+# was read as; a value that is no version makes the rule unknown; ranges
+# alone agree when they overlap, and the message says so. errata list
+# prints the rule's compare as semver.
+exec errata check -c holds.yaml
+stdout '^0 errata, 0 unknown. Coverage: ran 1, skipped 0.$'
+! stdout 'FALSE|UNKNOWN'
+! stderr .
+
+! exec errata check -c differs.yaml
+cmp stdout differs.txt
+! stderr .
+
+! exec errata check -c unknown.yaml
+stdout '^UNKNOWN node-agrees \(repo\)$'
+stdout '^  said: agree: compare semver reads every value as a version or a range, and cannot read 1 value$'
+stdout '^          "lts/iron" at old.nvmrc:1 \(nvmrc\): it is neither a version nor a range: "lts/iron" is not a version: it does not start with a number$'
+
+exec errata check -c ranges.yaml
+stdout '^  note on engines-agree \(repo\): agree: only ranges were compared, since no value is a version, and they overlap$'
+
+exec errata list --format json -c holds.yaml
+stdout '"compare": "semver"'
+exec errata list -c holds.yaml
+stdout 'agree: nvmrc, dockerfile, engines \(compare semver\)'
+
+-- holds.yaml --
+checks:
+  - id: node-agrees
+    reason: CI, the image and local shells must run one Node release line.
+    scope: repo
+    extract:
+      nvmrc:      {regex: {file: .nvmrc, pattern: '(.+)'}}
+      dockerfile: {regex: {file: Dockerfile, pattern: 'FROM node:([0-9.]+)'}}
+      engines:    {json: {file: package.json, path: engines.node}}
+    agree: [nvmrc, dockerfile, engines]
+    compare: semver
+-- differs.yaml --
+checks:
+  - id: node-agrees
+    reason: CI, the image and local shells must run one Node release line.
+    scope: repo
+    extract:
+      nvmrc:   {regex: {file: old.nvmrc, pattern: '(\d.+)'}}
+      engines: {json: {file: package.json, path: engines.node}}
+    agree: [nvmrc, engines]
+    compare: semver
+-- differs.txt --
+FALSE node-agrees (repo)
+  why:  CI, the image and local shells must run one Node release line.
+  said: agree: the version "18.19.0" does not satisfy the range ">=20 <23"
+          "18.19.0" (version 18.19.0) at old.nvmrc:2 (nvmrc)
+          ">=20 <23" (range >=20.0.0 <23.0.0-0) at package.json:3 (engines)
+
+1 erratum, 0 unknown. Coverage: ran 1, skipped 0.
+-- unknown.yaml --
+checks:
+  - id: node-agrees
+    reason: CI, the image and local shells must run one Node release line.
+    scope: repo
+    extract:
+      nvmrc:   {regex: {file: old.nvmrc, pattern: '^(lts.+)'}}
+      engines: {json: {file: package.json, path: engines.node}}
+    agree: [nvmrc, engines]
+    compare: semver
+-- ranges.yaml --
+checks:
+  - id: engines-agree
+    reason: The app and its library must accept one Node release.
+    scope: repo
+    extract:
+      app: {json: {file: package.json, path: engines.node}}
+      lib: {json: {file: lib/package.json, path: engines.node}}
+    agree: [app, lib]
+    compare: semver
+-- .nvmrc --
+v20.11
+-- old.nvmrc --
+lts/iron
+18.19.0
+-- Dockerfile --
+FROM node:20.11.1-alpine
+-- package.json --
+{
+  "name": "app",
+  "engines": {"node": ">=20 <23"}
+}
+-- lib/package.json --
+{
+  "engines": {"node": "^20.9"}
+}

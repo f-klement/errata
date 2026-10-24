@@ -42,6 +42,29 @@ func listDocument(t *testing.T, checks []check.Check) map[string]any {
 	return doc
 }
 
+// A rule that compares as semver lists as semver, in JSON and in text, and
+// one that names no compare as text. The planted break: toListCheck printing
+// "text" for every agree rule, as before #89, fails the first check.
+func TestListCompare(t *testing.T) {
+	checks := listChecks()
+	checks[1].Rule.Compare = check.CompareSemver
+	rel := listedCheck(t, checks, 1)["relation"].(map[string]any)
+	if rel["compare"] != "semver" {
+		t.Errorf("a semver rule lists compare %v, want semver", rel["compare"])
+	}
+	var buf bytes.Buffer
+	if err := (ListText{}).WriteList(&buf, checks); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "y, x (compare semver)") {
+		t.Errorf("the text listing does not say compare semver:\n%s", buf.String())
+	}
+	checks[1].Rule.Compare = ""
+	if rel := listedCheck(t, checks, 1)["relation"].(map[string]any); rel["compare"] != "text" {
+		t.Errorf("a rule with no compare lists compare %v, want text", rel["compare"])
+	}
+}
+
 // The JSON holds each kind of check with every key its type has, the lists
 // of a rule that sets none of them as [] rather than null or left out, and
 // the relation as agree with compare or as assert.
@@ -63,7 +86,7 @@ func TestListJSON(t *testing.T) {
 		t.Errorf("agree rule: %v", agree)
 	}
 	rel := agree["relation"].(map[string]any)
-	if !slices.Equal(rel["agree"].([]any), []any{"y", "x"}) || rel["compare"] != CompareText || len(rel) != 2 {
+	if !slices.Equal(rel["agree"].([]any), []any{"y", "x"}) || rel["compare"] != string(check.CompareText) || len(rel) != 2 {
 		t.Errorf("agree relation %v", rel)
 	}
 	rel = assert["relation"].(map[string]any)
@@ -205,8 +228,8 @@ func TestSpecText(t *testing.T) {
 // added to one of these types fails TestListPlacesEveryField until it is
 // placed here, and one placed under a key fails until its value reaches
 // that key. So list cannot go on printing a check the old way while check
-// runs it a new way: #89's compare on a rule is such a field, and list must
-// then print it rather than CompareText.
+// runs it a new way: compare on a rule (#89) was such a field, and is
+// printed from the rule rather than as a constant.
 var listedFields = map[reflect.Type]map[string]string{
 	reflect.TypeFor[check.Check](): {
 		"ID": "id", "Reason": "reason", "Scope": "scope", "Run": "run", "Timeout": "timeout",
@@ -214,7 +237,7 @@ var listedFields = map[reflect.Type]map[string]string{
 	},
 	reflect.TypeFor[check.Location](): {"File": "at.file", "Line": "at.line", "Outside": "at.outside"},
 	reflect.TypeFor[check.Rule](): {
-		"Extractors": "fields", "Agree": "relation.agree", "Assert": "relation.assert",
+		"Extractors": "fields", "Agree": "relation.agree", "Compare": "relation.compare", "Assert": "relation.assert",
 		"AllowEmpty": "allow_empty", "SkipNotLiteral": "skip_not_literal", "Normalize": "normalize",
 		"Compiled": "left out: compiled from Assert, which is printed",
 	},

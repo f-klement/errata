@@ -192,10 +192,20 @@ TIMEOUT_CAP=5
 # load. A small package cannot absorb that under TIMEOUT_CAP: json had 2 of its 13 mutants
 # time out in main's pipeline on 2026-10-22 (json.go:38 and :57), 15%, where both earlier
 # full runs that day timed out none. 10 costs a killed mutant nothing.
+#
+# internal/semver: a warm build cache makes its coverage pass short, 0.53 s and 0.24 s in the
+# two passes of main's pipeline on 2026-10-24, and a mutant's rebuild is not in it. At 5, the
+# first pass's limit of 2.7 s timed out 16 of 314 mutants and the second's of 1.2 s timed out
+# 297. Six time out at any limit: they turn a loop's condition so it never ends (range.go:234,
+# :669 twice, version.go:225 twice, :388); with a cold cache on builder, a pass of 8 s and so
+# a limit of 80 s, those six timed out in each of four runs and every other mutant ended. So
+# the rest take between about 1.2 and 2.7 s and more under load, where 10 after a short pass
+# is 2.4 s. 20 gives 4.7 s after the shortest pass seen, and the six cost about 10 s each.
 coefficient_for() {
     case "$1" in
         internal/protocol) echo 20 ;;
         internal/extract/*) echo 10 ;;
+        internal/semver) echo 20 ;;
     esac
 }
 

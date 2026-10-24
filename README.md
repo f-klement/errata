@@ -162,7 +162,8 @@ nothing and pass. Every check has these keys:
 | `run` | program check | the command, as a list of arguments, run from the repository root |
 | `timeout` | no | program check only: a positive Go duration such as `10s` or `2m`; default `30s`. Zero or less does not load |
 | `extract` | rule | the rule's extractors, each under a name of its own |
-| `agree` | rule: this or `assert` | the extractors whose values must all be equal |
+| `agree` | rule: this or `assert` | the extractors whose values must all agree |
+| `compare` | no | agree only: how the values must agree, `text` (the default) or `semver` (see [Comparing versions](#comparing-versions)) |
 | `assert` | rule: this or `agree` | a [CEL](https://cel.dev) expression over the extracted values that must be true |
 | `allow_empty` | no | rule only: the extractors that may find no value, such as `[client]` |
 | `skip_not_literal` | no | rule only: the extractors whose not literal values are left out, such as `[php]`; only an extractor that can return a not literal value may be listed (see [Values a file only computes](#values-a-file-only-computes)) |
@@ -202,7 +203,8 @@ checks:
     agree: [service, client]
 ```
 
-`agree` holds when every value from every named extractor has the same string form. It names
+`agree` holds when every value from every named extractor has the same string form, or with
+`compare: semver` the same version (see [Comparing versions](#comparing-versions)). It names
 only extractors the rule declares, each once, and every extractor the rule declares, so none is
 left out of the comparison by mistake. When the values differ, the message lists each distinct
 value with every `file:line` it was found at:
@@ -238,6 +240,121 @@ an extractor before it in name order reads, beside the first one, at most 8 of t
 counts the rest. A rule takes no `timeout`, because its extractors read files inside errata rather
 than running a program, and its scope is `repo` for the same reason.
 
+#### Comparing versions
+
+`compare: semver` makes `agree` read every value as a version or a version range, so files that
+state one version at different precision agree:
+
+```yaml
+checks:
+  - id: node-agrees
+    reason: CI, the image and local shells must run one Node release line.
+    scope: repo
+    extract:
+      nvmrc:      {regex: {file: .nvmrc, pattern: '(.+)'}}
+      dockerfile: {regex: {file: Dockerfile, pattern: 'FROM node:([0-9.]+)'}}
+      engines:    {json: {file: package.json, path: engines.node}}
+    agree: [nvmrc, dockerfile, engines]
+    compare: semver
+```
+
+Versions agree at the precision each states. A version of one or two numbers, such as `20` or
+`v20.11`, stands for every release that starts with them; a version of three numbers or more, or
+with a pre-release, stands for itself. So `20`, `20.11.1` and `v20.11` agree, and `20` and
+`18.19.0` do not. A range agrees when every version among the values satisfies it: `20.11.1`
+agrees with `>=20` and with `^20.1`. A version of one or two numbers satisfies a range when some
+release it stands for does, so `20` satisfies `^20.1`. That reading suits a floating version, such
+as `node:20` or `.nvmrc` with `20`, which installs the newest release. It does not suit go.mod's
+`go 1.21`, which means 1.21.0 and still satisfies `>=1.21.4` here: write the third number where
+the lowest release is meant. When no value is a version, the ranges
+agree when one release satisfies them all, and the text output says under the coverage line that
+only ranges were compared:
+
+```text
+0 errata, 0 unknown. Coverage: ran 1, skipped 0.
+  note on engines-agree (repo): agree: only ranges were compared, since no value is a version, and they overlap
+```
+
+When the values do not agree, the message names the first pair that does not, then lists each
+value with every place it was found at and what errata read it as. A bound written with `-0`, as
+in `<23.0.0-0`, lies below every pre-release of that version, as npm writes it:
+
+```text
+FALSE node-agrees (repo)
+  why:  CI, the image and local shells must run one Node release line.
+  said: agree: the version "18.19.0" does not satisfy the range ">=20 <23"
+          "18.19.0" (version 18.19.0) at .nvmrc:1 (nvmrc)
+          ">=20 <23" (range >=20.0.0 <23.0.0-0) at package.json:3 (engines)
+```
+
+A value that reads as neither a version nor a range, such as `lts/iron` or `latest`, makes the
+rule unknown, and the message names the value with the reason. errata never compares it as text.
+`normalize` applies before a value is read. A value of more than 1024 bytes is neither a version
+nor a range. After the numbers, a version holds a pre-release after `-`, or one of the words `a`,
+`alpha`, `b`, `beta`, `c`, `rc`, `pre`, `preview`, `post`, `rev`, `r` and `dev` in any case, so
+`10ms`, `1st` and `20H2` are not versions. A value that is only a wildcard, such as `*` or `x`, is the range of
+every version, and `vx` is neither.
+
+The ranges of one rule may hold at most 1000000 intervals in all, each alternative of a range, each
+piece a `!=` leaves and each release a comparator names a pre-release of counting as one. errata
+counts them as it reads the values, with a version among them or not, and the value that passes the
+bound makes the rule unknown, naming the bound, before any value after it is read. Real ranges hold
+one to a few. On a six core build machine, with 100000 distinct values of 1024 bytes each, the most
+one extractor returns:
+
+| Values | Time | Allocated |
+|---|---|---|
+| chains of `!=`, the most intervals for their length, refused at the bound after about 5000 | 0.9 s | 2.1 GB, most of it freed at once |
+| as many ranges of about 140 alternatives as the bound allows, compared with each other | 2.8 s | 0.6 GB |
+| ranges of about 140 comparators that fold into one interval, beside one version | 5.2 s | 3.2 GB, most of it freed at once |
+| ranges of about 90 comparators that each name a pre-release of another release, beside one version, refused at the bound after about 11000 | 1.0 s | 0.9 GB |
+| ranges of about 90 comparators that name pre-releases of one release, which errata keeps once, beside one version | 6.0 s | 3.4 GB, most of it freed at once |
+
+The process peaked at 967 MiB across the five. `compare: text`, the default, compares the
+string form, as above.
+
+errata reads the version and range syntax of five ecosystems:
+
+| Ecosystem | Versions | Ranges |
+|---|---|---|
+| npm | `1.2.3`, `v1.2.3`, `1.0.0-rc.1`, `1.0.0+build.5` | `^1.2`, `~1.2.3`, `>=20 <23`, `>= 20`, `1.2.x`, `*`, `^1 \|\| ^3`, and a hyphen range: two versions with a spaced hyphen between them, the second at its precision |
+| Cargo | as npm | `^1.2.3`, `~1.2`, `=1.2.3`, `>=1.2, <1.5`, `1.*` |
+| PEP 440 | `3.12.0rc1`, `1.0a1`, `1.0.post2`, `1.0.dev0`, `1!2.0`, `1.0+ubuntu.1` | `~=2.2`, `==1.2`, `==1.2.*`, `!=1.5`, `!=1.5.*`, `>=3.8, !=3.9.0, <4` |
+| Go modules | `v1.2.3+incompatible`, `v0.0.0-20191109021931-daa7c04131f5`, `go1.22.1`, `go1.22rc1` | none: Go writes versions only |
+| RubyGems | `3.3.0.preview1`, `1.0.0.pre`, `7.1.0.beta.2`; a word other than the ones above, such as `2.0.0.racecar1`, is refused | `~> 3.2`, `~> 3.2.1`, `~> 3.2, >= 3.2.1` |
+
+Where the syntaxes differ, errata reads each form one way. errata plans a `syntax:` key that reads
+a rule's values exactly as one ecosystem does; until then:
+
+- A bare version in a range is that version at its precision, as in npm: `1.2` is every 1.2
+  release. Cargo reads a bare `1.2` as `^1.2`, so write the `^`.
+- `>1.2` and `<=1.2` compare at the precision written, as npm and Cargo do: `>1.2` starts at 1.3.0,
+  and `<=1.2` admits 1.2.9. PEP 440 and RubyGems would admit 1.2.1 above `>1.2` and refuse it under
+  `<=1.2`. `==1.2` and `!=1.2` are PEP 440's, and compare with 1.2.0.
+- A pre-release satisfies a range only when one of the range's comparators names a pre-release of
+  the same numbers, as npm and Cargo decide: `2.0.0-beta.1` does not satisfy `>=1.0.0`, and does
+  satisfy `>=2.0.0-alpha`. Two ranges overlap when they share a release; sharing only pre-releases
+  is not enough.
+- After `-`, a pre-release is SemVer's and orders by SemVer's rules, so `1.0.0-1` is a pre-release,
+  not PEP 440's post release. Written without `-`, as PEP 440 and RubyGems write them, its words
+  and numbers order apart, so `rc2` comes before `rc10`.
+- A dev release comes before the pre-releases of its version, and a post release after the
+  version, as PEP 440 orders them. Build metadata and local versions after `+` are never compared.
+- PEP 440 spellings are read as written, not normalised. `1.0-post1` and `1.0-dev1` are SemVer
+  pre-releases, where PEP 440 reads a post and a dev release. `alpha`, `beta`, `c`, `pre` and
+  `preview` are not `a`, `b` and `rc`, so `1.0beta1` and `1.0b1` differ. A word is read in any case
+  but compared as written, so `1.0RC1` is a version that differs from `1.0rc1`. `1.0.0-rc1` (one
+  SemVer identifier) and `1.0.0rc1` (`rc` then `1`) differ.
+- RubyGems accepts any word after the numbers. errata reads only the words above, so a version
+  such as `2.0.0.racecar1` is neither a version nor a range, and its rule is unknown.
+- `>1.7.0` admits `1.7.0.post1`, which PEP 440 leaves out of `>V` unless V is itself a post
+  release.
+- `===` compares text, so a value that holds it is neither a version nor a range.
+
+`assert` reads versions with the same code, through `semver()` and `semver_satisfies()` (see
+below), so the two never read one value two ways. Each call costs 1 and the bytes it reads toward
+the expression's cost limit.
+
 #### assert
 
 `assert` states a relation that equality cannot: a derived number, an order, a set. This one says
@@ -272,6 +389,8 @@ the type of every part of the expression when it loads the file.
 | `port_split(s)` | a Compose port such as `"127.0.0.1:8080:80/udp"` as a map with `ip`, `host`, `container` and `protocol`; the protocol is `tcp` when the string names none |
 | `same_set(a, b)` | true when two lists hold the same members, in any order and with any repeats |
 | `subset(a, b)` | true when every member of `a` is in `b` |
+| `semver(s)` | the version `s`, which `<`, `<=`, `>`, `>=`, `==` and `!=` compare with another `semver()`, a missing number as 0, so `semver('20') == semver('20.0.0')`; `string()` writes it |
+| `semver_satisfies(v, r)` | true when the version `v` satisfies the range `r`, as `compare: semver` decides (see [Comparing versions](#comparing-versions)) |
 
 `same_set` and `subset` compare lists of strings, ints, uints, doubles or bools, so
 `same_set(ports.map(p, int(p)), [80, 443])` works. A duration times a whole number is a duration.
@@ -1268,7 +1387,7 @@ Every value is the one the loader resolved, with these defaults written out:
 - `max_bytes` of every extractor: 33554432 (32 MiB) when the extractor sets none;
 - `dialect` of an `ini` extractor: the one the file's name chooses when the extractor names none
   (see [INI files](#ini-files));
-- `compare` of an `agree` rule: `text`;
+- `compare` of an `agree` rule: `text` when the rule sets none;
 - `normalize`, `allow_empty` and `skip_not_literal` of a rule: an empty list when the rule sets
   none.
 
@@ -1363,7 +1482,7 @@ checks:
 | `extract` | rule: each extractor under its name, as `errata.yaml` spells the entry, with the defaults above written out; a key at its zero value (false, 0, empty) that the defaults above do not name is left out |
 | `relation` | rule: what its values must satisfy, with exactly one of `agree` and `assert` |
 | `relation.agree` | the names, in the order `agree` lists them |
-| `relation.compare` | beside `agree`: how its values are compared; `text` is the one way today, the string form of each value after `normalize` |
+| `relation.compare` | beside `agree`: how its values are compared, `text` (the string form of each value after `normalize`) or `semver` (as versions and ranges) |
 | `relation.assert` | the expression as written |
 | `normalize`, `allow_empty`, `skip_not_literal` | rule: as the config lists them |
 
@@ -1374,8 +1493,8 @@ rules of their kind (see [INI files](#ini-files) for each dialect's).
 
 `version` changes when a key is removed or renamed or a value changes its meaning. A new key does
 not change it, and neither does a new value of `type` or `compare`, or a new kind of
-extractor under `extract`. errata plans more of each, such as ways to compare versions and
-images, and more extractors. A program that meets a value or a kind it does not know should read
+extractor under `extract`. errata plans more of each, such as a way to compare images, and more
+extractors. A program that meets a value or a kind it does not know should read
 that check as one that changed. Both formats write control characters as
 [Command line](#command-line) says.
 
@@ -1561,6 +1680,7 @@ Each package has one job, and the domain types import nothing else:
 | `internal/engine` | decides which checks run and which are skipped |
 | `internal/protocol` | runs a check program and turns its exit code into a verdict |
 | `internal/rule` | evaluates a rule: runs its extractors, compares their values or evaluates its assert in CEL |
+| `internal/semver` | reads versions and ranges in five ecosystems' syntax, for `compare: semver` and the assert helpers |
 | `internal/extract` | builds the extractors a rule names and reads their values from files, one reader package beneath it for each kind |
 | `internal/provider` | the interface for running systems, and the reconciler model |
 | `internal/report` | the text, JUnit and SARIF outputs |

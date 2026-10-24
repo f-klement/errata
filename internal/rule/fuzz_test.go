@@ -25,6 +25,7 @@ func FuzzAssert(f *testing.F) {
 		{"cron_interval(v[0]) > duration('0s')", "1/9223372036854775807 * * * *"},
 		{"subset([1], v.map(x, int(x)))", "a"},
 		{"same_set(v, [v[5]])", "a"},
+		{"semver(v[0]) < semver('2') && semver_satisfies(v[0], '^1.2 || ~> 3.2')", "1.2.3"},
 	} {
 		f.Add(seed[0], seed[1])
 	}
@@ -38,6 +39,7 @@ func FuzzAssert(f *testing.F) {
 		"timestamp('2020-03-08T12:00:00Z').getHours(v[0]) > 0",
 		"same_set(v, v.map(x, x + v[0]))", "subset(v.map(x, int(x)), [1])", "subset([1], v.map(x, int(x)))",
 		"same_set(v, [v[5]])", "same_set([v[5]], v)",
+		"semver(v[0]) > semver('1')", "semver_satisfies(v[0], '>=1')", "semver_satisfies('1.2.3', v[0])",
 	} {
 		a, err := compile(h, []string{"v"}, limits{cost: 10_000, timeout: time.Second, grace: stopGrace})
 		if err != nil {

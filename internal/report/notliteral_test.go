@@ -412,3 +412,37 @@ func TestCutAllocatesItsClip(t *testing.T) {
 		t.Fatalf("cut allocated %d bytes for a clip of %d characters", n, messageLimit)
 	}
 }
+
+// A rule that held with a note, such as an agree rule that compared ranges
+// alone, has it said under the coverage line. A program check that passed
+// prints nothing there, whatever its output, and a check that did not hold
+// is noted nowhere but in its own entry. The planted breaks: printing the
+// note of a check that failed, and printing a passing check's Message (a
+// program check's output), as the first version of the line did.
+func TestTextNotesWhatAHeldRuleSays(t *testing.T) {
+	ranges := check.Result{
+		Check:     check.Check{ID: "engines", Scope: check.ScopeRepo, Reason: "r"},
+		Verdict:   check.VerdictTrue,
+		Note:      "agree: only ranges were compared, since no value is a version, and they overlap",
+		Message:   `skip_not_literal left out 1 not literal value of extractor "ci"`,
+		Extracted: []check.Extracted{{Extractor: "ci", Values: []check.Value{val(">=20", "ci.yml", 3)}, LeftOut: []check.Value{notLiteral("${{ env.NODE }}", "ci.yml", 4)}}},
+	}
+	program := check.Result{Check: check.Check{ID: "lint", Scope: check.ScopeRepo, Reason: "r", Run: []string{"make", "lint"}}, Verdict: check.VerdictTrue, Message: "all 412 files checked"}
+	unknown := check.Result{Check: check.Check{ID: "u", Scope: check.ScopeRepo, Reason: "r"}, Verdict: check.VerdictUnknown, Message: "could not read", Note: "a note"}
+	var buf bytes.Buffer
+	if err := (Text{}).Write(&buf, check.Report{Results: []check.Result{ranges, program, unknown, leftOutSample.Results[0]}}); err != nil {
+		t.Fatal(err)
+	}
+	want := `UNKNOWN u (repo)
+  why:  r
+  said: could not read
+
+0 errata, 1 unknown. Coverage: ran 4, skipped 0.
+  left out of engines (repo), not literal: "${{ env.NODE }}" at ci.yml:4 (ci)
+  left out of held (repo), not literal: "$(git describe)" at build.sh:7 (shell)
+  note on engines (repo): agree: only ranges were compared, since no value is a version, and they overlap
+`
+	if got := buf.String(); got != want {
+		t.Fatalf("text output differs.\ngot:\n%s\nwant:\n%s", got, want)
+	}
+}

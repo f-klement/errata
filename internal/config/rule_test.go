@@ -87,6 +87,30 @@ func TestParseRule(t *testing.T) {
 	}
 }
 
+// compare: semver loads onto the rule, compare: text loads as written, and
+// an agree rule that names none compares as text. The planted break: the
+// loader leaving Compare unset fails the last case.
+func TestParseCompare(t *testing.T) {
+	head := "checks:\n- id: r\n  reason: r\n  scope: repo\n  extract: {v: {json: {file: f.json, path: a}}, w: {json: {file: g.json, path: a}}}\n  agree: [v, w]\n"
+	for yaml, want := range map[string]check.Compare{
+		head + "  compare: semver\n": check.CompareSemver,
+		head + "  compare: text\n":   check.CompareText,
+		head:                         check.CompareText,
+	} {
+		checks, err := Parse([]byte(yaml))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := checks[0].Rule.Compare; got != want {
+			t.Errorf("compare %q, want %q, from:\n%s", got, want, yaml)
+		}
+	}
+	checks, err := Parse([]byte("checks:\n- id: r\n  reason: r\n  scope: repo\n  extract: {v: {json: {file: f.json, path: a}}}\n  assert: size(v) > 0\n"))
+	if err != nil || checks[0].Rule.Compare != "" {
+		t.Errorf("an assert rule has compare %q, %v; want none", checks[0].Rule.Compare, err)
+	}
+}
+
 // An assert is compiled at load, so a rule that loads can run it.
 func TestParseAssertRule(t *testing.T) {
 	checks, err := Parse([]byte("checks:\n- id: a\n  reason: r\n  scope: repo\n  extract: {v: {json: {file: f.json, path: a}}, w: {json: {file: g.json, path: a}}}\n  assert: v[0] == w[0]\n"))
@@ -381,6 +405,21 @@ func TestParseRejectsRules(t *testing.T) {
 		"one regex place spelt two ways": {
 			head + "  extract:\n    a: {regex: {file: ./f, pattern: 'v(.*)', max_bytes: 5}}\n    b: {regex: {file: f, pattern: 'v(.*)'}}\n  agree: [a, b]\n",
 			`extractors "a" and "b" read the same place`,
+		},
+		"compare unknown": {
+			head + ex + "  agree: [v]\n  compare: version\n", `compare "version" must be one of text, semver`,
+		},
+		"compare in another case": {
+			head + ex + "  agree: [v]\n  compare: SemVer\n", `compare "SemVer" must be one of text, semver`,
+		},
+		"compare blank": {
+			head + ex + "  agree: [v]\n  compare: ''\n", "compare is blank: write text or semver, or remove the key for text",
+		},
+		"compare on assert": {
+			head + ex + "  assert: size(v) > 0\n  compare: semver\n", `compare "semver" applies to agree; assert compares in its expression`,
+		},
+		"compare on a program check": {
+			head + "  run: [x]\n  compare: text\n", "never both",
 		},
 		"normalize empty": {
 			head + ex + "  agree: [v]\n  normalize: []\n", "normalize lists no option: name trim, lower or both, or remove the key",

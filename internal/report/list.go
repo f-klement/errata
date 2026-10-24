@@ -45,13 +45,6 @@ const (
 	listRuleType    = "rule"
 )
 
-// CompareText is the one way agree compares values today: the texts after
-// normalize must be equal. A later compare mode, such as semver (#89), is
-// another value of the same key, and comes with a field of check.Rule that
-// list must then print in its place; TestListPlacesEveryField fails until it
-// does.
-const CompareText = "text"
-
 // ListJSON is the format a program reads: one object with the version of its
 // shape and every check in the order the config holds them, each with the
 // values the loader resolved. The README's "Listing the checks" documents
@@ -150,7 +143,7 @@ func toListCheck(c check.Check) listCheck {
 		rule.Normalize = append(rule.Normalize, string(n))
 	}
 	if len(r.Agree) > 0 {
-		rule.Relation = listRelation{Agree: r.Agree, Compare: CompareText}
+		rule.Relation = listRelation{Agree: r.Agree, Compare: string(r.Comparison())}
 	} else {
 		rule.Relation = listRelation{Assert: r.Assert}
 	}

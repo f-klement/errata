@@ -47,6 +47,7 @@ type checkEntry struct {
 
 	Extract    map[string]extract.Spec `json:"extract,omitempty"`
 	Agree      []string                `json:"agree,omitempty"`
+	Compare    string                  `json:"compare,omitempty"`
 	Assert     string                  `json:"assert,omitempty"`
 	AllowEmpty []string                `json:"allow_empty,omitempty"`
 	Normalize  []string                `json:"normalize,omitempty"`
@@ -58,7 +59,7 @@ type checkEntry struct {
 // ruleKeys are the keys only a rule has. A check that sets any of them is a
 // rule, whatever the value, so a program check that sets one is refused as
 // both rather than loading with a key that does nothing.
-var ruleKeys = []string{"extract", "agree", "assert", "allow_empty", "normalize", "skip_not_literal"}
+var ruleKeys = []string{"extract", "agree", "compare", "assert", "allow_empty", "normalize", "skip_not_literal"}
 
 // Load reads and validates the config at path. It reports every invalid check
 // at once, so a user fixes the file in one pass rather than one error a run.
@@ -310,6 +311,9 @@ func build(raw json.RawMessage, newExtractor Builder) (c check.Check, decoded bo
 	if _, ok := keys["assert"]; ok && strings.TrimSpace(e.Assert) == "" {
 		errs = append(errs, errors.New("assert is blank: write the expression or remove the key"))
 	}
+	if _, ok := keys["compare"]; ok && e.Compare == "" {
+		errs = append(errs, errors.New("compare is blank: write text or semver, or remove the key for text"))
+	}
 	if _, ok := keys["normalize"]; ok && len(e.Normalize) == 0 {
 		errs = append(errs, errors.New("normalize lists no option: name trim, lower or both, or remove the key"))
 	}
@@ -336,9 +340,13 @@ func build(raw json.RawMessage, newExtractor Builder) (c check.Check, decoded bo
 func buildRule(e checkEntry, newExtractor Builder) (*check.Rule, []error) {
 	r := &check.Rule{
 		Agree:          e.Agree,
+		Compare:        check.Compare(e.Compare),
 		Assert:         e.Assert,
 		AllowEmpty:     e.AllowEmpty,
 		SkipNotLiteral: e.SkipNotLiteral,
+	}
+	if r.Compare == "" && len(e.Agree) > 0 {
+		r.Compare = check.CompareText
 	}
 	for _, n := range e.Normalize {
 		r.Normalize = append(r.Normalize, check.Normalization(n))

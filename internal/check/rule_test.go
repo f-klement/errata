@@ -69,6 +69,11 @@ func TestValidateRule(t *testing.T) {
 		{"agree and assert", func(c *Check) { c.Rule.Assert = "true" }, "agree and assert are both set"},
 		{"agree names an undeclared extractor", func(c *Check) { c.Rule.Agree = append(c.Rule.Agree, "configmap") }, `agree names "configmap", which extract does not declare`},
 		{"extractor agree leaves out", func(c *Check) { c.Rule.Agree = []string{"service"} }, `extractor "secret" is declared but agree does not name it`},
+		{"valid compare semver", func(c *Check) { c.Rule.Compare = CompareSemver }, ""},
+		{"valid compare text", func(c *Check) { c.Rule.Compare = CompareText }, ""},
+		{"unknown compare", func(c *Check) { c.Rule.Compare = "version" }, `compare "version" must be one of text, semver`},
+		{"compare on assert", func(c *Check) { c.Rule.Agree = nil; c.Rule.Assert = "x"; c.Rule.Compare = CompareText },
+			`compare "text" applies to agree; assert compares in its expression, with semver() and semver_satisfies() for versions`},
 		{"unknown normalize", func(c *Check) { c.Rule.Normalize = []Normalization{NormalizeTrim, "upper"} }, `normalize "upper" must be one of trim, lower`},
 		{"missing reason", func(c *Check) { c.Reason = "" }, "reason is required"},
 		{"bad id", func(c *Check) { c.ID = "Garage" }, "lower-case words"},
@@ -118,6 +123,15 @@ func TestValidateRuleReportsEveryProblem(t *testing.T) {
 	for _, want := range []string{"never both", `agree names "configmap"`, `extractor "secret" is declared`, `extractor "service" is declared`, `normalize "upper"`} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not mention %s", err, want)
+		}
+	}
+}
+
+// A rule with no compare compares as text; one with compare, by it.
+func TestComparison(t *testing.T) {
+	for _, c := range []struct{ set, want Compare }{{"", CompareText}, {CompareText, CompareText}, {CompareSemver, CompareSemver}} {
+		if got := (Rule{Compare: c.set}).Comparison(); got != c.want {
+			t.Errorf("Comparison() of compare %q = %q, want %q", c.set, got, c.want)
 		}
 	}
 }

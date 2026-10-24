@@ -83,7 +83,7 @@ stores these names in `metadata.managedFields`. Two managers can own one field.
 ## Rules
 
 **Rule.** A check the user writes in YAML. It names extractors and states how their values must
-relate: all equal, or a CEL expression that must hold.
+relate: all agree, as text or as versions, or a CEL expression that must hold.
 
 **Program check.** A check the user writes as a program, run through the check protocol. Every check
 is either a rule or a program check. Do not call it a script, an exec check or a command check.
@@ -96,6 +96,16 @@ prose, the versions of a tool in the files that pin it, an image digest, a field
 `.nvmrc` or `nodejs 20.11.1` in `.tool-versions`. The `tool_version` extractor reads every pin of
 one tool. A range a tool must satisfy, such as `"node": ">=20"` under `engines` in package.json, is
 not a pin.
+
+**Range.** A statement of the versions a tool accepts, such as `>=20` or `^20.1` under `engines`
+in package.json, or `~> 3.2` in a Gemfile. An agree rule with `compare: semver` reads each value
+as a version or a range: every version among the values must satisfy every range, and ranges
+with no version beside them agree when one release satisfies them all.
+
+**Precision.** How many numbers a version states. A version of one or two numbers, such as `20` or
+`20.11`, stands for every release that starts with them, so under `compare: semver` it agrees with
+any version that starts with the same numbers. A version of three numbers or more, or with a
+pre-release, stands for itself.
 
 **Not literal.** A value a file only computes, such as `E_ALL` in php.ini, which PHP reads as a
 number, or `{posargs}` in tox.ini. Its text is what the file wrote, not what the file means, so a

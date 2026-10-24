@@ -41,9 +41,11 @@ func FormatNames() []string {
 
 // Text is the human format. It prints each erratum and each unknown with its
 // reason, then the counts and the coverage line, which it prints on every run.
-// Under the coverage line it names each skipped check with its gap, and each
-// value that skip_not_literal left out, whatever the check's verdict: a rule
-// that holds held on the values that were left.
+// Under the coverage line it names each skipped check with its gap, each
+// value that skip_not_literal left out, whatever the check's verdict (a rule
+// that holds held on the values that were left), and the note of each rule
+// that held with one. A program check sets no note: its output is printed
+// only when it fails.
 // A reason comes from the config file and a message from a repository file or
 // a program's output, so the output goes to the terminal through
 // QuoteControls: no file can move the cursor, rewrite a line, reorder one or
@@ -74,6 +76,11 @@ func (Text) Write(w io.Writer, r check.Report) error {
 	for _, res := range r.Results {
 		for _, f := range leftOut(res) {
 			fmt.Fprintf(&b, "  left out of %s (%s), not literal: %s\n", res.Check.ID, res.Check.Scope, where(f))
+		}
+	}
+	for _, res := range r.Results {
+		if res.Verdict == check.VerdictTrue && res.Note != "" {
+			writeIndented(&b, fmt.Sprintf("note on %s (%s): ", res.Check.ID, res.Check.Scope), res.Note)
 		}
 	}
 	_, err := io.WriteString(w, QuoteControls(b.String()))

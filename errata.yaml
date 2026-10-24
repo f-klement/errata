@@ -16,18 +16,29 @@ checks:
 
   - id: go-toolchain-agrees
     reason: >
-      go.mod names the toolchain the release binaries are built with, the Dockerfile builds the
-      image with its own golang tag, and the README tells a developer which Go to install. When
-      the Dockerfile's tag differs, `docker build` ships a binary from another toolchain than the
-      release, and a Go security fix that reached go.mod never reaches that image. When the
-      README names another minor version than go.mod, it sends a developer to install a Go the
-      module does not build with.
+      go.mod names the toolchain the release binaries are built with, and the Dockerfile builds
+      the image with its own golang tag. When the tag differs, `docker build` ships a binary from
+      another toolchain than the release, and a Go security fix that reached go.mod never reaches
+      that image. The pattern takes three numbers, so a go.mod or a tag that names only a minor
+      version, and so floats, finds no value and is unknown.
+    scope: repo
+    extract:
+      gomod: {regex: {file: go.mod, pattern: '^go (\d+\.\d+\.\d+)$'}}
+      dockerfile: {regex: {file: Dockerfile, pattern: '^FROM golang:(\d+\.\d+\.\d+)-'}}
+    agree: [gomod, dockerfile]
+
+  - id: readme-names-the-go-minor
+    reason: >
+      The README tells a developer which Go to install, by its minor version. When it names
+      another minor version than go.mod, it sends a developer to install a Go the module does not
+      build with. The README states two numbers, so under compare semver it agrees with any patch
+      release of that minor version.
     scope: repo
     extract:
       gomod: {regex: {file: go.mod, pattern: '^go (\S+)$'}}
-      dockerfile: {regex: {file: Dockerfile, pattern: '^FROM golang:([0-9.]+)-'}}
       readme: {regex: {file: README.md, pattern: '^With Go (\d+\.\d+) or later'}}
-    assert: dockerfile.all(d, d == gomod[0]) && gomod[0].startsWith(readme[0] + '.')
+    agree: [gomod, readme]
+    compare: semver
 
   - id: docs-state-the-max-bytes-bounds
     reason: >

@@ -15,8 +15,12 @@ type Rule struct {
 	// Extractors are sorted by name, so every message that lists them reads
 	// the same on every run.
 	Extractors []NamedExtractor
-	// Agree names the extractors whose values must all be equal.
+	// Agree names the extractors whose values must all agree.
 	Agree []string
+	// Compare is how agree compares the values: CompareText or
+	// CompareSemver. The loader sets CompareText on an agree rule that names
+	// none, and "" reads as CompareText.
+	Compare Compare
 	// Assert is a CEL expression over the extracted values.
 	Assert string
 	// Compiled is Assert compiled and type checked at load. A rule that uses
@@ -94,6 +98,31 @@ func LeftOutCount(extracted []Extracted) string {
 		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+// Compare is a way agree compares a rule's values.
+type Compare string
+
+// The values a rule's compare: accepts.
+const (
+	// CompareText: the texts after normalize must be equal.
+	CompareText Compare = "text"
+	// CompareSemver: the values are versions and ranges, which agree at the
+	// precision each states (internal/semver).
+	CompareSemver Compare = "semver"
+)
+
+// Compares lists every value compare: accepts, in the order the load error
+// names them.
+var Compares = []Compare{CompareText, CompareSemver}
+
+// Comparison is how agree compares r's values: r.Compare, or CompareText
+// when it is not set.
+func (r Rule) Comparison() Compare {
+	if r.Compare == "" {
+		return CompareText
+	}
+	return r.Compare
 }
 
 // Normalization is one transformation applied to a value before a rule
@@ -213,12 +242,31 @@ func (r Rule) validate(c Check) []error {
 		}
 	}
 
+	// Ifs rather than a switch: Go's coverage profile leaves case
+	// expressions outside every block, so their mutants would read as not
+	// covered and pull the package under its mutant coverage floor.
+	if r.Compare != "" && hasAssert {
+		// assert compares in its expression, so compare would load and do
+		// nothing.
+		errs = append(errs, fmt.Errorf("compare %q applies to agree; assert compares in its expression, with semver() and semver_satisfies() for versions", r.Compare))
+	} else if r.Compare != "" && !slices.Contains(Compares, r.Compare) {
+		errs = append(errs, fmt.Errorf("compare %q must be one of %s", r.Compare, joinCompares()))
+	}
+
 	for _, n := range r.Normalize {
 		if !slices.Contains(Normalizations, n) {
 			errs = append(errs, fmt.Errorf("normalize %q must be one of %s", n, joinNormalizations()))
 		}
 	}
 	return errs
+}
+
+func joinCompares() string {
+	names := make([]string, len(Compares))
+	for i, c := range Compares {
+		names[i] = string(c)
+	}
+	return strings.Join(names, ", ")
 }
 
 func joinNormalizations() string {

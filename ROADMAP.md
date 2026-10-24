@@ -23,6 +23,7 @@ need no program at all.
 - Rules: name extractors and state how their values relate.
   - `agree:` every value is equal, or with `compare: semver` every version agrees at the precision
     each one states, so `20`, `20.11.1` and `>=20` agree.
+  - A `syntax:` key reads ranges as npm, Cargo, PEP 440, Go or RubyGems does.
   - `assert:` a CEL expression holds, for relations beyond equality, such as a threshold that must
     lie between one backup interval and two.
 - Extractors for YAML, JSON and TOML paths, regex captures, and prose in Markdown matched after

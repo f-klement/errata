@@ -5,6 +5,7 @@ package rule
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"slices"
@@ -14,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/f-klement/errata/internal/check"
+	"github.com/f-klement/errata/internal/semver"
 )
 
 // Run evaluates the rule c against the repository at root. It has the
@@ -28,7 +30,7 @@ func Run(ctx context.Context, root string, c check.Check) (res check.Result) {
 	if strings.TrimSpace(c.Rule.Assert) != "" {
 		res.Verdict, res.Message, res.Extracted = assert(ctx, root, *c.Rule)
 	} else {
-		res.Verdict, res.Message, res.Extracted = agree(ctx, root, *c.Rule)
+		res.Verdict, res.Message, res.Note, res.Extracted = agree(ctx, root, *c.Rule)
 	}
 	switch counted := check.LeftOutCount(res.Extracted); {
 	case counted == "":
@@ -311,12 +313,14 @@ type found struct {
 }
 
 // agree runs every extractor that r.Agree names, in that order, and compares
-// the normalised string form of every value they return. It also returns
-// what each extractor that did not fail returned, for the result.
-func agree(ctx context.Context, root string, r check.Rule) (check.Verdict, string, []check.Extracted) {
+// the normalised string form of every value they return, as text or, with
+// compare: semver, as versions and ranges. It also returns
+// what each extractor that did not fail returned, for the result, and a
+// note for a rule that held, which the text output prints.
+func agree(ctx context.Context, root string, r check.Rule) (check.Verdict, string, string, []check.Extracted) {
 	extracted, problems, cancelled := extractAll(ctx, root, r, r.Agree)
 	if cancelled != "" {
-		return check.VerdictUnknown, cancelled, extracted
+		return check.VerdictUnknown, cancelled, "", extracted
 	}
 	var (
 		all        []found
@@ -332,23 +336,27 @@ func agree(ctx context.Context, root string, r check.Rule) (check.Verdict, strin
 	}
 	switch {
 	case len(problems) > 0:
-		return check.VerdictUnknown, strings.Join(problems, "\n"), extracted
+		return check.VerdictUnknown, strings.Join(problems, "\n"), "", extracted
 	case len(all) == 0:
-		return check.VerdictUnknown, "no extractor found a value, so agree has nothing to compare", extracted
+		return check.VerdictUnknown, "no extractor found a value, so agree has nothing to compare", "", extracted
 	case len(all) == 1 && !listedNone:
 		// One value agrees with itself. Only an extractor that allow_empty
 		// lists coming back empty makes one value a comparison the author
 		// asked for.
 		f := all[0]
 		return check.VerdictUnknown, fmt.Sprintf("agree found one value, so it has nothing to compare: %s at %s:%d (%s)",
-			newQuoter(nil).quote(f.value.Text), f.value.At.File, f.value.At.Line, f.extractor), extracted
+			newQuoter(nil).quote(f.value.Text), f.value.At.File, f.value.At.Line, f.extractor), "", extracted
 	}
 
 	groups := group(all, r)
-	if len(groups) == 1 {
-		return check.VerdictTrue, "", extracted
+	if r.Comparison() == check.CompareSemver {
+		verdict, message, note := agreeSemver(groups)
+		return verdict, message, note, extracted
 	}
-	return check.VerdictFalse, differ(groups), extracted
+	if len(groups) == 1 {
+		return check.VerdictTrue, "", "", extracted
+	}
+	return check.VerdictFalse, differ(groups), "", extracted
 }
 
 // distinct is one normalised value and every place it was found.
@@ -387,11 +395,85 @@ func differ(groups []distinct) string {
 	var b strings.Builder
 	b.WriteString("agree: the values differ")
 	for _, g := range groups {
-		places := make([]string, len(g.where))
-		for i, f := range g.where {
-			places[i] = fmt.Sprintf("%s:%d (%s)", f.value.At.File, f.value.At.Line, f.extractor)
-		}
-		fmt.Fprintf(&b, "\n  %s at %s", q.quote(g.text), strings.Join(places, ", "))
+		fmt.Fprintf(&b, "\n  %s at %s", q.quote(g.text), places(g))
 	}
 	return b.String()
+}
+
+// agreeSemver is agree with compare: semver over the distinct values. Each
+// must read as a version or a range, or the rule is unknown, naming each
+// one that does not; a value is never compared as text. A semver.Reader
+// reads them, and refuses the value that takes their ranges past
+// semver.MaxIntervals before reading any more. The values agree as
+// semver.Agree decides. Any message lists each value with its places and
+// what it was read as, each clipped as the quoter clips a value. A rule that
+// held on ranges alone says so in its note.
+func agreeSemver(groups []distinct) (verdict check.Verdict, message, note string) {
+	texts := make([]string, len(groups))
+	for i, g := range groups {
+		texts[i] = g.text
+	}
+	q := newQuoter(texts)
+	values := make([]semver.Value, len(groups))
+	var (
+		unread []string
+		reader semver.Reader
+		bound  *semver.BoundError
+	)
+	for i, g := range groups {
+		v, err := reader.Parse(g.text)
+		switch {
+		case errors.As(err, &bound):
+			return check.VerdictUnknown, "agree: compare semver stopped at " + q.quote(g.text) + " at " + places(g) + ": " + err.Error(), ""
+		case err != nil:
+			unread = append(unread, fmt.Sprintf("%s at %s: %v", q.quote(g.text), places(g), err))
+		}
+		values[i] = v
+	}
+	if len(unread) > 0 {
+		return check.VerdictUnknown, "agree: compare semver reads every value as a version or a range, and cannot read " +
+			count(len(unread), "value") + "\n  " + strings.Join(unread, "\n  "), ""
+	}
+	out := semver.Agree(values)
+	var lead string
+	switch {
+	case out.Holds && out.OnlyRanges:
+		return check.VerdictTrue, "", "agree: only ranges were compared, since no value is a version, and they overlap"
+	case out.Holds:
+		return check.VerdictTrue, "", ""
+	case out.OnlyRanges:
+		lead = "agree: only ranges were compared, since no value is a version, and no release satisfies them all"
+	case values[out.First].IsRange() || values[out.Second].IsRange():
+		version, rng := out.First, out.Second
+		if values[version].IsRange() {
+			version, rng = rng, version
+		}
+		lead = fmt.Sprintf("agree: the version %s does not satisfy the range %s", q.quote(texts[version]), q.quote(texts[rng]))
+	default:
+		lead = fmt.Sprintf("agree: the versions %s and %s differ at the precision both state", q.quote(texts[out.First]), q.quote(texts[out.Second]))
+	}
+	var b strings.Builder
+	b.WriteString(lead)
+	for i, g := range groups {
+		fmt.Fprintf(&b, "\n  %s (%s) at %s", q.quote(g.text), clip(values[i].String()), places(g))
+	}
+	return check.VerdictFalse, b.String(), ""
+}
+
+// clip is what a value was read as, cut to maxQuoted bytes with its length
+// named: a range's intervals can take several times the bytes of its text.
+func clip(s string) string {
+	if len(s) <= maxQuoted {
+		return s
+	}
+	return fmt.Sprintf("%s... (%d bytes)", s[:maxQuoted], len(s))
+}
+
+// places is every place a distinct value was found, with its extractor.
+func places(g distinct) string {
+	out := make([]string, len(g.where))
+	for i, f := range g.where {
+		out[i] = fmt.Sprintf("%s:%d (%s)", f.value.At.File, f.value.At.Line, f.extractor)
+	}
+	return strings.Join(out, ", ")
 }

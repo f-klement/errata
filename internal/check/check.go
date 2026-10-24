@@ -98,9 +98,14 @@ const (
 // Result is what one check produced. Exactly one of Verdict and Gap is set:
 // a skipped check has no verdict, only its gap in the coverage.
 type Result struct {
-	Check    Check
-	Verdict  Verdict
-	Message  string
+	Check   Check
+	Verdict Verdict
+	Message string
+	// Note is what a rule that held says about how it held, such as an
+	// agree rule with compare: semver that compared ranges alone. Only a
+	// rule sets it: a program check's output is its Message, which the
+	// text output prints only for a check that failed.
+	Note     string
 	Gap      string
 	Duration time.Duration
 	// Extracted holds the raw values a rule evaluated, one entry per
