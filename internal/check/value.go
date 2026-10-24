@@ -1,5 +1,10 @@
 package check
 
+import (
+	"strconv"
+	"unicode/utf8"
+)
+
 // Location is a place in a file of the repository: a path relative to the
 // repository root, and a line counted from 1. It is where an extractor found
 // a value, or where a check is written in the config file.
@@ -27,7 +32,69 @@ type Value struct {
 	// zero value is literal, so a reader whose every value is literal never
 	// sets it.
 	NotLiteral bool
+	// Key is the name the file sets the value under, such as API_PORT for
+	// the line API_PORT=8080 of an env file, for a reader whose values
+	// carry one; "" for any other. A report names it beside the location
+	// (KeyNote).
+	Key string
+	// HasKey marks a value whose reader names its key, so the empty key,
+	// which an env file line =x sets, prints as key "" and not as no key.
+	HasKey bool
+	// Condition is what must hold for a job to see the value, for a reader
+	// that returns one value for each case a file chooses between, such as
+	// a GitLab CI rule's "if $CI_COMMIT_TAG" or a parallel:matrix instance
+	// "build: [a]"; "" for a value that always holds. A rule compares it as
+	// any other value; a report names it beside the location
+	// (ConditionNote).
+	Condition string
 }
+
+// maxNote is the most bytes of a key or a condition a note quotes.
+const maxNote = 64
+
+// KeyNote is what a report writes after a value's location to name its
+// key, such as ` key "API_PORT"`, cut as note says. It is "" for a value
+// with no key.
+func (v Value) KeyNote() string {
+	if !v.HasKey && v.Key == "" {
+		return ""
+	}
+	return note(" key ", v.Key)
+}
+
+// ConditionNote is what a report writes after a value's location to name
+// its condition, such as ` when "if $CI_COMMIT_TAG"`, cut as note says. It
+// is "" for a value with none.
+func (v Value) ConditionNote() string {
+	if v.Condition == "" {
+		return ""
+	}
+	return note(" when ", v.Condition)
+}
+
+// note is label and s quoted, and for an s longer than maxNote its first
+// maxNote bytes, cut back to the start of a character, and ....
+func note(label, s string) string {
+	if len(s) <= maxNote {
+		return label + strconv.Quote(s)
+	}
+	n := maxNote
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return label + strconv.Quote(s[:n]) + "..."
+}
+
+// NoValue is the error an extractor returns when it found no value and
+// can say where the value may be instead, such as a variable that only a
+// GitLab project's settings could set. The rule treats it as an empty list,
+// so allow_empty still decides, and names Reason when the extractor is
+// unknown for it.
+type NoValue struct {
+	Reason string
+}
+
+func (e *NoValue) Error() string { return e.Reason }
 
 // Extractor gets values from one place in the repository. An empty list is
 // not an error: the rule decides whether finding nothing is unknown. An error

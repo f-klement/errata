@@ -1,0 +1,119 @@
+# envfile reads a key of a .env file as docker compose does. A key set
+# twice returns both values, so an agree rule reports the file disagreeing
+# with itself, with the line and the key of each assignment.
+! exec errata check -c twice.yaml
+stdout '^FALSE port-agrees \(repo\)$'
+stdout '^          "8080" at values.yaml:1 \(chart\), .env:2 key "API_PORT" \(env\)$'
+stdout '^          "9090" at .env:6 key "API_PORT" \(env\)$'
+
+# Every message that lists values names the key: one value agree cannot
+# compare, and an assert that does not hold.
+! exec errata check -c one.yaml
+stdout 'agree found one value, so it has nothing to compare: "http://localhost:8080" at .env:3 key "API_URL" \(env\)$'
+! exec errata check -c assert.yaml
+stdout '^          env\[1\] = "9090" at .env:6 key "API_PORT"$'
+
+# ${OTHER} reads a key set before it in the file.
+exec errata check -c resolved.yaml
+stdout '^0 errata, 0 unknown. Coverage: ran 1, skipped 0.$'
+
+# A reference to a key the file does not set is returned as written and is
+# not literal: unknown, until skip_not_literal lists the extractor.
+! exec errata check -c unset.yaml
+stdout '^UNKNOWN url-agrees \(repo\)$'
+stdout '^          "http://\$\{HOST\}:8080" at .env:4 key "URL"$'
+exec errata check -c unset-skipped.yaml
+stdout '^0 errata, 0 unknown. Coverage: ran 1, skipped 0.$'
+
+# A name no line of an env file can set does not load.
+! exec errata check -c bad-name.yaml
+stderr 'envfile: name "API PORT" is no key an env file can set'
+
+# What compose refuses makes the rule unknown, at its line.
+! exec errata check -c refused.yaml
+stdout '^UNKNOWN refused \(repo\)$'
+stdout 'broken.env: line 2: the value.s " is not closed, which compose refuses'
+-- .env --
+# the API
+API_PORT=8080
+export API_URL="http://localhost:${API_PORT}"
+URL=http://${HOST}:8080
+URL=http://localhost:8080
+API_PORT=9090
+-- broken.env --
+A=1
+B="open
+-- values.yaml --
+port: "8080"
+url: http://localhost:8080
+-- twice.yaml --
+checks:
+  - id: port-agrees
+    reason: The chart and compose publish the API on one port.
+    scope: repo
+    extract:
+      chart: {yaml: {file: values.yaml, path: port}}
+      env: {envfile: {file: .env, name: API_PORT}}
+    agree: [chart, env]
+-- resolved.yaml --
+checks:
+  - id: api-url-agrees
+    reason: The chart and compose call the API at one URL.
+    scope: repo
+    extract:
+      chart: {yaml: {file: values.yaml, path: url}}
+      env: {envfile: {file: .env, name: API_URL}}
+    agree: [chart, env]
+-- unset.yaml --
+checks:
+  - id: url-agrees
+    reason: The chart and compose call the API at one URL.
+    scope: repo
+    extract:
+      chart: {yaml: {file: values.yaml, path: url}}
+      env: {envfile: {file: .env, name: URL}}
+    agree: [chart, env]
+-- unset-skipped.yaml --
+checks:
+  - id: url-agrees
+    reason: The chart and compose call the API at one URL.
+    scope: repo
+    extract:
+      chart: {yaml: {file: values.yaml, path: url}}
+      env: {envfile: {file: .env, name: URL}}
+    agree: [chart, env]
+    skip_not_literal: [env]
+-- bad-name.yaml --
+checks:
+  - id: port-agrees
+    reason: The chart and compose publish the API on one port.
+    scope: repo
+    extract:
+      env: {envfile: {file: .env, name: API PORT}}
+      chart: {yaml: {file: values.yaml, path: port}}
+    agree: [chart, env]
+-- refused.yaml --
+checks:
+  - id: refused
+    reason: A file compose refuses is unknown.
+    scope: repo
+    extract:
+      a: {envfile: {file: broken.env, name: A}}
+      chart: {yaml: {file: values.yaml, path: port}}
+    agree: [a, chart]
+-- one.yaml --
+checks:
+  - id: one
+    reason: One value has nothing to agree with.
+    scope: repo
+    extract:
+      env: {envfile: {file: .env, name: API_URL}}
+    agree: [env]
+-- assert.yaml --
+checks:
+  - id: once
+    reason: compose sets the port once.
+    scope: repo
+    extract:
+      env: {envfile: {file: .env, name: API_PORT}}
+    assert: size(env) == 1

@@ -236,6 +236,9 @@ type EntryExtractor struct {
 	// notLiteral is the dialect's test for the file, nil when every value
 	// is literal.
 	NotLiteral func(*Entry) bool
+	// Keyed sets each value's Key to its entry's key: the envfile reader's
+	// values carry the key they are set under.
+	Keyed bool
 	// valueLimit is the most values the extractor returns, 0 for maxValues,
 	// which every extractor errata builds has: a test sets it to witness the
 	// limit with a small file. The refusal still names maxValues.
@@ -293,7 +296,11 @@ func (e EntryExtractor) FromData(data []byte) ([]check.Value, error) {
 			stop = TooManyValues(e.File)
 			return errStop
 		}
-		out = append(out, check.Value{Text: string(en.Value), At: check.Location{File: e.File, Line: en.Line}, NotLiteral: e.NotLiteral != nil && e.NotLiteral(en)})
+		v := check.Value{Text: string(en.Value), At: check.Location{File: e.File, Line: en.Line}, NotLiteral: e.NotLiteral != nil && e.NotLiteral(en)}
+		if e.Keyed {
+			v.Key, v.HasKey = string(en.Key), true
+		}
+		out = append(out, v)
 		return nil
 	})
 	switch {

@@ -89,8 +89,9 @@ relate: all agree, as text or as versions, or a CEL expression that must hold.
 is either a rule or a program check. Do not call it a script, an exec check or a command check.
 
 **Extractor.** The part of a rule that gets values from one place. A YAML path, an XPath into an
-XML file, a key in an INI or properties file, a regular expression capture, a sentence of Markdown
-prose, the versions of a tool in the files that pin it, an image digest, a field on a live object.
+XML file, a key in an INI, properties or env file, a regular expression capture, a sentence of
+Markdown prose, the versions of a tool in the files that pin it, an image digest, a field on a live
+object.
 
 **Pin.** A file's statement of the version of a tool the repository uses, such as `20.11.1` in
 `.nvmrc` or `nodejs 20.11.1` in `.tool-versions`. The `tool_version` extractor reads every pin of
@@ -111,8 +112,16 @@ pre-release, stands for itself.
 number, or `{posargs}` in tox.ini. Its text is what the file wrote, not what the file means, so a
 rule never compares it. A rule that lists the extractor in `skip_not_literal` leaves such values
 out; any other rule with one is unknown. The `ini` extractor marks them, `properties` in a
-template file, and `tool_version` a version such as `lts/*` or `system`, which a version manager
-resolves.
+template file, `tool_version` a version such as `lts/*` or `system`, which a version manager
+resolves, `envfile` a value whose `${OTHER}` names a key the file does not set before it,
+`gitlab-ci` a variable that names another, such as `$CI_COMMIT_SHA`, or a number GitLab's YAML
+loader retypes, such as `3.10`, and `shell` a value the shell computes and errata does not
+resolve, such as `$(git describe)` or `"$HOME/bin"`.
+
+**Condition.** What must hold for a value to be the one a reader names, for a reader that returns
+one value for each case a file chooses between: a GitLab CI rule's `if $CI_COMMIT_TAG`, or a
+`parallel:matrix` instance such as `build: [a]`. A rule compares the value as any other; a message
+names its condition after its place.
 
 **Check protocol.** The way errata runs a program check. errata runs the
 program and reads its result. The program can be in any language.

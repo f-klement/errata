@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"strings"
 
 	"go.yaml.in/yaml/v3"
 
@@ -118,7 +119,23 @@ func scalarAt(n *core.Node, keys ...string) string {
 // with a hash map per mapping. An empty document, such as the one after a
 // trailing ---, is skipped.
 func Parse(data []byte) ([]*core.Node, error) {
+	docs, _, err := ParseNoted(data, 0, nil)
+	return docs, err
+}
+
+// ParseNoted is Parse for a reader of a format built on YAML, such as GitLab
+// CI's, that reads several files as one. It starts the count of nodes
+// aliases and merge keys add at expanded, the count the files before used,
+// so core.MaxExpanded bounds them all together, and returns the count it
+// ends at. It calls note, when it is not nil, once for each node of the
+// tree: with the node, the tag the file wrote on it, such as !reference or
+// !!float, or "" for none, and whether it is a plain scalar with no tag,
+// which a YAML 1.1 loader types by its text. The tree keeps neither. An
+// alias is noted once, as its anchor.
+func ParseNoted(data []byte, expanded int, note func(n *core.Node, tag string, plain bool)) ([]*core.Node, int, error) {
 	w := yamlWalker{
+		expanded: expanded,
+		note:     note,
 		last:     bytes.Count(data, []byte("\n")) + 1,
 		anchors:  map[*yaml.Node]converted{},
 		merges:   map[*core.Node]mergeable{},
@@ -131,10 +148,10 @@ func Parse(data []byte) ([]*core.Node, error) {
 		var doc yaml.Node
 		err := dec.Decode(&doc)
 		if errors.Is(err, io.EOF) {
-			return docs, nil
+			return docs, w.expanded, nil
 		}
 		if err != nil {
-			return nil, core.ClipError(err)
+			return nil, w.expanded, core.ClipError(err)
 		}
 		if len(doc.Content) == 0 {
 			continue
@@ -143,7 +160,7 @@ func Parse(data []byte) ([]*core.Node, error) {
 		// document may name an anchor on it.
 		tree, _, err := w.convert(doc.Content[0], 0, false)
 		if err != nil {
-			return nil, err
+			return nil, w.expanded, err
 		}
 		if !isEmptyDoc(doc.Content[0]) {
 			docs = append(docs, tree)
@@ -174,6 +191,7 @@ type yamlWalker struct {
 	merges   map[*core.Node]mergeable // each converted mapping, as a merge key adds it
 	ids      map[*yaml.Node]any       // a key as yaml.v3 decodes it into any, once decoded
 	unmerged map[*core.Node]error     // a merged mapping's refusal, made if an alias decodes it on its own
+	note     func(n *core.Node, tag string, plain bool)
 }
 
 // mergeable is what a merge key adds of a mapping, as yaml.v3 decodes it:
@@ -232,10 +250,23 @@ func (w *yamlWalker) convert(y *yaml.Node, depth int, merged bool) (*core.Node, 
 	if err != nil {
 		return nil, 0, err
 	}
+	if w.note != nil && y.Kind != yaml.AliasNode {
+		w.note(c.n, writtenTag(y), y.Kind == yaml.ScalarNode && y.Style == 0)
+	}
 	if y.Anchor != "" {
 		w.anchors[y] = c
 	}
 	return c.n, c.size, nil
+}
+
+// writtenTag is the tag the file wrote on y, such as !reference or !!str,
+// and "" when it wrote none: the tag yaml.v3 resolves for an untagged node
+// is not the file's.
+func writtenTag(y *yaml.Node) string {
+	if y.Style&yaml.TaggedStyle != 0 || (strings.HasPrefix(y.Tag, "!") && !strings.HasPrefix(y.Tag, "!!")) {
+		return y.Tag
+	}
+	return ""
 }
 
 // alias returns what an alias names. Its anchor comes before it in the file,

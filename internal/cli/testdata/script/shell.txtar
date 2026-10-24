@@ -1,0 +1,96 @@
+# The shell extractor returns every value deploy.sh gives a variable: an
+# assignment, an export and the default of ${API_PORT:-8080}, each at its
+# line, and none from the string, the comment or the quoted here-document.
+exec errata check -c agree.yaml
+stdout '^0 errata, 0 unknown. Coverage: ran 1, skipped 0.$'
+
+! exec errata check -c drifted.yaml
+stdout '^FALSE port-drifted \(repo\)$'
+stdout '^          "8080" at deploy.sh:3 \(script\), deploy.sh:11 \(script\)$'
+stdout '^          "9090" at values.yaml:2 \(chart\)$'
+
+# A value the shell computes, $(cat VERSION), is returned as written and
+# marked not literal: the rule is unknown, naming it, until skip_not_literal
+# lists the extractor, which leaves it out and compares the rest.
+! exec errata check -c computed.yaml
+stdout '^UNKNOWN version-agrees \(repo\)$'
+stdout '^  said: extractor "script" returned 1 not literal value, which a rule does not compare as text'
+stdout '^          "\$\(cat VERSION\)" at deploy.sh:6$'
+exec errata check -c skipped.yaml
+stdout '^0 errata, 0 unknown. Coverage: ran 1, skipped 0.$'
+stdout '^  left out of version-agrees \(repo\), not literal: "\$\(cat VERSION\)" at deploy.sh:6 \(script\)$'
+
+# A script that does not parse in its dialect makes the rule unknown: the
+# shebang names sh, and arrays are bash's.
+! exec errata check -c posix.yaml
+stdout '^UNKNOWN posix-reads \(repo\)$'
+stdout 'posix.sh: line 2: arrays parses only in bash and mksh and zsh, and the script is read as posix, which its shebang names'
+
+# errata list prints the extractor with its max_bytes written out.
+exec errata list -c agree.yaml -f json
+stdout '"shell": \{\n\s+"file": "deploy.sh",\n\s+"name": "API_PORT",\n\s+"max_bytes": 33554432\n\s+\}'
+-- deploy.sh --
+#!/bin/sh
+# API_PORT=1 in a comment is not an assignment
+API_PORT=8080
+export API_PORT
+echo "API_PORT=2"
+VERSION=$(cat VERSION)
+VERSION=1.4.0
+cat <<'EOF'
+API_PORT=3
+EOF
+exec server --port "${API_PORT:-8080}"
+-- posix.sh --
+#!/bin/sh
+PORTS=(80 443)
+-- values.yaml --
+port: 8080
+drifted: 9090
+version: 1.4.0
+-- agree.yaml --
+checks:
+  - id: port-agrees
+    reason: The chart and the start script use one port.
+    scope: repo
+    extract:
+      chart: {yaml: {file: values.yaml, path: port}}
+      script: {shell: {file: deploy.sh, name: API_PORT}}
+    agree: [chart, script]
+-- drifted.yaml --
+checks:
+  - id: port-drifted
+    reason: The chart and the start script use one port.
+    scope: repo
+    extract:
+      chart: {yaml: {file: values.yaml, path: drifted}}
+      script: {shell: {file: deploy.sh, name: API_PORT}}
+    agree: [chart, script]
+-- computed.yaml --
+checks:
+  - id: version-agrees
+    reason: The chart deploys the version the script starts.
+    scope: repo
+    extract:
+      chart: {yaml: {file: values.yaml, path: version}}
+      script: {shell: {file: deploy.sh, name: VERSION}}
+    agree: [chart, script]
+-- skipped.yaml --
+checks:
+  - id: version-agrees
+    reason: The chart deploys the version the script starts.
+    scope: repo
+    extract:
+      chart: {yaml: {file: values.yaml, path: version}}
+      script: {shell: {file: deploy.sh, name: VERSION}}
+    agree: [chart, script]
+    skip_not_literal: [script]
+-- posix.yaml --
+checks:
+  - id: posix-reads
+    reason: The script sets the ports.
+    scope: repo
+    extract:
+      a: {shell: {file: posix.sh, name: PORTS}}
+      b: {yaml: {file: values.yaml, path: port}}
+    agree: [a, b]

@@ -1,0 +1,124 @@
+# gitlab-ci reads the value a job sees: the deploy job's own TAG wins over
+# the top level's, and its image comes from default:, in the included
+# file. A rule over it and the Dockerfile names each value's file and line.
+! exec errata check -c drifted.yaml
+stdout '^FALSE tag-agrees \(repo\)$'
+stdout '^          "1.4.0" at .gitlab-ci.yml:6 \(ci\)$'
+stdout '^          "1.3.9" at chart.yaml:1 \(chart\)$'
+exec errata check -c image.yaml
+stdout '^0 errata, 0 unknown. Coverage: ran 1, skipped 0.$'
+
+# A rule's value carries its condition, which the message names after its
+# place; the README shows this output.
+! exec errata check -c rules.yaml
+stdout '^          "1.4.0" at .gitlab-ci.yml:12 when "if \$CI_COMMIT_TAG" \(ci\)$'
+stdout '^          "1.3.9" at .gitlab-ci.yml:9 \(ci\), chart.yaml:1 \(chart\)$'
+
+# A variable no file sets is unknown, and the message says where it may
+# come from; allow_empty lets the rule hold.
+! exec errata check -c unset.yaml
+stdout 'extractor "ci" found no value: no file gives the job REGISTRY; it may come from the project''s, group''s or instance''s settings'
+
+# A value that names another variable is GitLab's to compute: unknown,
+# naming it.
+! exec errata check -c computed.yaml
+stdout '^UNKNOWN url-agrees \(repo\)$'
+stdout '"https://\$HOST/app" at .gitlab-ci.yml:3'
+
+# A remote include could set any key, so the rule is unknown, naming it.
+! exec errata check -c remote.yaml
+stdout '^UNKNOWN remote-agrees \(repo\)$'
+stdout 'the remote include at remote.yml:1'
+
+# A spec that sets both variable and key does not load.
+! exec errata check -c both.yaml
+stderr 'gitlab-ci: set exactly one of variable'
+-- .gitlab-ci.yml --
+include: ci/defaults.yml
+variables:
+  URL: https://$HOST/app
+  TAG: 1.3.0
+deploy:
+  variables: {TAG: 1.4.0}
+  script: [./deploy]
+release:
+  variables: {TAG: 1.3.9}
+  rules:
+    - if: $CI_COMMIT_TAG
+      variables: {TAG: 1.4.0}
+    - when: on_success
+  script: [./release]
+-- ci/defaults.yml --
+default:
+  image: node:20.11.1
+-- remote.yml --
+include: https://example.com/ci.yml
+deploy:
+  variables: {TAG: 1.4.0}
+-- chart.yaml --
+tag: 1.3.9
+-- Dockerfile --
+FROM node:20.11.1
+-- drifted.yaml --
+checks:
+  - id: tag-agrees
+    reason: The pipeline deploys the tag the chart names.
+    scope: repo
+    extract:
+      ci: {gitlab-ci: {file: .gitlab-ci.yml, job: deploy, variable: TAG}}
+      chart: {yaml: {file: chart.yaml, path: tag}}
+    agree: [ci, chart]
+-- image.yaml --
+checks:
+  - id: image-agrees
+    reason: CI builds in the image the Dockerfile names.
+    scope: repo
+    extract:
+      ci: {gitlab-ci: {file: .gitlab-ci.yml, job: deploy, key: image}}
+      docker: {regex: {file: Dockerfile, pattern: '^FROM (\S+)'}}
+    agree: [ci, docker]
+-- computed.yaml --
+checks:
+  - id: url-agrees
+    reason: The job calls the URL the chart names.
+    scope: repo
+    extract:
+      ci: {gitlab-ci: {file: .gitlab-ci.yml, job: deploy, variable: URL}}
+      chart: {yaml: {file: chart.yaml, path: tag}}
+    agree: [ci, chart]
+-- remote.yaml --
+checks:
+  - id: remote-agrees
+    reason: The pipeline deploys the tag the chart names.
+    scope: repo
+    extract:
+      ci: {gitlab-ci: {file: remote.yml, job: deploy, variable: TAG}}
+      chart: {yaml: {file: chart.yaml, path: tag}}
+    agree: [ci, chart]
+-- both.yaml --
+checks:
+  - id: both
+    reason: Refused.
+    scope: repo
+    extract:
+      ci: {gitlab-ci: {file: .gitlab-ci.yml, job: deploy, variable: TAG, key: image}}
+      chart: {yaml: {file: chart.yaml, path: tag}}
+    agree: [ci, chart]
+-- rules.yaml --
+checks:
+  - id: tag-agrees
+    reason: The pipeline deploys the tag the chart names.
+    scope: repo
+    extract:
+      ci: {gitlab-ci: {file: .gitlab-ci.yml, job: release, variable: TAG}}
+      chart: {yaml: {file: chart.yaml, path: tag}}
+    agree: [ci, chart]
+-- unset.yaml --
+checks:
+  - id: registry-set
+    reason: The job pushes to the registry the chart names.
+    scope: repo
+    extract:
+      ci: {gitlab-ci: {file: .gitlab-ci.yml, job: deploy, variable: REGISTRY}}
+      chart: {yaml: {file: chart.yaml, path: tag}}
+    agree: [ci, chart]

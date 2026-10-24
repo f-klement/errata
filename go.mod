@@ -15,6 +15,7 @@ require (
 	go.yaml.in/yaml/v2 v2.4.4
 	go.yaml.in/yaml/v3 v3.0.5
 	golang.org/x/mod v0.42.0
+	mvdan.cc/sh/v3 v3.14.1
 	pgregory.net/rapid v1.3.0
 	sigs.k8s.io/yaml v1.6.0
 )

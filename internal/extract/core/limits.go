@@ -33,6 +33,12 @@ const (
 	// scales with max_bytes, and so does the memory a dense file can take:
 	// the densest file measured at the default peaks at 2.55 GB, so at
 	// 64 MiB one may take about 5 GB, under the 7 GB of a hosted CI runner.
+	// A shell script's parser holds one statement whole, so the shell reader
+	// refuses a statement over an eighth of max_bytes, and releases each
+	// statement's syntax once it has read it: the densest script measured at
+	// the default, eight groups of a;a;a each at the limit, peaks at 1.43 GB,
+	// and one pipeline of a|a|a is refused at the limit with 0.88 GB. At
+	// 64 MiB each statement may be twice as large.
 	// GitHub warns about a pushed file over 50 MiB. With the ceiling, no sum
 	// of a limit and a byte count can overflow.
 	MaxMaxBytes = 64 << 20

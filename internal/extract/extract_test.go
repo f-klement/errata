@@ -6,10 +6,13 @@ import (
 	"testing"
 
 	"github.com/f-klement/errata/internal/extract/core"
+	"github.com/f-klement/errata/internal/extract/envfile"
 	"github.com/f-klement/errata/internal/extract/extracttest"
+	"github.com/f-klement/errata/internal/extract/gitlabci"
 	"github.com/f-klement/errata/internal/extract/ini"
 	"github.com/f-klement/errata/internal/extract/json"
 	"github.com/f-klement/errata/internal/extract/properties"
+	"github.com/f-klement/errata/internal/extract/shell"
 	"github.com/f-klement/errata/internal/extract/text"
 	"github.com/f-klement/errata/internal/extract/toolversion"
 	"github.com/f-klement/errata/internal/extract/xml"
@@ -124,6 +127,7 @@ func TestINIPlace(t *testing.T) {
 		{iniSpec("f.ini", "s", "k"), {INI: &ini.Spec{File: "./f.ini", Dialect: "plain", Section: "s", Key: "k", MaxBytes: 10}}},
 		{gitINI(".gitconfig", "Remote", strPtr("origin"), "URL"), gitINI("a/../.gitconfig", "remote.origin", nil, "url")},
 		{{Properties: &properties.Spec{File: "a.properties", Key: "k"}}, {Properties: &properties.Spec{File: "./a.properties", Key: "k", MaxBytes: 5}}},
+		{{EnvFile: &envfile.Spec{File: ".env", Name: "A"}}, {EnvFile: &envfile.Spec{File: "./.env", Name: "A", MaxBytes: 5}}},
 		{{INI: &ini.Spec{File: "hosts", Section: "web", Key: "k"}}, {INI: &ini.Spec{File: "hosts", Section: "web:hosts", Key: "k"}}},
 		{iniSpec("tox.ini", "testenv", "Deps"), iniSpec("tox.ini", "testenv", "deps")},
 	}
@@ -137,6 +141,7 @@ func TestINIPlace(t *testing.T) {
 		{gitINI(".gitconfig", "remote", strPtr("origin"), "url"), gitINI(".gitconfig", "remote", strPtr("Origin"), "url")},
 		{iniSpec("hosts", "s", "k"), {INI: &ini.Spec{File: "hosts", Dialect: "plain", Section: "s", Key: "k"}}},
 		{{Properties: &properties.Spec{File: "a.properties", Key: "k"}}, {Properties: &properties.Spec{File: "a.properties", Key: "K"}}},
+		{{EnvFile: &envfile.Spec{File: ".env", Name: "A"}}, {EnvFile: &envfile.Spec{File: ".env"}}},
 	}
 	for _, p := range differ {
 		if reflect.DeepEqual(p[0].Place(), p[1].Place()) {
@@ -155,6 +160,9 @@ func TestSpecKind(t *testing.T) {
 		{Spec{JSON: &json.Spec{File: "a.json", Path: "$"}}, "json"},
 		{Spec{Properties: &properties.Spec{File: "a.properties", Key: "k"}}, "properties"},
 		{Spec{ToolVersion: &toolversion.Spec{Tool: "node"}}, "tool_version"},
+		{Spec{EnvFile: &envfile.Spec{File: ".env", Name: "A"}}, "envfile"},
+		{Spec{GitLabCI: &gitlabci.Spec{File: ".gitlab-ci.yml", Job: "build", Key: "image"}}, "gitlab-ci"},
+		{Spec{Shell: &shell.Spec{File: "deploy.sh", Name: "X"}}, "shell"},
 		{iniSpec("php.ini", "", "a"), "ini, php dialect on php.ini"},
 		{iniSpec("etc/php.ini-production", "", "a"), "ini, php dialect on php.ini-production"},
 		{gitINI(".gitconfig", "a", nil, "k"), "ini, git dialect on .gitconfig"},

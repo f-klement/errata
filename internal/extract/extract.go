@@ -1,10 +1,10 @@
 // Package extract builds the extractors a rule names in errata.yaml. Each one
 // reads one file and returns every value it finds there, with its location.
 // Each kind is a reader in a package of its own below this one (yaml, json,
-// toml, regex, text, xml, ini, properties, toolversion), and the readers share
-// internal/extract/core; no reader imports another. This package holds what
-// sees every kind: the Spec a rule decodes into, the kinds table, Build,
-// Place and Kind.
+// toml, regex, text, xml, ini, properties, toolversion, envfile, gitlabci,
+// shell), and the readers share internal/extract/core; no reader imports
+// another. This package holds what sees every kind: the Spec a rule decodes
+// into, the kinds table, Build, Place and Kind.
 //
 // The types below are the seam between the config package, which decodes a
 // rule, and this package, which runs its extractors. Their JSON names are the
@@ -19,10 +19,13 @@ import (
 
 	"github.com/f-klement/errata/internal/check"
 	"github.com/f-klement/errata/internal/extract/core"
+	"github.com/f-klement/errata/internal/extract/envfile"
+	"github.com/f-klement/errata/internal/extract/gitlabci"
 	"github.com/f-klement/errata/internal/extract/ini"
 	"github.com/f-klement/errata/internal/extract/json"
 	"github.com/f-klement/errata/internal/extract/properties"
 	"github.com/f-klement/errata/internal/extract/regex"
+	"github.com/f-klement/errata/internal/extract/shell"
 	"github.com/f-klement/errata/internal/extract/text"
 	"github.com/f-klement/errata/internal/extract/toml"
 	"github.com/f-klement/errata/internal/extract/toolversion"
@@ -43,6 +46,12 @@ type Spec struct {
 	Properties *Properties `json:"properties,omitempty"`
 
 	ToolVersion *ToolVersion `json:"tool_version,omitempty"`
+
+	EnvFile *EnvFile `json:"envfile,omitempty"`
+
+	GitLabCI *GitLabCI `json:"gitlab-ci,omitempty"`
+
+	Shell *Shell `json:"shell,omitempty"`
 }
 
 // Each kind takes MaxBytes, the largest file it reads. Zero, or the key
@@ -79,6 +88,18 @@ type Properties = properties.Spec
 // ToolVersion returns every version of a tool in the files that pin it, as
 // toolversion.Spec says.
 type ToolVersion = toolversion.Spec
+
+// EnvFile returns every value of a key in a dotenv file, or of every key,
+// as envfile.Spec says.
+type EnvFile = envfile.Spec
+
+// GitLabCI returns the value one job of a GitLab CI file sees, for a
+// variable or a keyword, as gitlabci.Spec says.
+type GitLabCI = gitlabci.Spec
+
+// Shell returns every value a shell script gives a variable, as shell.Spec
+// says.
+type Shell = shell.Spec
 
 // Place returns s with only what decides where it reads: each file cleaned,
 // so f, ./f and a/../f are one file, and max_bytes left out, since a limit
@@ -128,6 +149,19 @@ func (s Spec) Place() Spec {
 	if s.ToolVersion != nil {
 		t := toolversion.Place(*s.ToolVersion)
 		p.ToolVersion = &t
+	}
+	if s.EnvFile != nil {
+		x := *s.EnvFile
+		x.File, x.MaxBytes = filepath.Clean(x.File), 0
+		p.EnvFile = &x
+	}
+	if s.GitLabCI != nil {
+		g := gitlabci.Place(*s.GitLabCI)
+		p.GitLabCI = &g
+	}
+	if s.Shell != nil {
+		x := shell.Place(*s.Shell)
+		p.Shell = &x
 	}
 	return p
 }
@@ -185,6 +219,21 @@ func (s Spec) Resolved() Spec {
 		x.MaxBytes = core.MaxBytes(x.MaxBytes)
 		r.ToolVersion = &x
 	}
+	if s.EnvFile != nil {
+		x := *s.EnvFile
+		x.MaxBytes = core.MaxBytes(x.MaxBytes)
+		r.EnvFile = &x
+	}
+	if s.GitLabCI != nil {
+		x := *s.GitLabCI
+		x.MaxBytes = core.MaxBytes(x.MaxBytes)
+		r.GitLabCI = &x
+	}
+	if s.Shell != nil {
+		x := *s.Shell
+		x.MaxBytes = core.MaxBytes(x.MaxBytes)
+		r.Shell = &x
+	}
 	return r
 }
 
@@ -223,7 +272,8 @@ func (s Spec) kinds() []extractorKind {
 	// every block, so a comparison written in a row after the first would
 	// read as not covered to Gremlins however the tests run it.
 	set := [...]bool{s.YAML != nil, s.JSON != nil, s.TOML != nil, s.Regex != nil, s.Text != nil,
-		s.XML != nil, s.INI != nil, s.Properties != nil, s.ToolVersion != nil}
+		s.XML != nil, s.INI != nil, s.Properties != nil, s.ToolVersion != nil, s.EnvFile != nil,
+		s.GitLabCI != nil, s.Shell != nil}
 	return []extractorKind{
 		{"yaml", set[0], func() (check.Extractor, error) { return yaml.Build(*s.YAML) }},
 		{"json", set[1], func() (check.Extractor, error) { return json.Build(*s.JSON) }},
@@ -238,6 +288,10 @@ func (s Spec) kinds() []extractorKind {
 			// toml readers' parsers, since it imports no other reader.
 			return toolversion.Build(*s.ToolVersion, toolversion.Parsers{JSON: json.Parse, TOML: toml.Parse})
 		}},
+		{"envfile", set[9], func() (check.Extractor, error) { return envfile.Build(*s.EnvFile) }},
+		// The reader reads its YAML with the yaml reader's parser.
+		{"gitlab-ci", set[10], func() (check.Extractor, error) { return gitlabci.Build(*s.GitLabCI, yaml.ParseNoted) }},
+		{"shell", set[11], func() (check.Extractor, error) { return shell.Build(*s.Shell) }},
 	}
 }
 

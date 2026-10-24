@@ -172,6 +172,12 @@ func TestAgreeUnknown(t *testing.T) {
 			[]string{`extractor "b" found no value`},
 		},
 		{
+			"no value, with the reason the extractor gives",
+			nil,
+			[]check.NamedExtractor{named("a", fake{values: one}), named("b", fake{err: &check.NoValue{Reason: "it may be set in project settings"}})},
+			[]string{`extractor "b" found no value: it may be set in project settings`},
+		},
+		{
 			"no value from an extractor allow_empty does not list",
 			[]string{"a"},
 			[]check.NamedExtractor{named("a", fake{values: one}), named("b", fake{})},
@@ -526,5 +532,47 @@ func TestSharedWindowsPrintAFingerprint(t *testing.T) {
 	}
 	if p := newQuoter(values[:2]).quote(values[0]); strings.Contains(p, "fingerprint") {
 		t.Errorf("two values print a fingerprint, though their windows differ: %s", p)
+	}
+}
+
+// An extractor that returns check.NoValue found no value: allow_empty lets
+// the rule pass on it, as for an empty list, and the values of another
+// extractor carry their condition into the message. Planted break: NoValue
+// read as an ordinary error, which made the allow_empty rule unknown.
+func TestNoValueAndConditions(t *testing.T) {
+	c := agreeRule(named("a", fake{values: []check.Value{at("x", "f", 1), at("x", "f", 2)}}), named("b", fake{err: &check.NoValue{Reason: "settings"}}))
+	c.Rule.AllowEmpty = []string{"b"}
+	if res := Run(context.Background(), "", c); res.Verdict != check.VerdictTrue {
+		t.Fatalf("verdict %s, %s; want true", res.Verdict, res.Message)
+	}
+	v := at("y", "f", 3)
+	v.Condition = "if $A"
+	c = agreeRule(named("a", fake{values: []check.Value{at("x", "f", 1), v}}))
+	res := Run(context.Background(), "", c)
+	if res.Verdict != check.VerdictFalse || !strings.Contains(res.Message, `"y" at f:3 when "if $A" (a)`) {
+		t.Fatalf("verdict %s, message %q; want false, naming the condition", res.Verdict, res.Message)
+	}
+}
+
+// Every message that places a value names its condition after the place:
+// the saw lines of a false assert, a not literal value, and the one value
+// agree found. Planted breaks: ConditionNote dropped from saw, from
+// notLiteral and from the one value message, each failing its case.
+func TestMessagesNameConditions(t *testing.T) {
+	v := at("y", "f", 3)
+	v.Condition = "if $A"
+	res := Run(context.Background(), "", assertRule(t, "a[0] == 'x'", named("a", fake{values: []check.Value{v}})))
+	if !strings.Contains(res.Message, `a[0] = "y" at f:3 when "if $A"`) {
+		t.Errorf("assert: %q names no condition", res.Message)
+	}
+	computed := v
+	computed.NotLiteral = true
+	res = Run(context.Background(), "", agreeRule(named("a", fake{values: []check.Value{at("x", "f", 1), computed}})))
+	if !strings.Contains(res.Message, `"y" at f:3 when "if $A"`) {
+		t.Errorf("not literal: %q names no condition", res.Message)
+	}
+	res = Run(context.Background(), "", agreeRule(named("a", fake{values: []check.Value{v}})))
+	if !strings.Contains(res.Message, `nothing to compare: "y" at f:3 when "if $A" (a)`) {
+		t.Errorf("one value: %q names no condition", res.Message)
 	}
 }

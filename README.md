@@ -102,9 +102,9 @@ docker run --rm -v "$PWD:/repo" -w /repo fklement/errata check
 - **Coverage on every run.** Ran N, skipped M, and the gap behind each skip: the provider operation
   the run lacked. A run in CI with no
   cluster says out loud which checks it could not reach.
-- **Rules in YAML.** A rule reads values out of YAML, JSON, TOML, XML, INI and Java properties
-  files, the files that pin a tool's version, regular expression captures and the prose of
-  Markdown files, and states that they agree
+- **Rules in YAML.** A rule reads values out of YAML, JSON, TOML, XML, INI, Java properties
+  and dotenv files, the files that pin a tool's version, the variables of shell scripts, regular
+  expression captures and the prose of Markdown files, and states that they agree
   or that a [CEL](https://cel.dev) expression over them holds.
   An erratum names every value with the `file:line` it came from.
 - **Output for people and for CI.** Readable text, JUnit XML that GitLab, GitHub Actions and
@@ -132,8 +132,8 @@ The words above have one meaning each, fixed in [GLOSSARY.md](GLOSSARY.md).
 
 Ask where the value a check compares comes from.
 
-- **From a file read as text or as Markdown prose, from YAML, JSON, TOML, XML, INI or Java
-  properties, from git, or from a live system:** it is an
+- **From a file read as text or as Markdown prose, from YAML, JSON, TOML, XML, INI, Java
+  properties or dotenv, from git, or from a live system:** it is an
   errata check. That holds in a GitOps repository and in an application repository alike:
   documented commands, versions pinned in two places, CI wiring, thresholds derived from schedules.
 - **From the language itself** (its parser, its import graph, its types, or an import of the
@@ -483,7 +483,7 @@ expression in a repository's configuration can stall CI.
 
 An extractor reads one file of the repository and returns a list of values, each with the file and
 the line where it starts; `tool_version` reads every file that pins one tool. A rule names its
-extractors under `extract:` and sets exactly one of the nine keys in each:
+extractors under `extract:` and sets exactly one of the twelve keys in each:
 
 ```yaml
 extract:
@@ -510,6 +510,12 @@ extract:
     properties: {file: src/main/resources/application.properties, key: server.port}
   node:
     tool_version: {tool: node}
+  api_port:
+    envfile: {file: .env, name: API_PORT}
+  deploy_tag:
+    gitlab-ci: {file: .gitlab-ci.yml, job: deploy, variable: TAG}
+  start_port:
+    shell: {file: deploy.sh, name: API_PORT}
 ```
 
 | Key | Fields | Returns |
@@ -523,9 +529,12 @@ extract:
 | `ini` | `file`, `key`, `section`, and `dialect`, `subsection` (git) or `host` (ansible) | every value of the key in the section, or the hosts or child groups of an ansible group |
 | `properties` | `file`, `key` | every value of the key |
 | `tool_version` | `tool`, and `files` to name the files | every version of the tool in the files that pin it (see [Tool versions](#tool-versions)) |
+| `envfile` | `file`, and `name` for one key | every value of the key in a dotenv file, or of every key (see [Env files](#env-files)) |
+| `gitlab-ci` | `file`, `job`, and `variable` or `key` | the value the job sees of a CI/CD variable or a job keyword (see [GitLab CI](#gitlab-ci)) |
+| `shell` | `file`, `name`, and `language` to name the dialect | every value the script assigns the variable, and every default an expansion gives it (see [Shell scripts](#shell-scripts)) |
 
 Each key also takes `max_bytes`, the largest file it reads; for `tool_version`, the files it reads
-in all (see Limits).
+in all, and for `gitlab-ci` the file and the files it includes in all (see Limits).
 
 `file`, and each of `files`, is relative to the repository root. An absolute path, or one whose `..`
 leaves the root, does not load. A `..` in `file` is resolved by name, before any symlink:
@@ -660,9 +669,13 @@ Some files hold a value that only running them produces: `$(git describe)` in a 
 for such a file marks the value as not literal. Its text is what the file wrote, not the value the
 file means, so a rule never compares it. Each extractor's documentation says whether it can return
 a not literal value. Of errata's kinds only `ini` can, for the files and sections that
-[INI files](#ini-files) lists, `properties` for a template file, and `tool_version` for a version
-that names none, such as `lts/*` or `system` ([Tool versions](#tool-versions)); a `${{ }}` read
-with `yaml:` is still plain text, and two workflows that use the same expression agree.
+[INI files](#ini-files) lists, `properties` for a template file, `tool_version` for a version
+that names none, such as `lts/*` or `system` ([Tool versions](#tool-versions)), `envfile` for a
+substitution of a key the file does not set before it, a name alone that compose takes from the
+environment, and in a template file ([Env files](#env-files)), `gitlab-ci` for a value GitLab
+computes, such as `$CI_COMMIT_SHA` or a plain `3.10` ([GitLab CI](#gitlab-ci)), and `shell` for a
+value the shell expands, such as `$(git describe)` ([Shell scripts](#shell-scripts)); a `${{ }}`
+read with `yaml:` is still plain text, and two workflows that use the same expression agree.
 
 PHP reads `error_reporting = E_ALL` as the number the constant stands for, so the text `E_ALL` is
 not literal:
@@ -723,9 +736,9 @@ counts only the values left.
 
 `skip_not_literal` may list only an extractor that can return a not literal value: for any other the
 key would load and leave nothing out, so it does not load. That holds for every kind but `ini`,
-`properties` and `tool_version`, for an `ini` extractor whose file errata models no transform for,
-such as `pytest.ini`, and for a `properties` file that is not a template. The message names the
-kind, and for `ini` the dialect and the file:
+`properties`, `tool_version`, `envfile`, `gitlab-ci` and `shell`, for an `ini` extractor whose
+file errata models no transform for, such as `pytest.ini`, and for a `properties` file that is not
+a template. The message names the kind, and for `ini` the dialect and the file:
 
 ```console
 $ errata check -c errata.yaml
@@ -1086,6 +1099,90 @@ files are plain files: name the one to read, errata does not merge profiles. err
 value Java reads, so every value is literal, but in a template file, as [INI files](#ini-files)
 says.
 
+#### Env files
+
+`envfile` reads a dotenv file as docker compose reads its `.env` file and a service's
+`env_file:`, with the rules of compose-go v2.16.2, the parser compose uses. `name` selects one
+key; without it the extractor returns the values of every key, in file order. Each value is at
+the line of its key.
+
+```yaml
+extract:
+  port: {envfile: {file: .env, name: API_PORT}}
+  every: {envfile: {file: deploy/app.env}}
+```
+
+- An assignment is `KEY=value`, `export KEY=value` or `KEY: value`, and white space around the
+  separator is dropped. A key holds letters, digits, `_`, `.`, `-`, `[` and `]`.
+- A line that starts with `#` is a comment. In an unquoted value a space and `#` start a comment;
+  a `#` after no space, or after a tab, is part of the value. White space at the end of an
+  unquoted value is dropped.
+- A value in `'` is as written, with `\'` read as `'`, and nothing in it is substituted.
+- A value in `"` reads the escapes `\n`, `\t`, `\r`, `\a`, `\b`, `\f`, `\v`, `\"`, `\\`, `\$`
+  and `\0` with three octal digits (`\0101` is `A`), then substitutes. compose keeps any other
+  `\` as written, and writes `\012` as `\12`.
+- A quoted value can span lines. compose reads what follows its closing quote on the line as the
+  next assignment.
+- `$NAME`, `${NAME}`, and `${NAME}` with `:-`, `-`, `:+`, `+`, `:?` or `?` and a word substitute,
+  in an unquoted or a `"` value; `$$` is `$`. A `${` that starts none of these makes the rule
+  unknown.
+- A line of a name alone, `KEY`, takes the value from the environment.
+- A file whose last line holds no `=`, `:` or line break sets the empty key to that line, as
+  compose does, and so does a line `=x`, which has no name. Without `name:` such a value comes
+  back with the others.
+
+A substitution reads the keys the file sets before it. compose reads any other name from the
+shell's environment, which errata does not read, so a value that needs one is returned as the
+file wrote it between its quotes and marked not literal (see
+[Values a file only computes](#values-a-file-only-computes)). compose also lets the environment
+override a key the file sets, in the substitutions after it; errata reads the file's own value.
+A line of a name alone, `A`, is an empty value marked not literal, and so is every substitution
+of `A` after it. That is cautious: compose keeps an earlier `A=1` when the environment does not
+set `A`, but errata cannot tell whether it does. In a template file, named with a suffix such as
+`.j2` or `.tpl` ([INI files](#ini-files) lists them), a value whose text as written the engine
+renders is not literal, and so is every substitution of its key, since the engine may render it
+to anything: `A={{ port }}` in `.env.j2`, and `B=${A}` after it.
+
+Each value carries the key it is set under, and the text and SARIF reports print it beside the
+location: `"8080" at .env:2 key "API_PORT" (env)`.
+
+| File says | Value |
+|---|---|
+| `A=x`, then `B=${A}/y` | `x/y` |
+| `A=`, then `B=${A:-d}` | `d` |
+| `B=${A}/y`, with no `A` set before | `${A}/y`, not literal |
+| `B=${A:-d}`, with no `A` set before | `${A:-d}`, not literal |
+| `A`, then `B=${A}` | `${A}`, not literal; the line `A` is an empty value, not literal |
+| `B='${A}'` | `${A}` |
+
+compose keeps the last value of a key set twice; errata returns every one, so an agree rule sees
+the file disagree with itself. A file compose refuses makes the rule unknown: a key with another
+character or a space inside it, a quote never closed, `export` with no name after it, a `${`
+that starts no substitution, and `${A:?}` where the file sets `A` empty. A `name` that no line
+of an env file can set, such as `API PORT`, does not load.
+
+systemd's `EnvironmentFile=` reads another dialect (systemd.exec(5), and systemd 257 run with
+`systemd-run -p EnvironmentFile=`). `envfile` reads only compose's; a plain `KEY=value` line
+of letters, digits and `_` reads the same in both. Where the two differ:
+
+- systemd substitutes nothing: `${OTHER}` is the value's text.
+- A line that starts with `;` is a comment to systemd; compose refuses `;` in a key.
+- systemd ignores a line with no `=`: a name alone, which compose takes from the environment,
+  and `KEY: value`, which compose reads as an assignment.
+- systemd ignores `export KEY=value` as an invalid assignment; compose sets `KEY`.
+- systemd ignores a key with `.` or `-` in it, such as `x.y=3`; compose sets it.
+- A `#` inside an unquoted value is part of it to systemd; compose cuts the value at a space and
+  `#`.
+- An unquoted value reads `\` as POSIX shell does: `\` keeps the character after it, and a `\`
+  at the end of a line joins the next. compose keeps an unquoted `\` as written, and joins no
+  lines.
+- In `'` systemd reads no escape at all; compose reads `\'` as `'`.
+- In `"` systemd keeps the character after `\` only for `"`, `\`, `` ` `` and `$`, joins a line a
+  `\` ends, and keeps any other `\` with the character after it; compose reads `\n` as a line
+  break, and the other escapes above.
+- systemd joins what follows a closing quote to the value: `E="x" y=2` sets `E` to `xy=2`.
+  compose sets `E` to `x` and reads `y=2` as the next assignment.
+
 #### Tool versions
 
 `tool_version` returns every version of one tool that the repository pins, each with its file
@@ -1203,23 +1300,261 @@ so it needs no node limit: at 32 MiB on the build node the densest shapes take 0
 at most 110 MB, a line of 16 million versions refused at the value limit among them. The JSON and
 TOML files have the node limit of their format, and a `go.mod` a limit of its own, under Limits.
 
+#### GitLab CI
+
+`gitlab-ci` returns the value one job of a GitLab CI file sees: of a CI/CD variable with
+`variable`, or of a job keyword with `key`, such as `image` or `script`, or a key below one, such
+as `image.name`. Each value is at the file and line that set it, which may be an included file.
+
+```yaml
+checks:
+  - id: tag-agrees
+    reason: The pipeline deploys the tag the chart names.
+    scope: repo
+    extract:
+      ci: {gitlab-ci: {file: .gitlab-ci.yml, job: deploy, variable: TAG}}
+      chart: {yaml: {file: chart.yaml, path: image.tag}}
+    agree: [ci, chart]
+```
+
+errata builds the configuration as GitLab does, from the repository's files only, in GitLab's
+documented order:
+
+1. Each `include:` of a local file is read and merged, a nested include first, then each file in
+   its order, and the including file's own keys last. Hashes merge at any depth and any other
+   value replaces the one before it, so a list is never merged item by item. A leading `/` is the
+   repository root.
+2. A job's `extends` is merged deeply, each parent in its order with the job's own keys last, over
+   at most 11 levels. A keyword set to `null` is unset; a variable set to `null` is not literal. A
+   parent that is a `!reference` is refused, since GitLab merges extends before it follows one.
+3. A `!reference [job, keyword, ...]`, or `[job]` for the whole job, selects from that
+   configuration, after extends, so it sees what the job it names inherits. A list inside a list,
+   which a `!reference` in a script makes, is flattened. Tags and lists nest at most 10 levels
+   deep, counted along every chain, through a job or a tag reached twice too.
+4. A keyword the job does not set comes from `default:`, or from the top level for the deprecated
+   `image`, `services`, `cache`, `before_script` and `after_script`, unless `inherit:default`
+   leaves it out.
+5. A variable comes from the highest of the job's `rules:variables`, the job's `variables` with a
+   `parallel:matrix` instance's over them, `workflow:rules:variables` and the top level's
+   `variables`. `inherit:variables` can leave out the last two.
+
+YAML anchors and merge keys work within one file, as in GitLab; an alias of an anchor in another
+file does not parse. A variable's long form gives its `value:`, and an empty string without one.
+
+Which rule of a `rules:` list matches is the pipeline's to decide, so every rule that can match
+gives a value: its own variable, or the value below it when it sets none. A rule with
+`when: never` gives none, since the job does not run when it matches, and so do the rules after
+one with no `if`, `changes` or `exists`, which always matches. Each `parallel:matrix` instance is
+a job of its own, so each gives the value it sees. An agree rule therefore holds only when every
+value the job can see agrees. A value that holds only in some cases carries its condition, which
+a message names after its place: the rule's test, such as `if $CI_COMMIT_TAG` or
+`changes [src/a.go]`, prefixed `workflow` for a workflow rule, or the instance's name as GitLab
+gives it, such as `build: [linux, 3.12]`, with `010` written as `8` as GitLab's loader reads it. A
+message quotes 64 bytes of a condition, so a longer name writes the values no instance differs
+in as `...`, such as `build: [..., ..., monitoring-and-alerting-two]`:
+
+```text
+FALSE tag-agrees (repo)
+  why:  The pipeline deploys the tag the chart names.
+  said: agree: the values differ
+          "1.4.0" at .gitlab-ci.yml:12 when "if $CI_COMMIT_TAG" (ci)
+          "1.3.9" at .gitlab-ci.yml:9 (ci), chart.yaml:1 (chart)
+```
+
+A variable that some rules or instances set and nothing else sets is refused: in the other
+cases the job sees no value from the files.
+
+Some values are out of reach offline, and errata never guesses them:
+
+| What | Result |
+|---|---|
+| a `remote`, `project`, `template` or `component` include, a local include named by a wildcard or a variable, or an include with `rules:` | the rule is unknown, naming the include, since such a file could set any key |
+| a `trigger:` job's variable | refused: the job passes it to a downstream pipeline |
+| a variable of a job that gets a dotenv report: from a job its `needs:` names with artifacts, or with no `needs:` one `dependencies:` lists, or by default any job of an earlier stage, that declares `artifacts:reports:dotenv`, under `default:` too | unknown, naming the job that writes the report: the pipeline writes it as it runs, and it outranks the file |
+| a variable set in a project's, group's or instance's settings, by a pipeline, or a predefined one such as `CI_COMMIT_SHA` | not in the files: a variable no file sets is no value, and the message says it may come from those settings; `allow_empty` still lets the rule hold |
+| a value that names a variable, as `$NAME`, `${NAME}`, `%NAME%`, `$$` or an input's `$[[ ]]` | not literal; `expand: false` keeps it literal, and so does a `script` line, whose `$` is the shell's |
+| a plain scalar that GitLab's YAML loader, Psych, types as something other than a string: `3.10` (the float 3.1), `010` (8), `1:30` (90), `yes`, `null` or a date, and a scalar with a tag other than `!!str`, which Psych types the same way: `!!int 010`, and every `!!float` and `!!binary` | not literal; quote it, or tag it `!!str`, to give the job the text. A decimal integer such as `20` is literal |
+
+Variables in GitLab's settings or a pipeline rank above every value in the file, so a value errata
+returns is what the file gives the job; a setting in GitLab can still override it.
+
+errata refuses what GitLab refuses where the check is cheap: a keyword set both at the top level
+and under `default:`, a long form in a rule's `variables:`, a job variable with a `description:`,
+a variable named as YAML reads a boolean, such as `ON`, an include that is not a `.yml` or
+`.yaml` file or that is empty, an `expand:` that is not `true` or `false`, a tag other than
+`!reference` and YAML's own, and a `parallel:matrix` of more than 200 jobs.
+
+The file, and every file it includes, hold at most `max_bytes` bytes in all, the nodes that size
+allows, and 1000000 nodes that YAML aliases and merge keys add, as one file does; a configuration
+includes at most 150 files, GitLab's default limit, nested includes counted, and an include's name
+is at most 4096 bytes. Merging, extends and `!reference` take one step for each key they merge or
+item they follow, at most 1000000 for one extractor, the bound YAML aliases have: a few hundred
+bytes of nested `!reference` lists could otherwise stand for millions of script lines. A merge
+replaces a key it sets twice in constant time, and the values are kept in a set and refused at
+the value limit as they are gathered, so each pass is linear in the files. A job that is hidden
+(its name starts with `.`) or a global keyword such as `workflow` does not load as `job`, and a
+job the files do not define makes the rule unknown.
+
+#### Shell scripts
+
+`shell` returns every value a shell script gives one variable, each with its line, in file order:
+`X=v`, `export X=v`, `readonly X=v`, `declare X=v`, `typeset X=v`, `local X=v`, the `X=v` before a
+command, and the default in `${X:-v}`, `${X-v}`, `${X:=v}` and `${X=v}`. errata parses the script
+with mvdan.cc/sh, the parser behind shfmt, and runs none of it. Text that only looks like an
+assignment is none: `X=1` in a string, a comment, a here-document whose delimiter is quoted, or an
+argument such as `echo X=1`. A default in a here-document whose delimiter is not quoted is an
+expansion, so it counts.
+
+```yaml
+checks:
+  - id: port-agrees
+    reason: The chart and the start script use one port.
+    scope: repo
+    extract:
+      chart: {yaml: {file: values.yaml, path: port}}
+      script: {shell: {file: deploy.sh, name: API_PORT}}
+    agree: [chart, script]
+```
+
+The dialect is `language:` when the extractor names one: `bash`, `posix` or `mksh`. Otherwise the
+shebang names it, through `env` too: `bash`; `sh`, `dash`, `ash` and `posh` as posix; `mksh`,
+`ksh`, `lksh` and `pdksh` as mksh. A shebang that names another program, such as `python3` or
+`zsh`, makes the rule unknown, and `language:` reads the file anyway. A script without a shebang
+is read by its name, `.bash` as bash and `.mksh` or `.ksh` as mksh, and any other as bash, which
+parses the most. A script that does not parse in its dialect makes the rule unknown, and the
+message names the line, the dialect and what chose it. In posix the parser reads `export`,
+`readonly` and `local` as commands, and errata reads their `X=v` arguments as dash does.
+
+A value is the text the variable holds once the shell has removed the quotes: `X='a b'`,
+`X="a b"` and `X=a\ b` each give `a b`, and bash's `$'a\tb'` gives a tab between them. A default
+in double quotes keeps single quotes as text, so `"${X:-'q'}"` gives `'q'`. What errata makes of
+quotes and backslashes is compared with bash 5.2 and dash 0.5.12 over 800 generated scripts each.
+
+A reference `$Y` or `${Y}` in a value reads the value the script last gave `Y` before it, while
+nothing the script ran could have changed `Y` another way, so `BASE=/opt` and then `X=$BASE/bin`
+give `X` the value `/opt/bin`. A shell has more ways to change a variable than errata could list
+(`declare -i`, `unset "Y"`, `read` with no name, a nameref, arithmetic in `[[ ]]`, a function), so
+errata lists the statements it knows change none, and stops resolving at the first statement that
+is not one of them. A reference resolves when every statement before it in the file keeps the
+variables, its own statement is quiet, the last assignment of `Y` before it gave a literal value,
+and the shell does not own `Y`. Otherwise its value is not literal.
+
+A statement is quiet when expanding its words changes no variable:
+
+- it runs in the foreground, not negated with `!`, and is a simple command or a declaration, not
+  a pipeline, a list, a loop, a condition, a group, a subshell or a function;
+- its words hold only text, quotes, and parameters (`$Y`, `${Y}`, `$1`, `"$@"`) with no operator
+  but a default, `${Y:-v}`, `${Y-v}`, `${Y:+v}` or `${Y+v}`, whose word is quiet too; no `$( )`,
+  no arithmetic, no `${Y:=v}`, no index or slice, no pattern such as `@(a|b)`;
+- an assignment in it has no index and is no array;
+- its redirects hold no here-document, and name no descriptor by a variable (`{fd}>f`); a
+  statement with a redirect assigns nothing, and is not posix's `export`, `readonly` or `local`.
+
+A quiet statement keeps the variables when it is one of these:
+
+- assignments alone: `Y=v Z=w`;
+- `export` or `readonly` with no option, each argument a name alone or `NAME=v`, in posix too,
+  where the name is plain text at the start of the argument;
+- a command with no assignment before it, named by plain text with no quote or backslash, from
+  this list: `echo`, `true`, `false`, `:`, `cd`, `mkdir`; `printf` when its format is plain text
+  that does not start with `-` and holds no `%`, since bash's `%n` assigns; and `set` when each
+  argument is plain text, options of `e` and `u` after `-` or `+`, and `-o` or `+o` with
+  `errexit`, `nounset` or `pipefail`.
+
+`set -x` is not on the list: xtrace expands `PS4` before each command, and `PS4` may assign. For
+the same reason a shebang ends resolution from the first line, whatever `language:` says, unless
+each argument it passes the shell is an option `set` may take here: `#!/bin/sh -eu` keeps it,
+and `#!/bin/bash -x` ends it. The first argument after `env` or `busybox`, which names the shell,
+is passed over.
+
+A variable made read only keeps its value when a later statement assigns it, which bash reports
+and then goes on from, so after that its references are not literal. The shell owns `RANDOM`,
+`SRANDOM`, `SECONDS`, `LINENO`, `EPOCHSECONDS`, `EPOCHREALTIME`, `_`, `PPID`, `UID`, `EUID`,
+`SHELLOPTS`, `GROUPS`, `FUNCNAME`, `HISTCMD`, `DIRSTACK`, `PIPESTATUS`, `PWD`, `OLDPWD`,
+`COLUMNS`, `LINES`, `OPTIND`, `OPTARG`, `REPLY`, `MAPFILE`, `USER_ID`, `PATHSEP`, `ERRNO`, and
+every name that starts with `BASH`, `KSH` or `COMP_`: it sets them itself, or keeps them from an
+assignment. A value that would make the text longer than `max_bytes` is not resolved, and the walk
+keeps at most `max_bytes` of variables' values for references to resolve. errata reads the
+script, not the environment it runs in: a function that the environment or `BASH_ENV` defines
+under the name of a command on the list is not seen.
+
+A declaration expands all its arguments before it assigns any, so `declare Y=2 X=$Y` reads the
+`Y` before it. A variable the script never assigns, such as `$HOME`, comes from the environment,
+which errata does not read, so its reference is not literal.
+
+A value the shell computes otherwise comes back as the script wrote it, marked not literal
+([Values a file only computes](#values-a-file-only-computes)): a rule that would compare it is
+unknown, and a rule that lists the extractor in `skip_not_literal` leaves it out. These are not
+literal:
+
+- a value that expands a command, arithmetic or a parameter errata does not resolve:
+  `$(cat VERSION)`, `` `date` ``, `"$HOME/bin"`, `${Y:-v}`, `$((1+2))`;
+- a tilde at the start of a value or after a colon, which the shell turns into a home directory:
+  `~/bin`, `a:~/b`;
+- an array (`X=(a b)`), an element (`X[0]=v`) and an append (`X+=v`);
+- a `{` in an argument of a declaration in bash or mksh, since bash may expand braces there:
+  `declare X={a,b}` sets `b`;
+- every value of a variable that a declaration anywhere in the script gives an option that
+  changes what the shell stores, such as `-i` (`declare -i X; X=1+2` holds 3), `-l`, `-u`, `-a`
+  or `-n`, and every value of a `nameref`. The options that keep a value as written are `-g`,
+  `-r`, `-t`, `-x` and `-I` for `declare`, `typeset` and `local`, and `-n` for `export`. A value
+  after an argument errata cannot read as an option or a name, such as `"$opts"`, is not literal
+  either;
+- the forms errata does not decode: `$"..."`, an escape in `$'...'` other than `\a \b \e \E \f
+  \n \r \t \v \\ \' \" \?`, an octal byte or a `\x` byte, `$'...'` of any kind in posix and
+  mksh, a pattern such as `@(a|b)`, a quote or backslash in a default in a here-document, in
+  arithmetic, or in the pattern or replacement of `${Y#p}`, `${Y%p}` or `${Y/p/r}`, and in mksh a
+  single quote in a double-quoted default;
+- in a template file, named with `.j2`, `.jinja`, `.jinja2`, `.tmpl`, `.tpl`, `.tftpl` or `.erb`,
+  a value that holds what the engine renders, as [INI files](#ini-files) says.
+
+A quoted argument of a declaration assigns too, since the shell splits it at its `=` once the
+quotes are removed: `export "X=1"` gives `1`, and `export "X=$PATH:/x"` comes back as written,
+not literal. errata reads no other way a script sets a variable: `read X`, `for X in`,
+`let X=1`, `(( X=1 ))`, `printf -v X`, `eval`, `env X=v cmd`, `command export X=v`,
+`builtin export X=v`, or a file the script sources.
+
+mvdan.cc/sh parses by recursion and sets no limit on nesting, so a script of nothing but `"$("`
+grows its stack until Go ends the process: 1 MiB of them passed Go's limit of 1 GB. errata stops
+the parse once its stack is 20000 calls deep, which about 340 levels of parentheses in `(( ))`
+reach, the costliest nesting, or 1800 levels of `$( )`. A pipeline, a list of `&&` and `||`, and a
+sum such as `1+1+1` are parsed in a loop but walked by recursion, one level for each command or
+term, so errata refuses a script whose syntax is more than 20000 levels deep. Defaults nested in
+defaults return each one whole, so their values can hold more than the file; they hold at most
+`max_bytes` in all, as every extractor's values do.
+
+errata parses one statement at a time and holds the syntax of one statement whole while it reads
+it, so it refuses a statement longer than an eighth of `max_bytes`, 4 MiB at the default, counted
+to the 1 KiB the parser reads at a time. A function or a group that holds the whole script is one
+statement: of eight real scripts measured, the largest statement is nvm.sh's, 149802 bytes.
+The densest statement measured, a pipeline of `a|a|a`, is refused at the limit with 0.88 GB at
+the default; a group of `a;a;a` at the limit reads with 0.60 GB, and a word of `$a$a$a` with
+0.46 GB. The parser hands out words from batches that keep earlier statements reachable, so errata
+clears each statement's syntax once it has read it: eight groups at the limit, 31 MiB, take 16.5 s
+and 1.43 GB, and eight words 8.9 s and 0.77 GB, where before they took eight times one statement.
+At 64 MiB a statement may be twice as large. 32 MiB of 16 million one-word commands takes 10.3 s and
+157 MB, 8.4 million assignments 9.2 s and 148 MB, refused at the value limit, and statements of
+3 MiB each 5.1 s and 583 MB. Values with references and nested defaults are charged to the work
+meter like the rest of a read.
+
 #### Limits
 
 A file in a pull request can be large or hostile, and an extractor must not stall or kill the run
 over it. errata enforces the limits below on what it reads: the file size, the nodes a file can
 hold, the nodes YAML aliases add, the values, the depth, a pattern's capture groups, the regex time,
 the work of a path's filters and an XML path's terms, what a Markdown parse may build and how long
-it may run, the work of an INI or properties read, the lines and tokens of a go.mod, and the
-entries and depth of a walk of the repository. It does not bound the memory a read takes.
-Peak memory depends on the file's shape within those limits, and the figures below are the densest
-shapes measured so far, as examples, not as a ceiling; a file that needs more memory than the runner
-has kills the run, which fails it rather than passing it. Every pass errata makes over a file takes
-time in proportion to its size, but for the regex search, the Markdown parse and a path's filters,
-so the size cap bounds the cost of a read, and the other limits bound what a small file can make of
-itself. A regex search costs the size of the file times the threads its pattern keeps alive, which a
-counted repeat such as `{0,1000}` makes many, so the regex time limit bounds it. Each limit fails
-closed: a file over it makes the rule unknown, with a message that names the limit, the file and
-what to do. Times and memory below were measured on a loaded 4 core machine.
+it may run, the work of an INI, properties or env file read, how deep a shell script nests, the
+lines and tokens of a go.mod, and the entries and depth of a walk of the repository. It does not
+bound the memory a read takes. Peak memory depends on the file's shape within those limits, and the
+figures below are the densest shapes measured so far, as examples, not as a ceiling; a file that
+needs more memory than the runner has kills the run, which fails it rather than passing it. Every
+pass errata makes over a file takes time in proportion to its size, but for the regex search, the
+Markdown parse and a path's filters, so the size cap bounds the cost of a read, and the other limits
+bound what a small file can make of itself. A regex search costs the size of the file times the
+threads its pattern keeps alive, which a counted repeat such as `{0,1000}` makes many, so the regex
+time limit bounds it. Each limit fails closed: a file over it makes the rule unknown, with a message
+that names the limit, the file and what to do. Times and memory below were measured on a loaded 4
+core machine.
 
 | Limit | Value | Why |
 |---|---|---|
@@ -1229,6 +1564,7 @@ what to do. Times and memory below were measured on a loaded 4 core machine.
 | values per extractor | 100000 | every value is kept in memory and printed; a regex `(\d*)` matches at every byte. A path that selects more nodes at any step stops there. The values of one extractor also hold at most `max_bytes` bytes in all, since YAML aliases can repeat a value, decoding can lengthen one, and an XML element's value holds the text of every element inside it: `//a` over 1000 nested elements around 30 MB would return 30 GB, and is refused. 100000 regex matches in 4.3 MB take 0.8 s and 45 MB |
 | depth | 1000 | each key, each part of a dotted TOML key or table header, and each element is one level, and an array table's element one more. The deepest of 56 real files measured nests 25 |
 | YAML aliases and merge keys | 1000000 nodes | each alias adds the nodes of its anchor, and so does each mapping a merge key names, counted for the whole file before anything is built from them. A key counts by its length too: each 64 bytes of a key that a merge key copies count as one node more, and an alias used as a key counts one node and one more for each 64 bytes of its anchor's text, so a file that merges or repeats long keys many times reaches the limit instead of taking minutes. errata keeps one copy of an anchor, so 5000 mappings that merge one of 99 keys, at the limit, take 0.15 s and 51 MB |
+| GitLab CI resolution | 150 included files, 11 levels of `extends`, 10 of `!reference`, 200 `parallel:matrix` jobs, 1000000 steps | GitLab's own limits on includes (its default), extends, `!reference` and matrices, and a step for each key a merge, an extends or a `!reference` touches, the bound YAML aliases have, since nested `!reference` lists repeat what they select without the file growing. Each is checked as the configuration is built (see [GitLab CI](#gitlab-ci)) |
 | regex time | 10 s for each 32 MiB of `max_bytes`, and never less than 10 s | the search looks at the clock every 256 characters it reads, so one long search is stopped too. A pattern whose optional tail scans the rest of the line, such as `(\d)(?:.*x)?`, searches the line again after every match: 40 KB of one line took 27 s. One search that finds nothing costs the file times the pattern's width: `([0-9a-f]{40})` over 32 MiB of hex words took 28 s, and `([ab]{0,1000}c)` over 1 MiB 62 s; each is refused at 10 s. The slowest ordinary pattern measured over 32 MiB, `([A-Za-z0-9+/]{64,}={0,2})`, takes 4.7 s. A pattern that starts with a literal skips to each place the literal occurs and tries the pattern there. Where the next place is less than 64 bytes past the text the last try read, or a try reads more than 4 KiB, it searches every place from there on, as it does a pattern without a literal, so it reads at most 4 KiB more than a search of every place does. Over 32 MiB of this README, repeated, on the build node, `commit ([0-9a-f]{40})` takes 0.01 s, where a search of every place takes 0.82 s, and `(\d+\.\d+\.\d+)`, which starts with no literal, 1.2 s |
 | regex capture groups | 32 | a search tracks every group for every thread it keeps alive; 100000 matches of a pattern of 32 groups take 0.5 s and 29 MB |
 | filter work | 4000000000 bytes for the filters of one path | for each member tested, each comparison and each step after `@` counts 256, plus the bytes of each key it looks up and of the literal it compares, counted before the members are tested. At the limit, with 64 comparisons on each member, the worst shapes measured take 0.36 s to 1.42 s |
@@ -1244,6 +1580,9 @@ what to do. Times and memory below were measured on a loaded 4 core machine.
 | a line of an HTML block | 1 MiB | goldmark scans such a line in calls errata cannot stop: a tag of 32 MiB took 0.59 s, and 0.02 s at the limit. The limit dates from goldmark v1, whose regular expressions took 11 s over the same line. The longest in a real file is 1801 bytes |
 | prose | twice the size of the file | the regex time limit, which scales with the file, then holds for the prose too |
 | ini and properties work | 128 units for each byte of the file and of the spec's names, and 1048576 more | each read makes one pass over the file and keeps only the values it selects, so it needs no node limit. Every loop that reads a line, compares a name or matches an ansible host against a range charges the budget; a unit is 0.3 to 2.6 ns on the dense shapes measured, so a read that spends the whole budget at 32 MiB (about 4.3 billion units) takes 1.5 s to 11 s. Real files spend 2 to 8 units a byte. The slowest shape that reads at 32 MiB takes 3.8 s (tox, a key of each letter in each of a million sections). The worst shape found, lines of ten 17 digit ranges against a spec host of 1024 bytes, is refused at the budget in 5.9 s, where it would have run for about 350 s; a range bound of 4 million digits is refused in 0.1 s, and php fallbacks nested 131000 deep in under 0.01 s |
+| envfile work | the budget of an ini or properties read | each statement costs a line's work, each pass of a substitution its bytes, and each byte it copies from a key 32 units, so a read copies at most a 32nd of its budget, 134 MB at 32 MiB, and a chain of keys that each repeat the one before is refused before its values fill memory. That bounds the bytes copied; the memory is about three times that, since a value grows by appends and the reader keeps a copy of each key's value: 32 MiB of `${A}` for a value of 4 KiB is refused in 0.45 s after 733 MB allocated, anon 395 MiB above its base on a 2 core worker. A word inside a word is read again at each level, so nesting costs the square of its depth and is refused for work long before 1000 levels, the depth limit. Real files spend 1.9 to 5.6 units a byte (20 files: compose-go's fixtures and five projects' `.env.example`). At 32 MiB on a worker node the slowest shape that reads takes 1.6 s on a 4 core worker and 3.1 s on a 2 core one (a key on each line). The most memory measured is 6.7 million distinct keys of four letters: the reader keeps every key's value for the substitutions after it, so it reads in 3.1 s after 801 MB allocated, anon 517 MiB above its base, on the 2 core worker, and the same as a template file such as `.env.j2`. Words nested 2.8 million deep are refused in 2.3 s |
+| shell nesting | 20000 calls of the parser's stack, and syntax 20000 levels deep | mvdan.cc/sh recurses on nesting, and a stack overflow ends the process: 1 MiB of `"$("` passed Go's 1 GB limit. The parser reads through a check that counts its stack every 16 KiB, so it stops within 16 KiB of the limit; about 340 levels of parentheses in `(( ))` or 1800 of `$( )` reach it. A pipeline, a list or a sum is one level deeper for each command or term, and errata walks it by recursion: 32 MiB of `+1` passed Go's limit there. See [Shell scripts](#shell-scripts) for the times and memory |
+| a shell statement | an eighth of `max_bytes`, 4 MiB at the default | the parser holds one statement's syntax whole while it reads it, up to 200 bytes of memory for each byte: 4 MiB of `a\|a\|a` took 0.87 GB and 8 MiB 1.7 GB, so 32 MiB would take about 6.6 GB; the limit refuses it with 0.88 GB, and eight groups of `a;a;a` at the limit read with 1.43 GB. Counted to the 1 KiB the parser reads at a time. The largest statement of eight real scripts measured is 149802 bytes |
 | go.mod lines and tokens | `max_bytes` divided by 64 | checked before golang.org/x/mod/modfile parses the file, since it builds the syntax of the whole file first, at 150 to 440 bytes a line or token: without the limit, 32 MiB of lines of one short token took 2.1 GB and 4.1 s, and of commas on one line 1.9 GB. errata counts an upper bound in one pass: each line end, each `(`, `)`, `[`, `]`, `{`, `}` and comma, each quote and backquote that can start a string, and each start of a word. A go.mod of requirements holds one for every 7 bytes, so at the default the limit reads one of about 3.5 MB. The densest files measured at the limit take about 0.5 to 0.75 s and up to about 320 MB: 32 MiB of unknown directives of 129 bytes, or of lines ending in a comment, since modfile keeps an error for each line |
 | walk entries | 1000000 files and directories | a `tool_version` extractor without `files` walks the repository; the entries of the directories it passes over are counted, what is inside them is not. The largest tree measured, a Go module cache, holds 136007. One directory of 999999 files takes 3.0 s and 3 MB on the build node: a file costs the walk a few microseconds |
 | walk directories | 200000 | a directory costs the walk an open and a listing, and a pin in it a read, so this is the walk's bound on time: 199000 directories with a 144-byte `.tool-versions` of another tool in each take 26.3 to 30.0 s and 69 MB on the build node (66.4 s on a busier node), and 199999 empty ones, which git cannot check out, 7.0 to 9.2 s. A million empty directories took 82 s before the limit. The largest tree measured holds 27149 |
@@ -1315,8 +1654,9 @@ declares, a `<!DOCTYPE>` without a name, after the root element starts or a seco
 mark may come before it) or a second one, and a processing instruction named `xml` in another
 case, such as `<?XML ...?>`.
 
-An INI or properties file makes the rule unknown for what its tool refuses, as the sections on them
-say, and so does a file a `tool_version` extractor reads ([Tool versions](#tool-versions)). A
+An INI, properties or env file makes the rule unknown for what its tool refuses, as the sections
+on them say, and so does a file a `tool_version` extractor reads ([Tool versions](#tool-versions))
+and a script that does not parse in its dialect ([Shell scripts](#shell-scripts)). A
 Markdown file parses whatever it holds, so only a bound under Limits refuses one.
 
 ### The check protocol

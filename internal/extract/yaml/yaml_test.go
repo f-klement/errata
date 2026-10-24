@@ -418,3 +418,61 @@ func TestYAMLBuildAndReadRefuse(t *testing.T) {
 	_, err = run(t, Spec{File: "f.yaml", Path: "a", MaxBytes: 70}, extracttest.Repo(t, map[string]string{"f.yaml": strings.Repeat("[", 60)}))
 	extracttest.WantError(t, err, "f.yaml: the file can hold up to 124 nodes, over the limit of 10")
 }
+
+// ParseNoted notes each node once, an anchor's for its aliases too, with
+// the tag the file wrote and whether it is a plain scalar with no tag: a
+// quoted, a block or a tagged scalar is not plain, and a node the file
+// wrote no tag on has none. Planted breaks: the note on every alias as
+// well, which noted the anchored scalar twice; the tag yaml.v3 resolves
+// noted, which gave "3.10" the tag !!float.
+func TestParseNotedNotesTagsAndPlainScalars(t *testing.T) {
+	type note struct {
+		tag   string
+		plain bool
+	}
+	got := map[string][]note{}
+	docs, _, err := ParseNoted([]byte("a: &x 3.10\nb: '3.10'\nc: !!str 3.10\nd: |\n  t\ne: !reference [j, k]\nf: *x\n"), 0,
+		func(n *core.Node, tag string, plain bool) {
+			key := n.Text
+			if n.Shape != core.Scalar {
+				key = fmt.Sprintf("%s@%d", n.Shape, n.Line)
+			}
+			got[key] = append(got[key], note{tag, plain})
+		})
+	if err != nil || len(docs) != 1 {
+		t.Fatalf("ParseNoted: %v, %d documents", err, len(docs))
+	}
+	want := map[string][]note{
+		"3.10": {{"", true}, {"", false}, {"!!str", false}}, "t\n": {{"", false}},
+		"j": {{"", true}}, "k": {{"", true}}, "a sequence@6": {{"!reference", false}}, "a mapping@1": {{"", false}},
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("noted %v, want %v", got, want)
+	}
+	if docs[0].Field["f"] != docs[0].Field["a"] {
+		t.Fatal("the alias is not its anchor's node")
+	}
+}
+
+// ParseNoted starts its count of the nodes aliases and merge keys add at
+// the count it is given and returns where it ends, so two files each under
+// core.MaxExpanded are refused together. Planted break: the count started
+// at 0, which read the second file.
+func TestParseNotedCarriesTheAliasCount(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("a: &a {")
+	for i := range 100 {
+		fmt.Fprintf(&b, "k%d: 1, ", i)
+	}
+	b.WriteString("}\n")
+	for i := range 3000 {
+		fmt.Fprintf(&b, "m%d: {<<: *a}\n", i)
+	}
+	data := []byte(b.String())
+	_, used, err := ParseNoted(data, 0, nil)
+	if err != nil || used < core.MaxExpanded/2 || used > core.MaxExpanded {
+		t.Fatalf("one file: %v, count %d; want between %d and %d", err, used, core.MaxExpanded/2, core.MaxExpanded)
+	}
+	_, _, err = ParseNoted(data, used, nil)
+	extracttest.WantError(t, err, "aliases and merge keys expand to more than 1000000 nodes, the limit")
+}

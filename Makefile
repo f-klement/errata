@@ -63,7 +63,10 @@ FUZZ_TARGETS := ./internal/config:FuzzParse ./internal/protocol:FuzzMessage \
                 ./internal/extract/text:FuzzText ./internal/extract/core:FuzzNumber \
                 ./internal/extract/xml:FuzzXPath ./internal/extract/xml:FuzzXML \
                 ./internal/extract/ini:FuzzINI ./internal/extract/properties:FuzzProperties \
-                ./internal/extract/toolversion:FuzzToolVersion ./internal/semver:FuzzParse
+                ./internal/extract/toolversion:FuzzToolVersion ./internal/semver:FuzzParse \
+                ./internal/extract/envfile:FuzzEnvfile \
+                ./internal/extract/gitlabci:FuzzGitLabCI \
+                ./internal/extract/shell:FuzzShell
 
 .PHONY: check gate build tools lint fmt test cover slow fuzz mutation vuln dogfood public-dry release-dry image-dry ci-local ci-test tool-sums hooks clean
 
@@ -168,6 +171,13 @@ SLOW_TESTS := ./internal/report:TestSARIFBoundsTheReviewersUpload \
               ./internal/extract/ini:TestReplayINIShapesAtFullSize \
               ./internal/extract/properties:TestReplayPropertiesShapesAtFullSize \
               ./internal/extract/toolversion:TestReplayToolVersionShapesAtFullSize \
+              ./internal/extract/envfile:TestReplayEnvfileShapesAtFullSize \
+              ./internal/extract/gitlabci:TestReplayGitLabCIShapesAtFullSize \
+              ./internal/extract/shell:TestReplayShellShapesAtFullSize \
+              ./internal/extract/shell:TestShellDeepTreeLineTakesNoStack \
+              ./internal/extract/shell:TestShellMemoryDoesNotGrowWithStatementsAtFullSize \
+              ./internal/extract/shell:TestShellMemoryDoesNotGrowWithStatements \
+              ./internal/extract/shell:TestShellEmptyDocumentHoldsNoStatements \
               ./internal/extract/ini:TestPHPDeepReferenceCopiesItsTextOnce
 slow:
 	@for t in $(SLOW_TESTS); do \
