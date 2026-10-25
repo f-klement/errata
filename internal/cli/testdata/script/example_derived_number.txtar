@@ -1,0 +1,55 @@
+# The second worked example of docs/examples.md: a derived number that
+# drifted from what derives it. The backup policy keeps a week of backups, and
+# the number of backups to keep follows from the schedule. The schedule went
+# from every 6 hours to every hour and keep_last stayed at 28, which now covers
+# 28 hours. With keep_last raised to 168, it holds. errata.yaml's check
+# docs-examples-are-run holds every block of this example in docs/examples.md
+# equal to its section here, in order.
+! exec errata check
+cmp stdout false.txt
+! stderr .
+
+cp fixed/backup.toml backup.toml
+exec errata check
+stdout '^0 errata, 0 unknown. Coverage: ran 1, skipped 0.$'
+! stdout 'FALSE|UNKNOWN'
+! stderr .
+
+-- errata.yaml --
+checks:
+  - id: backups-cover-the-retention-window
+    reason: >
+      The policy promises a restore point from any time in the retention window. The tool
+      deletes all but the newest keep_last backups, so keep_last runs of the schedule must
+      span the window, or the oldest restore points are gone before the window ends.
+    scope: repo
+    extract:
+      schedule: {yaml: {file: deploy/backup-cronjob.yaml, path: spec.schedule}}
+      keep:     {toml: {file: backup.toml, path: retention.keep_last}}
+      window:   {toml: {file: backup.toml, path: retention.window}}
+    assert: cron_interval(schedule[0]) * int(keep[0]) >= duration(window[0])
+-- false.txt --
+FALSE backups-cover-the-retention-window (repo)
+  why:  The policy promises a restore point from any time in the retention window. The tool deletes all but the newest keep_last backups, so keep_last runs of the schedule must span the window, or the oldest restore points are gone before the window ends.
+  said: assert: the expression is false
+          expression: cron_interval(schedule[0]) * int(keep[0]) >= duration(window[0])
+          keep[0] = "28" at backup.toml:2
+          schedule[0] = "0 * * * *" at deploy/backup-cronjob.yaml:6
+          window[0] = "7d" at backup.toml:3
+
+1 erratum, 0 unknown. Coverage: ran 1, skipped 0.
+-- deploy/backup-cronjob.yaml --
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: backup
+spec:
+  schedule: "0 * * * *"
+-- backup.toml --
+[retention]
+keep_last = 28
+window = "7d"
+-- fixed/backup.toml --
+[retention]
+keep_last = 168
+window = "7d"

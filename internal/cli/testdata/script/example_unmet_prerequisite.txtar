@@ -1,0 +1,109 @@
+# The third worked example of docs/examples.md: a procedure whose
+# prerequisite is unmet. The runbook for adding a node names the packages and
+# the kernel parameters the node needs; the Ansible role is what declares
+# them. Storage moved from NFS to iSCSI, and search moved off the nodes, and
+# the runbook still asks for nfs-common and vm.max_map_count. Each check is an
+# erratum. With the runbook fixed, both hold. errata.yaml's check
+# docs-examples-are-run holds every block of this example in docs/examples.md
+# equal to its section here, in order.
+! exec errata check
+cmp stdout false.txt
+! stderr .
+
+cp fixed/runbook.md docs/runbook.md
+exec errata check
+stdout '^0 errata, 0 unknown. Coverage: ran 2, skipped 0.$'
+! stdout 'FALSE|UNKNOWN'
+! stderr .
+
+# The page's program check for a file the runbook depends on, which no rule
+# can state: it holds while the file is there and is an erratum once it is gone.
+exec errata check -c files.yaml
+stdout '^0 errata, 0 unknown. Coverage: ran 1, skipped 0.$'
+! stderr .
+
+rm ansible/roles/node/files/99-node.conf
+! exec errata check -c files.yaml
+stdout '^FALSE runbook-sysctl-file-exists \(repo\)$'
+stdout '^1 erratum, 0 unknown. Coverage: ran 1, skipped 0.$'
+! stderr .
+
+-- errata.yaml --
+checks:
+  - id: runbook-packages-are-installed
+    reason: >
+      The runbook for adding a node names the packages the node needs, and the node role is what
+      installs them. A package the runbook names and the role does not install is a step that
+      either fails or installs something nothing else keeps up to date.
+    scope: repo
+    extract:
+      runbook:  {text: {file: docs/runbook.md, pattern: 'the package (\S+) '}}
+      declared: {yaml: {file: ansible/roles/node/tasks/main.yml, path: "$[*]['ansible.builtin.apt'].name[*]"}}
+    assert: subset(runbook, declared)
+
+  - id: runbook-kernel-parameters-are-set
+    reason: >
+      The runbook for adding a node has the operator check kernel parameters that the node role's
+      sysctl file sets. A parameter the runbook names and the file does not set fails the check
+      on every new node, and sends the operator to set by hand what the repository dropped.
+    scope: repo
+    extract:
+      runbook:  {text: {file: docs/runbook.md, pattern: 'the kernel parameter (\S+) '}}
+      declared: {regex: {file: ansible/roles/node/files/99-node.conf, pattern: '^([a-z0-9_.]+)\s*='}}
+    assert: subset(runbook, declared)
+-- false.txt --
+FALSE runbook-packages-are-installed (repo)
+  why:  The runbook for adding a node names the packages the node needs, and the node role is what installs them. A package the runbook names and the role does not install is a step that either fails or installs something nothing else keeps up to date.
+  said: assert: the expression is false
+          expression: subset(runbook, declared)
+          declared[0] = "jq" at ansible/roles/node/tasks/main.yml:4
+          declared[1] = "open-iscsi" at ansible/roles/node/tasks/main.yml:5
+          runbook[0] = "nfs-common" at docs/runbook.md:3
+          runbook[1] = "jq" at docs/runbook.md:4
+
+FALSE runbook-kernel-parameters-are-set (repo)
+  why:  The runbook for adding a node has the operator check kernel parameters that the node role's sysctl file sets. A parameter the runbook names and the file does not set fails the check on every new node, and sends the operator to set by hand what the repository dropped.
+  said: assert: the expression is false
+          expression: subset(runbook, declared)
+          declared[0] = "net.ipv4.ip_forward" at ansible/roles/node/files/99-node.conf:1
+          declared[1] = "fs.inotify.max_user_watches" at ansible/roles/node/files/99-node.conf:2
+          runbook[0] = "net.ipv4.ip_forward" at docs/runbook.md:5
+          runbook[1] = "vm.max_map_count" at docs/runbook.md:6
+
+2 errata, 0 unknown. Coverage: ran 2, skipped 0.
+-- files.yaml --
+checks:
+  - id: runbook-sysctl-file-exists
+    reason: >
+      The runbook has the operator check the kernel parameters that the node role's sysctl file
+      sets. If the file is gone, the role sets none of them, and every step that checks one fails.
+    scope: repo
+    run: [test, -f, ansible/roles/node/files/99-node.conf]
+-- docs/runbook.md --
+# Adding a node
+
+1. Install the package `nfs-common` with apt; the volumes mount over NFS.
+2. Install the package `jq` with apt.
+3. Check that the kernel parameter `net.ipv4.ip_forward` is 1.
+4. Check that the kernel parameter `vm.max_map_count` is at least 262144, or search does not
+   start.
+-- ansible/roles/node/tasks/main.yml --
+- name: Install the node packages
+  ansible.builtin.apt:
+    name:
+      - jq
+      - open-iscsi
+
+- name: Install the sysctl settings
+  ansible.builtin.copy:
+    src: 99-node.conf
+    dest: /etc/sysctl.d/99-node.conf
+-- ansible/roles/node/files/99-node.conf --
+net.ipv4.ip_forward = 1
+fs.inotify.max_user_watches = 524288
+-- fixed/runbook.md --
+# Adding a node
+
+1. Install the package `open-iscsi` with apt; the volumes attach over iSCSI.
+2. Install the package `jq` with apt.
+3. Check that the kernel parameter `net.ipv4.ip_forward` is 1.

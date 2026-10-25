@@ -126,6 +126,66 @@ func TestGuardCountsEmphasisMatchedAtOnce(t *testing.T) {
 	}
 }
 
+// goldmark scans for the run that closes an emphasis only from a run with
+// fewer than goldmarkScanLine bytes left on its line, and matches the pair at
+// once there; from further back it scans nothing. The guard's count of the
+// scan models that, so this holds the model to goldmark's: an emphasis whose
+// rest of the line is one byte under the length counts its four bytes, and
+// one at the length counts none. goldmark 2.1.6 scanned every line to its
+// end, and so counted four for both; a goldmark that moves its length, or
+// errata's constant moved alone, fails here. A goldmark release that fails
+// this test needs the bound re-measured, which is why Renovate does not
+// automerge it.
+func TestGuardScansWhereGoldmarkDoes(t *testing.T) {
+	for _, c := range []struct {
+		rest    int
+		scanned int64
+	}{
+		{goldmarkScanLine - 1, 4},
+		{goldmarkScanLine, 0},
+	} {
+		src := "*ab* " + strings.Repeat("c", c.rest-5) + "\n"
+		doc, err := parseMarkdown("f", []byte(src), core.DefaultMaxBytes, time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if doc.scanned != c.scanned {
+			t.Errorf("an emphasis with %d bytes left on its line: the guard counted a scan of %d, want %d", c.rest, doc.scanned, c.scanned)
+		}
+	}
+}
+
+// The guard counts goldmark's walk for an emphasis matched at once only
+// when the character before its run is not a space as goldmark reads one:
+// tab, line feed, carriage return, space, or a space above ASCII. An
+// emphasis after any other character counts the paragraph's 300 runs; one
+// after a space counts none. The planted break, unicode.IsSpace, which
+// also takes the vertical tab and the form feed, counted none for them.
+func TestGuardCountsTheWalkAfterWhatGoldmarkCallsNoSpace(t *testing.T) {
+	for _, c := range []struct {
+		before string
+		walked bool
+	}{
+		{" ", false}, {"\t", false}, {"\u00a0", false}, {"\u2003", false},
+		{"a", true}, {"\v", true}, {"\f", true}, {".", true},
+	} {
+		src := strings.Repeat("a* ", 300) + "x" + c.before + "*b*c\n"
+		doc, err := parseMarkdown("f", []byte(src), core.DefaultMaxBytes, time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The runs "a* " cannot open, so the guard counts no scan for them:
+		// the 3 is the scan of the emphasis *b*.
+		want := int64(3)
+		if c.walked {
+			want += 300
+		}
+		if doc.scanned != want {
+			t.Errorf("an emphasis after %q: the guard counted %d, want %d", c.before, doc.scanned, want)
+		}
+	}
+}
+
 // A code span's prose is its text less the space CommonMark strips from
 // each end when both ends have one, so a space after the span maps to the
 // file's space after it. A span with a space at one end only keeps it. The
@@ -206,20 +266,68 @@ func markdownBounds(t *testing.T, large bool) {
 		// before them: 256 KB took over a minute.
 		{name: "5001 runs that match nothing", body: strings.Repeat("*a_ ", 2501), refused: "README.md: line 1: a paragraph holds more than 5000 runs of * and _, the limit" + tail, bound: time.Second},
 		// The bytes goldmark scans for runs that close emphasis: max_bytes
-		// times two. goldmark v2 looks from each * that opens to the end of
-		// its line, so runs that close nothing cost the rest of the line
-		// each: 2500 of them on a line of 400 KB took 2.2 s under the run
-		// limit alone. Four runs that open on a line of 399 bytes, as
-		// goldmark trims its end, scan 996 bytes, the limit at 498; an
-		// emphasis matched at once scans up to its closing run, three bytes
-		// more. The planted breaks: >= in
-		// place of > refuses the case at the limit, and either count left
-		// out reads the case over it.
-		{name: "scans at the limit", body: strings.Repeat("*"+strings.Repeat("a", 98)+" ", 4) + "\n", limit: 498},
-		{name: "an emphasis more", body: "x\n\n*b*\n" + strings.Repeat("*"+strings.Repeat("a", 98)+" ", 4) + "\n", limit: 498,
-			refused: "README.md: line 4: the Markdown parse scans more than 996 bytes for runs of * and _ that close emphasis, the limit, 2 for every byte of max_bytes" + tail},
-		{name: "emphasis matched at once along a line", body: strings.Repeat("*ab* ", 20_000)},
-		{name: "100000 runs that match nothing", body: strings.Repeat("*a_ ", 100_000), refused: "README.md: line 1: the Markdown parse scans more than 67108864 bytes for runs of * and _ that close emphasis, the limit, 2 for every byte of max_bytes" + tail, bound: time.Second, large: true},
+		// times two. goldmark looks from each * that opens, with fewer than
+		// 256 bytes left on its line, to the end of the line, so runs that
+		// close nothing cost the rest of the line each. Four runs that open
+		// on a line of 243 bytes, as goldmark trims its end, scan 606 bytes,
+		// the limit at 303; an emphasis matched at once scans up to its
+		// closing run, three bytes more. A run with 255 bytes left on its
+		// line scans them, past the limit after three such lines, and one
+		// with 256 scans nothing. The planted
+		// breaks: >= in place of > refuses the case at the limit; either
+		// count left out reads the case over it; <= in place of < in the
+		// line's length refuses the line of 256, and the length left out
+		// refuses it too; a plus for the minus in the count of an emphasis
+		// refuses the lines of closed emphasis.
+		{name: "scans at the limit", body: strings.Repeat("*"+strings.Repeat("a", 59)+" ", 4) + "\n", limit: 303},
+		{name: "an emphasis more", body: "x\n\n*b*\n" + strings.Repeat("*"+strings.Repeat("a", 59)+" ", 4) + "\n", limit: 303,
+			refused: "README.md: line 4: the Markdown parse scans more than 606 bytes for runs of * and _ that close emphasis, the limit, 2 for every byte of max_bytes" + tail},
+		{name: "a run with 255 bytes left on its line more", body: strings.Repeat(strings.Repeat("*"+strings.Repeat("a", 59)+" ", 4)+"\n\n", 3) + "*" + strings.Repeat("a", 254) + "\n", limit: 1000,
+			refused: "README.md: line 7: the Markdown parse scans more than 2000 bytes for runs of * and _ that close emphasis, the limit, 2 for every byte of max_bytes" + tail},
+		{name: "a run with 256 bytes left on its line more", body: strings.Repeat(strings.Repeat("*"+strings.Repeat("a", 59)+" ", 4)+"\n\n", 3) + "*" + strings.Repeat("a", 255) + "\n", limit: 1000},
+		{name: "lines of emphasis matched at once", body: strings.Repeat(strings.Repeat("*ab* ", 50)+"\n", 100), limit: 100_000},
+		// goldmark matches no emphasis at once from 256 bytes or more before
+		// the end of a line, so a long line of closed emphasis is runs that
+		// the run limit counts. goldmark 2.1.6 matched these at once, and
+		// read the line.
+		{name: "emphasis along a long line", body: strings.Repeat("*ab* ", 20_000),
+			refused: "README.md: line 1: a paragraph holds more than 5000 runs of * and _, the limit" + tail},
+		// A table, one paragraph to CommonMark, of rows of 305 bytes with
+		// four runs in each, all 256 bytes or more before the row's end:
+		// goldmark matches none at once, so 1251 rows are over the run limit.
+		{name: "a table of 1250 wide rows", body: "| a | b | c |\n|---|---|---|\n" + strings.Repeat("| **name** | _type_ | "+strings.Repeat("d", 280)+" |\n", 1250)},
+		{name: "a table of 1251 wide rows", body: "| a | b | c |\n|---|---|---|\n" + strings.Repeat("| **name** | _type_ | "+strings.Repeat("d", 280)+" |\n", 1251),
+			refused: "README.md: line 1253: a paragraph holds more than 5000 runs of * and _, the limit" + tail},
+		// The same table with 7000 narrow rows after it. Each narrow emphasis
+		// matches at once after a space, so goldmark walks no runs for it,
+		// and the guard counts none. The planted break, the walk counted for
+		// every emphasis matched at once, refuses it.
+		{name: "a table of 1249 wide rows and 7000 narrow ones", body: "| a | b | c |\n|---|---|---|\n" + strings.Repeat("| **name** | _type_ | "+strings.Repeat("d", 280)+" |\n", 1249) + strings.Repeat("| **n** | _t_ |\n", 7000)},
+		{name: "100000 runs that match nothing", body: strings.Repeat("*a_ ", 100_000), refused: "README.md: line 1: a paragraph holds more than 5000 runs of * and _, the limit" + tail, bound: time.Second},
+		{name: "lines of 85 runs that match nothing", body: strings.Repeat(strings.Repeat("*a ", 85)+"\n\n", 4000), limit: 1 << 20, refused: "README.md: line 385: the Markdown parse scans more than 2097152 bytes for runs of * and _ that close emphasis, the limit, 2 for every byte of max_bytes" + tail, bound: time.Second},
+		// From a run that can open and close, with fewer than 256 bytes left
+		// on its line, goldmark walks every run of the paragraph before it
+		// for one of the same character that opens, and an emphasis it then
+		// matches at once adds no run. 4990 runs and then lines of a*b*c
+		// took 3.99 s at 1 MiB and 16.6 s at 4 MiB: the guard counts a byte
+		// of the scan for each run walked. The planted break, the walk not
+		// counted, reads this case.
+		{name: "runs then lines of emphasis inside words", body: strings.Repeat("a* ", 4990) + "\n" + strings.Repeat(strings.Repeat("a*b*c ", 40)+"\n", 400), limit: 1 << 20,
+			refused: "README.md: line 12: the Markdown parse scans more than 2097152 bytes for runs of * and _ that close emphasis, the limit, 2 for every byte of max_bytes" + tail, bound: time.Second},
+		// goldmark reads a vertical tab or a form feed before a run as no
+		// space, so the run may close and goldmark walks. Lines of 34 such
+		// emphases each, where the case above has 40, are refused two lines
+		// later. The planted break, unicode.IsSpace in place of goldmark's
+		// spaces, reads them.
+		{name: "runs then lines of emphasis after a vertical tab", body: strings.Repeat("a* ", 4990) + "\n" + strings.Repeat(strings.Repeat("a\v*b*c ", 34)+"\n", 400), limit: 1 << 20,
+			refused: "README.md: line 14: the Markdown parse scans more than 2097152 bytes for runs of * and _ that close emphasis, the limit, 2 for every byte of max_bytes" + tail, bound: time.Second},
+		{name: "runs then lines of emphasis after a form feed", body: strings.Repeat("a* ", 4990) + "\n" + strings.Repeat(strings.Repeat("a\f*b*c ", 34)+"\n", 400), limit: 1 << 20,
+			refused: "README.md: line 14: the Markdown parse scans more than 2097152 bytes for runs of * and _ that close emphasis, the limit, 2 for every byte of max_bytes" + tail, bound: time.Second},
+		// The same walk from a run that it then returns unmatched: 2500 runs
+		// that close, then a run on each line with nothing to close it. The
+		// planted break, the walk counted only for an emphasis, reads it.
+		{name: "runs then unmatched runs inside words", body: strings.Repeat("a* ", 2500) + "\n" + strings.Repeat("a*b c\n", 2400), limit: 1 << 20,
+			refused: "README.md: line 732: the Markdown parse scans more than 2097152 bytes for runs of * and _ that close emphasis, the limit, 2 for every byte of max_bytes" + tail, bound: time.Second},
 		// Link reference definitions times the paragraph's lines.
 		{name: "3162 definitions", body: defs(3162)},
 		// 3125 definitions in 3200 lines multiply to the limit exactly, and

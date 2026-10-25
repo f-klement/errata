@@ -102,3 +102,32 @@ checks:
       readme_mib: {regex: {file: README.md, pattern: '^\| the config file \| (\d+) MiB \(\d+ bytes\) \|'}}
       readme_bytes: {regex: {file: README.md, pattern: '^\| the config file \| \d+ MiB \((\d+) bytes\) \|'}}
     assert: readme_mib.all(v, v == code[0]) && readme_bytes.all(v, int(v) == int(code[0]) * 1048576)
+
+  - id: docs-examples-are-run
+    reason: >
+      docs/examples.md shows three examples: the files, the rules and what errata prints. Three
+      API tests in internal/cli/testdata/script run those rules on those files and compare what
+      errata prints. A block on the page that differs from its test's section is one nobody ran,
+      and a reader who copies it gets another verdict than the page shows. The page's blocks are
+      compared in order with the sections, so a block added, dropped or moved fails too.
+    scope: repo
+    extract:
+      page: {regex: {file: docs/examples.md, pattern: '^```[a-z]*\n((?:[^\n]*\n)*?)```$'}}
+      port_agents: {regex: {file: internal/cli/testdata/script/example_wrong_port.txtar, pattern: '^-- AGENTS\.md --\n((?:[^\n]*\n)*?)-- \S+ --$'}}
+      port_config: {regex: {file: internal/cli/testdata/script/example_wrong_port.txtar, pattern: '^-- config/staging\.toml --\n((?:[^\n]*\n)*?)-- \S+ --$'}}
+      port_rules: {regex: {file: internal/cli/testdata/script/example_wrong_port.txtar, pattern: '^-- errata\.yaml --\n((?:[^\n]*\n)*?)-- \S+ --$'}}
+      port_output: {regex: {file: internal/cli/testdata/script/example_wrong_port.txtar, pattern: '^-- false\.txt --\n((?:[^\n]*\n)*?)-- \S+ --$'}}
+      number_cronjob: {regex: {file: internal/cli/testdata/script/example_derived_number.txtar, pattern: '^-- deploy/backup-cronjob\.yaml --\n((?:[^\n]*\n)*?)-- \S+ --$'}}
+      number_config: {regex: {file: internal/cli/testdata/script/example_derived_number.txtar, pattern: '^-- backup\.toml --\n((?:[^\n]*\n)*?)-- \S+ --$'}}
+      number_rules: {regex: {file: internal/cli/testdata/script/example_derived_number.txtar, pattern: '^-- errata\.yaml --\n((?:[^\n]*\n)*?)-- \S+ --$'}}
+      number_output: {regex: {file: internal/cli/testdata/script/example_derived_number.txtar, pattern: '^-- false\.txt --\n((?:[^\n]*\n)*?)-- \S+ --$'}}
+      prereq_runbook: {regex: {file: internal/cli/testdata/script/example_unmet_prerequisite.txtar, pattern: '^-- docs/runbook\.md --\n((?:[^\n]*\n)*?)-- \S+ --$'}}
+      prereq_tasks: {regex: {file: internal/cli/testdata/script/example_unmet_prerequisite.txtar, pattern: '^-- ansible/roles/node/tasks/main\.yml --\n((?:[^\n]*\n)*?)-- \S+ --$'}}
+      prereq_sysctl: {regex: {file: internal/cli/testdata/script/example_unmet_prerequisite.txtar, pattern: '^-- ansible/roles/node/files/99-node\.conf --\n((?:[^\n]*\n)*?)-- \S+ --$'}}
+      prereq_rules: {regex: {file: internal/cli/testdata/script/example_unmet_prerequisite.txtar, pattern: '^-- errata\.yaml --\n((?:[^\n]*\n)*?)-- \S+ --$'}}
+      prereq_output: {regex: {file: internal/cli/testdata/script/example_unmet_prerequisite.txtar, pattern: '^-- false\.txt --\n((?:[^\n]*\n)*?)-- \S+ --$'}}
+      prereq_file_check: {regex: {file: internal/cli/testdata/script/example_unmet_prerequisite.txtar, pattern: '^-- files\.yaml --\n((?:[^\n]*\n)*?)-- \S+ --$'}}
+    assert: |
+      page == port_agents + port_config + port_rules + port_output + number_cronjob +
+        number_config + number_rules + number_output + prereq_runbook + prereq_tasks +
+        prereq_sysctl + prereq_rules + prereq_output + prereq_file_check

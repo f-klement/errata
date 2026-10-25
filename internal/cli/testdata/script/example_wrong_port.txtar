@@ -1,0 +1,61 @@
+# The first worked example of docs/examples.md: a document naming the wrong
+# port. AGENTS.md tells an agent where the staging database listens; the
+# staging config moved it to a connection pooler on 6432 and AGENTS.md still
+# says 5432. The host check holds and the port check is an erratum. With the
+# document fixed, both hold. errata.yaml's check
+# docs-examples-are-run holds every block of this example in docs/examples.md
+# equal to its section here, in order.
+! exec errata check
+cmp stdout false.txt
+! stderr .
+
+cp fixed/AGENTS.md AGENTS.md
+exec errata check
+stdout '^0 errata, 0 unknown. Coverage: ran 2, skipped 0.$'
+! stdout 'FALSE|UNKNOWN'
+! stderr .
+
+-- errata.yaml --
+checks:
+  - id: agents-name-the-staging-db-host
+    reason: >
+      AGENTS.md tells an agent which host the staging database is on. An agent that reads
+      another host connects to the wrong database or to none.
+    scope: repo
+    extract:
+      doc:    {text: {file: AGENTS.md, pattern: 'staging database is (\S+) on port'}}
+      config: {toml: {file: config/staging.toml, path: database.host}}
+    agree: [doc, config]
+
+  - id: agents-name-the-staging-db-port
+    reason: >
+      AGENTS.md tells an agent which port the staging database listens on. The config is what
+      the application reads, so a port the document names and the config does not sends the
+      agent to a closed port.
+    scope: repo
+    extract:
+      doc:    {text: {file: AGENTS.md, pattern: 'staging database is \S+ on port (\d+)'}}
+      config: {toml: {file: config/staging.toml, path: database.port}}
+    agree: [doc, config]
+-- false.txt --
+FALSE agents-name-the-staging-db-port (repo)
+  why:  AGENTS.md tells an agent which port the staging database listens on. The config is what the application reads, so a port the document names and the config does not sends the agent to a closed port.
+  said: agree: the values differ
+          "5432" at AGENTS.md:3 (doc)
+          "6432" at config/staging.toml:3 (config)
+
+1 erratum, 0 unknown. Coverage: ran 2, skipped 0.
+-- AGENTS.md --
+# Working on this service
+
+The staging database is `db.staging.example.com` on port
+`5432`. Run the migrations against it before a release.
+-- config/staging.toml --
+[database]
+host = "db.staging.example.com"
+port = 6432
+-- fixed/AGENTS.md --
+# Working on this service
+
+The staging database is `db.staging.example.com` on port
+`6432`. Run the migrations against it before a release.
