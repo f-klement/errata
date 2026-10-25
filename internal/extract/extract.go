@@ -2,9 +2,9 @@
 // reads one file and returns every value it finds there, with its location.
 // Each kind is a reader in a package of its own below this one (yaml, json,
 // toml, regex, text, xml, ini, properties, toolversion, envfile, gitlabci,
-// shell), and the readers share internal/extract/core; no reader imports
-// another. This package holds what sees every kind: the Spec a rule decodes
-// into, the kinds table, Build, Place and Kind.
+// shell, githubactions, jenkins), and the readers share internal/extract/core;
+// no reader imports another. This package holds what sees every kind: the
+// Spec a rule decodes into, the kinds table, Build, Place and Kind.
 //
 // The types below are the seam between the config package, which decodes a
 // rule, and this package, which runs its extractors. Their JSON names are the
@@ -20,8 +20,10 @@ import (
 	"github.com/f-klement/errata/internal/check"
 	"github.com/f-klement/errata/internal/extract/core"
 	"github.com/f-klement/errata/internal/extract/envfile"
+	"github.com/f-klement/errata/internal/extract/githubactions"
 	"github.com/f-klement/errata/internal/extract/gitlabci"
 	"github.com/f-klement/errata/internal/extract/ini"
+	"github.com/f-klement/errata/internal/extract/jenkins"
 	"github.com/f-klement/errata/internal/extract/json"
 	"github.com/f-klement/errata/internal/extract/properties"
 	"github.com/f-klement/errata/internal/extract/regex"
@@ -52,6 +54,10 @@ type Spec struct {
 	GitLabCI *GitLabCI `json:"gitlab-ci,omitempty"`
 
 	Shell *Shell `json:"shell,omitempty"`
+
+	GitHubActions *GitHubActions `json:"github-actions,omitempty"`
+
+	Jenkins *Jenkins `json:"jenkins,omitempty"`
 }
 
 // Each kind takes MaxBytes, the largest file it reads. Zero, or the key
@@ -100,6 +106,15 @@ type GitLabCI = gitlabci.Spec
 // Shell returns every value a shell script gives a variable, as shell.Spec
 // says.
 type Shell = shell.Spec
+
+// GitHubActions returns the value one step or job of a GitHub Actions
+// workflow sees, for an environment variable or a key, as
+// githubactions.Spec says.
+type GitHubActions = githubactions.Spec
+
+// Jenkins returns the value of an environment variable that a stage of a
+// Jenkinsfile sees, as jenkins.Spec says.
+type Jenkins = jenkins.Spec
 
 // Place returns s with only what decides where it reads: each file cleaned,
 // so f, ./f and a/../f are one file, and max_bytes left out, since a limit
@@ -162,6 +177,14 @@ func (s Spec) Place() Spec {
 	if s.Shell != nil {
 		x := shell.Place(*s.Shell)
 		p.Shell = &x
+	}
+	if s.GitHubActions != nil {
+		x := githubactions.Place(*s.GitHubActions)
+		p.GitHubActions = &x
+	}
+	if s.Jenkins != nil {
+		x := jenkins.Place(*s.Jenkins)
+		p.Jenkins = &x
 	}
 	return p
 }
@@ -234,6 +257,16 @@ func (s Spec) Resolved() Spec {
 		x.MaxBytes = core.MaxBytes(x.MaxBytes)
 		r.Shell = &x
 	}
+	if s.GitHubActions != nil {
+		x := *s.GitHubActions
+		x.MaxBytes = core.MaxBytes(x.MaxBytes)
+		r.GitHubActions = &x
+	}
+	if s.Jenkins != nil {
+		x := *s.Jenkins
+		x.MaxBytes = core.MaxBytes(x.MaxBytes)
+		r.Jenkins = &x
+	}
 	return r
 }
 
@@ -273,7 +306,7 @@ func (s Spec) kinds() []extractorKind {
 	// read as not covered to Gremlins however the tests run it.
 	set := [...]bool{s.YAML != nil, s.JSON != nil, s.TOML != nil, s.Regex != nil, s.Text != nil,
 		s.XML != nil, s.INI != nil, s.Properties != nil, s.ToolVersion != nil, s.EnvFile != nil,
-		s.GitLabCI != nil, s.Shell != nil}
+		s.GitLabCI != nil, s.Shell != nil, s.GitHubActions != nil, s.Jenkins != nil}
 	return []extractorKind{
 		{"yaml", set[0], func() (check.Extractor, error) { return yaml.Build(*s.YAML) }},
 		{"json", set[1], func() (check.Extractor, error) { return json.Build(*s.JSON) }},
@@ -292,6 +325,11 @@ func (s Spec) kinds() []extractorKind {
 		// The reader reads its YAML with the yaml reader's parser.
 		{"gitlab-ci", set[10], func() (check.Extractor, error) { return gitlabci.Build(*s.GitLabCI, yaml.ParseNoted) }},
 		{"shell", set[11], func() (check.Extractor, error) { return shell.Build(*s.Shell) }},
+		// The reader reads its YAML with the yaml reader's parser.
+		{"github-actions", set[12], func() (check.Extractor, error) {
+			return githubactions.Build(*s.GitHubActions, yaml.ParseNoted)
+		}},
+		{"jenkins", set[13], func() (check.Extractor, error) { return jenkins.Build(*s.Jenkins) }},
 	}
 }
 

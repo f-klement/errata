@@ -1,0 +1,4 @@
+go test fuzz v1
+string("X=$'\\x01)'\ndeclare -i X")
+string("X")
+byte('\x01')

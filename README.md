@@ -483,7 +483,7 @@ expression in a repository's configuration can stall CI.
 
 An extractor reads one file of the repository and returns a list of values, each with the file and
 the line where it starts; `tool_version` reads every file that pins one tool. A rule names its
-extractors under `extract:` and sets exactly one of the twelve keys in each:
+extractors under `extract:` and sets exactly one of the fourteen keys in each:
 
 ```yaml
 extract:
@@ -516,6 +516,10 @@ extract:
     gitlab-ci: {file: .gitlab-ci.yml, job: deploy, variable: TAG}
   start_port:
     shell: {file: deploy.sh, name: API_PORT}
+  test_node:
+    github-actions: {file: .github/workflows/ci.yml, job: test, step: setup, key: with.node-version}
+  image_tag:
+    jenkins: {file: Jenkinsfile, variable: IMAGE_TAG, stage: deploy}
 ```
 
 | Key | Fields | Returns |
@@ -532,6 +536,8 @@ extract:
 | `envfile` | `file`, and `name` for one key | every value of the key in a dotenv file, or of every key (see [Env files](#env-files)) |
 | `gitlab-ci` | `file`, `job`, and `variable` or `key` | the value the job sees of a CI/CD variable or a job keyword (see [GitLab CI](#gitlab-ci)) |
 | `shell` | `file`, `name`, and `language` to name the dialect | every value the script assigns the variable, and every default an expansion gives it (see [Shell scripts](#shell-scripts)) |
+| `github-actions` | `file`, `job`, `step` for a step by its id or name, and `variable` or `key` | the value the step, or the job, sees of an environment variable or a key such as `runs-on` or `with.node-version`, one for each job of a matrix (see [GitHub Actions](#github-actions)) |
+| `jenkins` | `file`, `variable`, and `stage` | the value a stage of a declarative Jenkinsfile sees of an environment variable (see [Jenkinsfiles](#jenkinsfiles)) |
 
 Each key also takes `max_bytes`, the largest file it reads; for `tool_version`, the files it reads
 in all, and for `gitlab-ci` the file and the files it includes in all (see Limits).
@@ -673,9 +679,12 @@ a not literal value. Of errata's kinds only `ini` can, for the files and section
 that names none, such as `lts/*` or `system` ([Tool versions](#tool-versions)), `envfile` for a
 substitution of a key the file does not set before it, a name alone that compose takes from the
 environment, and in a template file ([Env files](#env-files)), `gitlab-ci` for a value GitLab
-computes, such as `$CI_COMMIT_SHA` or a plain `3.10` ([GitLab CI](#gitlab-ci)), and `shell` for a
-value the shell expands, such as `$(git describe)` ([Shell scripts](#shell-scripts)); a `${{ }}`
-read with `yaml:` is still plain text, and two workflows that use the same expression agree.
+computes, such as `$CI_COMMIT_SHA` or a plain `3.10` ([GitLab CI](#gitlab-ci)), `shell` for a
+value the shell expands, such as `$(git describe)` ([Shell scripts](#shell-scripts)),
+`github-actions` for a `${{ }}` expression other than a matrix variable, or a plain `3.10`
+([GitHub Actions](#github-actions)), and `jenkins` for a value Groovy computes, such as
+`credentials('id')` ([Jenkinsfiles](#jenkinsfiles)); a `${{ }}` read with `yaml:` is still
+plain text, and two workflows that use the same expression agree.
 
 PHP reads `error_reporting = E_ALL` as the number the constant stands for, so the text `E_ALL` is
 not literal:
@@ -736,9 +745,10 @@ counts only the values left.
 
 `skip_not_literal` may list only an extractor that can return a not literal value: for any other the
 key would load and leave nothing out, so it does not load. That holds for every kind but `ini`,
-`properties`, `tool_version`, `envfile`, `gitlab-ci` and `shell`, for an `ini` extractor whose
-file errata models no transform for, such as `pytest.ini`, and for a `properties` file that is not
-a template. The message names the kind, and for `ini` the dialect and the file:
+`properties`, `tool_version`, `envfile`, `gitlab-ci`, `shell`, `github-actions` and `jenkins`,
+for an `ini` extractor whose file errata models no transform for, such as `pytest.ini`, and
+for a `properties` file that is not a template. The message names the kind, and for `ini` the
+dialect and the file:
 
 ```console
 $ errata check -c errata.yaml
@@ -1395,6 +1405,98 @@ the value limit as they are gathered, so each pass is linear in the files. A job
 (its name starts with `.`) or a global keyword such as `workflow` does not load as `job`, and a
 job the files do not define makes the rule unknown.
 
+#### GitHub Actions
+
+`github-actions` returns the value one job of a GitHub Actions workflow sees, or one step of it
+with `step`: of an environment variable with `variable`, or of a key with `key`, such as
+`runs-on`, `uses`, `container.image` or a `with:` input such as `with.node-version`, which is
+where workflows pin versions. Without `step`, `key` reads the job's keys and `variable` the value
+the job's `env:` gives its steps. A step is named by its `id`, or else by its `name`, which must
+then be one step's; a step inside a `parallel:` group counts as the job's. `key` reads the key at
+the level it names: `key: shell` of a step is the step's own `shell:`, not a `defaults.run.shell`
+the step runs with.
+
+```yaml
+checks:
+  - id: node-agrees
+    reason: CI tests on the node version .nvmrc pins.
+    scope: repo
+    extract:
+      ci: {github-actions: {file: .github/workflows/ci.yml, job: test, step: setup, key: with.node-version}}
+      nvm: {regex: {file: .nvmrc, pattern: '^(\S+)'}}
+    agree: [ci, nvm]
+```
+
+A variable comes from the step's `env:`, else the job's, else the workflow's: "GitHub uses the
+most specific variable". When none sets it, the job's `container.env` gives it. GitHub documents
+no order between `container.env` and the others, so a variable both set is unknown.
+
+Each combination of a job's `strategy.matrix` is a job of its own, so a value whose expressions
+are all matrix variables, such as `${{ matrix.node }}`, `node-${{ matrix.os }}` or
+`${{ matrix.node.version }}`, gives one value for each job. errata builds the combinations as
+GitHub documents: every combination of the variables, the last varying fastest, less those an
+`exclude:` entry partly matches, and then each `include:` entry added to every combination whose
+variables it agrees with, or made a job of its own when it agrees with none. A variable a job
+does not have is the empty string. Each value carries the job's name as GitHub gives it, which a
+message names after its place: the job's `name:`, or its id when it has none, followed by the
+combination's values, such as `test (ubuntu-latest, 18)`. A `name:` that references the matrix,
+such as `Unit ${{ matrix.node }}`, has its references replaced and no values after it. A value
+that names no matrix variable, such as `runs-on: ubuntu-latest`, is one value with no name, even
+when the matrix is out of reach. A value that is one matrix variable alone is at the line of the
+matrix that sets it. A message quotes 64 bytes of a name, so a longer one cuts the `name:` to leave
+room for the values, to no fewer than 16 bytes, and writes the values every job shares as `...`:
+
+```text
+FALSE node-agrees (repo)
+  why:  CI tests on the node version .nvmrc pins.
+  said: agree: the values differ
+          "20.11.1" at .github/workflows/ci.yml:9 when "test (20.11.1)" (ci), .nvmrc:1 (nvm)
+          "18.20.4" at .github/workflows/ci.yml:9 when "test (18.20.4)" (ci)
+```
+
+An agree rule therefore holds only when every job of the matrix agrees.
+
+Some values are out of reach offline, and errata never guesses them:
+
+| What | Result |
+|---|---|
+| any other `${{ }}` expression: a secret, a repository variable (`vars.`), an input, the `env` context, a step's output, or a matrix variable in the workflow's own `env:` | not literal, as written |
+| a matrix, a matrix variable or an `include:` or `exclude:` list that an expression writes | unknown for a value that names the matrix, naming the expression |
+| an expression in an `include:` or `exclude:` entry or in a matrix variable's value, where errata would compare it to decide whether a job runs or what it holds | unknown for a value that names the matrix, naming the job and the expression: GitHub evaluates it before it compares |
+| an `env:` that is an expression | unknown, naming it |
+| a step or a variable of a job that calls a reusable workflow with `uses:` | unknown: for a local one (`./` or `$/`) the message names the file to read instead, since the caller's `env:` does not reach it, and for one from another repository it names that workflow |
+| a variable read after a `run:` step whose script, `shell:` or `env:`, or the `defaults.run.shell` it runs with, names `GITHUB_ENV` in any case (PowerShell's `$env:github_env`) or as `${{ github.env }}` or `${{ github['env'] }}` | unknown, naming that step: what the script writes there reaches every later step |
+| a variable read after a `run:` step when the job's `env:`, its `container.env:` or the workflow's `env:` names `GITHUB_ENV` in one of those ways | unknown, naming that `env:` and the step: the script sees all three |
+| an `include:` or `exclude:` entry whose nested mapping matches a value's keys only in another case, such as `{x: 1}` against `{X: 1}`, where the values agree | unknown for a value that names the matrix, naming the job: GitHub reads such keys in any case and does not document how it compares them |
+| a matrix that passes 256 jobs only through jobs an expression may remove or add, as with an `exclude:` entry an expression writes | unknown for a value that names the matrix, naming the expression; a matrix of more than 256 jobs no expression decides is refused |
+| a variable read after a step that runs an action not on the list below, a local (`./path`) or a Docker action among them | unknown, naming the action and its step: an action writes `GITHUB_ENV` with `core.exportVariable` |
+| a variable no `env:` sets: one the runner sets, or the repository's variables | no value, and the message names where errata looked; `allow_empty` still lets the rule hold |
+| a plain scalar that YAML's core schema types as something other than a string: `3.10` (the number 3.1), `010` (10), `1e3`, `0x1f`, `True`, `null`, or an integer of more than 15 digits, which a double cannot hold, and a scalar with a tag other than `!!str` | not literal; quote it to give the step the text. A decimal integer such as `20`, and `true` and `false`, are literal |
+
+errata reads no action's code. It knows a short list of actions that set no variable for the
+steps after them: `actions/checkout`, `actions/cache` (with `actions/cache/restore` and
+`actions/cache/save`), `actions/upload-artifact` and `actions/download-artifact`. Each one's
+`action.yml` declares only outputs, and its source calls no `core.exportVariable`. A variable read
+after any other action is unknown. The list matches the action by its owner and name, the part
+before the `@`, and not by its version, so a later version of a listed action that starts to
+export a variable would go unseen. Nor is a ref checked: GitHub can resolve a commit of a fork
+of the repository through the listed name, as `actions/checkout@<sha>`, and errata does not
+detect that the code is the fork's. errata looks only at the steps before the one read, but an
+action's `pre:` runs at the start of the job, before the first step, so an action not on the list
+that comes after the step read can still set the variable through its `pre:`, and errata does not
+see it.
+
+errata refuses a `GITHUB_` or `RUNNER_` variable, which GitHub does not let a workflow set, a
+variable named in another case beside the one asked for (a Windows runner reads them as one), two
+matrix variables whose names differ only in case (GitHub documents `OS` and `os` as one; errata
+compares other letters as the runner compares a context's keys, so `é` and `É` are one and the
+Kelvin sign is not `k`), an empty matrix variable, an exclusion
+that leaves no job, and a matrix of more than 256 jobs that no expression decides, GitHub's limit.
+The product of the variables holds at most 65536 combinations before `exclude:`, and matching the
+`include:` and `exclude:` entries takes one step for each key compared and for each 64 bytes of a
+value compared, at most 1000000 for one extractor. The values hold at most 100000 in count and
+`max_bytes` bytes in all, since a matrix repeats a value for each job.
+
 #### Shell scripts
 
 `shell` returns every value a shell script gives one variable, each with its line, in file order:
@@ -1537,13 +1639,112 @@ At 64 MiB a statement may be twice as large. 32 MiB of 16 million one-word comma
 3 MiB each 5.1 s and 583 MB. Values with references and nested defaults are charged to the work
 meter like the rest of a read.
 
+#### Jenkinsfiles
+
+`jenkins` returns the value of one environment variable in a declarative Jenkinsfile: as the stage
+that `stage:` names sees it, or as the whole pipeline sees it without `stage:`. errata reads the
+file with a lexer of Groovy's comments and string forms and runs none of it.
+
+```yaml
+checks:
+  - id: tag-agrees
+    reason: The chart deploys the tag the pipeline builds.
+    scope: repo
+    extract:
+      ci: {jenkins: {file: Jenkinsfile, variable: IMAGE_TAG, stage: deploy}}
+      chart: {yaml: {file: values.yaml, path: image.tag}}
+    agree: [ci, chart]
+```
+
+errata looks in this order and stops at the first place that gives a value:
+
+1. The `environment` block of the stage, then of each stage around it, innermost first. A stage
+   in the `stages`, `parallel` or `matrix` of another stage is inside it.
+2. The `environment` block at the top of the `pipeline`.
+3. Every `env.X = v` that starts a statement, in file order: in a `script` block, a function, or
+   outside the pipeline. errata does not follow the order the stages run in, so each is a value the stage may
+   see, and an agree rule holds only when they all agree.
+4. Every `def X = v`, only when no environment block and no `env.X =` sets X anywhere in the file,
+   since a step's shell does not see a Groovy variable. A type may stand for `def`: a name that
+   starts with a capital, as in `String X = 'v'` or `Integer X = 5`, or one of Groovy's primitive
+   types, as in `int X = 1`. So may `final`, `static` and `var`. A generic type such as
+   `List<String> X`, an array type, and a qualified type such as `java.lang.String X` are not
+   read. An `X = v`, `X += v`, `X++` or `++X`, or the same with `--` or with `(X)` for `X`,
+   before the `def` or after it, makes the value unknown.
+
+Of two assignments in one environment block the last counts. An environment block counts only
+inside the `pipeline` block, at its top or directly in a stage.
+
+A value is literal when it is one string or one decimal integer: `'v'`, `"v"`, `'''v'''`,
+`"""v"""`, `/v/`, `$/v/$` or `42`. errata decodes the escapes `\b`, `\t`, `\n`, `\f`, `\r`, `\\`,
+`\'` and `\"`; Groovy 2.4 has no `\s`, so `'a\sb'` is not literal. Any other value comes back as the file wrote it, from its first token to its
+last, marked not literal ([Values a file only computes](#values-a-file-only-computes)):
+
+- a call, such as `credentials('id')` or `sh(script: 'git describe', returnStdout: true).trim()`,
+  a sum such as `'a' + 'b'`, a name such as `params.TAG`, and `true`;
+- a string with a `$` in any form, `${BUILD_NUMBER}` and `$NAME` in a GString, and a `$` in
+  single quotes too, since errata cannot tell where Jenkins or a step expands it;
+- a number Groovy writes back otherwise: `010` is octal, `1_000` is 1000, `1.50` is a BigDecimal;
+- a string with an octal or `\u` escape, a backslash in a slashy string, or a carriage return.
+
+Some values are out of reach, and errata never guesses them:
+
+| What | Result |
+|---|---|
+| a `withEnv(['X=v'])` anywhere in the file, or a `withEnv` whose list holds anything but literal strings, such as a variable, a call, a sum or a string whose name has a `$` | unknown, naming its line: it sets the variable for the steps inside it, over every environment block. `PATH+X=v` counts as setting `PATH` |
+| a stage inside a `matrix` that has an axis of the variable's name | unknown, over every environment block: the matrix sets the axis in each cell |
+| `@Library`, the `libraries` directive, or a `library`, `load` or `evaluate` step, `this.load` included | unknown when no environment block sets the variable, since a shared library or a loaded file may set it |
+| a parameter of the variable's name in `parameters`, or a matrix axis outside the stage's matrix | unknown when no environment block sets it: whoever starts the build chooses a parameter, and errata does not read a matrix's cells |
+| `env['X'] = v`, `env."X" = v`, `env?.'X' = v`, `env.setProperty('X', v)`, `env.putAt('X', v)`, or one of these with a name that is not literal; `env.X += v` or another compound assignment, `env.X++`, `++env.X` and the same with `--` or with `(env.X)` for `env.X`; and an `env.X = v` that does not start a statement, such as `env?.X = v`, `this.env.X = v`, `this?.env.X = v`, `(env).X = v` or `if (c) env.X = v` | unknown when no environment block sets the variable: errata reads none of them |
+| the variable's name in another case, such as `image_tag` for `IMAGE_TAG`, in an environment block, an `env.` assignment, a `withEnv` or a parameter | unknown: Jenkins does not tell names apart by case, and errata does not guess which spelling a stage sees |
+| a variable no file sets, such as `BUILD_NUMBER`, or one from the controller's, a folder's or a node's settings or a plugin | no value, and the message says where errata looked; `allow_empty` still lets the rule hold. Without `stage:`, the message names the stages whose environment sets it |
+
+errata refuses what Jenkins refuses where the check is cheap: a second `pipeline` block, and two
+stages of the name `stage:` gives. A `stage:` that names no stage is refused, and so is one the
+file may name with a name that is not literal, such as `stage("${name}")`. A file that does not
+lex makes the rule unknown: a string or a comment that is not closed, a `'...'` or `"..."` string
+over a line end, a `}` that closes no block, a `)` or `]` that closes no bracket, a `{`, `(` or
+`[` still open at the end of the file,
+and a `}` that closes a block in which a `(` or `[` is still open. In a template file, such as `Jenkinsfile.j2`, a
+value with `{{ }}` is not literal.
+
+The lexer does not understand Groovy beyond what a declarative pipeline states literally. Of a
+scripted pipeline it reads only the literal `env.X =` and `def X =` assignments. It does not read:
+
+- `X = v` without `def` or `env.`, which only makes a `def X` unknown;
+- which branch of an `if`, a `when` or a loop runs, or what a function or closure returns: an
+  assignment inside one is a value like any other;
+- a stage's `when`, `options`, `tools` or `agent`, and a matrix's cells;
+- which order the stages run in;
+- one variable set from another, such as `X = "${Y}-1"`, which is not literal.
+
+Where Groovy's grammar needs more than a lexer, errata takes the reading of the lexer of Groovy
+2.4, which Jenkins compiles a pipeline with. A `/` divides after a name, after every keyword but
+`final`, `abstract`, `strictfp`, `do`, `goto` and `const`, and after a number, a string, `)`, `]`,
+`}`, `++` or `--`, so `return /re/` is a division. It starts a slashy string anywhere else, the
+start of a line included, but Groovy skips a line end inside `( )` or `[ ]`, so a `/` after one
+divides. In a dollar slashy string only `$$` and `$/` are escapes, and a backslash is itself, so
+`$/a\/$` ends at its `/$`. A line end ends a statement, unless it is inside brackets, follows an
+operator, or the next line starts with `.`, `?.`, `*.`, `?`, `:`, `?:`, `&&` or `||`.
+
+The lexer reads the file once, twice with `stage:`, and holds no statement: it keeps the stack of
+blocks and strings it is inside, at most 1000 levels deep, and at most 100001 assignments of the
+variable, so its memory does not grow with the shape of the file. Of 19 dense shapes at 32 MiB
+on the build node (4 cores, 4 GiB), each in a process of its own, every one peaked between 149
+and 155 MB, the file's own copies included. A backslash again and again in code took 8.6 s, and a
+comma again and again 8.4 s, since a byte that starts no operator of more than one byte is tried
+against each. The slowest shape measured since, `[` again and again and never closed, took 9.8 s
+on the same node and 33 MiB above the process's base, refused at the end of the file. Blocks nested 999 deep again and again took 7.3 s, a statement
+of 16 million names 5.5 s, and 3.4 million `env.X = 1` lines 3.1 s, refused at the value limit.
+
 #### Limits
 
 A file in a pull request can be large or hostile, and an extractor must not stall or kill the run
 over it. errata enforces the limits below on what it reads: the file size, the nodes a file can
 hold, the nodes YAML aliases add, the values, the depth, a pattern's capture groups, the regex time,
 the work of a path's filters and an XML path's terms, what a Markdown parse may build and how long
-it may run, the work of an INI, properties or env file read, how deep a shell script nests, the
+it may run, the work of an INI, properties or env file read, how deep a shell script or a
+Jenkinsfile nests, the
 lines and tokens of a go.mod, and the entries and depth of a walk of the repository. It does not
 bound the memory a read takes. Peak memory depends on the file's shape within those limits, and the
 figures below are the densest shapes measured so far, as examples, not as a ceiling; a file that
@@ -1565,6 +1766,7 @@ core machine.
 | depth | 1000 | each key, each part of a dotted TOML key or table header, and each element is one level, and an array table's element one more. The deepest of 56 real files measured nests 25 |
 | YAML aliases and merge keys | 1000000 nodes | each alias adds the nodes of its anchor, and so does each mapping a merge key names, counted for the whole file before anything is built from them. A key counts by its length too: each 64 bytes of a key that a merge key copies count as one node more, and an alias used as a key counts one node and one more for each 64 bytes of its anchor's text, so a file that merges or repeats long keys many times reaches the limit instead of taking minutes. errata keeps one copy of an anchor, so 5000 mappings that merge one of 99 keys, at the limit, take 0.15 s and 51 MB |
 | GitLab CI resolution | 150 included files, 11 levels of `extends`, 10 of `!reference`, 200 `parallel:matrix` jobs, 1000000 steps | GitLab's own limits on includes (its default), extends, `!reference` and matrices, and a step for each key a merge, an extends or a `!reference` touches, the bound YAML aliases have, since nested `!reference` lists repeat what they select without the file growing. Each is checked as the configuration is built (see [GitLab CI](#gitlab-ci)) |
+| GitHub Actions matrix | 256 jobs, 65536 combinations before `exclude:`, 1000000 steps | GitHub's own limit on a matrix's jobs, and a step for each key an `include:` or `exclude:` entry compares and for each 64 bytes of a value it compares, the bound YAML aliases have, since each entry is matched against every combination (see [GitHub Actions](#github-actions)) |
 | regex time | 10 s for each 32 MiB of `max_bytes`, and never less than 10 s | the search looks at the clock every 256 characters it reads, so one long search is stopped too. A pattern whose optional tail scans the rest of the line, such as `(\d)(?:.*x)?`, searches the line again after every match: 40 KB of one line took 27 s. One search that finds nothing costs the file times the pattern's width: `([0-9a-f]{40})` over 32 MiB of hex words took 28 s, and `([ab]{0,1000}c)` over 1 MiB 62 s; each is refused at 10 s. The slowest ordinary pattern measured over 32 MiB, `([A-Za-z0-9+/]{64,}={0,2})`, takes 4.7 s. A pattern that starts with a literal skips to each place the literal occurs and tries the pattern there. Where the next place is less than 64 bytes past the text the last try read, or a try reads more than 4 KiB, it searches every place from there on, as it does a pattern without a literal, so it reads at most 4 KiB more than a search of every place does. Over 32 MiB of this README, repeated, on the build node, `commit ([0-9a-f]{40})` takes 0.01 s, where a search of every place takes 0.82 s, and `(\d+\.\d+\.\d+)`, which starts with no literal, 1.2 s |
 | regex capture groups | 32 | a search tracks every group for every thread it keeps alive; 100000 matches of a pattern of 32 groups take 0.5 s and 29 MB |
 | filter work | 4000000000 bytes for the filters of one path | for each member tested, each comparison and each step after `@` counts 256, plus the bytes of each key it looks up and of the literal it compares, counted before the members are tested. At the limit, with 64 comparisons on each member, the worst shapes measured take 0.36 s to 1.42 s |
@@ -1583,6 +1785,7 @@ core machine.
 | envfile work | the budget of an ini or properties read | each statement costs a line's work, each pass of a substitution its bytes, and each byte it copies from a key 32 units, so a read copies at most a 32nd of its budget, 134 MB at 32 MiB, and a chain of keys that each repeat the one before is refused before its values fill memory. That bounds the bytes copied; the memory is about three times that, since a value grows by appends and the reader keeps a copy of each key's value: 32 MiB of `${A}` for a value of 4 KiB is refused in 0.45 s after 733 MB allocated, anon 395 MiB above its base on a 2 core worker. A word inside a word is read again at each level, so nesting costs the square of its depth and is refused for work long before 1000 levels, the depth limit. Real files spend 1.9 to 5.6 units a byte (20 files: compose-go's fixtures and five projects' `.env.example`). At 32 MiB on a worker node the slowest shape that reads takes 1.6 s on a 4 core worker and 3.1 s on a 2 core one (a key on each line). The most memory measured is 6.7 million distinct keys of four letters: the reader keeps every key's value for the substitutions after it, so it reads in 3.1 s after 801 MB allocated, anon 517 MiB above its base, on the 2 core worker, and the same as a template file such as `.env.j2`. Words nested 2.8 million deep are refused in 2.3 s |
 | shell nesting | 20000 calls of the parser's stack, and syntax 20000 levels deep | mvdan.cc/sh recurses on nesting, and a stack overflow ends the process: 1 MiB of `"$("` passed Go's 1 GB limit. The parser reads through a check that counts its stack every 16 KiB, so it stops within 16 KiB of the limit; about 340 levels of parentheses in `(( ))` or 1800 of `$( )` reach it. A pipeline, a list or a sum is one level deeper for each command or term, and errata walks it by recursion: 32 MiB of `+1` passed Go's limit there. See [Shell scripts](#shell-scripts) for the times and memory |
 | a shell statement | an eighth of `max_bytes`, 4 MiB at the default | the parser holds one statement's syntax whole while it reads it, up to 200 bytes of memory for each byte: 4 MiB of `a\|a\|a` took 0.87 GB and 8 MiB 1.7 GB, so 32 MiB would take about 6.6 GB; the limit refuses it with 0.88 GB, and eight groups of `a;a;a` at the limit read with 1.43 GB. Counted to the 1 KiB the parser reads at a time. The largest statement of eight real scripts measured is 149802 bytes |
+| Jenkinsfile nesting | 1000 levels of blocks, and of strings and the `${ }` inside them | the lexer reads a string's `${ }` and the strings inside it on a stack of its own, and the scan keeps one entry for each block it is inside, so a file of nothing but `{` or `"${` is refused at the limit instead of growing either stack. Memory stays at about 150 MB for every shape measured at 32 MiB (see [Jenkinsfiles](#jenkinsfiles)) |
 | go.mod lines and tokens | `max_bytes` divided by 64 | checked before golang.org/x/mod/modfile parses the file, since it builds the syntax of the whole file first, at 150 to 440 bytes a line or token: without the limit, 32 MiB of lines of one short token took 2.1 GB and 4.1 s, and of commas on one line 1.9 GB. errata counts an upper bound in one pass: each line end, each `(`, `)`, `[`, `]`, `{`, `}` and comma, each quote and backquote that can start a string, and each start of a word. A go.mod of requirements holds one for every 7 bytes, so at the default the limit reads one of about 3.5 MB. The densest files measured at the limit take about 0.5 to 0.75 s and up to about 320 MB: 32 MiB of unknown directives of 129 bytes, or of lines ending in a comment, since modfile keeps an error for each line |
 | walk entries | 1000000 files and directories | a `tool_version` extractor without `files` walks the repository; the entries of the directories it passes over are counted, what is inside them is not. The largest tree measured, a Go module cache, holds 136007. One directory of 999999 files takes 3.0 s and 3 MB on the build node: a file costs the walk a few microseconds |
 | walk directories | 200000 | a directory costs the walk an open and a listing, and a pin in it a read, so this is the walk's bound on time: 199000 directories with a 144-byte `.tool-versions` of another tool in each take 26.3 to 30.0 s and 69 MB on the build node (66.4 s on a busier node), and 199999 empty ones, which git cannot check out, 7.0 to 9.2 s. A million empty directories took 82 s before the limit. The largest tree measured holds 27149 |
@@ -1656,8 +1859,8 @@ case, such as `<?XML ...?>`.
 
 An INI, properties or env file makes the rule unknown for what its tool refuses, as the sections
 on them say, and so does a file a `tool_version` extractor reads ([Tool versions](#tool-versions))
-and a script that does not parse in its dialect ([Shell scripts](#shell-scripts)). A
-Markdown file parses whatever it holds, so only a bound under Limits refuses one.
+a script that does not parse in its dialect ([Shell scripts](#shell-scripts)), and a Jenkinsfile
+that does not lex ([Jenkinsfiles](#jenkinsfiles)). A Markdown file parses whatever it holds, so only a bound under Limits refuses one.
 
 ### The check protocol
 

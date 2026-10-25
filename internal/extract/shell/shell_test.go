@@ -138,6 +138,16 @@ func TestShellNotLiteralValues(t *testing.T) {
 		{`nameref X=Y`, "Y!@1"},
 		{"declare -i X\nX=010", "010!@2"},
 		{"X=010\ntypeset -u X", "010!@1"},
+		// An option after a value returns it as written, not as read: FuzzShell
+		// found the byte $'\x01' stands for, which the script does not hold,
+		// marked not literal. The planted break: emit returning the text read,
+		// or a keep without where the value is written.
+		{"X=$'\\x01)'\ndeclare -i X", "$'\\x01)'!@1"},
+		{"X=a\\b\ntypeset -u X", "a\\b!@1"},
+		{"export X=\"a\"\ndeclare -i X", `"a"!@1`},
+		{"Y=ab\nX=$Y\ndeclare -i X", "$Y!@2"},
+		{": ${X:-'a'}\ndeclare -i X", "'a'!@1"},
+		{"declare \"X=\\$b\"\ndeclare -i X", `"X=\$b"!@1`},
 		{`declare "$opts" X=1`, "1!@1"},
 		{`declare X={a,b}`, "{a,b}!@1"},
 		{`export X=a{1..3}`, "a{1..3}!@1"},

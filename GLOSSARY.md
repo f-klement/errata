@@ -115,12 +115,15 @@ out; any other rule with one is unknown. The `ini` extractor marks them, `proper
 template file, `tool_version` a version such as `lts/*` or `system`, which a version manager
 resolves, `envfile` a value whose `${OTHER}` names a key the file does not set before it,
 `gitlab-ci` a variable that names another, such as `$CI_COMMIT_SHA`, or a number GitLab's YAML
-loader retypes, such as `3.10`, and `shell` a value the shell computes and errata does not
-resolve, such as `$(git describe)` or `"$HOME/bin"`.
+loader retypes, such as `3.10`, `shell` a value the shell computes and errata does not
+resolve, such as `$(git describe)` or `"$HOME/bin"`, `github-actions` a `${{ }}` expression
+other than a matrix variable, or a number YAML retypes, and `jenkins` a value Groovy computes,
+such as `credentials('id')` or `"${BUILD_NUMBER}"`.
 
 **Condition.** What must hold for a value to be the one a reader names, for a reader that returns
-one value for each case a file chooses between: a GitLab CI rule's `if $CI_COMMIT_TAG`, or a
-`parallel:matrix` instance such as `build: [a]`. A rule compares the value as any other; a message
+one value for each case a file chooses between: a GitLab CI rule's `if $CI_COMMIT_TAG`, a
+`parallel:matrix` instance such as `build: [a]`, or a GitHub Actions matrix job such as
+`test (ubuntu-latest, 18)`. A rule compares the value as any other; a message
 names its condition after its place.
 
 **Check protocol.** The way errata runs a program check. errata runs the

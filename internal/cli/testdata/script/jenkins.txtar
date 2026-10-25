@@ -1,0 +1,113 @@
+# The jenkins extractor returns the value a stage of a Jenkinsfile sees: the
+# stage's environment block over the pipeline's, and none from a comment or
+# a string.
+exec errata check -c agree.yaml
+stdout '^0 errata, 0 unknown. Coverage: ran 1, skipped 0.$'
+
+! exec errata check -c drifted.yaml
+stdout '^FALSE tag-drifted \(repo\)$'
+stdout '^          "1.4.0" at Jenkinsfile:4 \(ci\)$'
+stdout '^          "1.4.1" at values.yaml:2 \(chart\)$'
+
+# A value Groovy or Jenkins computes, such as credentials(), is returned as
+# written and marked not literal: the rule is unknown, naming it, and
+# skip_not_literal leaves it out.
+! exec errata check -c computed.yaml
+stdout '^UNKNOWN registry-agrees \(repo\)$'
+stdout '^          "credentials\(''registry''\)" at Jenkinsfile:5$'
+exec errata check -c skipped.yaml
+stdout '^  left out of registry-agrees \(repo\), not literal: "credentials\(''registry''\)" at Jenkinsfile:5 \(ci\)$'
+
+# A variable no file sets is no value, and the message says where errata
+# looked; allow_empty lets the rule hold.
+! exec errata check -c unset.yaml
+stdout 'extractor "ci" found no value: no file sets REGION: errata read the environment blocks of stage "deploy", the stages around it and the pipeline'
+
+# A shared library is out of reach: a variable no environment block sets is
+# unknown.
+! exec errata check -c library.yaml
+stdout 'library.groovy: line 1: the shared library of the @Library may set REGION, and errata cannot read it'
+
+# errata list prints the extractor with its max_bytes written out.
+exec errata list -c agree.yaml -f json
+stdout '"jenkins": \{\n\s+"file": "Jenkinsfile",\n\s+"variable": "TAG",\n\s+"stage": "deploy",\n\s+"max_bytes": 33554432\n\s+\}'
+-- Jenkinsfile --
+pipeline {
+    agent any
+    environment {
+        TAG = '1.4.0'
+        REGISTRY = credentials('registry')
+    }
+    stages {
+        stage('deploy') {
+            // TAG = '0.0.1' in a comment is no assignment
+            environment { TAG = "1.5.0" }
+            steps { sh "echo TAG = '9'" }
+        }
+    }
+}
+-- library.groovy --
+@Library('deploy-tools') _
+pipeline {
+    stages { stage('deploy') { steps { deployTo() } } }
+}
+-- values.yaml --
+tag: 1.5.0
+drifted: 1.4.1
+registry: registry.example.com
+-- agree.yaml --
+checks:
+  - id: tag-agrees
+    reason: The chart deploys the tag the pipeline builds.
+    scope: repo
+    extract:
+      chart: {yaml: {file: values.yaml, path: tag}}
+      ci: {jenkins: {file: Jenkinsfile, variable: TAG, stage: deploy}}
+    agree: [chart, ci]
+-- drifted.yaml --
+checks:
+  - id: tag-drifted
+    reason: The chart deploys the tag the pipeline builds.
+    scope: repo
+    extract:
+      chart: {yaml: {file: values.yaml, path: drifted}}
+      ci: {jenkins: {file: Jenkinsfile, variable: TAG}}
+    agree: [chart, ci]
+-- computed.yaml --
+checks:
+  - id: registry-agrees
+    reason: The chart pulls from the registry the pipeline pushes to.
+    scope: repo
+    extract:
+      chart: {yaml: {file: values.yaml, path: registry}}
+      ci: {jenkins: {file: Jenkinsfile, variable: REGISTRY}}
+    agree: [chart, ci]
+-- skipped.yaml --
+checks:
+  - id: registry-agrees
+    reason: The chart pulls from the registry the pipeline pushes to.
+    scope: repo
+    extract:
+      chart: {yaml: {file: values.yaml, path: registry}}
+      ci: {jenkins: {file: Jenkinsfile, variable: REGISTRY}}
+    agree: [chart, ci]
+    skip_not_literal: [ci]
+    allow_empty: [ci]
+-- unset.yaml --
+checks:
+  - id: region-agrees
+    reason: The chart deploys to the region the pipeline names.
+    scope: repo
+    extract:
+      chart: {yaml: {file: values.yaml, path: tag}}
+      ci: {jenkins: {file: Jenkinsfile, variable: REGION, stage: deploy}}
+    agree: [chart, ci]
+-- library.yaml --
+checks:
+  - id: region-agrees
+    reason: The chart deploys to the region the pipeline names.
+    scope: repo
+    extract:
+      chart: {yaml: {file: values.yaml, path: tag}}
+      ci: {jenkins: {file: library.groovy, variable: REGION, stage: deploy}}
+    agree: [chart, ci]

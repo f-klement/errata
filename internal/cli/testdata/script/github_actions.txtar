@@ -1,0 +1,114 @@
+# github-actions reads the value a step sees. Each job of the matrix gives
+# its own node-version, named by the job, so a rule over it and .nvmrc names
+# the job that differs; the README shows this output.
+! exec errata check -c matrix.yaml
+stdout '^FALSE node-agrees \(repo\)$'
+stdout '^          "18.20.4" at .github/workflows/ci.yml:9 when "test \(18.20.4\)" \(ci\)$'
+stdout '^          "20.11.1" at .github/workflows/ci.yml:9 when "test \(20.11.1\)" \(ci\), .nvmrc:1 \(nvm\)$'
+
+# The job's env: wins over the workflow's for a step that sets none.
+exec errata check -c precedence.yaml
+stdout '^0 errata, 0 unknown. Coverage: ran 1, skipped 0.$'
+
+# A ${{ }} expression is GitHub's to evaluate: unknown, naming it.
+! exec errata check -c secret.yaml
+stdout '^UNKNOWN token-agrees \(repo\)$'
+stdout '"\$\{\{ secrets.TOKEN \}\}" at .github/workflows/ci.yml:23'
+
+# A variable no env: sets is unknown, and the message says where errata
+# looked and where it may come from.
+! exec errata check -c unset.yaml
+stdout 'extractor "ci" found no value: no env: of step "Deploy", job "deploy", the workflow sets REGISTRY; it may come from a step before that writes GITHUB_ENV'
+
+# A job that calls a reusable workflow from another repository is out of
+# reach, naming it.
+! exec errata check -c remote.yaml
+stdout '^UNKNOWN remote-agrees \(repo\)$'
+stdout 'calls the reusable workflow "octo-org/ci/.github/workflows/node.yml@v1", from another repository'
+
+# A spec that sets both variable and key does not load.
+! exec errata check -c both.yaml
+stderr 'github-actions: set exactly one of variable'
+-- .github/workflows/ci.yml --
+on: push
+env:
+  NODE_VERSION: 20.11.0
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: ["20.11.1", "18.20.4"]
+    steps:
+      - uses: actions/checkout@v6
+      - id: setup
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      NODE_VERSION: 20.11.1
+    steps:
+      - name: Deploy
+        env:
+          TOKEN: ${{ secrets.TOKEN }}
+        run: ./deploy
+  shared:
+    uses: octo-org/ci/.github/workflows/node.yml@v1
+-- .nvmrc --
+20.11.1
+-- matrix.yaml --
+checks:
+  - id: node-agrees
+    reason: CI tests on the node version .nvmrc pins.
+    scope: repo
+    extract:
+      ci: {github-actions: {file: .github/workflows/ci.yml, job: test, step: setup, key: with.node-version}}
+      nvm: {regex: {file: .nvmrc, pattern: '^(\S+)'}}
+    agree: [ci, nvm]
+-- precedence.yaml --
+checks:
+  - id: deploy-node
+    reason: The deploy step runs on the node version .nvmrc pins.
+    scope: repo
+    extract:
+      ci: {github-actions: {file: .github/workflows/ci.yml, job: deploy, step: Deploy, variable: NODE_VERSION}}
+      nvm: {regex: {file: .nvmrc, pattern: '^(\S+)'}}
+    agree: [ci, nvm]
+-- secret.yaml --
+checks:
+  - id: token-agrees
+    reason: Unknown.
+    scope: repo
+    extract:
+      ci: {github-actions: {file: .github/workflows/ci.yml, job: deploy, step: Deploy, variable: TOKEN}}
+      nvm: {regex: {file: .nvmrc, pattern: '^(\S+)'}}
+    agree: [ci, nvm]
+-- unset.yaml --
+checks:
+  - id: registry-set
+    reason: The deploy step pushes to the registry .nvmrc names.
+    scope: repo
+    extract:
+      ci: {github-actions: {file: .github/workflows/ci.yml, job: deploy, step: Deploy, variable: REGISTRY}}
+      nvm: {regex: {file: .nvmrc, pattern: '^(\S+)'}}
+    agree: [ci, nvm]
+-- remote.yaml --
+checks:
+  - id: remote-agrees
+    reason: Unknown.
+    scope: repo
+    extract:
+      ci: {github-actions: {file: .github/workflows/ci.yml, job: shared, variable: NODE_VERSION}}
+      nvm: {regex: {file: .nvmrc, pattern: '^(\S+)'}}
+    agree: [ci, nvm]
+-- both.yaml --
+checks:
+  - id: both
+    reason: Refused.
+    scope: repo
+    extract:
+      ci: {github-actions: {file: .github/workflows/ci.yml, job: test, variable: A, key: runs-on}}
+      nvm: {regex: {file: .nvmrc, pattern: '^(\S+)'}}
+    agree: [ci, nvm]

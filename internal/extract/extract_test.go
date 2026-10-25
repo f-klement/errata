@@ -8,8 +8,10 @@ import (
 	"github.com/f-klement/errata/internal/extract/core"
 	"github.com/f-klement/errata/internal/extract/envfile"
 	"github.com/f-klement/errata/internal/extract/extracttest"
+	"github.com/f-klement/errata/internal/extract/githubactions"
 	"github.com/f-klement/errata/internal/extract/gitlabci"
 	"github.com/f-klement/errata/internal/extract/ini"
+	"github.com/f-klement/errata/internal/extract/jenkins"
 	"github.com/f-klement/errata/internal/extract/json"
 	"github.com/f-klement/errata/internal/extract/properties"
 	"github.com/f-klement/errata/internal/extract/shell"
@@ -163,6 +165,8 @@ func TestSpecKind(t *testing.T) {
 		{Spec{EnvFile: &envfile.Spec{File: ".env", Name: "A"}}, "envfile"},
 		{Spec{GitLabCI: &gitlabci.Spec{File: ".gitlab-ci.yml", Job: "build", Key: "image"}}, "gitlab-ci"},
 		{Spec{Shell: &shell.Spec{File: "deploy.sh", Name: "X"}}, "shell"},
+		{Spec{GitHubActions: &githubactions.Spec{File: "ci.yml", Job: "test", Key: "runs-on"}}, "github-actions"},
+		{Spec{Jenkins: &jenkins.Spec{File: "Jenkinsfile", Variable: "X"}}, "jenkins"},
 		{iniSpec("php.ini", "", "a"), "ini, php dialect on php.ini"},
 		{iniSpec("etc/php.ini-production", "", "a"), "ini, php dialect on php.ini-production"},
 		{gitINI(".gitconfig", "a", nil, "k"), "ini, git dialect on .gitconfig"},

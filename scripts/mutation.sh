@@ -218,6 +218,9 @@ EFFICACY_FLOOR=85
 #   extract/core        79  116 of its 571 (115 case expressions, 1 package level): 79.68%
 #   extract/ini         82  253 of its 1500 (178 case expressions, 75 package level), and 7
 #                           in dead code (php.go 163 twice, 374, 548, 552, 554, 628): 82.67%
+#   extract/jenkins     78  86 of its 409 (84 case expressions, 2 package level) at fee8656
+#                           on 2026-10-25, and 1 no test reached (scan.go 512), since
+#                           covered: 78.73%
 #   extract/properties  79  34 of its 167, case expressions: 79.64%
 #   extract/xml         82  94 of its 527, case expressions: 82.16%
 # text (5 such mutants of 238, 97.90%, after goldmark v2), toml (10 of 78, 87.18%) and
@@ -232,6 +235,7 @@ mcover_floor() {
         internal/protocol)           echo 78 ;;
         internal/extract/core)       echo 79 ;;
         internal/extract/ini)        echo 82 ;;
+        internal/extract/jenkins)    echo 78 ;;
         internal/extract/properties) echo 79 ;;
         internal/extract/xml)        echo 82 ;;
         *)                           echo 85 ;;

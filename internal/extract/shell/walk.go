@@ -2,7 +2,8 @@ package shell
 
 import (
 	"bytes"
-	"sort"
+	"cmp"
+	"slices"
 	"strings"
 
 	"mvdan.cc/sh/v3/syntax"
@@ -19,10 +20,13 @@ import (
 // TestGuardFramesPerLevel), so the limit refuses only those loops.
 var maxTreeDepth = 20000
 
-// found is one value of the spec's variable, before it is visited.
+// found is one value of the spec's variable, before it is visited. from
+// and to are where its text stands as written, which is the value's once an
+// attribute after it makes the shell compute it (emit).
 type found struct {
 	text     string
 	off      int
+	from, to int
 	computed bool
 }
 
@@ -284,10 +288,11 @@ func (w *walker) stmtOffset() int {
 	return w.base
 }
 
-// keep records a value at offset off, while the values found stay within
-// what any extractor may return, so that the visits after the read meet the
-// extractor's limits without the walker holding more than they allow.
-func (w *walker) keep(text string, off int, computed bool) {
+// keep records a value at offset off, written from one offset to another,
+// while the values found stay within what any extractor may return, so that
+// the visits after the read meet the extractor's limits without the walker
+// holding more than they allow.
+func (w *walker) keep(text string, off, from, to int, computed bool) {
 	if w.full() {
 		return
 	}
@@ -295,7 +300,7 @@ func (w *walker) keep(text string, off int, computed bool) {
 		return
 	}
 	w.bytes += int64(len(text))
-	w.found = append(w.found, found{text: text, off: off, computed: computed})
+	w.found = append(w.found, found{text: text, off: off, from: from, to: to, computed: computed})
 }
 
 // full reports whether the values kept are past every extractor's limits,
@@ -308,13 +313,22 @@ func (w *walker) full() bool {
 // emit visits the values found in file order, which the walk's is not: it
 // reads a command before its redirects, and a here-document after the
 // statements on its line. The lines come from one pass of a cursor over
-// the sorted offsets.
+// the sorted offsets, which are distinct: cmp.Compare leaves gremlins no
+// boundary to flip, where < against <= could not differ. When an attribute makes the shell compute every value,
+// a literal one is returned as written, not as its quotes, escapes and
+// references read: $'\x01' and not the byte it stands for, which the script
+// does not hold (FuzzShell found it). A literal value holds no expansion, so
+// no other value, and the texts it adds come to at most the script's size.
 func (w *walker) emit(visit func(*core.Entry) error) error {
-	sort.SliceStable(w.found, func(i, j int) bool { return w.found[i].off < w.found[j].off })
+	slices.SortStableFunc(w.found, func(a, b found) int { return cmp.Compare(a.off, b.off) })
 	lines := core.NewLineCursor(w.data)
 	e := core.Entry{Key: []byte(w.name)}
 	for _, f := range w.found {
-		e.Value, e.Line, e.Computed = []byte(f.text), lines.At(f.off), f.computed || w.transformed
+		text := f.text
+		if w.transformed && !f.computed {
+			text = w.source(f.from, f.to)
+		}
+		e.Value, e.Line, e.Computed = []byte(text), lines.At(f.off), f.computed || w.transformed
 		if err := visit(&e); err != nil {
 			return err
 		}
@@ -352,18 +366,21 @@ func (w *walker) assign(a *syntax.Assign) {
 	}
 	notLiteral := a.Append || a.Index != nil || w.declArgs[a]
 	var text string
+	var from, to int
 	ok := true
 	if a.Array != nil {
-		text, ok = w.source(offset(a.Array.Lparen), offset(a.Array.End())), false
+		from, to = offset(a.Array.Lparen), offset(a.Array.End())
+		text, ok = w.source(from, to), false
 	} else if a.Value != nil {
+		from, to = offset(a.Value.Pos()), offset(a.Value.End())
 		text, ok = w.literal(a.Value, unquoted, inDecl)
 		if !ok || notLiteral {
-			text = w.source(offset(a.Value.Pos()), offset(a.Value.End()))
+			text = w.source(from, to)
 		}
 	}
 	literal := ok && !notLiteral
 	if name == w.name && !w.full() {
-		w.keep(text, offset(a.Pos()), !literal)
+		w.keep(text, offset(a.Pos()), from, to, !literal)
 	}
 	st := varState{value: text, known: literal}
 	if inDecl {
@@ -436,14 +453,15 @@ func (w *walker) param(p *syntax.ParamExp) {
 		return
 	}
 	if p.Exp.Word == nil {
-		w.keep("", offset(p.Pos()), false)
+		w.keep("", offset(p.Pos()), 0, 0, false)
 		return
 	}
+	from, to := offset(p.Exp.Word.Pos()), offset(p.Exp.Word.End())
 	text, ok := w.literal(p.Exp.Word, w.quoting(), false)
 	if !ok {
-		text = w.source(offset(p.Exp.Word.Pos()), offset(p.Exp.Word.End()))
+		text = w.source(from, to)
 	}
-	w.keep(text, offset(p.Pos()), !ok)
+	w.keep(text, offset(p.Pos()), from, to, !ok)
 }
 
 // defaultOp reports whether a parameter expansion's operator gives a
@@ -548,7 +566,7 @@ func (w *walker) declWord(s *declState, word *syntax.Word) {
 		}
 		if name == w.name {
 			if !w.full() {
-				w.keep(text, offset(word.Pos()), notLiteral)
+				w.keep(text, offset(word.Pos()), from, offset(word.End()), notLiteral)
 			}
 			w.transformed = w.transformed || s.changes
 		}
