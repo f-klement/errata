@@ -55,6 +55,39 @@ func TestPHPLexerReadsABlankLineAsOneToken(t *testing.T) {
 	}
 }
 
+// run stops at the end of the file whatever its predicate takes, the NUL
+// at gives past the end included, and takes the bytes the predicate takes
+// before it. The planted break is the bound dropped from run's loop, which
+// reads past the end and panics on the second case.
+func TestRunStopsAtTheEnd(t *testing.T) {
+	for _, c := range []struct {
+		data string
+		ok   func(byte) bool
+		want int
+	}{
+		{"a \t\tb", isPHPBlank, 3},
+		{"=abc", isPHPLabel, 3},
+		{"=a\x00c", func(byte) bool { return true }, 3},
+	} {
+		l := &phpLexer{data: []byte(c.data)}
+		if got := l.run(1, c.ok); got != c.want {
+			t.Errorf("run over %q from 1 takes %d bytes, want %d", c.data, got, c.want)
+		}
+	}
+}
+
+// In the initial state no rule matches a NUL, and the lexer ends the file
+// there; readPHP refuses a file that holds one before the lexer sees it, so
+// only a lexer made here reaches it. The planted break is rule < 0 dropped,
+// which leaves the lexer at the NUL with no token.
+func TestPHPLexerEndsAtAByteNoRuleMatches(t *testing.T) {
+	l := &phpLexer{data: []byte("\x00a")}
+	l.next()
+	if l.tok != phpEnd || l.pos != 3 {
+		t.Errorf("token %d with the lexer at %d, want the end at 3", l.tok, l.pos)
+	}
+}
+
 // Python's configparser reads a last line with no line break after it as it
 // reads any other, so an entry there is found. The planted break is the
 // line reader stopping, with no error, at the last line's charge.

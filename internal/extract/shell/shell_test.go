@@ -323,3 +323,29 @@ func TestShellParseErrorAfterAStatement(t *testing.T) {
 		t.Errorf("error %q, want %q", got, want)
 	}
 }
+
+// IsScript is true for a #! line that names a shell errata reads, through
+// env too, and false for any other first line, for a shell it does not
+// read, and for a shell named past the 256 bytes Linux reads of a #! line.
+// Planted breaks: the known test dropped, which took python3 as a shell;
+// the cut at ShebangBytes dropped.
+func TestIsScript(t *testing.T) {
+	far := "#!" + strings.Repeat(" ", ShebangBytes-6) + "sh\n"
+	for data, want := range map[string]bool{
+		"#!/bin/sh\nX=1\n":         true,
+		"#!/usr/bin/env bash\n":    true,
+		"#!/bin/mksh":              true,
+		"#!/usr/bin/env python3\n": false,
+		"#!/bin/zsh\n":             false,
+		"#!\n":                     false,
+		"X=1\n":                    false,
+		"":                         false,
+		far:                        true,
+		"#!" + strings.Repeat(" ", ShebangBytes-3) + "sh\n": false,
+		"# !/bin/sh\n": false,
+	} {
+		if got := IsScript([]byte(data)); got != want {
+			t.Errorf("%q: %v, want %v", data, got, want)
+		}
+	}
+}

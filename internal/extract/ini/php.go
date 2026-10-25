@@ -153,20 +153,17 @@ type phpMatch struct {
 	past bool
 }
 
-// run is how many bytes from i ok takes, and whether it took the NUL at the
-// end of the file and would read on, since a NUL there is followed by more.
-func (l *phpLexer) run(i int, ok func(byte) bool) phpMatch {
+// run is how many bytes from i ok takes, stopping at the end of the file
+// whatever ok takes.
+func (l *phpLexer) run(i int, ok func(byte) bool) int {
 	j := i
-	for ok(l.at(j)) {
+	for j < len(l.data) && ok(l.data[j]) {
 		j++
-		if j > len(l.data) {
-			return phpMatch{j - i, true}
-		}
 	}
-	return phpMatch{j - i, false}
+	return j - i
 }
 
-func (l *phpLexer) blanks(i int) int { return l.run(i, isPHPBlank).n }
+func (l *phpLexer) blanks(i int) int { return l.run(i, isPHPBlank) }
 
 func (l *phpLexer) newline(i int) int {
 	switch {
@@ -321,7 +318,7 @@ func (l *phpLexer) lex() bool {
 			l.end, l.tok, l.state = l.pos, phpEquals, phpValue
 			return true
 		}
-		label := l.run(i, isPHPLabel)
+		label := phpMatch{n: l.run(i, isPHPLabel)}
 		offset := phpMatch{}
 		if label.n > 0 && l.at(i+label.n) == '[' && i+label.n < len(l.data) {
 			offset.n = label.n + 1 + l.blanks(i+label.n+1)
@@ -346,7 +343,8 @@ func (l *phpLexer) lex() bool {
 		}
 		rule, n, past := best(section, offset, phpMatch{n: l.word(i, "true", "on", "yes")}, phpMatch{n: l.word(i, "false", "off", "no", "none")},
 			phpMatch{n: l.word(i, "null")}, label, eq, tokens, blank, eol, comment)
-		if past {
+		// No rule matches only a NUL, which readPHP refuses before it lexes.
+		if past || rule < 0 {
 			l.pos, l.tok = len(l.data)+1, phpEnd
 			return true
 		}
@@ -370,8 +368,6 @@ func (l *phpLexer) lex() bool {
 			return false
 		case 9, 10:
 			l.tok = phpEOL
-		default:
-			l.pos, l.tok = len(l.data)+1, phpEnd
 		}
 		return true
 	case phpValue:
@@ -390,7 +386,7 @@ func (l *phpLexer) lex() bool {
 // can match: a blank, =, a line break and ; are no label bytes, and TOKENS
 // loses a tie to the label, the earlier rule.
 func (l *phpLexer) lexLabel(i int) bool {
-	label := l.run(i, isPHPLabel)
+	label := phpMatch{n: l.run(i, isPHPLabel)}
 	n := label.n
 	rule := 5
 	if b := l.word(i, "true", "on", "yes", "false", "off", "no", "none", "null"); b >= n {

@@ -143,6 +143,9 @@ type Entry struct {
 	// boolean word, constant, operator or ${} reference, and an ansible
 	// literal whose value Python writes otherwise, such as 0x10 or [1, 2].
 	Computed bool
+	// Origin is the part of the file the value holds for, which the value
+	// carries as its check.Value.Origin: a Jenkinsfile's stage "deploy".
+	Origin string
 }
 
 // Query is what an extractor selects, in the form of the entries.
@@ -296,7 +299,7 @@ func (e EntryExtractor) FromData(data []byte) ([]check.Value, error) {
 			stop = TooManyValues(e.File)
 			return errStop
 		}
-		v := check.Value{Text: string(en.Value), At: check.Location{File: e.File, Line: en.Line}, NotLiteral: e.NotLiteral != nil && e.NotLiteral(en)}
+		v := check.Value{Text: string(en.Value), At: check.Location{File: e.File, Line: en.Line}, NotLiteral: e.NotLiteral != nil && e.NotLiteral(en), Origin: en.Origin}
 		if e.Keyed {
 			v.Key, v.HasKey = string(en.Key), true
 		}

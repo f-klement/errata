@@ -324,6 +324,10 @@ func TestOverlap(t *testing.T) {
 		{[]string{"<2.0.0", ">=2.0.0-alpha"}, false}, // they share only pre-releases
 		{[]string{">1.0.0", "<1.0.1"}, true},         // 1.0.0.post1 lies between
 		{[]string{">1.0.0", "<=1.0.0"}, false},
+		// Of two lower bounds at one version, the exclusive one starts
+		// later, whichever the range writes first.
+		{[]string{">1.0.0, >=1.0.0", "<=1.0.0"}, false},
+		{[]string{">=1.0.0, >1.0.0", "<=1.0.0"}, false},
 		// Post and dev releases beside a bound (correctness review, finding 3).
 		{[]string{">1.0.0", "<1.0.0.post5"}, true},
 		{[]string{">1.0.0.post1, <1.0.0.post3"}, true},
@@ -404,6 +408,11 @@ func TestParseValue(t *testing.T) {
 	}
 	if (Value{}).String() != "nothing" {
 		t.Error("the zero Value names something")
+	}
+	for in, want := range map[string]bool{"20.11": false, "^20.1": true} {
+		if v, err := Parse(in); err != nil || v.IsRange() != want {
+			t.Errorf("Parse(%q).IsRange() = %v, %v; want %v", in, v.IsRange(), err, want)
+		}
 	}
 }
 
@@ -655,6 +664,10 @@ func TestErrorsQuoteLittle(t *testing.T) {
 		t.Errorf("error of %d bytes: %v", len(fmt.Sprint(err)), err)
 	}
 	if got := quoteToken(strings.Repeat("é", 40)); got != `"`+strings.Repeat("é", 32)+`"... (80 bytes)` {
+		t.Errorf("quoteToken cuts inside a rune: %s", got)
+	}
+	// One byte ahead puts the limit inside a rune, so the cut steps back.
+	if got := quoteToken("a" + strings.Repeat("é", 40)); got != `"a`+strings.Repeat("é", 31)+`"... (81 bytes)` {
 		t.Errorf("quoteToken cuts inside a rune: %s", got)
 	}
 	if got := quoteToken(strings.Repeat("a", maxToken)); got != strconv.Quote(strings.Repeat("a", maxToken)) {

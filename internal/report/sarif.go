@@ -729,7 +729,7 @@ func leftOutLocations(res check.Result) ([]sarifLocation, string) {
 // label names a value in a message: its text quoted as the agree message
 // quotes it, cut at valueLimit, and its extractor.
 func label(f named) string {
-	return plain(quoteValue(f.value.Text) + f.value.KeyNote() + f.value.ConditionNote() + " (" + f.extractor + ")")
+	return plain(quoteValue(f.value.Text) + f.value.Notes() + " (" + f.extractor + ")")
 }
 
 // outside is the message of a value whose path leaves the repository. It has

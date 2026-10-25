@@ -185,6 +185,21 @@ func chooseLanguage(spec, file string, data []byte) (syntax.LangVariant, string,
 	return syntax.LangBash, "since no shebang names a shell", nil
 }
 
+// ShebangBytes is the most bytes of a file's start IsScript needs: Linux
+// reads at most 256 bytes of a #! line (BINPRM_BUF_SIZE), so a shell
+// named past them is no shebang the kernel runs.
+const ShebangBytes = 256
+
+// IsScript reports whether data starts with a #! line that names a shell
+// errata reads, directly or through env: the test the env extractor
+// chooses this reader by for a file whose name says nothing, such as
+// bin/deploy. Only the first ShebangBytes bytes of data count.
+func IsScript(data []byte) bool {
+	program, ok := shebang(data[:min(len(data), ShebangBytes)])
+	_, known := shebangShells[program]
+	return ok && known
+}
+
 // shebangShells are the programs a shebang may name, and the dialect each
 // is read in. ksh is read as mksh, the Korn shell mvdan.cc/sh parses.
 var shebangShells = map[string]syntax.LangVariant{

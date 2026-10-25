@@ -46,6 +46,29 @@ func TestDescribe(t *testing.T) {
 	}
 }
 
+// Resolve writes out the dialect the file's name chooses, keeps the one a
+// spec names, and leaves a name errata does not read as it was, for Build to
+// refuse. The planted break is its error check negated, which writes no
+// dialect for the first two and stops on the third.
+func TestResolve(t *testing.T) {
+	for _, c := range []struct {
+		spec Spec
+		want string
+	}{
+		{Spec{File: "a/pytest.ini"}, "plain"},
+		{Spec{File: "hosts"}, "ansible"},
+		{Spec{File: "hosts", Dialect: "git"}, "git"},
+		{Spec{File: "x.ini", Dialect: "toml"}, "toml"},
+	} {
+		got := Resolve(c.spec)
+		want := c.spec
+		want.Dialect = c.want
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("Resolve(%+v) = %+v, want %+v", c.spec, got, want)
+		}
+	}
+}
+
 // Place cleans the file, drops max_bytes and writes the dialect out, and
 // gives the names in the form the dialect compares them in; a spec that names
 // no dialect errata reads, or that its dialect refuses, keeps its names. The

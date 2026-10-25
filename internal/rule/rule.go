@@ -122,7 +122,7 @@ func notLiteral(name string, values []check.Value) string {
 	fmt.Fprintf(&b, "extractor %q returned %s, which a rule does not compare as text, since the file only computes such a value; list %q in skip_not_literal to leave such values out",
 		name, count(len(computed), "not literal value"), name)
 	for _, v := range computed {
-		fmt.Fprintf(&b, "\n  %s at %s:%d%s%s", q.quote(v.Text), v.At.File, v.At.Line, v.KeyNote(), v.ConditionNote())
+		fmt.Fprintf(&b, "\n  %s at %s:%d%s", q.quote(v.Text), v.At.File, v.At.Line, v.Notes())
 	}
 	return b.String()
 }
@@ -304,7 +304,7 @@ func saw(r check.Rule, extracted []check.Extracted) string {
 			fmt.Fprintf(&b, "  %s = [] (allow_empty)\n", x.Extractor)
 		}
 		for i, v := range x.Values {
-			fmt.Fprintf(&b, "  %s[%d] = %s at %s:%d%s%s\n", x.Extractor, i, q.quote(r.Normalized(v.Text)), v.At.File, v.At.Line, v.KeyNote(), v.ConditionNote())
+			fmt.Fprintf(&b, "  %s[%d] = %s at %s:%d%s\n", x.Extractor, i, q.quote(r.Normalized(v.Text)), v.At.File, v.At.Line, v.Notes())
 		}
 	}
 	return strings.TrimSuffix(b.String(), "\n")
@@ -348,8 +348,8 @@ func agree(ctx context.Context, root string, r check.Rule) (check.Verdict, strin
 		// lists coming back empty makes one value a comparison the author
 		// asked for.
 		f := all[0]
-		return check.VerdictUnknown, fmt.Sprintf("agree found one value, so it has nothing to compare: %s at %s:%d%s%s (%s)",
-			newQuoter(nil).quote(f.value.Text), f.value.At.File, f.value.At.Line, f.value.KeyNote(), f.value.ConditionNote(), f.extractor), "", extracted
+		return check.VerdictUnknown, fmt.Sprintf("agree found one value, so it has nothing to compare: %s at %s:%d%s (%s)",
+			newQuoter(nil).quote(f.value.Text), f.value.At.File, f.value.At.Line, f.value.Notes(), f.extractor), "", extracted
 	}
 
 	groups := group(all, r)
@@ -488,7 +488,7 @@ func clip(s string) string {
 func places(g distinct) string {
 	out := make([]string, len(g.where))
 	for i, f := range g.where {
-		out[i] = fmt.Sprintf("%s:%d%s%s (%s)", f.value.At.File, f.value.At.Line, f.value.KeyNote(), f.value.ConditionNote(), f.extractor)
+		out[i] = fmt.Sprintf("%s:%d%s (%s)", f.value.At.File, f.value.At.Line, f.value.Notes(), f.extractor)
 	}
 	return strings.Join(out, ", ")
 }

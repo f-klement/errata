@@ -447,14 +447,16 @@ func TestTextNotesWhatAHeldRuleSays(t *testing.T) {
 	}
 }
 
-// A left out value names its condition after its place, in the text and
-// JUnit lines (where) and in SARIF's messages (label). Planted break: label
-// without the condition, which named the value alone.
+// A left out value names its origin and its condition after its place, in
+// the text and JUnit lines (where) and in SARIF's messages (label). Planted
+// breaks: label without the condition, which named the value alone; where
+// without the origin.
 func TestLeftOutNamesItsCondition(t *testing.T) {
 	v := notLiteral("$TAG", ".gitlab-ci.yml", 9)
 	v.Condition = "build: [a]"
+	v.Origin = `gitlab-ci job "build"`
 	f := named{value: v, extractor: "ci"}
-	if got, want := where(f), `"$TAG" at .gitlab-ci.yml:9 when "build: [a]" (ci)`; got != want {
+	if got, want := where(f), `"$TAG" at .gitlab-ci.yml:9 from gitlab-ci job "build" when "build: [a]" (ci)`; got != want {
 		t.Errorf("where: %q, want %q", got, want)
 	}
 	if got := label(f); !strings.Contains(got, `when \"build: [a]\" (ci)`) && !strings.Contains(got, `when "build: [a]" (ci)`) {

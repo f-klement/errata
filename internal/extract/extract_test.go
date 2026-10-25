@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/f-klement/errata/internal/extract/core"
+	"github.com/f-klement/errata/internal/extract/env"
 	"github.com/f-klement/errata/internal/extract/envfile"
 	"github.com/f-klement/errata/internal/extract/extracttest"
 	"github.com/f-klement/errata/internal/extract/githubactions"
@@ -52,8 +53,11 @@ func TestKindsCoverSpec(t *testing.T) {
 		reflect.ValueOf(&s).Elem().Field(i).Set(reflect.New(f.Type.Elem()))
 		_, err := Build(s)
 		required := "file"
-		if name == "tool_version" {
+		switch name {
+		case "tool_version":
 			required = "tool" // it reads the files that pin the tool
+		case "env":
+			required = "name" // it reads the variable in the files it lists
 		}
 		extracttest.WantError(t, err, name+": "+required+" is required")
 	}
@@ -167,6 +171,7 @@ func TestSpecKind(t *testing.T) {
 		{Spec{Shell: &shell.Spec{File: "deploy.sh", Name: "X"}}, "shell"},
 		{Spec{GitHubActions: &githubactions.Spec{File: "ci.yml", Job: "test", Key: "runs-on"}}, "github-actions"},
 		{Spec{Jenkins: &jenkins.Spec{File: "Jenkinsfile", Variable: "X"}}, "jenkins"},
+		{Spec{Env: &env.Spec{Name: "X", Files: []string{".env"}}}, "env"},
 		{iniSpec("php.ini", "", "a"), "ini, php dialect on php.ini"},
 		{iniSpec("etc/php.ini-production", "", "a"), "ini, php dialect on php.ini-production"},
 		{gitINI(".gitconfig", "a", nil, "k"), "ini, git dialect on .gitconfig"},

@@ -117,6 +117,13 @@ type record struct {
 	line  int // the line of the assignment's name
 }
 
+// settingStage is a stage whose environment sets the variable: its name,
+// nil when it is not literal, and the line of its block.
+type settingStage struct {
+	name []byte
+	line int
+}
+
 // mention is a place in the file that makes the variable unknown: a
 // library, a load, a parameter, a matrix axis, or a withEnv.
 type mention struct {
@@ -153,7 +160,10 @@ type scan struct {
 	unnamed     int      // the line of the first stage whose name is not literal, 0 for none
 	settingIn   [][]byte // the first stages whose environment sets the variable
 	settingMore int      // and how many more do
-	pipelineEnv *record  // the pipeline's environment's last value
+	// setting is every stage whose environment sets the variable, in the
+	// file's order, for Every.
+	setting     []settingStage
+	pipelineEnv *record // the pipeline's environment's last value
 	stageEnv    map[int]record
 	// records are the env.X = and def X = assignments, at most
 	// core.MaxValues+1 of them, and only env.X = once envSets.
@@ -754,6 +764,7 @@ func (s *scan) assigned(i int) {
 			// The note of a spec that names no stage: the first stages whose
 			// environment sets the variable, by name.
 			parent.counted = true
+			s.setting = append(s.setting, settingStage{name: parent.stageName, line: parent.line})
 			if len(s.settingIn) < 3 && parent.stageName != nil {
 				s.settingIn = append(s.settingIn, parent.stageName)
 			} else {

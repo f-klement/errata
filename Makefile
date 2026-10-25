@@ -60,6 +60,7 @@ FUZZ_TARGETS := ./internal/config:FuzzParse ./internal/protocol:FuzzMessage \
                 ./internal/extract/core:FuzzPath ./internal/extract/yaml:FuzzYAML \
                 ./internal/extract/json:FuzzJSON ./internal/extract/toml:FuzzTOML \
                 ./internal/extract/core:FuzzRegex ./internal/extract/core:FuzzExtract \
+                ./internal/extract/core:FuzzParseIndex \
                 ./internal/extract/text:FuzzText ./internal/extract/core:FuzzNumber \
                 ./internal/extract/xml:FuzzXPath ./internal/extract/xml:FuzzXML \
                 ./internal/extract/ini:FuzzINI ./internal/extract/properties:FuzzProperties \

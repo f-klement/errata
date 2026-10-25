@@ -27,6 +27,13 @@ exec errata list -c tool.yaml -f json
 cmp stdout tool.json
 ! stderr .
 
+# An env extractor lists its files as written, globs too, and the reader a
+# readers: entry gives a file; it reads no file, so git's index is not read.
+exec errata list -c env.yaml -f json
+cmp stdout env.json
+exec errata list -c env.yaml
+stdout '^  extract: port: env name API_PORT, files \[.env, .github/workflows/\*.yml, ci/build.yml\], readers \{ci/build.yml gitlab-ci\}, max_bytes 4096$'
+
 # The text listing says the same for a person to read.
 exec errata list -c agree.yaml
 cmp stdout agree.txt
@@ -337,6 +344,61 @@ checks:
         "agree": [
           "walked",
           "named"
+        ],
+        "compare": "text"
+      },
+      "normalize": [],
+      "allow_empty": [],
+      "skip_not_literal": []
+    }
+  ]
+}
+-- env.yaml --
+checks:
+  - id: api-port-agrees
+    reason: Every place that sets API_PORT names one port.
+    scope: repo
+    extract:
+      port:
+        env:
+          name: API_PORT
+          files: [.env, .github/workflows/*.yml, ci/build.yml]
+          readers: {ci/build.yml: gitlab-ci}
+          max_bytes: 4096
+    agree: [port]
+-- env.json --
+{
+  "version": 1,
+  "checks": [
+    {
+      "id": "api-port-agrees",
+      "reason": "Every place that sets API_PORT names one port.",
+      "scope": "repo",
+      "at": {
+        "file": "env.yaml",
+        "line": 2,
+        "outside": false
+      },
+      "type": "rule",
+      "extract": {
+        "port": {
+          "env": {
+            "name": "API_PORT",
+            "files": [
+              ".env",
+              ".github/workflows/*.yml",
+              "ci/build.yml"
+            ],
+            "readers": {
+              "ci/build.yml": "gitlab-ci"
+            },
+            "max_bytes": 4096
+          }
+        }
+      },
+      "relation": {
+        "agree": [
+          "port"
         ],
         "compare": "text"
       },

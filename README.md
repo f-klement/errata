@@ -494,8 +494,9 @@ expression in a repository's configuration can stall CI.
 ### Extractors
 
 An extractor reads one file of the repository and returns a list of values, each with the file and
-the line where it starts; `tool_version` reads every file that pins one tool. A rule names its
-extractors under `extract:` and sets exactly one of the fourteen keys in each:
+the line where it starts; `tool_version` reads every file that pins one tool, and `env` one
+variable in every file a rule lists. A rule names its extractors under `extract:` and sets exactly
+one of the fifteen keys in each:
 
 ```yaml
 extract:
@@ -532,6 +533,8 @@ extract:
     github-actions: {file: .github/workflows/ci.yml, job: test, step: setup, key: with.node-version}
   image_tag:
     jenkins: {file: Jenkinsfile, variable: IMAGE_TAG, stage: deploy}
+  every_port:
+    env: {name: API_PORT, files: [.env, deploy.sh, .gitlab-ci.yml, .github/workflows/*.yml, Jenkinsfile]}
 ```
 
 | Key | Fields | Returns |
@@ -550,9 +553,10 @@ extract:
 | `shell` | `file`, `name`, and `language` to name the dialect | every value the script assigns the variable, and every default an expansion gives it (see [Shell scripts](#shell-scripts)) |
 | `github-actions` | `file`, `job`, `step` for a step by its id or name, and `variable` or `key` | the value the step, or the job, sees of an environment variable or a key such as `runs-on` or `with.node-version`, one for each job of a matrix (see [GitHub Actions](#github-actions)) |
 | `jenkins` | `file`, `variable`, and `stage` | the value a stage of a declarative Jenkinsfile sees of an environment variable (see [Jenkinsfiles](#jenkinsfiles)) |
+| `env` | `name`, `files`, and `readers` to give a file its reader | every value of one variable in the files, each read by the reader its name chooses, and each naming its reader and its job, step or stage (see [One variable in many files](#one-variable-in-many-files)) |
 
-Each key also takes `max_bytes`, the largest file it reads; for `tool_version`, the files it reads
-in all, and for `gitlab-ci` the file and the files it includes in all (see Limits).
+Each key also takes `max_bytes`, the largest file it reads; for `tool_version` and `env`, the files
+it reads in all, and for `gitlab-ci` the file and the files it includes in all (see Limits).
 
 `file`, and each of `files`, is relative to the repository root. An absolute path, or one whose `..`
 leaves the root, does not load. A `..` in `file` is resolved by name, before any symlink:
@@ -564,8 +568,12 @@ A link that ends outside is refused when the file is read, which makes the rule 
 link whose route passes through any other directory outside the repository, even when it ends
 inside, and an absolute link written through a symlink, such as one to `/tmp/...` on a machine where
 `/tmp` is a link. The message says only that a symlink leads outside the repository: not where it
-points, nor whether that exists. errata looks at nothing outside the repository to decide. A
-location, and every message, names the file as `file` wrote it.
+points, nor whether that exists. errata looks at nothing outside the repository to decide. A file
+that is not a regular file, such as a FIFO or a device, which git never checks out, is refused
+before a byte of it is read, so a FIFO with no writer makes the rule unknown rather than hang the
+run. A device is refused before it is even opened, since opening one can act on it: `/dev/watchdog`
+arms, and a serial port raises DTR. A location, and every message, names the file as `file` wrote
+it.
 
 #### Paths
 
@@ -694,9 +702,10 @@ environment, and in a template file ([Env files](#env-files)), `gitlab-ci` for a
 computes, such as `$CI_COMMIT_SHA` or a plain `3.10` ([GitLab CI](#gitlab-ci)), `shell` for a
 value the shell expands, such as `$(git describe)` ([Shell scripts](#shell-scripts)),
 `github-actions` for a `${{ }}` expression other than a matrix variable, or a plain `3.10`
-([GitHub Actions](#github-actions)), and `jenkins` for a value Groovy computes, such as
-`credentials('id')` ([Jenkinsfiles](#jenkinsfiles)); a `${{ }}` read with `yaml:` is still
-plain text, and two workflows that use the same expression agree.
+([GitHub Actions](#github-actions)), `jenkins` for a value Groovy computes, such as
+`credentials('id')` ([Jenkinsfiles](#jenkinsfiles)), and `env` for any of these that the reader
+of its file marks; a `${{ }}` read with `yaml:` is still plain text, and two workflows that use the
+same expression agree.
 
 PHP reads `error_reporting = E_ALL` as the number the constant stands for, so the text `E_ALL` is
 not literal:
@@ -1749,6 +1758,99 @@ against each. The slowest shape measured since, `[` again and again and never cl
 on the same node and 33 MiB above the process's base, refused at the end of the file. Blocks nested 999 deep again and again took 7.3 s, a statement
 of 16 million names 5.5 s, and 3.4 million `env.X = 1` lines 3.1 s, refused at the value limit.
 
+#### One variable in many files
+
+`env` reads one variable in every file a rule lists, so one rule says that every place that sets
+it agrees. The rule below holds when the env file, the deploy script, every job of the GitLab CI
+file, every job and step of each workflow and every stage of the Jenkinsfile that set `API_PORT`
+give one port:
+
+```yaml
+checks:
+  - id: api-port-agrees
+    reason: Every place that sets API_PORT names the port the server listens on.
+    scope: repo
+    extract:
+      port:
+        env:
+          name: API_PORT
+          files: [.env, deploy.sh, .gitlab-ci.yml, .github/workflows/*.yml, Jenkinsfile]
+    agree: [port]
+```
+
+When the deploy job sets 8081 and a smoke test step 9090, the erratum names each place with the
+reader that read it and the job, step or stage the value holds for:
+
+```text
+FALSE api-port-agrees (repo)
+  why:  Every place that sets API_PORT names the port the server listens on.
+  said: agree: the values differ
+          "8080" at .env:1 from envfile (port), deploy.sh:2 from shell (port), .gitlab-ci.yml:2 from gitlab-ci job "test" (port), .github/workflows/ci.yml:3 from github-actions job "test" (port), Jenkinsfile:3 from jenkins pipeline (port)
+          "8081" at .gitlab-ci.yml:6 from gitlab-ci job "deploy" (port)
+          "9090" at .github/workflows/ci.yml:10 from github-actions job "test" step "smoke" (port)
+```
+
+A file's name chooses its reader:
+
+| Name | Reader | What it returns |
+|---|---|---|
+| `.env`, any name that starts with `.env` but `.envrc`, and any name that ends in `.env`, such as `prod.env` | `envfile` | every value of the key ([Env files](#env-files)) |
+| a name that ends in `.sh`, and `.envrc`, direnv's script | `shell` | every value the script gives the variable ([Shell scripts](#shell-scripts)) |
+| `.gitlab-ci.yml`, with its local includes | `gitlab-ci` | the value each job sees, as `job:` would name it ([GitLab CI](#gitlab-ci)) |
+| a `.yml` or `.yaml` file directly in `.github/workflows` | `github-actions` | the value each job's steps see from the workflow's and the job's `env:`, and the value of each step whose own `env:` sets the variable ([GitHub Actions](#github-actions)) |
+| `Jenkinsfile` | `jenkins` | the value the pipeline's top sees, and the value of each stage whose `environment` sets the variable ([Jenkinsfiles](#jenkinsfiles)) |
+
+A file whose name chooses none is read as a shell script when its first line is a `#!` that names a
+shell errata reads, such as `bin/deploy` with `#!/usr/bin/env bash`. Any other file makes the rule
+unknown, naming it, until `readers:` gives it a reader by its entry in `files`:
+
+```yaml
+env:
+  name: API_PORT
+  files: [ci/build.yml, config/app.env]
+  readers: {ci/build.yml: gitlab-ci, config/app.env: envfile}
+```
+
+An entry with `*`, `?` or `[` is a glob. errata matches it against the files git tracks, read from
+`.git/index` without running git, a path segment at a time as Go's `path.Match` does: `*` never
+crosses a `/`. A file git does not track is not read, nor is a submodule or a file a sparse checkout
+leaves out. A glob that matches no file adds no value, so a rule whose `env` finds none is unknown
+unless `allow_empty` lists it. A glob needs the repository root to be the top of a git repository. A
+worktree's or a submodule's `.git` file is followed to the git directory it names, and one that
+names a directory that is not there, as when a worktree is mounted alone into a container, or one
+that is there but is no git directory as git tests it (a `HEAD` file or a symlink into `refs/`, and
+`objects` and `refs` directories, in the `commondir` of a worktree), such as an empty mount point,
+makes the rule unknown rather than match nothing. So does a `.git` file with more than its `gitdir:`
+line. So do a split index (`git update-index --split-index`) and an index that is not a regular
+file, a device among them, which is refused before it is opened. An entry without a glob names one
+file, which must exist. A file that two entries name is read once, by the reader one of them gives
+it under `readers:`, whichever entry comes first; two readers for one file make the rule unknown,
+naming both entries.
+
+Each reader reads its file as its own extractor does and refuses what it refuses, so a value that is
+unknown for one job makes the whole rule unknown, and a value a file computes is not literal
+([Values a file only computes](#values-a-file-only-computes)): the rule above is unknown when the
+Jenkinsfile writes `API_PORT = "${PORT_BASE}1"`, unless `skip_not_literal` lists `port`. A job,
+step or stage that sees no value from the files adds none. Some places are no job: a GitLab CI
+hidden job (`.base`) counts only through the jobs that extend it, a trigger job gives the values it
+passes downstream unless its `trigger:forward:yaml_variables` is `false`, and a GitHub Actions job
+that calls a reusable workflow gives none, since neither its `env:` nor the workflow's reaches the
+called workflow's steps. A step's own `env:` wins over a `GITHUB_ENV` write before it, as the runner
+merges it over the job's environment, so its value is read. A step without one, after a step that
+may write `GITHUB_ENV` (the steps `github-actions` with `step:` refuses for), sees what the write
+left, so the rule is unknown, whether or not the job sets the variable itself. A Jenkins stage whose
+name is not literal and whose environment sets the variable is unknown, since errata cannot name
+it.
+
+The name must be a letter or `_` and then letters, digits and `_`, which every reader reads, and
+each reader a listed file's name chooses checks it as the rule loads: `GITHUB_TOKEN` does not load
+for a workflow. `max_bytes` is the most bytes the listed files hold in all, a GitLab CI file's
+includes too, each read to what the files before it left. `files` lists at most 64 entries, and
+one extractor reads at most 10000 files, empty ones too, since each costs an open whatever it
+holds (see Limits). Dockerfile
+`ENV` and `ARG`, compose `environment:`, Kubernetes `env:` entries and systemd units join the
+readers in later releases.
+
 #### Limits
 
 A file in a pull request can be large or hostile, and an extractor must not stall or kill the run
@@ -1803,6 +1905,9 @@ core machine.
 | walk directories | 200000 | a directory costs the walk an open and a listing, and a pin in it a read, so this is the walk's bound on time: 199000 directories with a 144-byte `.tool-versions` of another tool in each take 26.3 to 30.0 s and 69 MB on the build node (66.4 s on a busier node), and 199999 empty ones, which git cannot check out, 7.0 to 9.2 s. A million empty directories took 82 s before the limit. The largest tree measured holds 27149 |
 | walk names | 16 MiB | the walk opens each directory from the one above it and holds the names of the directories it has still to walk, not their paths, so a long path costs its length once: 60000 directories of 250-byte names below a path of 3765 bytes take 8.2 s and 36 MB, where whole paths took 1.67 GB for 200000. Past the limit, as for 200000 such names in one directory, the walk is refused in 0.9 s |
 | walk depth | 64 directories | the deepest tree measured nests 17. A chain 64 deep with 15000 files in each directory takes 3.9 s and 3 MB |
+| git index | 64 MiB, whatever `max_bytes` is, and 1000000 entries; a path of 4096 bytes, and 64 MiB of paths in all | an `env` glob reads `.git/index` whole and keeps the path of each entry: an entry is about 70 bytes and its path, so 64 MiB holds some 600000 files, and the entries limit is the walk's. A version 4 index writes each path as what it keeps of the one before and a suffix, so 65 bytes of the index can make a path of 4096 and 64 MiB of them gigabytes of paths: a path is held to 4096 bytes, the longest a file may be named, and the paths together to 64 MiB, which an index of plain paths cannot pass. An index read with the wrong object format is refused, since each entry's path must be the length its flags give |
+| `env` files | 64 entries in `files`; 256 MiB of paths matched, the globs times the bytes of the tracked paths; 10000 files read | each glob is matched against every tracked file, and a match costs time in proportion to the path, about 33 ns a byte on a 3 core worker node. An index may hold 64 MiB of paths, over which 64 globs took 167 s. The bytes to match are the globs times the paths' bytes, known once the index is read, so a spec over the bound is refused before any glob is matched. The bound fits about 22 MB of paths for a dozen globs, some 450000 files of 50 bytes or 320000 of 70, and 4 globs over a million files of 60 bytes. A very large monorepo with many globs is refused, which makes the rule unknown: list fewer globs. A file costs an open, a stat and a read of its first bytes before its reader runs, however small it is, so a glob over a million empty files would run for minutes; 10000 empty files take 1.4 s on the 6 core build node and 3.7 s on a 3 core worker node |
+| an `env` extractor's values | 100000 and `max_bytes` in all | a CI file repeats a value for each job that inherits it, so the values of every file, job and step together hold to the limits of one extractor's. A Jenkinsfile is read again for each stage that sets the variable, all within the extractor's one work budget, so a file of hundreds of such stages is refused at it: 400 of them are refused in 1 s |
 | files one extractor reads | `max_bytes` in all | a walk may find many files, and symlinks or copies may repeat one, so the files of one extractor are read up to its `max_bytes` together, as one file is; links that end at one file read it once. 100 links to a 32 MiB file take 0.4 to 0.7 s, where reading each link took 31 to 64 s in all before |
 | file name | 4096 bytes | the longest path Linux opens. A longer `file:` in an extractor is a load error, since every message about a file names it whole |
 | quoted text | 64 bytes | errata's message that quotes a key, an anchor or a number from a file, or a path, a pattern, a file or a selector from `errata.yaml`, cuts it there and writes `...`, since a message goes into the CI log and the JUnit report. A parser's message, such as yaml.v3's for an unknown anchor, which quotes the anchor's name, is cut at 256 bytes. A rule's message quotes a value of at most 256 bytes whole. Of a longer one it quotes 256 bytes, from 32 bytes before the first byte where it differs from the other values of the message, marked as in `(from byte 266 of 299)`, so two long values that differ only at the end still print differently |

@@ -49,26 +49,12 @@ type candidate struct {
 
 // fromData resolves the values from the workflow file's bytes.
 func (e extractor) fromData(data []byte) ([]check.Value, error) {
-	if err := e.CheckNodes(data, core.YAMLFormat); err != nil {
+	w, top, jobs, err := e.parseWorkflow(data)
+	if err != nil {
 		return nil, err
 	}
-	w := &workflow{file: e.File, limit: e.Limit, info: map[*core.Node]nodeInfo{}, ids: map[string]int{}, templates: map[*core.Node]madeTemplate{}}
-	docs, _, err := e.parse(data, 0, func(n *core.Node, tag string, plain bool) {
-		w.info[n] = nodeInfo{tag: tag, plain: plain}
-	})
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", e.File, err)
-	}
-	switch {
-	case len(docs) != 1:
-		return nil, fmt.Errorf("%s: holds %d YAML documents; a workflow is one", e.File, len(docs))
-	case docs[0].Shape != core.Mapping:
-		return nil, fmt.Errorf("%s: line %d: the workflow is %s, not a mapping", e.File, docs[0].Line, shapeName(docs[0]))
-	}
-	top := docs[0]
-	jobs := top.Field["jobs"]
-	if jobs == nil || jobs.Shape != core.Mapping {
-		return nil, fmt.Errorf("%s: has no jobs: mapping, which a workflow needs", e.File)
+	if e.every {
+		return w.everyJob(top, jobs, e.variable, e.maxValues())
 	}
 	job := jobs.Field[e.job]
 	switch {
@@ -87,14 +73,8 @@ func (e extractor) fromData(data []byte) ([]check.Value, error) {
 			return nil, err
 		}
 	}
-	m := &jobMatrix{job: e.job, node: job}
-	var expr *expressionError
-	switch m.combos, err = w.matrix(e.job, job); {
-	case errors.As(err, &expr):
-		// Only a value that names the matrix needs it, such as
-		// ${{ matrix.os }}; runs-on: ubuntu-latest does not.
-		m.unknown = err
-	case err != nil:
+	m, err := w.jobMatrix(e.job, job)
+	if err != nil {
 		return nil, err
 	}
 	var cands []candidate
@@ -111,6 +91,191 @@ func (e extractor) fromData(data []byte) ([]check.Value, error) {
 		return nil, err
 	}
 	return w.values(cands, m)
+}
+
+// parseWorkflow parses the workflow and returns it with its top mapping
+// and its jobs: mapping.
+func (e extractor) parseWorkflow(data []byte) (w *workflow, top, jobs *core.Node, err error) {
+	if err := e.CheckNodes(data, core.YAMLFormat); err != nil {
+		return nil, nil, nil, err
+	}
+	w = &workflow{file: e.File, limit: e.Limit, info: map[*core.Node]nodeInfo{}, ids: map[string]int{}, templates: map[*core.Node]madeTemplate{}}
+	docs, _, err := e.parse(data, 0, func(n *core.Node, tag string, plain bool) {
+		w.info[n] = nodeInfo{tag: tag, plain: plain}
+	})
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("%s: %w", e.File, err)
+	}
+	if len(docs) != 1 {
+		return nil, nil, nil, fmt.Errorf("%s: holds %d YAML documents; a workflow is one", e.File, len(docs))
+	}
+	if docs[0].Shape != core.Mapping {
+		return nil, nil, nil, fmt.Errorf("%s: line %d: the workflow is %s, not a mapping", e.File, docs[0].Line, shapeName(docs[0]))
+	}
+	top = docs[0]
+	jobs = top.Field["jobs"]
+	if jobs == nil || jobs.Shape != core.Mapping {
+		return nil, nil, nil, fmt.Errorf("%s: has no jobs: mapping, which a workflow needs", e.File)
+	}
+	return w, top, jobs, nil
+}
+
+// jobMatrix builds the combinations of a job's matrix. A matrix that
+// needs an expression GitHub evaluates is kept as the error, since only a
+// value that names the matrix needs it, such as ${{ matrix.os }};
+// runs-on: ubuntu-latest does not.
+func (w *workflow) jobMatrix(name string, job *core.Node) (*jobMatrix, error) {
+	m := &jobMatrix{job: name, node: job}
+	var expr *expressionError
+	var err error
+	// ifs, not a switch's cases, which Go's coverage profile leaves outside
+	// every block.
+	m.combos, err = w.matrix(name, job)
+	if errors.As(err, &expr) {
+		m.unknown = err
+		return m, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+// everyJob returns the values of the variable name each job sees, its
+// env: over the workflow's, and each step whose env: sets it sees, each
+// with the job, and the step, as its origin: job "test", or job "test"
+// step "build". A step is named by its id, else its name, else its line.
+// A job that calls a reusable workflow runs no step of this file, and
+// neither the workflow's env: nor its own reaches the called one's, so it
+// gives no value. Whatever makes one step's value unknown makes every
+// value's, and the values in all keep to core.MaxValues and max_bytes.
+func (w *workflow) everyJob(top, jobs *core.Node, name string, limit int) ([]check.Value, error) {
+	out := []check.Value{}
+	var total int64
+	add := func(cands []candidate, m *jobMatrix, origin string) error {
+		vs, err := w.values(cands, m)
+		if err != nil {
+			return err
+		}
+		for _, v := range vs {
+			if len(out) == limit {
+				return core.TooManyValues(w.file)
+			}
+			if total += int64(len(v.Text)); total > w.limit {
+				return fmt.Errorf("%s: the values of every job and step hold more than %d bytes in all, the extractor's max_bytes; each job repeats a value the workflow sets, so set max_bytes: higher", w.file, w.limit)
+			}
+			v.Origin = origin
+			out = append(out, v)
+		}
+		return nil
+	}
+	for i, jobName := range jobs.Keys {
+		job := jobs.Vals[i]
+		if job.Shape != core.Mapping {
+			return nil, fmt.Errorf("%s: line %d: job %s is %s, not a mapping", w.file, job.Line, core.Quote(jobName), shapeName(job))
+		}
+		if job.Field["uses"] != nil {
+			continue
+		}
+		m, err := w.jobMatrix(jobName, job)
+		if err != nil {
+			return nil, err
+		}
+		origin := "job " + core.Quote(jobName)
+		cands, err := w.variable(top, jobName, job, "", nil, nil, name)
+		var none *check.NoValue
+		if err != nil && !errors.As(err, &none) {
+			return nil, err
+		}
+		if err == nil {
+			if err := add(cands, m, origin); err != nil {
+				return nil, err
+			}
+		}
+		// The call is a statement of its own: Go's coverage profile leaves
+		// code after a statement's first func literal outside every block.
+		addStep := func(cands []candidate, step string) error { return add(cands, m, origin+" step "+step) }
+		if err := w.everyStep(top, jobName, job, name, addStep); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+// everyStep calls add with the candidates of each step of the job whose
+// env: sets the variable name, and the step's name for its origin. A step's
+// own env: wins over a GITHUB_ENV write before it: actions/runner's
+// StepsRunner.RunAsync fills a step's env context from
+// Global.EnvironmentVariables, which holds the workflow's and the job's
+// env: (JobExtension.InitializeJob) and every GITHUB_ENV write after them
+// (FileCommandManager's SetEnvFileCommand), and then merges the step's own
+// env: over it ("Evaluate and merge step env"). So such a step's value is
+// its own. A step without one sees the job's value, unless a step before it
+// may have written GITHUB_ENV: then what it sees is out of reach, and the
+// job's value is refused, read once for all the steps before.
+func (w *workflow) everyStep(top *core.Node, jobName string, job *core.Node, name string, add func([]candidate, string) error) error {
+	list := job.Field["steps"]
+	if list == nil {
+		return nil
+	}
+	var flat []*core.Node
+	if err := w.flatten(list, &flat); err != nil {
+		return err
+	}
+	labels := stepLabels(flat)
+	before := w.newEarlier(top, job, name)
+	var stopped error
+	for i, s := range flat {
+		n, err := w.envOf(s, "step "+labels[i], name)
+		if err != nil {
+			return err
+		}
+		if n == nil && stopped != nil {
+			return stopped
+		}
+		if n != nil {
+			cands, err := w.variable(top, jobName, job, labels[i], s, nil, name)
+			if err != nil {
+				return err
+			}
+			if err := add(cands, labels[i]); err != nil {
+				return err
+			}
+		}
+		if stopped == nil {
+			stopped = before.step(s)
+		}
+	}
+	return nil
+}
+
+// stepLabels names each step for an origin: by its id, or its name when no
+// other step of the job has it, quoted, or else by the line it starts at,
+// so two steps of one name are told apart.
+func stepLabels(flat []*core.Node) []string {
+	scalar := func(s *core.Node, k string) *core.Node {
+		if v := s.Field[k]; v != nil && v.Shape == core.Scalar {
+			return v
+		}
+		return nil
+	}
+	names := map[string]int{}
+	for _, s := range flat {
+		if n := scalar(s, "name"); n != nil {
+			names[n.Text]++
+		}
+	}
+	out := make([]string, len(flat))
+	for i, s := range flat {
+		out[i] = "at line " + strconv.Itoa(s.Line)
+		if n := scalar(s, "name"); n != nil && names[n.Text] == 1 {
+			out[i] = core.Quote(n.Text)
+		}
+		if id := scalar(s, "id"); id != nil {
+			out[i] = core.Quote(id.Text)
+		}
+	}
+	return out
 }
 
 // called is the refusal of a step or a variable of a job that calls a

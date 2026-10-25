@@ -47,6 +47,12 @@ type Value struct {
 	// any other value; a report names it beside the location
 	// (ConditionNote).
 	Condition string
+	// Origin is the reader that found the value and the part of its file
+	// the value holds for, for a value an env extractor returned, such as
+	// `gitlab-ci job "deploy"` or `shell`; "" for any other. Its reader
+	// quotes the file's text in it, so a report writes it as it is
+	// (OriginNote).
+	Origin string
 }
 
 // maxNote is the most bytes of a key or a condition a note quotes.
@@ -60,6 +66,20 @@ func (v Value) KeyNote() string {
 		return ""
 	}
 	return note(" key ", v.Key)
+}
+
+// Notes are what a report writes after a value's location: its key, its
+// origin and its condition, each "" when the value has none.
+func (v Value) Notes() string { return v.KeyNote() + v.OriginNote() + v.ConditionNote() }
+
+// OriginNote is what a report writes after a value's location to name the
+// reader and the part of the file it came from, such as
+// ` from gitlab-ci job "deploy"`. It is "" for a value with no origin.
+func (v Value) OriginNote() string {
+	if v.Origin == "" {
+		return ""
+	}
+	return " from " + v.Origin
 }
 
 // ConditionNote is what a report writes after a value's location to name

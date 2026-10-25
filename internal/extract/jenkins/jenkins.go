@@ -57,6 +57,53 @@ func Build(s Spec) (check.Extractor, error) {
 	return core.EntryExtractor{Source: src, Query: core.Query{Key: []byte(s.Variable), HasKey: true}, Read: r.read, NotLiteral: core.TemplateNotLiteral(s.File, computed)}, nil
 }
 
+// Every builds the extractor of the variable variable in every place of
+// the Jenkinsfile that sets it: the value the pipeline's top sees, as
+// Build's with no stage, with the origin pipeline, and the value each stage
+// whose environment block sets the variable sees, as Build's for that
+// stage, with the origin stage "name". A place that sees no value gives
+// none. The reads share one work budget, so a file of many such stages is
+// refused at the budget rather than read once for each. The env extractor
+// builds it.
+func Every(file, variable string, maxBytes int64) (check.Extractor, error) {
+	x, err := Build(Spec{File: file, Variable: variable, MaxBytes: maxBytes})
+	if err != nil {
+		return nil, err
+	}
+	e := x.(core.EntryExtractor)
+	e.Read = reader{file: file, variable: variable}.readEvery
+	return e, nil
+}
+
+// readEvery visits the values the pipeline's top sees, then those of each
+// stage that sets the variable, in the file's order.
+func (r reader) readEvery(data []byte, m *core.Meter, visit func(*core.Entry) error) error {
+	s := newScan(data, []byte(r.variable), nil, m)
+	if err := s.run(); err != nil {
+		return err
+	}
+	at := func(origin string) func(*core.Entry) error {
+		return func(e *core.Entry) error {
+			e.Origin = origin
+			return visit(e)
+		}
+	}
+	var none *check.NoValue
+	if err := r.read(data, m, at("pipeline")); err != nil && !errors.As(err, &none) {
+		return err
+	}
+	for _, st := range s.setting {
+		if st.name == nil {
+			return core.LineError(st.line, "the environment of a stage whose name is not literal sets %s, and errata cannot name the stage", r.variable)
+		}
+		staged := reader{file: r.file, variable: r.variable, stage: string(st.name), staged: true}
+		if err := staged.read(data, m, at("stage "+core.Quote(staged.stage))); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // computed is the reader's test of a not literal value: the reader marks it.
 func computed(e *core.Entry) bool { return e.Computed }
 

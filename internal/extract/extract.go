@@ -3,8 +3,10 @@
 // Each kind is a reader in a package of its own below this one (yaml, json,
 // toml, regex, text, xml, ini, properties, toolversion, envfile, gitlabci,
 // shell, githubactions, jenkins), and the readers share internal/extract/core;
-// no reader imports another. This package holds what sees every kind: the
-// Spec a rule decodes into, the kinds table, Build, Place and Kind.
+// no reader imports another. The env kind asks five of them for one variable
+// across several files, through the functions this package hands it. This
+// package holds what sees every kind: the Spec a rule decodes into, the kinds
+// table, Build, Place and Kind.
 //
 // The types below are the seam between the config package, which decodes a
 // rule, and this package, which runs its extractors. Their JSON names are the
@@ -19,6 +21,7 @@ import (
 
 	"github.com/f-klement/errata/internal/check"
 	"github.com/f-klement/errata/internal/extract/core"
+	"github.com/f-klement/errata/internal/extract/env"
 	"github.com/f-klement/errata/internal/extract/envfile"
 	"github.com/f-klement/errata/internal/extract/githubactions"
 	"github.com/f-klement/errata/internal/extract/gitlabci"
@@ -58,6 +61,8 @@ type Spec struct {
 	GitHubActions *GitHubActions `json:"github-actions,omitempty"`
 
 	Jenkins *Jenkins `json:"jenkins,omitempty"`
+
+	Env *Env `json:"env,omitempty"`
 }
 
 // Each kind takes MaxBytes, the largest file it reads. Zero, or the key
@@ -115,6 +120,33 @@ type GitHubActions = githubactions.Spec
 // Jenkins returns the value of an environment variable that a stage of a
 // Jenkinsfile sees, as jenkins.Spec says.
 type Jenkins = jenkins.Spec
+
+// Env returns every value of one variable in the files a rule lists, each
+// read by the reader its name chooses, as env.Spec says.
+type Env = env.Spec
+
+// envReaders are the readers the env kind asks, each for one variable in
+// one file: envfile and shell as their own Build reads it, and the CI
+// readers in every job, step or stage, as their Every reads it.
+var envReaders = env.Readers{
+	ByName: map[string]env.Reader{
+		"envfile": func(file, name string, maxBytes int64) (check.Extractor, error) {
+			return envfile.Build(envfile.Spec{File: file, Name: name, MaxBytes: maxBytes})
+		},
+		"shell": func(file, name string, maxBytes int64) (check.Extractor, error) {
+			return shell.Build(shell.Spec{File: file, Name: name, MaxBytes: maxBytes})
+		},
+		"gitlab-ci": func(file, name string, maxBytes int64) (check.Extractor, error) {
+			return gitlabci.Every(file, name, maxBytes, yaml.ParseNoted)
+		},
+		"github-actions": func(file, name string, maxBytes int64) (check.Extractor, error) {
+			return githubactions.Every(file, name, maxBytes, yaml.ParseNoted)
+		},
+		"jenkins": jenkins.Every,
+	},
+	IsScript:    shell.IsScript,
+	ScriptBytes: shell.ShebangBytes,
+}
 
 // Place returns s with only what decides where it reads: each file cleaned,
 // so f, ./f and a/../f are one file, and max_bytes left out, since a limit
@@ -185,6 +217,10 @@ func (s Spec) Place() Spec {
 	if s.Jenkins != nil {
 		x := jenkins.Place(*s.Jenkins)
 		p.Jenkins = &x
+	}
+	if s.Env != nil {
+		x := env.Place(*s.Env)
+		p.Env = &x
 	}
 	return p
 }
@@ -267,6 +303,10 @@ func (s Spec) Resolved() Spec {
 		x.MaxBytes = core.MaxBytes(x.MaxBytes)
 		r.Jenkins = &x
 	}
+	if s.Env != nil {
+		x := env.Resolve(*s.Env)
+		r.Env = &x
+	}
 	return r
 }
 
@@ -306,7 +346,7 @@ func (s Spec) kinds() []extractorKind {
 	// read as not covered to Gremlins however the tests run it.
 	set := [...]bool{s.YAML != nil, s.JSON != nil, s.TOML != nil, s.Regex != nil, s.Text != nil,
 		s.XML != nil, s.INI != nil, s.Properties != nil, s.ToolVersion != nil, s.EnvFile != nil,
-		s.GitLabCI != nil, s.Shell != nil, s.GitHubActions != nil, s.Jenkins != nil}
+		s.GitLabCI != nil, s.Shell != nil, s.GitHubActions != nil, s.Jenkins != nil, s.Env != nil}
 	return []extractorKind{
 		{"yaml", set[0], func() (check.Extractor, error) { return yaml.Build(*s.YAML) }},
 		{"json", set[1], func() (check.Extractor, error) { return json.Build(*s.JSON) }},
@@ -330,6 +370,7 @@ func (s Spec) kinds() []extractorKind {
 			return githubactions.Build(*s.GitHubActions, yaml.ParseNoted)
 		}},
 		{"jenkins", set[13], func() (check.Extractor, error) { return jenkins.Build(*s.Jenkins) }},
+		{"env", set[14], func() (check.Extractor, error) { return env.Build(*s.Env, envReaders) }},
 	}
 }
 

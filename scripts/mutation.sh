@@ -211,18 +211,20 @@ EFFICACY_FLOOR=85
 # after a statement's first func literal outside every block, so their mutants always read
 # as not covered, however the tests run them. Such a package's floor is its measured figure
 # rounded down, and one under it when the figure is whole, since a figure at its floor
-# fails. check and protocol were counted at e43c2ef, the extract packages at the split into
-# one package per reader (#105), on 2026-10-22, each scoped alone:
+# fails. check and protocol were counted at e43c2ef, the other extract packages at the split
+# into one package per reader (#105), on 2026-10-22, and ini and jenkins again on 2026-10-25,
+# with env's reader in (#38, #107), each scoped alone:
 #   check               72  9 of its 33 mutants, case expressions in Validate and LeftOutCount
 #   protocol            78  3 of its 14 mutants
-#   extract/core        79  116 of its 571 (115 case expressions, 1 package level): 79.68%
-#   extract/ini         82  253 of its 1500 (178 case expressions, 75 package level), and 7
-#                           in dead code (php.go 163 twice, 374, 548, 552, 554, 628): 82.67%
-#   extract/jenkins     78  86 of its 409 (84 case expressions, 2 package level) at fee8656
-#                           on 2026-10-25, and 1 no test reached (scan.go 512), since
-#                           covered: 78.73%
+#   extract/ini         82  253 of its 1500 (178 case expressions, 75 package level), and 4
+#                           in dead code (php.go 544, 548, 550, 624): 82.87%
+#   extract/jenkins     79  86 of its 416 (84 case expressions, 2 package level): 79.33%
 #   extract/properties  79  34 of its 167, case expressions: 79.64%
 #   extract/xml         82  94 of its 527, case expressions: 82.16%
+# core had 82 (111 of 637, 82.57%) until env's reader added code its tests reach: 111 of 744,
+# 110 case expressions and 1 package level, 85.08% on 2026-10-25, so it has 85, one mutant
+# over. githubactions (52 case expressions of 408, 87.25%) and gitlabci (38 of 380, 90.00%)
+# clear 85 on 2026-10-25, and env, every one of its 46 mutants covered, has none;
 # text (5 such mutants of 238, 97.90%, after goldmark v2), toml (10 of 78, 87.18%) and
 # toolversion (9 of 117, 92.31%, on 2026-10-23) clear 85, and json, regex and yaml have none.
 # The facade had 64, 7 of its 20 after the first func literal of kinds' return statement
@@ -233,9 +235,8 @@ mcover_floor() {
     case "$1" in
         internal/check)              echo 72 ;;
         internal/protocol)           echo 78 ;;
-        internal/extract/core)       echo 79 ;;
         internal/extract/ini)        echo 82 ;;
-        internal/extract/jenkins)    echo 78 ;;
+        internal/extract/jenkins)    echo 79 ;;
         internal/extract/properties) echo 79 ;;
         internal/extract/xml)        echo 82 ;;
         *)                           echo 85 ;;

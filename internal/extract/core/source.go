@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 // CheckPath parses a path, refusing an empty one by the field's name.
@@ -86,7 +87,7 @@ func (s Source) Resolved(root string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("open the repository root: %w", bare(err))
 	}
-	rel, err := resolve(realRoot, s.File)
+	rel, _, err := resolve(realRoot, s.File)
 	if err != nil {
 		return "", fmt.Errorf("read %s: %w", s.File, err)
 	}
@@ -97,43 +98,103 @@ func (s Source) Resolved(root string) (string, error) {
 // it is read, and a file that grows past it while it is read is refused too.
 // Every error names the file as the spec wrote it, never an absolute path.
 func (s Source) Read(root string) ([]byte, error) {
-	realRoot, err := filepath.EvalSymlinks(root)
+	f, _, err := s.open(root)
 	if err != nil {
-		return nil, fmt.Errorf("open the repository root: %w", bare(err))
-	}
-	rel, err := resolve(realRoot, s.File)
-	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", s.File, err)
-	}
-	r, err := os.OpenRoot(realRoot)
-	if err != nil {
-		return nil, fmt.Errorf("open the repository root: %w", bare(err))
-	}
-	defer r.Close()
-	// The open goes through os.Root, which refuses a link that leads out,
-	// so a link swapped in after resolve is refused too.
-	f, err := r.Open(rel)
-	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", s.File, bare(err))
+		return nil, err
 	}
 	defer f.Close()
-	info, err := f.Stat()
+	return s.readLimited(f)
+}
+
+// readLimited reads r to the limit, and refuses it when it holds a byte
+// more: the file grew while it was read. The limit is never added to, so no
+// limit overflows.
+func (s Source) readLimited(r io.Reader) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(r, s.Limit))
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", s.File, bare(err))
 	}
-	if info.Size() > s.Limit {
-		return nil, tooLarge(s.File, info.Size(), s.Limit)
-	}
-	data, err := io.ReadAll(io.LimitReader(f, s.Limit))
-	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", s.File, bare(err))
-	}
-	// A byte past the limit means the file grew while it was read. The
-	// limit is never added to, so no limit overflows.
-	if n, _ := f.Read(make([]byte, 1)); n > 0 {
+	if n, _ := r.Read(make([]byte, 1)); n > 0 {
 		return nil, tooLarge(s.File, int64(len(data))+1, s.Limit)
 	}
 	return data, nil
+}
+
+// Head is the first n bytes of the file under root, all of it when it is
+// shorter, and the file's size in bytes, refused as Read refuses the file.
+func (s Source) Head(root string, n int) ([]byte, int64, error) {
+	f, size, err := s.open(root)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, int64(n)))
+	if err != nil {
+		return nil, 0, fmt.Errorf("read %s: %w", s.File, bare(err))
+	}
+	return data, size, nil
+}
+
+// open opens the file under root, refusing a link that leads out, a file
+// that is not there and one over the limit, and returns its size.
+func (s Source) open(root string) (*os.File, int64, error) {
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return nil, 0, fmt.Errorf("open the repository root: %w", bare(err))
+	}
+	rel, mode, err := resolve(realRoot, s.File)
+	if err != nil {
+		return nil, 0, fmt.Errorf("read %s: %w", s.File, err)
+	}
+	// Opening a device can act on it: a watchdog arms, a serial port
+	// raises DTR. So a device is refused by its type before the open.
+	if mode&fs.ModeDevice != 0 {
+		return nil, 0, fmt.Errorf("read %s: %w", s.File, errDevice)
+	}
+	r, err := os.OpenRoot(realRoot)
+	if err != nil {
+		return nil, 0, fmt.Errorf("open the repository root: %w", bare(err))
+	}
+	defer r.Close()
+	// The open goes through os.Root, which refuses a link that leads out,
+	// so a link swapped in after resolve is refused too. It does not block,
+	// so a FIFO, which git never checks out, opens at once, and the type
+	// check of the open file refuses it, and a socket, before a byte is
+	// read. That check also refuses a device swapped in after resolve, and
+	// O_NOCTTY keeps such a terminal from becoming errata's own.
+	f, err := r.OpenFile(rel, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOCTTY, 0)
+	if err != nil {
+		return nil, 0, fmt.Errorf("read %s: %w", s.File, bare(err))
+	}
+	info, err := f.Stat()
+	if err == nil {
+		err = regular(info)
+	}
+	if err != nil {
+		_ = f.Close()
+		return nil, 0, fmt.Errorf("read %s: %w", s.File, bare(err))
+	}
+	if info.Size() > s.Limit {
+		_ = f.Close()
+		return nil, 0, tooLarge(s.File, info.Size(), s.Limit)
+	}
+	return f, info.Size(), nil
+}
+
+// errDevice refuses a device, such as /dev/null, before it is opened.
+var errDevice = errors.New("it is a device, which errata does not open")
+
+// regular refuses a file that is not a regular file: a directory as the
+// read of one would, and a FIFO, a socket or a device as no file of the
+// repository.
+func regular(info fs.FileInfo) error {
+	if info.IsDir() {
+		return errors.New("is a directory")
+	}
+	if !info.Mode().IsRegular() {
+		return errors.New("it is not a regular file")
+	}
+	return nil
 }
 
 // bare drops the path from a file system error, since the path there is
@@ -147,46 +208,48 @@ func bare(err error) error {
 }
 
 // resolve follows the symlinks on the way to file and returns the path,
-// relative to realRoot, where it ends. It walks one name at a time as the
+// relative to realRoot, where it ends, and the type of the file there as
+// Lstat gives it. It walks one name at a time as the
 // kernel does, so a .. in a link's target goes up from where the link
 // points. It looks only at paths inside realRoot, and refuses a link that
 // leads out before it touches anything outside. A route may pass through a
 // directory above the root on its way back in, since those directories are
 // real: realRoot is the root with its own links resolved. A .. in file itself
 // is resolved by name first, by Clean, before any link.
-func resolve(realRoot, file string) (string, error) {
+func resolve(realRoot, file string) (string, fs.FileMode, error) {
 	todo := splitPath(filepath.Clean(file))
 	cur := realRoot
+	mode := fs.ModeDir // of cur
 	links := 0
 	for len(todo) > 0 {
 		name := todo[0]
 		todo = todo[1:]
 		if name == ".." {
-			cur = filepath.Dir(cur) // cur holds no link, so .. is its parent
+			cur, mode = filepath.Dir(cur), fs.ModeDir // cur holds no link, so .. is its parent
 			continue
 		}
 		next := filepath.Join(cur, name)
 		if !within(realRoot, next) {
 			if !within(next, realRoot) {
-				return "", errOutside
+				return "", 0, errOutside
 			}
-			cur = next // a directory above the root, on the way back to it
+			cur, mode = next, fs.ModeDir // a directory above the root, on the way back to it
 			continue
 		}
 		info, err := os.Lstat(next)
 		if err != nil {
-			return "", bare(err)
+			return "", 0, bare(err)
 		}
 		if info.Mode()&fs.ModeSymlink == 0 {
-			cur = next
+			cur, mode = next, info.Mode()
 			continue
 		}
 		if links++; links > maxLinks {
-			return "", errors.New("too many levels of symbolic links")
+			return "", 0, errors.New("too many levels of symbolic links")
 		}
 		target, err := os.Readlink(next)
 		if err != nil {
-			return "", bare(err)
+			return "", 0, bare(err)
 		}
 		if filepath.IsAbs(target) {
 			cur = filepath.VolumeName(target) + string(filepath.Separator)
@@ -194,9 +257,10 @@ func resolve(realRoot, file string) (string, error) {
 		todo = append(splitPath(target), todo...)
 	}
 	if !within(realRoot, cur) {
-		return "", errOutside
+		return "", 0, errOutside
 	}
-	return filepath.Rel(realRoot, cur)
+	rel, err := filepath.Rel(realRoot, cur)
+	return rel, mode, err
 }
 
 // splitPath lists the names in p, without the empty ones and ".".

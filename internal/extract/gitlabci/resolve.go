@@ -1,7 +1,9 @@
 package gitlabci
 
 import (
+	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"unicode/utf8"
 
@@ -54,6 +56,51 @@ type config struct {
 	refs      map[*core.Node]followed
 	following map[*core.Node]bool // the !reference tags being followed
 	condBytes int64               // the bytes of the candidates' conditions so far
+	// every is Every's reading: a trigger job's variables are the values it
+	// passes downstream, where a spec that names one is refused, and the
+	// dotenv reports of earlier stages are read once for all jobs, where a
+	// spec's one job walks the jobs before it, as it always has, so a Build
+	// spends the work budget on no job it did not read before.
+	every  bool
+	staged *stagedReports // every job's stage and dotenv report, once read
+}
+
+// everyJob returns the values each job sees of the variable name, each
+// with its job as its origin, at most limit and max_bytes of them in all.
+func (c *config) everyJob(name string, limit int) ([]check.Value, error) {
+	out := []check.Value{}
+	var total int64
+	for _, job := range c.top.Keys {
+		if reserved[job] || strings.HasPrefix(job, ".") {
+			continue
+		}
+		cands, err := c.variable(job, name)
+		if err != nil {
+			return nil, err
+		}
+		// The checks of everyJob, variable's trigger and forwards are ifs,
+		// not a switch's cases, which Go's coverage profile leaves outside
+		// every block.
+		vs, err := c.values(cands, true, true, name)
+		var none *check.NoValue
+		if errors.As(err, &none) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		for _, v := range vs {
+			if len(out) == limit {
+				return nil, core.TooManyValues(c.main)
+			}
+			if total += int64(len(v.Text)); total > c.limit {
+				return nil, fmt.Errorf("%s: the values of every job hold more than %d bytes in all, the extractor's max_bytes; a job repeats each value it inherits, so set max_bytes: higher", c.main, c.limit)
+			}
+			v.Origin = "job " + core.Quote(job)
+			out = append(out, v)
+		}
+	}
+	return out, nil
 }
 
 // resolvedJob is a job with its extends merged in, the levels of extends
@@ -367,11 +414,18 @@ func (c *config) variable(jobName, name string) ([]candidate, error) {
 	if err != nil {
 		return nil, err
 	}
-	if t, err := c.field(job, "trigger"); err != nil || t != nil {
-		if err == nil {
-			err = fmt.Errorf("%s: job %s is a trigger job: it passes its variables to a downstream pipeline, which errata does not read", c.at(t), core.Quote(jobName))
-		}
+	t, err := c.field(job, "trigger")
+	if err != nil {
 		return nil, err
+	}
+	if t != nil && !c.every {
+		return nil, fmt.Errorf("%s: job %s is a trigger job: it passes its variables to a downstream pipeline, which errata does not read", c.at(t), core.Quote(jobName))
+	}
+	if t != nil {
+		forwards, err := c.forwards(t)
+		if err != nil || !forwards {
+			return []candidate{}, err
+		}
 	}
 	if err := c.dotenv(jobName, job, name); err != nil {
 		return nil, err
@@ -400,6 +454,31 @@ func (c *config) variable(jobName, name string) ([]candidate, error) {
 		return nil, err
 	}
 	return c.rules(job, name, cands, "")
+}
+
+// forwards reports whether the trigger t passes the job's variables
+// downstream: "yaml_variables: true (default), or false. When true,
+// variables defined in the trigger job are passed to downstream pipelines"
+// (trigger:forward). Like inherit:, it takes the boolean Psych loads.
+func (c *config) forwards(t *core.Node) (bool, error) {
+	fw, err := c.field(t, "forward")
+	if err != nil {
+		return false, err
+	}
+	if fw != nil && fw.Shape != core.Mapping {
+		return false, fmt.Errorf("%s: trigger:forward is %s; errata reads it only as a mapping of yaml_variables and pipeline_variables", c.at(fw), shapeName(fw))
+	}
+	v, err := c.field(fw, "yaml_variables")
+	if err != nil {
+		return false, err
+	}
+	if v == nil {
+		return true, nil
+	}
+	if v.Shape == core.Scalar && isPsychBool(v.Text) && c.retyped(v, v.Text) {
+		return psychTrue(v.Text), nil
+	}
+	return false, fmt.Errorf("%s: trigger:forward:yaml_variables is true or false, which GitLab requires as a boolean", c.at(v))
 }
 
 // varIn is the variable name under n's variables:, or below when n does
@@ -757,26 +836,26 @@ func (c *config) describe(v *core.Node) string {
 // jobs dependencies: lists, or by default every job of an earlier stage,
 // that declares artifacts:reports:dotenv.
 func (c *config) dotenv(jobName string, job *core.Node, name string) error {
-	sources, err := c.artifactSources(jobName, job)
+	sources, earlier, err := c.artifactSources(jobName, job)
 	if err != nil {
 		return err
 	}
+	switch {
+	case earlier && c.every:
+		src, d, err := c.earlierReport(job)
+		if err != nil || d == nil {
+			return err
+		}
+		return c.dotenvError(d, jobName, src, name)
+	case earlier:
+		if sources, err = c.earlierJobs(job); err != nil {
+			return err
+		}
+	}
 	for _, s := range sources {
-		src, err := c.jobToRun(s)
-		if err != nil {
-			return err
-		}
-		art, err := c.keywordOf(src, "artifacts")
-		if err != nil {
-			return err
-		}
-		rep, err := c.field(art, "reports")
-		if err != nil {
-			return err
-		}
-		if d, err := c.field(rep, "dotenv"); err != nil || d != nil {
+		if d, err := c.report(s); err != nil || d != nil {
 			if err == nil {
-				err = fmt.Errorf("%s: job %s gets the dotenv report of job %s, which the pipeline writes as it runs and which outranks the file, so it may set %s", c.at(d), core.Quote(jobName), core.Quote(s), name)
+				err = c.dotenvError(d, jobName, s, name)
 			}
 			return err
 		}
@@ -784,18 +863,40 @@ func (c *config) dotenv(jobName string, job *core.Node, name string) error {
 	return nil
 }
 
-// artifactSources lists the jobs whose artifacts job receives: those its
-// needs: names with artifacts, or with no needs: those dependencies: names,
-// or with neither every job of an earlier stage.
-func (c *config) artifactSources(jobName string, job *core.Node) ([]string, error) {
-	needs, err := c.field(job, "needs")
+func (c *config) dotenvError(d *core.Node, jobName, src, name string) error {
+	return fmt.Errorf("%s: job %s gets the dotenv report of job %s, which the pipeline writes as it runs and which outranks the file, so it may set %s", c.at(d), core.Quote(jobName), core.Quote(src), name)
+}
+
+// report is the artifacts:reports:dotenv the job named s declares, or nil.
+func (c *config) report(s string) (*core.Node, error) {
+	src, err := c.jobToRun(s)
 	if err != nil {
 		return nil, err
+	}
+	art, err := c.keywordOf(src, "artifacts")
+	if err != nil {
+		return nil, err
+	}
+	rep, err := c.field(art, "reports")
+	if err != nil {
+		return nil, err
+	}
+	return c.field(rep, "dotenv")
+}
+
+// artifactSources lists the jobs whose artifacts job receives: those its
+// needs: names with artifacts, or with no needs: those dependencies: names,
+// or with neither every job of an earlier stage, which earlier reports and
+// earlierReport reads.
+func (c *config) artifactSources(jobName string, job *core.Node) (sources []string, earlier bool, err error) {
+	needs, err := c.field(job, "needs")
+	if err != nil {
+		return nil, false, err
 	}
 	if needs != nil {
 		items, err := c.listOf(needs)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		var out []string
 		for _, it := range items {
@@ -804,44 +905,44 @@ func (c *config) artifactSources(jobName string, job *core.Node) ([]string, erro
 				continue
 			}
 			if it.Field["project"] != nil || it.Field["pipeline"] != nil {
-				return nil, fmt.Errorf("%s: job %s needs a job of another pipeline, whose dotenv report errata cannot read", c.at(it), core.Quote(jobName))
+				return nil, false, fmt.Errorf("%s: job %s needs a job of another pipeline, whose dotenv report errata cannot read", c.at(it), core.Quote(jobName))
 			}
 			j, err := c.field(it, "job")
 			if err != nil || j == nil || j.Shape != core.Scalar {
 				if err == nil {
 					err = fmt.Errorf("%s: a needs: entry names a job: or a job by a string", c.at(it))
 				}
-				return nil, err
+				return nil, false, err
 			}
 			if a, err := c.field(it, "artifacts"); err != nil || (a != nil && a.Text == "false") {
 				if err != nil {
-					return nil, err
+					return nil, false, err
 				}
 				continue
 			}
 			out = append(out, j.Text)
 		}
-		return out, nil
+		return out, false, nil
 	}
 	deps, err := c.field(job, "dependencies")
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if deps != nil {
 		items, err := c.listOf(deps)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		var out []string
 		for _, it := range items {
 			if it.Shape != core.Scalar {
-				return nil, fmt.Errorf("%s: dependencies names a job by a string, not %s", c.at(it), shapeName(it))
+				return nil, false, fmt.Errorf("%s: dependencies names a job by a string, not %s", c.at(it), shapeName(it))
 			}
 			out = append(out, it.Text)
 		}
-		return out, nil
+		return out, false, nil
 	}
-	return c.earlierJobs(job)
+	return nil, true, nil
 }
 
 // listOf is the items of a list, each !reference followed.
@@ -852,42 +953,14 @@ func (c *config) listOf(n *core.Node) ([]*core.Node, error) {
 	return c.flatten(n, 0)
 }
 
-// earlierJobs lists the jobs of the stages before job's.
+// earlierJobs lists the jobs of the stages before job's, in the file's
+// order.
 func (c *config) earlierJobs(job *core.Node) ([]string, error) {
-	order := map[string]int{".pre": 0}
-	stages := defaultStages
-	st, err := c.field(c.top, "stages")
+	order, _, err := c.stageOrder()
 	if err != nil {
 		return nil, err
 	}
-	if st != nil {
-		items, err := c.listOf(st)
-		if err != nil {
-			return nil, err
-		}
-		stages = nil
-		for _, it := range items {
-			stages = append(stages, it.Text)
-		}
-	}
-	for i, s := range stages {
-		if _, ok := order[s]; !ok {
-			order[s] = i + 1
-		}
-	}
-	order[".post"] = len(stages) + 1
-	stageOf := func(j *core.Node) (int, error) {
-		s, err := c.field(j, "stage")
-		if err != nil {
-			return 0, err
-		}
-		name := "test" // "If stage is not defined, the job uses the test stage by default."
-		if s != nil {
-			name = s.Text
-		}
-		return order[name], nil
-	}
-	mine, err := stageOf(job)
+	mine, err := c.stageOf(order, job)
 	if err != nil {
 		return nil, err
 	}
@@ -900,7 +973,7 @@ func (c *config) earlierJobs(job *core.Node) ([]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		s, err := stageOf(j)
+		s, err := c.stageOf(order, j)
 		if err != nil {
 			return nil, err
 		}
@@ -909,6 +982,138 @@ func (c *config) earlierJobs(job *core.Node) ([]string, error) {
 		}
 	}
 	return out, nil
+}
+
+// stageOrder is each stage's place, .pre first and .post last, and .post's.
+func (c *config) stageOrder() (map[string]int, int, error) {
+	order := map[string]int{".pre": 0}
+	stages := defaultStages
+	list, err := c.field(c.top, "stages")
+	if err != nil {
+		return nil, 0, err
+	}
+	if list != nil {
+		items, err := c.listOf(list)
+		if err != nil {
+			return nil, 0, err
+		}
+		stages = nil
+		for _, it := range items {
+			stages = append(stages, it.Text)
+		}
+	}
+	for i, s := range stages {
+		if _, ok := order[s]; !ok {
+			order[s] = i + 1
+		}
+	}
+	last := len(stages) + 1
+	order[".post"] = last
+	return order, last, nil
+}
+
+// stagedReports is every job's stage and dotenv report, read once for the
+// configuration: a job with neither needs: nor dependencies: receives the
+// artifacts of every job of an earlier stage, and Every asks that for each
+// job, which a walk of every job for each would make quadratic.
+type stagedReports struct {
+	order map[string]int // each stage's place, .pre first and .post last
+	jobs  []stagedJob    // the jobs, in the file's order
+	// first[v] is the index in jobs of the first job of a stage before
+	// stage v that declares a report or whose report does not read, noJob
+	// for none.
+	first []int
+}
+
+// stagedJob is a job's name, and its dotenv report or why it does not
+// read.
+type stagedJob struct {
+	name   string
+	report *core.Node
+	err    error
+}
+
+// earlierReport is the first job, in the file's order, of a stage before
+// job's that declares a dotenv report, with the report, or the error of the
+// first whose report does not read; "" and nil for none.
+func (c *config) earlierReport(job *core.Node) (string, *core.Node, error) {
+	if c.staged == nil {
+		st, err := c.stageReports()
+		if err != nil {
+			return "", nil, err
+		}
+		c.staged = st
+	}
+	mine, err := c.stageOf(c.staged.order, job)
+	if err != nil {
+		return "", nil, err
+	}
+	i := c.staged.first[mine]
+	if i == noJob {
+		return "", nil, nil
+	}
+	j := c.staged.jobs[i]
+	return j.name, j.report, j.err
+}
+
+// stageReports reads the stages and every job's stage and report. A job
+// whose stage does not read refuses every job that receives the artifacts
+// of earlier stages, as it would be one of them or not.
+func (c *config) stageReports() (*stagedReports, error) {
+	order, last, err := c.stageOrder()
+	if err != nil {
+		return nil, err
+	}
+	st := &stagedReports{order: order}
+	// firstIn[v] is the first job of stage v that stops a job of a later
+	// stage, as an index in st.jobs, and noJob for none.
+	firstIn := make([]int, last+1)
+	for v := range firstIn {
+		firstIn[v] = noJob
+	}
+	for _, k := range c.top.Keys {
+		if reserved[k] || strings.HasPrefix(k, ".") {
+			continue
+		}
+		j, err := c.jobToRun(k)
+		if err != nil {
+			return nil, err
+		}
+		v, err := c.stageOf(order, j)
+		if err != nil {
+			return nil, err
+		}
+		d, err := c.report(k)
+		if err != nil || d != nil {
+			firstIn[v] = min(firstIn[v], len(st.jobs))
+		}
+		st.jobs = append(st.jobs, stagedJob{name: k, report: d, err: err})
+	}
+	st.first = make([]int, last+1)
+	best := noJob
+	for v := range st.first {
+		st.first[v] = best
+		best = min(best, firstIn[v])
+	}
+	return st, nil
+}
+
+// noJob is the index of no job, past every one.
+const noJob = math.MaxInt
+
+// stageOf is the place of job's stage in order: "If stage is not defined,
+// the job uses the test stage by default." A stage the file does not list
+// is placed with .pre, as a lookup of it gives 0.
+func (c *config) stageOf(order map[string]int, j *core.Node) (int, error) {
+	s, err := c.field(j, "stage")
+	if err != nil {
+		return 0, err
+	}
+	name := "test"
+	if s != nil {
+		name = s.Text
+	}
+	return order[name], nil
 }
 
 // keyword returns the value of a job keyword, or of a key below one: the

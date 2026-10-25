@@ -90,8 +90,8 @@ is either a rule or a program check. Do not call it a script, an exec check or a
 
 **Extractor.** The part of a rule that gets values from one place. A YAML path, an XPath into an
 XML file, a key in an INI, properties or env file, a regular expression capture, a sentence of
-Markdown prose, the versions of a tool in the files that pin it, an image digest, a field on a live
-object.
+Markdown prose, the versions of a tool in the files that pin it, one variable in every file a rule
+lists, an image digest, a field on a live object.
 
 **Pin.** A file's statement of the version of a tool the repository uses, such as `20.11.1` in
 `.nvmrc` or `nodejs 20.11.1` in `.tool-versions`. The `tool_version` extractor reads every pin of
@@ -117,8 +117,9 @@ resolves, `envfile` a value whose `${OTHER}` names a key the file does not set b
 `gitlab-ci` a variable that names another, such as `$CI_COMMIT_SHA`, or a number GitLab's YAML
 loader retypes, such as `3.10`, `shell` a value the shell computes and errata does not
 resolve, such as `$(git describe)` or `"$HOME/bin"`, `github-actions` a `${{ }}` expression
-other than a matrix variable, or a number YAML retypes, and `jenkins` a value Groovy computes,
-such as `credentials('id')` or `"${BUILD_NUMBER}"`.
+other than a matrix variable, or a number YAML retypes, `jenkins` a value Groovy computes,
+such as `credentials('id')` or `"${BUILD_NUMBER}"`, and `env` any of these that the reader of its
+file marks.
 
 **Condition.** What must hold for a value to be the one a reader names, for a reader that returns
 one value for each case a file chooses between: a GitLab CI rule's `if $CI_COMMIT_TAG`, a

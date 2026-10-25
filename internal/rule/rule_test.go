@@ -554,25 +554,32 @@ func TestNoValueAndConditions(t *testing.T) {
 	}
 }
 
-// Every message that places a value names its condition after the place:
-// the saw lines of a false assert, a not literal value, and the one value
-// agree found. Planted breaks: ConditionNote dropped from saw, from
-// notLiteral and from the one value message, each failing its case.
+// Every message that places a value names its origin and its condition
+// after the place: the saw lines of a false assert, a not literal value,
+// the one value agree found, and the places of a false agree. Planted
+// breaks: ConditionNote dropped from saw, from notLiteral and from the one
+// value message, each failing its case; Notes dropped from the places of a
+// false agree.
 func TestMessagesNameConditions(t *testing.T) {
 	v := at("y", "f", 3)
 	v.Condition = "if $A"
+	v.Origin = `gitlab-ci job "b"`
 	res := Run(context.Background(), "", assertRule(t, "a[0] == 'x'", named("a", fake{values: []check.Value{v}})))
-	if !strings.Contains(res.Message, `a[0] = "y" at f:3 when "if $A"`) {
+	if !strings.Contains(res.Message, `a[0] = "y" at f:3 from gitlab-ci job "b" when "if $A"`) {
 		t.Errorf("assert: %q names no condition", res.Message)
 	}
 	computed := v
 	computed.NotLiteral = true
 	res = Run(context.Background(), "", agreeRule(named("a", fake{values: []check.Value{at("x", "f", 1), computed}})))
-	if !strings.Contains(res.Message, `"y" at f:3 when "if $A"`) {
+	if !strings.Contains(res.Message, `"y" at f:3 from gitlab-ci job "b" when "if $A"`) {
 		t.Errorf("not literal: %q names no condition", res.Message)
 	}
 	res = Run(context.Background(), "", agreeRule(named("a", fake{values: []check.Value{v}})))
-	if !strings.Contains(res.Message, `nothing to compare: "y" at f:3 when "if $A" (a)`) {
+	if !strings.Contains(res.Message, `nothing to compare: "y" at f:3 from gitlab-ci job "b" when "if $A" (a)`) {
 		t.Errorf("one value: %q names no condition", res.Message)
+	}
+	res = Run(context.Background(), "", agreeRule(named("a", fake{values: []check.Value{at("x", "f", 1), v}})))
+	if !strings.Contains(res.Message, `f:3 from gitlab-ci job "b" when "if $A" (a)`) {
+		t.Errorf("false agree: %q names no origin", res.Message)
 	}
 }

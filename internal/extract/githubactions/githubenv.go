@@ -60,83 +60,112 @@ func quiet(uses string) bool {
 // core.exportVariable. Each node is read once: an alias repeats a script
 // without its bytes.
 func (w *workflow) earlier(top, j *core.Node, before []*core.Node, name string) error {
-	seen := map[*core.Node]bool{}
-	names := func(n *core.Node) bool {
-		if n == nil || seen[n] {
-			return false
+	e := w.newEarlier(top, j, name)
+	for _, s := range before {
+		if err := e.step(s); err != nil {
+			return err
 		}
-		seen[n] = true
-		return n.Shape == core.Scalar && namesGitHubEnv.MatchString(n.Text)
 	}
-	defaultShell, defaultWhat := shellDefault(j), "the job's"
-	if defaultShell == nil {
-		defaultShell, defaultWhat = shellDefault(top), "the workflow's"
+	return nil
+}
+
+// earlierSteps is earlier's state over the steps of one job, one step at a
+// time, so Every reads each step once for every step after it.
+type earlierSteps struct {
+	w                      *workflow
+	name                   string
+	seen                   map[*core.Node]bool
+	defaultShell           *core.Node
+	defaultWhat, levelWhat string
+	levelEnv               *core.Node
+}
+
+func (w *workflow) newEarlier(top, j *core.Node, name string) *earlierSteps {
+	e := &earlierSteps{w: w, name: name, seen: map[*core.Node]bool{}}
+	e.defaultShell, e.defaultWhat = shellDefault(j), "the job's"
+	if e.defaultShell == nil {
+		e.defaultShell, e.defaultWhat = shellDefault(top), "the workflow's"
 	}
 	// The job's, its container's and the workflow's env: reach every run:
 	// step's script, so a value there that names the file hands it to each
 	// of them.
 	envNames := func(holder *core.Node) *core.Node {
 		env := holder.Field["env"]
-		if env == nil || env.Shape != core.Mapping || seen[env] {
+		if env == nil || env.Shape != core.Mapping || e.seen[env] {
 			return nil
 		}
-		seen[env] = true
+		e.seen[env] = true
 		for _, v := range env.Vals {
-			if names(v) {
+			if e.names(v) {
 				return v
 			}
 		}
 		return nil
 	}
-	levelEnv, levelWhat := envNames(j), "the job's env:"
+	e.levelEnv, e.levelWhat = envNames(j), "the job's env:"
 	// The run: scripts of a job with a container run in it, with its env:.
-	if c := j.Field["container"]; levelEnv == nil && c != nil && c.Shape == core.Mapping {
-		levelEnv, levelWhat = envNames(c), "the job's container.env:"
+	if c := j.Field["container"]; e.levelEnv == nil && c != nil && c.Shape == core.Mapping {
+		e.levelEnv, e.levelWhat = envNames(c), "the job's container.env:"
 	}
-	if levelEnv == nil {
-		levelEnv, levelWhat = envNames(top), "the workflow's env:"
+	if e.levelEnv == nil {
+		e.levelEnv, e.levelWhat = envNames(top), "the workflow's env:"
 	}
-	for _, s := range before {
-		if uses := s.Field["uses"]; uses != nil && s.Field["run"] == nil {
-			if uses.Shape == core.Scalar && quiet(uses.Text) {
-				continue
-			}
-			return fmt.Errorf("%s:%d: %s runs the action %s, which can set %s for the steps after it through GITHUB_ENV; errata reads no action's code, and this action is not on its list of those that set none",
-				w.file, uses.Line, describeStep(s), core.Quote(uses.Text), name)
+	return e
+}
+
+// names reports whether n is a scalar that names GITHUB_ENV, reading each
+// node once.
+func (e *earlierSteps) names(n *core.Node) bool {
+	if n == nil || e.seen[n] {
+		return false
+	}
+	e.seen[n] = true
+	return n.Shape == core.Scalar && namesGitHubEnv.MatchString(n.Text)
+}
+
+// step refuses the variable for the steps after s when s may set it
+// through GITHUB_ENV.
+func (e *earlierSteps) step(s *core.Node) error {
+	w, name := e.w, e.name
+	if uses := s.Field["uses"]; uses != nil && s.Field["run"] == nil {
+		if uses.Shape == core.Scalar && quiet(uses.Text) {
+			return nil
 		}
-		run := s.Field["run"]
-		if run == nil {
-			continue
-		}
-		shell, shellWhat := s.Field["shell"], "its shell:"
-		if shell == nil {
-			shell, shellWhat = defaultShell, "its shell, "+defaultWhat+" defaults.run.shell"
-		}
-		found, where := (*core.Node)(nil), ""
-		switch {
-		case names(run):
-			found, where = run, "its run:"
-		case names(shell):
-			found, where = shell, shellWhat
-		default:
-			if env := s.Field["env"]; env != nil && env.Shape == core.Mapping && !seen[env] {
-				seen[env] = true
-				for _, v := range env.Vals {
-					if names(v) {
-						found, where = v, "its env:"
-						break
-					}
+		return fmt.Errorf("%s:%d: %s runs the action %s, which can set %s for the steps after it through GITHUB_ENV; errata reads no action's code, and this action is not on its list of those that set none",
+			w.file, uses.Line, describeStep(s), core.Quote(uses.Text), name)
+	}
+	run := s.Field["run"]
+	if run == nil {
+		return nil
+	}
+	shell, shellWhat := s.Field["shell"], "its shell:"
+	if shell == nil {
+		shell, shellWhat = e.defaultShell, "its shell, "+e.defaultWhat+" defaults.run.shell"
+	}
+	found, where := (*core.Node)(nil), ""
+	switch {
+	case e.names(run):
+		found, where = run, "its run:"
+	case e.names(shell):
+		found, where = shell, shellWhat
+	default:
+		if env := s.Field["env"]; env != nil && env.Shape == core.Mapping && !e.seen[env] {
+			e.seen[env] = true
+			for _, v := range env.Vals {
+				if e.names(v) {
+					found, where = v, "its env:"
+					break
 				}
 			}
 		}
-		if found == nil && levelEnv != nil {
-			return fmt.Errorf("%s:%d: %s names GITHUB_ENV and reaches the run: of %s, which can set %s for the steps after it as the job runs; errata cannot read what it writes",
-				w.file, levelEnv.Line, levelWhat, describeStep(s), name)
-		}
-		if found != nil {
-			return fmt.Errorf("%s:%d: %s names GITHUB_ENV in %s, which can set %s for the steps after it as the job runs; errata cannot read what it writes",
-				w.file, found.Line, describeStep(s), where, name)
-		}
+	}
+	if found == nil && e.levelEnv != nil {
+		return fmt.Errorf("%s:%d: %s names GITHUB_ENV and reaches the run: of %s, which can set %s for the steps after it as the job runs; errata cannot read what it writes",
+			w.file, e.levelEnv.Line, e.levelWhat, describeStep(s), name)
+	}
+	if found != nil {
+		return fmt.Errorf("%s:%d: %s names GITHUB_ENV in %s, which can set %s for the steps after it as the job runs; errata cannot read what it writes",
+			w.file, found.Line, describeStep(s), where, name)
 	}
 	return nil
 }

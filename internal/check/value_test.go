@@ -57,3 +57,21 @@ func TestConditionNoteBoundaries(t *testing.T) {
 		}
 	}
 }
+
+// OriginNote names the reader and the part of its file after a value's
+// location, as the reader wrote it, and Notes puts the key, the origin and
+// the condition in that order. Planted breaks: OriginNote quoting the
+// origin, which wrote job "deploy" as job \"deploy\"; Notes without the
+// origin; the origin after the condition.
+func TestOriginNote(t *testing.T) {
+	if got := (Value{}).OriginNote(); got != "" {
+		t.Errorf("no origin: %q, want none", got)
+	}
+	v := Value{Origin: `gitlab-ci job "deploy"`, Condition: "if $A", Key: "K", HasKey: true}
+	if got, want := v.OriginNote(), ` from gitlab-ci job "deploy"`; got != want {
+		t.Errorf("OriginNote: %q, want %q", got, want)
+	}
+	if got, want := v.Notes(), ` key "K" from gitlab-ci job "deploy" when "if $A"`; got != want {
+		t.Errorf("Notes: %q, want %q", got, want)
+	}
+}

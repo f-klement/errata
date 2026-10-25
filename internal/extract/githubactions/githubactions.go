@@ -70,13 +70,8 @@ func Build(s Spec, parse Parser) (check.Extractor, error) {
 	case (s.Variable == "") == (s.Key == ""):
 		return nil, errors.New("github-actions: set exactly one of variable, for an environment variable, and key, for a key of the step or the job such as runs-on")
 	case s.Variable != "":
-		if len(s.Variable) > maxName || !variableName.MatchString(s.Variable) {
-			return nil, fmt.Errorf("github-actions: variable %s is no variable name: write up to %d letters, digits and underscores, not starting with a digit", core.Quote(s.Variable), maxName)
-		}
-		// "You can't overwrite the value of the default environment
-		// variables named GITHUB_* and RUNNER_*" (Variables reference).
-		if up := strings.ToUpper(s.Variable); strings.HasPrefix(up, "GITHUB_") || strings.HasPrefix(up, "RUNNER_") {
-			return nil, fmt.Errorf("github-actions: variable %s is one the runner sets, and GitHub ignores an env: that sets a GITHUB_ or RUNNER_ name", core.Quote(s.Variable))
+		if err := checkVariable(s.Variable); err != nil {
+			return nil, err
 		}
 	default:
 		if x.key, err = checkKey(s.Key); err != nil {
@@ -84,6 +79,34 @@ func Build(s Spec, parse Parser) (check.Extractor, error) {
 		}
 	}
 	return x, nil
+}
+
+// Every builds the extractor of the environment variable variable across
+// every job of the workflow file, and every step whose env: sets it: the
+// values each sees, as Build's for that job or step, with the job, and the
+// step, as each value's origin. The env extractor builds it.
+func Every(file, variable string, maxBytes int64, parse Parser) (check.Extractor, error) {
+	src, err := core.CheckSource("github-actions", file, maxBytes)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkVariable(variable); err != nil {
+		return nil, err
+	}
+	return extractor{Source: src, variable: variable, parse: parse, every: true}, nil
+}
+
+// checkVariable refuses a name no step's env: can set.
+func checkVariable(v string) error {
+	if len(v) > maxName || !variableName.MatchString(v) {
+		return fmt.Errorf("github-actions: variable %s is no variable name: write up to %d letters, digits and underscores, not starting with a digit", core.Quote(v), maxName)
+	}
+	// "You can't overwrite the value of the default environment variables
+	// named GITHUB_* and RUNNER_*" (Variables reference).
+	if up := strings.ToUpper(v); strings.HasPrefix(up, "GITHUB_") || strings.HasPrefix(up, "RUNNER_") {
+		return fmt.Errorf("github-actions: variable %s is one the runner sets, and GitHub ignores an env: that sets a GITHUB_ or RUNNER_ name", core.Quote(v))
+	}
+	return nil
 }
 
 // checkKey splits a key into its parts.
@@ -116,11 +139,25 @@ type extractor struct {
 	job, step, variable string
 	key                 []string // the key's parts, when variable is ""
 	parse               Parser
+	every               bool // the variable in every job and step, as Every builds it
+	// valueLimit is the most values Every returns, 0 for core.MaxValues:
+	// a test lowers it to witness the bound with a small file. The refusal
+	// still names core.MaxValues.
+	valueLimit int
 }
 
 // MayReturnNotLiteral reports true: a ${{ }} expression, and a number YAML
 // retypes, such as 3.10, are values GitHub computes.
 func (extractor) MayReturnNotLiteral() bool { return true }
+
+// maxValues is the most values Every returns: core.MaxValues, or the
+// valueLimit a test sets.
+func (e extractor) maxValues() int {
+	if e.valueLimit == 0 {
+		return core.MaxValues
+	}
+	return e.valueLimit
+}
 
 // Extract reads the workflow and returns the values the step, or the job,
 // sees.
