@@ -7,16 +7,15 @@ import (
 	"time"
 
 	"github.com/yuin/goldmark/v2/ast"
-	"github.com/yuin/goldmark/v2/parser"
 
 	"github.com/f-klement/errata/internal/extract/core"
 )
 
-// The guarded parse is goldmark's, node for node and offset for offset, or
-// a refusal by one of its bounds. The guard counts at least the nodes the
-// tree holds, and a parse with a node budget of budget more than the lines
-// take either makes the same tree or is refused by the budget, or by the
-// scan for runs that close emphasis, which max_bytes bounds too. Every byte of the prose is the file's byte at the offset its
+// The guarded parse is goldmark's with parseRun (goldmarkRuns), node for
+// node and offset for offset, or a refusal by one of its bounds. The guard
+// counts at least the nodes the tree holds, and a parse with a node budget
+// of budget more than the lines take either makes the same tree or is
+// refused by the budget. Every byte of the prose is the file's byte at the offset its
 // piece maps it to, but for a space or a newline errata wrote, and the prose
 // is never over maxProseRatio times the file. Every value of the text
 // extractor is in the prose, at a line of the file.
@@ -30,8 +29,8 @@ func FuzzText(f *testing.F) {
 	f.Add("\xef\xbb\xbf---\na\n...\n<!-- x --> y <b>z</b>\n", false, uint16(2))
 	// Seeds that cross each bound: definitions, continuations under the
 	// budget, depth at a block's opening and after the parse, runs of * and
-	// _, the scan for runs that close them under the budget, a line of HTML,
-	// and folds of case that change a rune's length.
+	// _, runs that close nothing under the budget, a line of HTML, and folds
+	// of case that change a rune's length.
 	f.Add(strings.Repeat("[x]: y\n", 3163), false, uint16(500))
 	f.Add(strings.Repeat("> > > a\n", 11), false, uint16(4))
 	f.Add(strings.Repeat("> ", 1000)+"a\n", false, uint16(9))
@@ -50,15 +49,14 @@ func FuzzText(f *testing.F) {
 			return
 		}
 		tree := treeString(doc.root, doc.src)
-		if want := treeString(parser.New().Parse(doc.src), doc.src); tree != want {
+		if want := treeString(goldmarkRuns.Parse(doc.src), doc.src); tree != want {
 			t.Fatalf("guarded\n%s\ngoldmark\n%s", tree, want)
 		}
 		limit := markdownBytesPerNode * (2*int64(strings.Count(data, "\n")) + 3 + int64(budget))
 		small, err := parseMarkdown("f", []byte(data), limit, time.Minute)
 		switch {
 		case err != nil:
-			if msg := err.Error(); !strings.Contains(msg, "nodes, the limit") && !strings.Contains(msg, "open blocks from line to line, the limit") &&
-				!strings.Contains(msg, "that close emphasis, the limit") {
+			if msg := err.Error(); !strings.Contains(msg, "nodes, the limit") && !strings.Contains(msg, "open blocks from line to line, the limit") {
 				t.Fatalf("budget %d: refused: %v", budget, err)
 			}
 		case treeString(small.root, small.src) != tree:

@@ -6,7 +6,7 @@ import (
 	"slices"
 	"strings"
 	"time"
-	"unicode/utf8"
+	"unicode"
 
 	"github.com/yuin/goldmark/v2/ast"
 	"github.com/yuin/goldmark/v2/parser"
@@ -30,7 +30,9 @@ import (
 // that parseMarkdown recovers, once it has run past its time limit or past
 // one of the bounds below. Between two looks at the guard, goldmark does at
 // most one pass over a paragraph or one of the bounded costs the bounds below
-// name: it scans HTML and link destinations by hand, a byte at a time.
+// name: it scans HTML and link destinations by hand, a byte at a time. Runs
+// of * and _ errata reads itself (parseRun), so that goldmark's matching of
+// them happens in calls the guard sees, and no bound models goldmark's code.
 const (
 	// markdownBytesPerNode is how many bytes of max_bytes allow one node,
 	// counted as the guard counts them: three for each inline node, two for
@@ -46,67 +48,17 @@ const (
 	markdownBytesPerNode = 4
 
 	// maxDelimiters is the most runs of * and _ one paragraph or heading may
-	// hold. goldmark matches each closing run against the runs open before
-	// it, so a paragraph costs up to the square of its runs, some of it
-	// between two looks at the guard. On goldmark 2.1.8, of ten shapes of
-	// 5000 runs on one line with 300 bytes after them, the slowest, such as
-	// "****_a*a" 1663 times, takes 0.062 s on the build node and up to
-	// 0.09 s on the slowest worker node. From 256 bytes or more before a
-	// line's end goldmark matches no emphasis at once, so a long line of
-	// closed emphasis counts two runs for each. The most in one paragraph
-	// of the real files below, under 2.1.8, is 286.
+	// hold. goldmark pairs each run that may close with the runs open before
+	// it when the paragraph closes, so a paragraph costs up to the square of
+	// its runs, each pair tried a look at the guard (guardedProcessor). Of
+	// seven shapes of 4990 runs on one line, the slowest, "****_a*a" 1663
+	// times, takes 0.063 s on the build node. errata reads every run itself
+	// (parseRun), so an emphasis is two runs, and the most in one paragraph
+	// of 5342 real files is 796. The real files are the distinct Markdown
+	// files of Go module caches and npm packages' node_modules on a
+	// development machine on 2026-10-26, 54 MB; they are not kept. Each
+	// renders from errata's parse as from goldmark's own.
 	maxDelimiters = 5000
-
-	// markdownScanPerByte is how many bytes goldmark may scan for runs of *
-	// and _ that close emphasis, for each byte of max_bytes. From a run that
-	// opens with fewer than goldmarkScanLine bytes left on its line,
-	// goldmark looks to the end of the line for a run to close it, so runs
-	// that close nothing cost up to 255 bytes each. Without this limit, 32
-	// MiB of lines of 85 such runs scanned 330 MB, ten bytes for each of the
-	// file's, in 2.2 s on the build node before the node limit stopped them.
-	// The guard counts the rest of the line for each run that may open there
-	// and is left open, and the bytes up to the closing run for each
-	// emphasis matched at once: the bytes goldmark's hop to the closing run
-	// reads. goldmark then reads the same bytes once more to check them, so
-	// it reads at most twice what the guard counts.
-	//
-	// From a run there that may also close, goldmark first walks the runs
-	// of the paragraph before it for one of the same character that opens.
-	// An emphasis it then matches at once adds no run, so maxDelimiters
-	// alone does not bound the walk: 4990 runs and then lines of a*b*c took
-	// 3.99 s at 1 MiB and 16.6 s at 4 MiB on the build node, and ran to the
-	// 30 s time limit at 32 MiB. The guard counts a byte for each run of the
-	// paragraph so far: before an unmatched run that may close, and before
-	// an emphasis matched at once whose opening run follows a character
-	// that goldmark does not read as a space (goldmarkSpace), since only
-	// such a run may close. The build node refuses that shape at 32 MiB in
-	// at most 0.39 s, and the same with a vertical tab or a form feed before
-	// each run.
-	//
-	// On goldmark 2.1.8, with its hop and its walk counted in a copy of its
-	// source, the guard counts at least both on each of 5341 real files, on
-	// 100035 random documents of runs, words, links, blocks and spaces, and
-	// on ten shapes of runs at 32 MiB but for the one call in which the node
-	// limit stopped three of them, before the guard counted its scan. Six
-	// of those shapes reach this limit without a walk, and the build node
-	// refuses each in at most 0.90 s. Of the real files, the most is 140541
-	// bytes, from a changelog of 2.9 MB, and the densest, a file of 82
-	// bytes, counts 0.99 for each of its bytes. The real files are the
-	// Markdown files of a Go module cache and of npm packages' node_modules
-	// on a development machine on 2026-10-25, 42 MB once duplicates were
-	// removed; they are not kept.
-	markdownScanPerByte = 2
-
-	// goldmarkScanLine is goldmark's fastPathMax, 256 since 2.1.8: from a
-	// run with this many bytes or more left on its line, goldmark scans
-	// nothing and matches the run when the paragraph closes, so the guard
-	// counts no scan for it. goldmark 2.1.6 scanned from every run to the
-	// end of its line, so a line of runs cost the square of its length:
-	// 100000 runs that close nothing, on one line of 400 KB, scanned 988 MB
-	// in 2.2 s before the run limit refused them, where 2.1.8 refuses them
-	// at once. TestGuardScansWhereGoldmarkDoes fails when goldmark's length
-	// and this one differ.
-	goldmarkScanLine = 256
 
 	// maxDefinitionCopies bounds the link reference definitions at the start
 	// of a paragraph. goldmark takes each one out by copying the lines of
@@ -185,7 +137,7 @@ var (
 		util.Prioritized(parser.NewLinkParser(), 200),
 		util.Prioritized(parser.NewAutoLinkParser(), 300),
 		util.Prioritized(parser.NewRawHTMLParser(), 400),
-		util.Prioritized(parser.NewEmphasisParser(), 500),
+		util.Prioritized(parser.NewEmphasisParser(parser.WithParseDelimiterFunc(parseRun)), 500),
 	}
 	commonMarkTransformers = []util.PrioritizedValue[parser.ParagraphTransformer]{
 		util.Prioritized(parser.LinkReferenceParagraphTransformer, 100),
@@ -229,9 +181,8 @@ type markdownDoc struct {
 	// maxPieces is the most pieces its prose may hold.
 	maxPieces int
 	// nodes is the guard's count of the nodes the parse made, an upper
-	// bound on those in the tree, goOn its count of continuations, and
-	// scanned its count of the bytes goldmark scanned for closing runs.
-	nodes, goOn, scanned int64
+	// bound on those in the tree, and goOn its count of continuations.
+	nodes, goOn int64
 }
 
 // parseMarkdown parses data, which it may change, as CommonMark, past a
@@ -262,7 +213,6 @@ func parseMarkdown(file string, data []byte, limit int64, timeLimit time.Duratio
 		timeLimit: timeLimit,
 		maxNodes:  limit / markdownBytesPerNode,
 		maxGoOn:   limit / markdownBytesPerContinuation,
-		maxScan:   limit * markdownScanPerByte,
 	}
 	defer func() {
 		if r := recover(); r != nil {
@@ -281,7 +231,7 @@ func parseMarkdown(file string, data []byte, limit int64, timeLimit time.Duratio
 	pc := parser.NewContext()
 	pc.Set(guardKey, g)
 	doc.root = markdownParser.Parse(data, parser.WithContext(pc))
-	doc.nodes, doc.goOn, doc.scanned = g.nodes, g.goOn, g.scanned
+	doc.nodes, doc.goOn = g.nodes, g.goOn
 	if err := checkDepth(doc.root, data); err != nil {
 		return nil, fmt.Errorf("%s: %w", file, err)
 	}
@@ -372,11 +322,7 @@ type guard struct {
 	// delimiters the runs of * and _ in it so far.
 	block      ast.Node
 	delimiters int
-	// scanned counts the bytes goldmark scans for runs that close
-	// emphasis, up to maxScan.
-	scanned int64
-	maxScan int64
-	err     error
+	err        error
 }
 
 // stopParse is the panic that ends a parse the guard has refused.
@@ -466,84 +412,95 @@ func (b guardedBlock) Close(n ast.Node, reader text.Reader, pc parser.Context) {
 // node it returns counts three: itself, the text before it, and the text of
 // a link's label that goldmark reads with the link in one call. A run of * or
 // _ it returns counts against maxDelimiters, and gets a processor that looks
-// at the guard when goldmark matches runs. goldmark matches a pair of runs on
-// one line at once when nothing between them is for another parser and the
-// opening run has fewer than goldmarkScanLine bytes left on its line, and
-// returns the emphasis whole: one node for every two characters of the
-// closing run, nested around a text. Each node below the first counts one
-// more. Before either, goldmark scans that short rest of the line for the
-// closing run, and for a run that may also close walks the paragraph's runs
-// for an opener; the guard counts both against maxScan.
+// at the guard each time goldmark tries a pair of runs and each time it
+// matches one (guardedProcessor).
 type guardedInline struct{ parser.InlineParser }
 
 func (p guardedInline) Parse(parent ast.Node, block text.Reader, pc parser.Context) ast.Node {
 	g := guardOf(pc)
 	g.tick()
-	line, seg := block.PeekLine()
-	before := block.PrecedingCharacter()
 	n := p.InlineParser.Parse(parent, block, pc)
 	if n == nil {
 		return nil
 	}
 	g.add(3)
-	switch d := n.(type) {
-	case *parser.Delimiter:
-		runs := g.runsIn(parent)
-		if d.CanOpen && len(line) < goldmarkScanLine {
-			g.scan(len(line), seg.Start)
-			if d.CanClose {
-				g.scan(runs, seg.Start)
-			}
+	if d, ok := n.(*parser.Delimiter); ok {
+		if parent != g.block {
+			g.block, g.delimiters = parent, 0
 		}
 		if g.delimiters++; g.delimiters > maxDelimiters {
 			g.stop(fmt.Errorf("%s: line %d: a paragraph holds more than %d runs of * and _, the limit; %s",
 				g.file, lineOf(g.src, d.Value.Index().Start), maxDelimiters, core.OtherWay))
 		}
 		d.Processor = guardedProcessor{d.Processor, g}
-	case *ast.Emphasis, *ast.Strong:
-		rest, _ := block.PeekLine()
-		runs := g.runsIn(parent)
-		if goldmarkSpace(before) {
-			runs = 0 // a run after a space cannot close, so goldmark walked nothing
-		}
-		g.scan(len(line)-len(rest)+runs, seg.Start)
-		for c := n.FirstChild(); c != nil; c = c.FirstChild() {
-			g.add(1)
-		}
 	}
 	return n
 }
 
-// goldmarkSpace reports whether goldmark reads r, the character before a
-// run, as a space when it decides whether the run may close: runeClass in
-// goldmark 2.1.8's parser/delimiter.go. Below 0x80 that is its charFlags
-// space, util.IsSpace less CR and LF, or a CR or an LF, which is util.IsSpace
-// itself: tab, LF, CR and space, and not the vertical tab or the form feed
-// that unicode.IsSpace also takes. From 0x80 it is util.IsSpaceRune.
-func goldmarkSpace(r rune) bool {
-	if r < utf8.RuneSelf {
-		return util.IsSpace(byte(r)) //nolint:gosec // r comes from PrecedingCharacter, never negative, so here it is in [0, 0x80)
+// parseRun reads a run of * or _ for goldmark's emphasis parser, in place of
+// goldmark's ParseDelimiter. It reads the run as a delimiter run of
+// CommonMark (canOpenClose) and leaves every match to goldmark's
+// ProcessDelimiters, which tries each pair of runs through the run's
+// processor when the paragraph closes. ParseDelimiter first tries to match a
+// run on its line at once: in the one call, it scans the line ahead for a
+// closing run and walks the paragraph's runs for an opener. No wrapper sees
+// that work, so a guard could bound it only through a model of goldmark's
+// code, and goldmark 2.1.8 changed the code under errata's model. Read this
+// way, all the work emphasis costs is calls the guard sees.
+func parseRun(block text.Reader, minimum int, processor parser.DelimiterProcessor, pc parser.Context) ast.Node {
+	before := block.PrecedingCharacter()
+	line, seg := block.PeekLine()
+	if len(line) == 0 || !processor.IsDelimiter(line[0]) {
+		return nil
 	}
-	return util.IsSpaceRune(r)
+	c, n := line[0], 0
+	for n < len(line) && line[n] == c {
+		n++
+	}
+	if n < minimum {
+		return nil
+	}
+	after := ' ' // a line's end counts as a space
+	if n < len(line) {
+		after = util.ToRune(line, n)
+	}
+	run := text.NewSingleLineValueFromSegment(seg.WithStop(seg.Start+n), block.Decoder())
+	block.Advance(n)
+	canOpen, canClose := canOpenClose(before, after, c)
+	if !canOpen && !canClose {
+		return ast.NewText(run)
+	}
+	d := parser.NewDelimiter(canOpen, canClose, n, c, processor)
+	d.Value = run
+	pc.PushDelimiter(d)
+	return d
 }
 
-// runsIn is how many runs of * and _ the guard has counted in block so far,
-// none when the parse has moved on to a block other than the last one.
-func (g *guard) runsIn(block ast.Node) int {
-	if block != g.block {
-		g.block, g.delimiters = block, 0
+// canOpenClose reports whether a run of c between the characters before and
+// after it may open emphasis and may close it, by the rules of CommonMark
+// 0.31.2, section 6.2: a left-flanking run of * opens and a right-flanking
+// one closes, and a run of _ that is both opens only after punctuation and
+// closes only before it.
+func canOpenClose(before, after rune, c byte) (canOpen, canClose bool) {
+	beforeSpace, beforePunct := markdownSpace(before), markdownPunct(before)
+	afterSpace, afterPunct := markdownSpace(after), markdownPunct(after)
+	left := !afterSpace && (!afterPunct || beforeSpace || beforePunct)
+	right := !beforeSpace && (!beforePunct || afterSpace || afterPunct)
+	if c == '_' {
+		return left && (!right || beforePunct), right && (!left || afterPunct)
 	}
-	return g.delimiters
+	return left, right
 }
 
-// scan counts n bytes that goldmark scanned from offset at for a run that
-// closes emphasis, and stops the parse past maxScan.
-func (g *guard) scan(n, at int) {
-	if g.scanned += int64(n); g.scanned > g.maxScan {
-		g.stop(fmt.Errorf("%s: line %d: the Markdown parse scans more than %d bytes for runs of * and _ that close emphasis, the limit, %d for every byte of max_bytes; %s",
-			g.file, lineOf(g.src, at), g.maxScan, markdownScanPerByte, core.OtherWay))
-	}
+// markdownSpace is CommonMark's Unicode whitespace character: a space
+// separator (Zs), a tab, a line feed, a form feed or a carriage return.
+func markdownSpace(r rune) bool {
+	return r == '\t' || r == '\n' || r == '\f' || r == '\r' || unicode.Is(unicode.Zs, r)
 }
+
+// markdownPunct is CommonMark's Unicode punctuation character: one in the
+// general category P or S.
+func markdownPunct(r rune) bool { return unicode.IsPunct(r) || unicode.IsSymbol(r) }
 
 // guardedCloser is guardedInline for a parser that goldmark also calls when
 // a block closes.
@@ -555,7 +512,9 @@ func (p guardedCloser) CloseBlock(parent ast.Node, block text.Reader, pc parser.
 }
 
 // guardedProcessor matches runs of * and _ as goldmark does, looking at the
-// guard on every call. Each match makes a node.
+// guard on every call: each pair goldmark tries and each match, which makes
+// a node. With parseRun reading the runs, these calls are all the work
+// emphasis costs.
 type guardedProcessor struct {
 	parser.DelimiterProcessor
 	g *guard
