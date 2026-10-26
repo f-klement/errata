@@ -11,3 +11,5 @@ coverage.product.out
 /.cache
 # rapid writes a failing case here; it is a local repro, not a fixture
 **/testdata/rapid/
+# Claude Code puts a subagent's isolated worktree here; each is a checkout of its own
+/.claude/worktrees/
