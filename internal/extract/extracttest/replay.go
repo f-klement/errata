@@ -24,7 +24,8 @@ type Replay[S any] struct {
 	// TimeLimit replaces a regex search's time limit, so a refusal on time
 	// comes fast.
 	TimeLimit time.Duration
-	// Bound is the most time reading the input may take, without -race.
+	// Bound is the most time reading the input may take, without -race, at
+	// the fastest of up to three reads (fastest).
 	// A case that replays a quadratic pass sets it at no more than a third
 	// of the time that pass takes on the input, and at three times or more
 	// the slowest of three linear runs on a loaded machine, under -race too;
@@ -37,8 +38,13 @@ type Replay[S any] struct {
 }
 
 // OtherBound is the bound of a case that sets none: none of those replays a
-// quadratic pass. The slowest of them took 0.17 s, and 0.48 s under -race.
-const OtherBound = time.Second
+// quadratic pass, so it stops a read gone badly wrong and was measured
+// against no slow pass. It was 1 s until shell's deep pipelines took 1.06 s
+// in CI beside two other pipelines. On 2026-10-26, with three runs of every
+// package's replays at once on builder, the slowest of them, shell's
+// assignments at 1 MiB, took 1.44 s at the fastest of three reads, and the
+// slowest under -race at make test's size 0.39 s.
+const OtherBound = 2 * time.Second
 
 // boundOf is c's Bound, or OtherBound when it sets none.
 func boundOf[S any](c Replay[S]) time.Duration {
@@ -46,6 +52,34 @@ func boundOf[S any](c Replay[S]) time.Duration {
 		return OtherBound
 	}
 	return c.Bound
+}
+
+// reads is how many times fastest reads an input that keeps going over its
+// bound.
+const reads = 3
+
+// fastest reads with read, and again while the read takes more than bound,
+// up to reads times. A linear read that a loaded node slows passes on a
+// later read, and a quadratic one is slow every time: on 2026-10-26 three
+// concurrent runs on builder took shell's and jenkins' linear shapes to
+// 1.6 s against their bound of 1 s. It returns the first read's values and
+// error, and the fastest read's time.
+func fastest[V any](bound time.Duration, read func() (V, time.Duration, error)) (V, time.Duration, error) {
+	got, best, err := read()
+	for i := 1; i < reads && best > bound; i++ {
+		_, took, _ := read()
+		best = min(best, took)
+	}
+	return got, best, err
+}
+
+// timed is a read of root with e that gives its time.
+func timed(e check.Extractor, root string) func() ([]check.Value, time.Duration, error) {
+	return func() ([]check.Value, time.Duration, error) {
+		start := time.Now()
+		got, err := e.Extract(root)
+		return got, time.Since(start), err
+	}
 }
 
 // RunReplays reads the cases whose Full is full, each with the extractor
@@ -71,10 +105,9 @@ func RunReplays[S any](t *testing.T, build func(S) (check.Extractor, error), cas
 			if c.TimeLimit > 0 {
 				e = withTimeLimit(t, e, c.TimeLimit)
 			}
-			start := time.Now()
-			got, err := e.Extract(root)
 			bound := boundOf(c)
-			if took := time.Since(start); took > bound*RaceSlowdown {
+			got, took, err := fastest(bound*RaceSlowdown, timed(e, root))
+			if took > bound*RaceSlowdown {
 				t.Errorf("took %v, over %v", took, bound*RaceSlowdown)
 			}
 			switch {
@@ -120,10 +153,9 @@ func RunShapes[S any](t *testing.T, build func(S) (check.Extractor, error), case
 			if err != nil {
 				t.Fatal(err)
 			}
-			start := time.Now()
-			got, err := e.Extract(root)
 			bound := boundOf(c)
-			if took := time.Since(start); took > bound*RaceSlowdown {
+			got, took, err := fastest(bound*RaceSlowdown, timed(e, root))
+			if took > bound*RaceSlowdown {
 				t.Errorf("took %v, over %v", took, bound*RaceSlowdown)
 			}
 			switch {
