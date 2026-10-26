@@ -13,7 +13,7 @@ GOLANGCI_LINT_VERSION := v2.15.0
 GREMLINS_VERSION      := v0.6.0
 GOVULNCHECK_VERSION   := v1.9.0
 GORELEASER_VERSION    := v2.18.3
-SYFT_VERSION          := v1.54.1
+SYFT_VERSION          := v1.55.0
 KO_VERSION            := v0.19.1
 
 # SHA-256 of each released archive, from the project's own checksum file at
@@ -26,8 +26,8 @@ GREMLINS_SHA256_linux_amd64      := b02a42e47935f891c9a411d68c07e211c7082609e79c
 GREMLINS_SHA256_linux_arm64      := 686542674e54559afb7e86d6994d342c19a856cfd970c315748989537936664c
 GORELEASER_SHA256_linux_amd64    := b8dee4728bca1aba0d71a832a17cd0a3799f75372878e7ffa36aef2343bce0bc
 GORELEASER_SHA256_linux_arm64    := fa7011a7f8de3b504326b8552cf21c708ed3089519b01d372da32ef4e8d298d7
-SYFT_SHA256_linux_amd64          := c069905b391cc4c20a5ba65ad5c10be2a7ba074f8ea6ad203e24d14e303dad47
-SYFT_SHA256_linux_arm64          := dfdf0537610113edbefe1f1fc6548bc957b2d77439636ec824fcf0e10d46d054
+SYFT_SHA256_linux_amd64          := bb65249542db5fedeeb4d3f9b018b75e7264dbfbbb10486f044581a92f90490d
+SYFT_SHA256_linux_arm64          := 929bd163db2d7cd2255d3bcb8967208079813d7b46b0c952f7b794d8e2c7d304
 KO_SHA256_linux_amd64            := 635ac6ea3fd376c935fee597fbb29ab2c2449f49ef1655085fe3aa9c25fed7a5
 KO_SHA256_linux_arm64            := 4099b2d1170d3b8a70e049237462efc2dd14d5fa30e9d2e5e108fb4f778cdd3f
 
