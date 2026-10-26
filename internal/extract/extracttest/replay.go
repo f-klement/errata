@@ -40,6 +40,14 @@ type Replay[S any] struct {
 // quadratic pass. The slowest of them took 0.17 s, and 0.48 s under -race.
 const OtherBound = time.Second
 
+// boundOf is c's Bound, or OtherBound when it sets none.
+func boundOf[S any](c Replay[S]) time.Duration {
+	if c.Bound == 0 {
+		return OtherBound
+	}
+	return c.Bound
+}
+
 // RunReplays reads the cases whose Full is full, each with the extractor
 // build makes of its spec, from a file named f.
 func RunReplays[S any](t *testing.T, build func(S) (check.Extractor, error), cases []Replay[S], full bool) {
@@ -65,10 +73,7 @@ func RunReplays[S any](t *testing.T, build func(S) (check.Extractor, error), cas
 			}
 			start := time.Now()
 			got, err := e.Extract(root)
-			bound := c.Bound
-			if bound == 0 {
-				bound = OtherBound
-			}
+			bound := boundOf(c)
 			if took := time.Since(start); took > bound*RaceSlowdown {
 				t.Errorf("took %v, over %v", took, bound*RaceSlowdown)
 			}
@@ -104,8 +109,8 @@ func withTimeLimit(t *testing.T, e check.Extractor, d time.Duration) check.Extra
 }
 
 // RunShapes reads each case, a dense shape of a file, from the file fileOf
-// names, within OtherBound. Last is a prefix of the last value's text: a
-// shape's last value may be as long as the file.
+// names, within its Bound or OtherBound. Last is a prefix of the last
+// value's text: a shape's last value may be as long as the file.
 func RunShapes[S any](t *testing.T, build func(S) (check.Extractor, error), cases []Replay[S], fileOf func(S) string) {
 	t.Helper()
 	for _, c := range cases {
@@ -117,8 +122,9 @@ func RunShapes[S any](t *testing.T, build func(S) (check.Extractor, error), case
 			}
 			start := time.Now()
 			got, err := e.Extract(root)
-			if took := time.Since(start); took > OtherBound*RaceSlowdown {
-				t.Errorf("took %v, over %v", took, OtherBound*RaceSlowdown)
+			bound := boundOf(c)
+			if took := time.Since(start); took > bound*RaceSlowdown {
+				t.Errorf("took %v, over %v", took, bound*RaceSlowdown)
 			}
 			switch {
 			case c.Refused != "":

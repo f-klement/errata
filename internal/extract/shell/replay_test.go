@@ -3,6 +3,7 @@ package shell
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/f-klement/errata/internal/extract/extracttest"
 )
@@ -10,9 +11,10 @@ import (
 // shellReplays are the densest shapes measured for the reader, built at
 // size bytes: the most statements, words, quotes, defaults and here-documents
 // a file can hold, and nesting just under the guard's limit, again and again.
-// None is quadratic, so each is bounded by extracttest.OtherBound. make test
-// reads them at 16 KiB and make slow at 1 MiB; the README's shell section
-// gives the figures at 32 MiB.
+// None is quadratic, so each is bounded by extracttest.OtherBound, or by its
+// own Bound where it was measured past that. make test reads them at 16 KiB
+// and make slow at 1 MiB; the README's shell section gives the figures at
+// 32 MiB.
 func shellReplays(size int) []extracttest.Replay[Spec] {
 	fill := func(unit string) string { return strings.Repeat(unit, size/len(unit)) }
 	x := Spec{File: "f.sh", Name: "X"}
@@ -53,10 +55,14 @@ func shellReplays(size int) []extracttest.Replay[Spec] {
 	// commands deep, and here-documents there: the walk once looped over its
 	// stack of 18000 nodes for each assignment and reference, which took a
 	// file of 32 MiB 85 s, and copied the stack for each pending document,
-	// which took 4000 of them 1232 MiB.
+	// which took 4000 of them 1232 MiB. They take longer than the other
+	// shapes: assignments at 1 MiB, slowest of three on builder 0.30 s,
+	// 0.67 s with three runs at once, and 1.06 s in CI beside two other
+	// pipelines, which failed extracttest.OtherBound. Bound 2 s, three
+	// times the loaded run; that walk put back takes them 4.4 s and 5.7 s.
 	pipe := strings.Repeat("|a", 9000)
 	headOfPipe := func(name, unit string) extracttest.Replay[Spec] {
-		return extracttest.Replay[Spec]{Name: name, Spec: x, Body: func() string { return "{ " + fill(unit) + " }" + pipe + "\n" }}
+		return extracttest.Replay[Spec]{Name: name, Spec: x, Body: func() string { return "{ " + fill(unit) + " }" + pipe + "\n" }, Bound: 2 * time.Second}
 	}
 	pending := size / len(" <<A") / 2
 	deepDocs := extracttest.Replay[Spec]{Name: "here-documents under a deep pipeline", Spec: x, Body: func() string {
@@ -82,7 +88,7 @@ func shellReplays(size int) []extracttest.Replay[Spec] {
 	}
 }
 
-// runShellReplays reads each shape at size within extracttest.OtherBound.
+// runShellReplays reads each shape at size within its Bound or extracttest.OtherBound.
 func runShellReplays(t *testing.T, size int) {
 	t.Helper()
 	extracttest.RunShapes(t, Build, shellReplays(size), func(Spec) string { return "f.sh" })
