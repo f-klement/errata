@@ -71,7 +71,7 @@ FUZZ_TARGETS := ./internal/config:FuzzParse ./internal/protocol:FuzzMessage \
                 ./internal/extract/githubactions:FuzzGitHubActions \
                 ./internal/extract/jenkins:FuzzJenkins
 
-.PHONY: check gate build tools lint fmt test cover slow fuzz mutation vuln dogfood public-dry release-dry image-dry ci-local ci-test tool-sums hooks clean
+.PHONY: check gate precheck build tools lint fmt test cover slow fuzz mutation vuln dogfood public-dry release-dry image-dry ci-local ci-test tool-sums hooks clean
 
 # ci/ is stripped from the public mirror, so a public clone runs the gate
 # without the publish and autopatch targets.
@@ -85,6 +85,17 @@ INTERNAL := $(if $(wildcard ci/public-tree.sh),public-dry ci-test)
 gate: lint test cover slow fuzz vuln dogfood image-dry $(INTERNAL)
 
 check: gate mutation
+
+# The checks that sank whole gates for want of a minute's look, for a seat to run on its final
+# commit before handing it back. In the two waves up to 2026-10-25 five gates of 12 to 15 minutes
+# went red on one of them: three on lint or on a node name in a public file (public-dry), and two
+# on a new package without its `//go:build mutation` mutation_test.go, which only
+# TestEveryTestedPackageLinksTheWatchdog in make test catches. That test runs first, since it
+# takes seconds where lint takes minutes. The public mirror has no ci/, so there it is the test
+# and lint.
+precheck:
+	$(GO) test -count=1 -run '^TestEveryTestedPackageLinksTheWatchdog$$' ./internal/heapcap
+	$(MAKE) --no-print-directory lint $(if $(wildcard ci/public-tree.sh),public-dry)
 
 build:
 	CGO_ENABLED=0 $(GO) build -trimpath -ldflags '$(LDFLAGS)' -o errata ./cmd/errata

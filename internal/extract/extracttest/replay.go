@@ -1,6 +1,7 @@
 package extracttest
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -73,6 +74,19 @@ func fastest[V any](bound time.Duration, read func() (V, time.Duration, error)) 
 	return got, best, err
 }
 
+// logTook logs the time a case was judged by and its bound. go test prints
+// it under -v and on a failure only.
+func logTook(t *testing.T, took, bound time.Duration) {
+	t.Helper()
+	t.Log(tookLine(took, bound))
+}
+
+// tookLine is the line logTook logs, in the one form ci/replay-load.sh
+// parses.
+func tookLine(took, bound time.Duration) string {
+	return fmt.Sprintf("took %v, bound %v", took, bound)
+}
+
 // timed is a read of root with e that gives its time.
 func timed(e check.Extractor, root string) func() ([]check.Value, time.Duration, error) {
 	return func() ([]check.Value, time.Duration, error) {
@@ -107,6 +121,7 @@ func RunReplays[S any](t *testing.T, build func(S) (check.Extractor, error), cas
 			}
 			bound := boundOf(c)
 			got, took, err := fastest(bound*RaceSlowdown, timed(e, root))
+			logTook(t, took, bound*RaceSlowdown)
 			if took > bound*RaceSlowdown {
 				t.Errorf("took %v, over %v", took, bound*RaceSlowdown)
 			}
@@ -155,6 +170,7 @@ func RunShapes[S any](t *testing.T, build func(S) (check.Extractor, error), case
 			}
 			bound := boundOf(c)
 			got, took, err := fastest(bound*RaceSlowdown, timed(e, root))
+			logTook(t, took, bound*RaceSlowdown)
 			if took > bound*RaceSlowdown {
 				t.Errorf("took %v, over %v", took, bound*RaceSlowdown)
 			}

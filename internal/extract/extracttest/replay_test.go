@@ -47,3 +47,12 @@ func TestFastestReadsAgainOnlyWhileOverTheBound(t *testing.T) {
 		})
 	}
 }
+
+// ci/replay-load.sh reads a case's time and bound from this line under -v,
+// and its test in ci/test-ci.sh feeds it lines of this form. The planted
+// break: "%v of %v", which the script's table read as no time at all.
+func TestTookLineIsTheFormReplayLoadParses(t *testing.T) {
+	if got := tookLine(412*time.Millisecond, 2*time.Second); got != "took 412ms, bound 2s" {
+		t.Errorf("tookLine = %q, want %q", got, "took 412ms, bound 2s")
+	}
+}

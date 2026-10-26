@@ -141,7 +141,7 @@ func runShapes(t *testing.T, full bool, bound time.Duration) {
 			start := time.Now()
 			got, err := e.Extract(root)
 			took := time.Since(start)
-			t.Logf("%s at %d: %v", s.name, n, took)
+			t.Logf("%s at %d: took %v, bound %v", s.name, n, took, bound*extracttest.RaceSlowdown)
 			if took > bound*extracttest.RaceSlowdown {
 				t.Errorf("took %v, over %v", took, bound*extracttest.RaceSlowdown)
 			}
