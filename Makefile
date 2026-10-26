@@ -18,8 +18,8 @@ KO_VERSION            := v0.19.1
 
 # SHA-256 of each released archive, from the project's own checksum file at
 # that version. After a version bump, `make tool-sums` rewrites them; until
-# then the download fails its check. govulncheck publishes no binaries and is
-# always built.
+# then the download fails its check. Renovate runs it on its own bumps
+# (renovate.json). govulncheck publishes no binaries and is always built.
 GOLANGCI_LINT_SHA256_linux_amd64 := 9b7fe6a6bf6334b98decf8d86b11415ea7889afdabdd1959fdce23af2a9ebcea
 GOLANGCI_LINT_SHA256_linux_arm64 := b4d8f17068b35ee6060cc2f69a16fb48740d706fbba81661c318649c114a6998
 GREMLINS_SHA256_linux_amd64      := b02a42e47935f891c9a411d68c07e211c7082609e79c2435b67c85ee9658c538
