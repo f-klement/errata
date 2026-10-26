@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"golang.org/x/mod/modfile"
+
 	"github.com/f-klement/errata/internal/extract/core"
 	"github.com/f-klement/errata/internal/extract/extracttest"
 )
@@ -21,9 +23,35 @@ import (
 //
 //	(cd testdata/oracle/compose && go build -o /tmp/compose-oracle .)
 //	ERRATA_COMPOSE_ORACLE=/tmp/compose-oracle go test ./internal/extract/envfile -run TestRegenerateOracleCorpora
-//
-// The corpus of this commit came from compose-go v2.16.2.
 const composeCorpus = "testdata/oracle/envfile-compose.json"
+
+// composeCorpusFrom is the compose-go release the committed corpus came from.
+// Moving the oracle's go.mod without writing the corpus again fails
+// TestComposeCorpusMatchesOracleModule.
+const composeCorpusFrom = "v2.16.2"
+
+// TestComposeCorpusMatchesOracleModule holds the oracle module's compose-go
+// to the release the corpus came from. CI never runs the oracle, so a bump
+// of its go.mod alone would pass every other test.
+func TestComposeCorpusMatchesOracleModule(t *testing.T) {
+	b, err := os.ReadFile("testdata/oracle/compose/go.mod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := modfile.ParseLax("go.mod", b, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range f.Require {
+		if r.Mod.Path == "github.com/compose-spec/compose-go/v2" {
+			if r.Mod.Version != composeCorpusFrom {
+				t.Fatalf("the oracle requires compose-go %s, the corpus came from %s: write the corpus again (above) and move composeCorpusFrom", r.Mod.Version, composeCorpusFrom)
+			}
+			return
+		}
+	}
+	t.Fatal("the oracle's go.mod does not require compose-go")
+}
 
 // TestRegenerateOracleCorpora writes the corpus again from
 // ERRATA_COMPOSE_ORACLE.
