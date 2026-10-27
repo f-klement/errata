@@ -43,6 +43,9 @@ need no program at all.
     reader for one variable, so one rule checks that every place setting it agrees.
 - SARIF output, for inline annotations on GitHub, and `errata list`, the checks a config loads as
   JSON.
+- A gate that cannot pass on less than it should: a config names the check ids that must run and
+  fails on a missing or extra one, and a flag turns a skipped check into a failed run.
+- Program check defaults: one `run` for every program check, with the check's id substituted.
 - Worked examples: a document naming the wrong host, a derived number that drifted, a runbook step
   whose prerequisite is gone.
 - First real user: an existing suite of 64 invariant checks from a GitOps repository, moved under
