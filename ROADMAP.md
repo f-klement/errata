@@ -73,6 +73,8 @@ Claims about how values sit together, not only what they are.
 - A regex built from another extractor's values, each quoted as a literal.
 - A regex match with the lines around it, so a rule can require or refuse a context. Go's regex
   engine has no lookaround, and this keeps matching in linear time.
+- A generated file is current: a committed file equals what its generator prints. This is the one
+  check kind besides a program check that runs anything, and an ADR sets its limits.
 
 ## v0.2.3: docs claims
 
