@@ -53,11 +53,16 @@ func (c Check) IsRule() bool { return c.Rule != nil }
 
 var idPattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 
+// ValidID reports whether id is lower-case letters and digits in words joined
+// by single hyphens, the form Validate accepts. Such an id holds no slash, dot,
+// space or leading hyphen, so it can be put into an argument of a command.
+func ValidID(id string) bool { return idPattern.MatchString(id) }
+
 // Validate returns every problem with c joined into one error. A check that
 // fails validation does not load.
 func (c Check) Validate() error {
 	var errs []error
-	if !idPattern.MatchString(c.ID) {
+	if !ValidID(c.ID) {
 		errs = append(errs, fmt.Errorf("id %q must be lower-case words joined by single hyphens", c.ID))
 	}
 	if strings.TrimSpace(c.Reason) == "" {
@@ -124,6 +129,22 @@ func (r Result) Failed() bool { return r.Verdict == VerdictFalse || r.Verdict ==
 // Report is the output of one run.
 type Report struct {
 	Results []Result
+	// SkipsFail makes a skipped check fail the run, as an unknown does, for
+	// a CI gate that must not pass on checks that never ran. errata check
+	// sets it with --fail-on-skip. Without it a skip only shows in the
+	// coverage.
+	SkipsFail bool
+}
+
+// FailingSkips counts the skipped checks that fail the run: every skip when
+// SkipsFail is set, none otherwise. Each output reports these as failures,
+// so its summary agrees with the exit code.
+func (r Report) FailingSkips() int {
+	if !r.SkipsFail {
+		return 0
+	}
+	_, skipped := r.Coverage()
+	return skipped
 }
 
 // Errata returns the results whose claim the check showed to be false.
@@ -132,8 +153,11 @@ func (r Report) Errata() []Result { return r.with(VerdictFalse) }
 // Unknowns returns the results of checks that could not evaluate.
 func (r Report) Unknowns() []Result { return r.with(VerdictUnknown) }
 
-// Failed reports whether the run fails: any erratum or any unknown.
-func (r Report) Failed() bool { return len(r.Errata())+len(r.Unknowns()) > 0 }
+// Failed reports whether the run fails: any erratum or any unknown, and any
+// skip when SkipsFail is set.
+func (r Report) Failed() bool {
+	return len(r.Errata())+len(r.Unknowns())+r.FailingSkips() > 0
+}
 
 func (r Report) with(v Verdict) []Result {
 	var out []Result

@@ -14,6 +14,9 @@ import (
 // per check without a plugin. An erratum is a <failure>, an unknown is an
 // <error> (JUnit's word for a test that could not run to a result), and a
 // skipped check is <skipped> with its gap, so the CI view shows the coverage.
+// When the report's skips fail the run, a skipped check is an <error> whose
+// message is "skipped: " and its gap, so the suite's counts fail where the
+// exit code does.
 // A rule that left not literal values out names each in <system-out>,
 // whatever its verdict.
 type JUnit struct{}
@@ -53,6 +56,9 @@ func (JUnit) Write(w io.Writer, r check.Report) error {
 		}
 		problem := &junitProblem{Message: res.Message, Body: res.Check.Reason}
 		switch {
+		case res.Skipped() && r.SkipsFail:
+			s.Errors++
+			c.Error = &junitProblem{Message: "skipped: " + res.Gap, Body: res.Check.Reason}
 		case res.Skipped():
 			s.Skipped++
 			c.Skipped = &junitProblem{Message: res.Gap}

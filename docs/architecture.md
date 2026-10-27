@@ -88,7 +88,9 @@ text, such as `y` as `true` or `007` as `7`, is refused.
 **A check that cannot evaluate is unknown, and an unknown fails the run.** A crashing program, a
 timeout or a missing binary gives `VerdictUnknown`. It is kept apart from the errata, which hold
 only claims shown false, and it fails the run all the same. A skip is only for a scope that no provider can
-reach, and the coverage line names each one with its gap.
+reach, and the coverage line names each one with its gap. A skip passes the run unless
+`--fail-on-skip` sets `check.Report.SkipsFail`; `Report.Failed` then counts it, and each reporter
+writes it as a failure, so the output agrees with the exit code.
 
 **A rule's extractors are `check.Extractor` values.** `config` decodes `extract:` into
 `extract.Spec` and calls `extract.Build`, so `check` keeps importing nothing from errata and

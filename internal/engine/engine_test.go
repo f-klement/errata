@@ -42,6 +42,18 @@ func TestExecuteSkipsUnreachableScopes(t *testing.T) {
 	}
 }
 
+// FailOnSkip reaches the report, which every output and the exit code read.
+func TestExecuteCarriesFailOnSkip(t *testing.T) {
+	var ran []string
+	for _, want := range []bool{false, true} {
+		e := &Engine{Run: alwaysTrue(&ran), FailOnSkip: want}
+		rep := e.Execute(context.Background(), []check.Check{{ID: "b", Scope: check.ScopeLive}})
+		if rep.SkipsFail != want || rep.Failed() != want {
+			t.Fatalf("FailOnSkip %v gave SkipsFail %v and Failed %v", want, rep.SkipsFail, rep.Failed())
+		}
+	}
+}
+
 func TestExecutePassesRoot(t *testing.T) {
 	var gotRoot string
 	e := &Engine{Root: "/repo", Run: func(_ context.Context, root string, c check.Check) check.Result {

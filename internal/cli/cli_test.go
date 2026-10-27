@@ -35,7 +35,7 @@ func TestScripts(t *testing.T) {
 }
 
 // computedLoad is config.Load with each extractor behind computedReader.
-func computedLoad(root, path string) ([]check.Check, error) {
+func computedLoad(root, path string) (config.Config, error) {
 	return config.LoadWith(root, path, func(s extract.Spec) (check.Extractor, error) {
 		x, err := extract.Build(s)
 		if err != nil {

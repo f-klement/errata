@@ -21,6 +21,9 @@ type Engine struct {
 	Root      string
 	Providers []provider.Provider
 	Run       Runner
+	// FailOnSkip makes a skipped check fail the run: Execute sets the
+	// report's SkipsFail from it.
+	FailOnSkip bool
 }
 
 // New returns an engine that runs a program check through the check protocol
@@ -43,7 +46,7 @@ func Dispatch(ctx context.Context, root string, c check.Check) check.Result {
 // can come later without changing the report.
 func (e *Engine) Execute(ctx context.Context, checks []check.Check) check.Report {
 	caps := provider.Union(e.Providers)
-	var rep check.Report
+	rep := check.Report{SkipsFail: e.FailOnSkip}
 	for _, c := range checks {
 		if ok, gap := provider.Reaches(caps, c.Scope); !ok {
 			rep.Results = append(rep.Results, check.Result{Check: c, Gap: gap})

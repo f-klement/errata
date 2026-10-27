@@ -78,11 +78,12 @@ jobs:
 | `--root` | `.` | the repository root, and the checks' working directory |
 | `--config`, `-c` | `<root>/errata.yaml` | the config file |
 | `--format`, `-f` | `text` | `text`, or `junit` for CI |
+| `--fail-on-skip` | off | `check` only: a skipped check fails the run with exit code 1 |
 
 | Exit code | Meaning |
 |---|---|
 | 0 | every check that ran found its claim true |
-| 1 | at least one erratum (a claim shown false) or unknown (a check that could not evaluate) |
+| 1 | at least one erratum (a claim shown false) or unknown (a check that could not evaluate), or with `--fail-on-skip` at least one skipped check |
 | 2 | bad flags, or a config that does not load |
 
 ### What is in the image

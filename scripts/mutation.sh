@@ -137,6 +137,10 @@ if [ -n "$diff_base" ]; then
     # The `git` gremlins finds first on PATH. It answers the one call gremlins makes, `git diff
     # --merge-base <base>`, with the package's diff from diff_for, and leaves a mark that it did,
     # so a gremlins that stopped asking cannot pass as a diff run; it hands anything else to git.
+    # The path to git is written in, not passed in the environment: gremlins runs the tests, and
+    # a test runner such as testscript starts its commands with PATH and little else, so a test
+    # that runs git reaches this shim without ERRATA_REAL_GIT. The ERRATA_MUTATION_ variables
+    # are read only on gremlins' own call, which has the whole environment.
     mkdir "$work/shim"
     cat >"$work/shim/git" <<'SHIM'
 #!/bin/sh
@@ -148,8 +152,8 @@ if [ "$#" -eq 3 ] && [ "$1" = diff ] && [ "$2" = --merge-base ]; then
     : >"$ERRATA_MUTATION_ASKED"
     exec cat "$ERRATA_MUTATION_DIFF"
 fi
-exec "$ERRATA_REAL_GIT" "$@"
 SHIM
+    printf 'exec %s "$@"\n' "'$(printf '%s' "$real_git" | sed "s/'/'\\\\''/g")'" >>"$work/shim/git"
     chmod +x "$work/shim/git"
 fi
 if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -219,6 +223,8 @@ EFFICACY_FLOOR=85
 #   extract/ini         82  253 of its 1500 (178 case expressions, 75 package level), and 4
 #                           in dead code (php.go 544, 548, 550, 624): 82.87%
 #   extract/jenkins     79  86 of its 416 (84 case expressions, 2 package level): 79.33%
+#   extract/packageversion  84  11 of its 70, case expressions in describe and readPyproject,
+#                           every arm tested: 84.29% on 2026-10-27, counted on the new package
 #   extract/properties  79  34 of its 167, case expressions: 79.64%
 #   extract/xml         82  94 of its 527, case expressions: 82.16%
 # core had 82 (111 of 637, 82.57%) until env's reader added code its tests reach: 111 of 744,
@@ -237,6 +243,7 @@ mcover_floor() {
         internal/protocol)           echo 78 ;;
         internal/extract/ini)        echo 82 ;;
         internal/extract/jenkins)    echo 79 ;;
+        internal/extract/packageversion) echo 84 ;;
         internal/extract/properties) echo 79 ;;
         internal/extract/xml)        echo 82 ;;
         *)                           echo 85 ;;
@@ -410,7 +417,7 @@ pass_once() {
         rc=0
         if [ -n "${2:-}" ]; then
             PATH="$work/shim:$PATH" ERRATA_MUTATION_BASE=$diff_base ERRATA_MUTATION_DIFF=$2 \
-                ERRATA_MUTATION_ASKED="$work/asked" ERRATA_REAL_GIT=$real_git \
+                ERRATA_MUTATION_ASKED="$work/asked" \
                 "$GREMLINS" unleash --config "$work/gremlins.yaml" --diff "$diff_base" -S ltc "$1" || rc=$?
         else
             "$GREMLINS" unleash --config "$work/gremlins.yaml" -S lt "$1" || rc=$?

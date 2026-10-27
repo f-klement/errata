@@ -35,7 +35,18 @@ const DefaultTimeout = 30 * time.Second
 // so a check that does not decode is named in the error and the others are
 // still validated.
 type file struct {
-	Checks []json.RawMessage `json:"checks"`
+	Checks   []json.RawMessage `json:"checks"`
+	Required []string          `json:"required"`
+	Defaults json.RawMessage   `json:"defaults"`
+}
+
+// Config is what a config file loads into: its checks, in the order the file
+// holds them, and the ids under required, nil when the file has no required
+// key. A file whose required list and checks do not name the same ids does
+// not load, so Required, when set, is the checks' ids.
+type Config struct {
+	Checks   []check.Check
+	Required []string
 }
 
 type checkEntry struct {
@@ -65,7 +76,7 @@ var ruleKeys = []string{"extract", "agree", "compare", "assert", "allow_empty", 
 // at once, so a user fixes the file in one pass rather than one error a run.
 // Each check's location names the file relative to root, the repository
 // root, when the file is inside it, and as path, marked outside, otherwise.
-func Load(root, path string) ([]check.Check, error) {
+func Load(root, path string) (Config, error) {
 	return LoadWith(root, path, extract.Build)
 }
 
@@ -76,20 +87,20 @@ type Builder func(extract.Spec) (check.Extractor, error)
 // LoadWith is Load with the extractors made by build. The CLI's tests pass a
 // builder that wraps extract.Build in a reader of not literal values, which
 // no extractor errata has yet returns.
-func LoadWith(root, path string, build Builder) ([]check.Check, error) {
+func LoadWith(root, path string, build Builder) (Config, error) {
 	raw, err := readConfig(path)
 	if err != nil {
-		return nil, err
+		return Config{}, err
 	}
-	checks, err := ParseWith(raw, build)
+	cfg, err := parse(raw, build)
 	if err != nil {
-		return nil, err
+		return Config{}, err
 	}
 	at := place(root, path)
-	for i := range checks {
-		checks[i].At.File, checks[i].At.Outside = at.File, at.Outside
+	for i := range cfg.Checks {
+		cfg.Checks[i].At.File, cfg.Checks[i].At.Outside = at.File, at.Outside
 	}
-	return checks, nil
+	return cfg, nil
 }
 
 // MaxConfigBytes is the largest config errata reads. The largest real one
@@ -167,6 +178,12 @@ func Parse(raw []byte) ([]check.Check, error) {
 
 // ParseWith is Parse with the extractors made by build.
 func ParseWith(raw []byte, newExtractor Builder) ([]check.Check, error) {
+	cfg, err := parse(raw, newExtractor)
+	return cfg.Checks, err
+}
+
+// parse is ParseWith that returns the required list with the checks.
+func parse(raw []byte, newExtractor Builder) (Config, error) {
 	// The document tree keeps each alias as a reference, so its expanded
 	// size is counted before toJSON expands it, whenever the first document
 	// decoded, even if a later one did not: toJSON reads only the first. A
@@ -174,44 +191,62 @@ func ParseWith(raw []byte, newExtractor Builder) ([]check.Check, error) {
 	// expands a tree nobody counted.
 	n, first, derr := documents(raw)
 	if first == nil && derr != nil {
-		return nil, firstDocumentError(raw, derr)
+		return Config{}, firstDocumentError(raw, derr)
 	}
 	if first != nil {
 		if err := checkExpansion(first); err != nil {
-			return nil, fmt.Errorf("decode: %w", err)
+			return Config{}, fmt.Errorf("decode: %w", err)
 		}
 	}
 	doc, err := toJSON(raw)
 	if err != nil {
-		return nil, fmt.Errorf("decode: %w", err)
+		return Config{}, fmt.Errorf("decode: %w", err)
 	}
 	if derr != nil {
-		return nil, fmt.Errorf("decode: %w", derr)
+		return Config{}, fmt.Errorf("decode: %w", derr)
 	}
 	if n > 1 {
-		return nil, fmt.Errorf("the file holds %d YAML documents; errata reads one, so put every check in one document under checks", n)
+		return Config{}, fmt.Errorf("the file holds %d YAML documents; errata reads one, so put every check in one document under checks", n)
 	}
 	if errs := exactKeys(doc, reflect.TypeFor[file](), ""); len(errs) > 0 {
-		return nil, fmt.Errorf("decode: %w", errors.Join(errs...))
+		return Config{}, fmt.Errorf("decode: %w", errors.Join(errs...))
+	}
+	var keys map[string]json.RawMessage
+	_ = json.Unmarshal(doc, &keys) // a document that is not an object fails decodeStrict below
+	if v, ok := keys["required"]; ok {
+		if b := string(bytes.TrimSpace(v)); b != "null" && !strings.HasPrefix(b, "[") {
+			return Config{}, fmt.Errorf("decode: required takes a list of check ids, one id a line; %s is not accepted", clip(b))
+		}
 	}
 	var f file
 	if !bytes.Equal(doc, []byte("null")) {
 		if err := decodeStrict(doc, &f); err != nil {
-			return nil, fmt.Errorf("decode: %w", err)
+			return Config{}, fmt.Errorf("decode: %w", err)
 		}
 	}
 	if len(f.Checks) == 0 {
-		return nil, ErrNoChecks
+		return Config{}, ErrNoChecks
+	}
+	// A default that does not load is the one error: every check that relies
+	// on it would otherwise add one of its own for having no run.
+	def, errs := parseDefaults(f.Defaults)
+	if errs = append(errs, plainDefaults(first)...); len(errs) > 0 {
+		return Config{}, errors.Join(errs...)
 	}
 
 	var (
 		checks []check.Check
-		errs   []error
 		seen   = map[string]bool{}
 		at     = lines(first)
 		plain  = plainStrings(first)
+		ids    = make([]string, 0, len(f.Checks))
 	)
 	for i, raw := range f.Checks {
+		id := entryID(raw)
+		if i < len(plain) && plain[i].id != "" {
+			id = plain[i].id // as written, as required must write it
+		}
+		ids = append(ids, id)
 		// A string YAML 1.1 read as a bool, a number or null is refused
 		// before the check is built, as a decode error is: the value the
 		// check would hold is not the text its author wrote.
@@ -225,8 +260,11 @@ func ParseWith(raw []byte, newExtractor Builder) ([]check.Check, error) {
 		}
 		if decoded {
 			// Validate even after a build error, so one pass reports every
-			// problem with the check.
-			err = errors.Join(err, c.Validate())
+			// problem with the check, and after the default run applies, so a
+			// program check that has neither is refused as one with no run.
+			var rerr error
+			c.Run, rerr = def.runOf(c)
+			err = errors.Join(err, rerr, c.Validate())
 		}
 		if err != nil {
 			errs = append(errs, fmt.Errorf("checks[%d]: %w", i, err))
@@ -239,10 +277,76 @@ func ParseWith(raw []byte, newExtractor Builder) ([]check.Check, error) {
 		seen[c.ID] = true
 		checks = append(checks, c)
 	}
-	if len(errs) > 0 {
-		return nil, errors.Join(errs...)
+	if _, ok := keys["required"]; ok {
+		if perrs := plainRequired(first); len(perrs) > 0 {
+			errs = append(errs, fmt.Errorf("decode: %w", errors.Join(perrs...)))
+		} else {
+			errs = append(errs, requiredErrors(f.Required, ids)...)
+		}
 	}
-	return checks, nil
+	if len(errs) > 0 {
+		return Config{}, errors.Join(errs...)
+	}
+	return Config{Checks: checks, Required: f.Required}, nil
+}
+
+// requiredErrors compares required, the ids the file lists under required,
+// with ids, those of its entries under checks in file order, and returns an
+// error that names every id one has and the other lacks, so a deleted check,
+// or a check added without its id, stops the load before anything runs. An
+// empty or null list is refused, since it would turn the list off with the
+// key still in the file, and so is an id listed twice. An entry with no id
+// is refused on its own and is not named again here.
+func requiredErrors(required, ids []string) []error {
+	if len(required) == 0 {
+		return []error{errors.New("required lists no check id: name the id of every check that must run, or remove the key")}
+	}
+	listed := make(map[string]bool, len(required))
+	var twice []string
+	for _, id := range required {
+		if listed[id] {
+			twice = append(twice, strconv.Quote(id))
+		}
+		listed[id] = true
+	}
+	has := make(map[string]bool, len(ids))
+	var extra []string
+	for _, id := range ids {
+		has[id] = true
+		if id != "" && !listed[id] {
+			extra = append(extra, strconv.Quote(id))
+		}
+	}
+	var missing []string
+	for _, id := range required {
+		if !has[id] {
+			missing = append(missing, strconv.Quote(id))
+			has[id] = true // named once, however often required lists it
+		}
+	}
+	var errs []error
+	if len(twice) > 0 {
+		errs = append(errs, fmt.Errorf("required lists these ids more than once: %s", strings.Join(twice, ", ")))
+	}
+	if len(missing) > 0 {
+		errs = append(errs, fmt.Errorf("required lists ids no check has: %s; restore each check, or remove its id from required", strings.Join(missing, ", ")))
+	}
+	if len(extra) > 0 {
+		errs = append(errs, fmt.Errorf("these checks are not under required: %s; add each id to required, or remove the check", strings.Join(extra, ", ")))
+	}
+	return errs
+}
+
+// entryID is the id one entry under checks writes, or "" when it writes
+// none that decodes, so the required list is compared with every entry,
+// those that do not load included, and a check with an error of its own is
+// not also named as missing.
+func entryID(raw json.RawMessage) string {
+	var named struct {
+		ID string `json:"id"`
+	}
+	_ = json.Unmarshal(raw, &named)
+	return named.ID
 }
 
 // build decodes one check strictly and builds its extractors. decoded reports
@@ -313,6 +417,11 @@ func build(raw json.RawMessage, newExtractor Builder) (c check.Check, decoded bo
 	}
 	if _, ok := keys["compare"]; ok && e.Compare == "" {
 		errs = append(errs, errors.New("compare is blank: write text or semver, or remove the key for text"))
+	}
+	// An empty run on a program check would take the default run, a program
+	// the entry says it does not have. A rule's run: [] loads as before.
+	if _, ok := keys["run"]; ok && !isRule && len(e.Run) == 0 {
+		errs = append(errs, errors.New("run lists no argument: write the command, or remove the key, which takes the default run if the file sets one"))
 	}
 	if _, ok := keys["normalize"]; ok && len(e.Normalize) == 0 {
 		errs = append(errs, errors.New("normalize lists no option: name trim, lower or both, or remove the key"))

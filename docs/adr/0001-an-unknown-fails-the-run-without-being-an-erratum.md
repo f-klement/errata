@@ -18,4 +18,5 @@ says nothing about it.
 
 Exit code 1 means "at least one erratum or unknown", and the summary line counts the two apart
 (`1 erratum, 1 unknown`). Once a release ships, changing either is a breaking change to every CI
-job that runs errata.
+job that runs errata. Under `errata check --fail-on-skip`, exit code 1 also covers a skipped check,
+which, like an unknown, fails the run without being an erratum.

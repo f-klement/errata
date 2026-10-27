@@ -101,7 +101,8 @@ checks:
       ],
       "timeout": "2m0s"
     }
-  ]
+  ],
+  "required": []
 }
 -- agree.yaml --
 checks:
@@ -187,7 +188,8 @@ checks:
         "deps"
       ]
     }
-  ]
+  ],
+  "required": []
 }
 -- assert.yaml --
 checks:
@@ -201,7 +203,8 @@ checks:
       pom:      {xml: {file: pom.xml, path: '/m:project/m:version', namespaces: {m: 'http://maven.apache.org/POM/4.0.0'}}}
       port:     {properties: {file: app.properties, key: server.port}}
       cfg:      {toml: {file: cfg.toml, path: 'server.port'}}
-    assert: int(replicas[0]) <= int(nodes[0]) && size(prose) + size(pom) + size(port) + size(cfg) > 0
+      pkg:      {package_version: {}}
+    assert: int(replicas[0]) <= int(nodes[0]) && size(prose) + size(pom) + size(port) + size(cfg) + size(pkg) > 0
 -- assert.json --
 {
   "version": 1,
@@ -228,6 +231,11 @@ checks:
           "regex": {
             "file": "README.md",
             "pattern": "(\\d+) nodes",
+            "max_bytes": 33554432
+          }
+        },
+        "pkg": {
+          "package_version": {
             "max_bytes": 33554432
           }
         },
@@ -265,13 +273,14 @@ checks:
         }
       },
       "relation": {
-        "assert": "int(replicas[0]) <= int(nodes[0]) && size(prose) + size(pom) + size(port) + size(cfg) > 0"
+        "assert": "int(replicas[0]) <= int(nodes[0]) && size(prose) + size(pom) + size(port) + size(cfg) + size(pkg) > 0"
       },
       "normalize": [],
       "allow_empty": [],
       "skip_not_literal": []
     }
-  ]
+  ],
+  "required": []
 }
 -- agree.txt --
 version-agrees (repo) rule
@@ -351,7 +360,8 @@ checks:
       "allow_empty": [],
       "skip_not_literal": []
     }
-  ]
+  ],
+  "required": []
 }
 -- env.yaml --
 checks:
@@ -406,5 +416,6 @@ checks:
       "allow_empty": [],
       "skip_not_literal": []
     }
-  ]
+  ],
+  "required": []
 }

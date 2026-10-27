@@ -21,9 +21,10 @@ import (
 // a check that changed. The README's "Listing the checks" says the same.
 const ListVersion = 1
 
-// Lister writes the checks a config loads, as errata list prints them.
+// Lister writes the checks a config loads, as errata list prints them, and
+// required, the ids its required key lists, nil when it has none.
 type Lister interface {
-	WriteList(w io.Writer, checks []check.Check) error
+	WriteList(w io.Writer, checks []check.Check, required []string) error
 }
 
 // ListFormats lists the listers by the name errata list's --format flag
@@ -55,8 +56,9 @@ const (
 type ListJSON struct{}
 
 type listDoc struct {
-	Version int         `json:"version"`
-	Checks  []listCheck `json:"checks"`
+	Version  int         `json:"version"`
+	Checks   []listCheck `json:"checks"`
+	Required []string    `json:"required"`
 }
 
 type listCheck struct {
@@ -97,9 +99,10 @@ type listRelation struct {
 	Assert  string   `json:"assert,omitempty"`
 }
 
-// WriteList writes checks as one JSON object of version ListVersion.
-func (ListJSON) WriteList(w io.Writer, checks []check.Check) error {
-	doc := listDoc{Version: ListVersion, Checks: make([]listCheck, 0, len(checks))}
+// WriteList writes checks and required as one JSON object of version
+// ListVersion, required as an empty list when the config has none.
+func (ListJSON) WriteList(w io.Writer, checks []check.Check, required []string) error {
+	doc := listDoc{Version: ListVersion, Checks: make([]listCheck, 0, len(checks)), Required: orEmpty(required)}
 	for _, c := range checks {
 		doc.Checks = append(doc.Checks, toListCheck(c))
 	}
@@ -167,8 +170,9 @@ func orEmpty(s []string) []string {
 // Like Text, it goes to the terminal through QuoteControls.
 type ListText struct{}
 
-// WriteList writes each of checks with its labels, then the count.
-func (ListText) WriteList(w io.Writer, checks []check.Check) error {
+// WriteList writes each of checks with its labels, then the count, which
+// says when the config requires every one of them.
+func (ListText) WriteList(w io.Writer, checks []check.Check, required []string) error {
 	var b strings.Builder
 	rules := 0
 	for _, c := range checks {
@@ -206,8 +210,13 @@ func (ListText) WriteList(w io.Writer, checks []check.Check) error {
 		}
 		b.WriteString("\n")
 	}
-	fmt.Fprintf(&b, "%s: %s, %s.\n", plural(len(checks), "check", "checks"),
+	fmt.Fprintf(&b, "%s: %s, %s", plural(len(checks), "check", "checks"),
 		plural(rules, "rule", "rules"), plural(len(checks)-rules, "program check", "program checks"))
+	if len(required) > 0 {
+		// The loader refuses a required list that is not the checks' ids.
+		b.WriteString("; required lists every one")
+	}
+	b.WriteString(".\n")
 	_, err := io.WriteString(w, QuoteControls(b.String()))
 	return err
 }

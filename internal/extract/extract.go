@@ -1,8 +1,8 @@
 // Package extract builds the extractors a rule names in errata.yaml. Each one
 // reads one file and returns every value it finds there, with its location.
 // Each kind is a reader in a package of its own below this one (yaml, json,
-// toml, regex, text, xml, ini, properties, toolversion, envfile, gitlabci,
-// shell, githubactions, jenkins), and the readers share internal/extract/core;
+// toml, regex, text, xml, ini, properties, toolversion, packageversion,
+// envfile, gitlabci, shell, githubactions, jenkins), and the readers share internal/extract/core;
 // no reader imports another. The env kind asks five of them for one variable
 // across several files, through the functions this package hands it. This
 // package holds what sees every kind: the Spec a rule decodes into, the kinds
@@ -28,6 +28,7 @@ import (
 	"github.com/f-klement/errata/internal/extract/ini"
 	"github.com/f-klement/errata/internal/extract/jenkins"
 	"github.com/f-klement/errata/internal/extract/json"
+	"github.com/f-klement/errata/internal/extract/packageversion"
 	"github.com/f-klement/errata/internal/extract/properties"
 	"github.com/f-klement/errata/internal/extract/regex"
 	"github.com/f-klement/errata/internal/extract/shell"
@@ -51,6 +52,8 @@ type Spec struct {
 	Properties *Properties `json:"properties,omitempty"`
 
 	ToolVersion *ToolVersion `json:"tool_version,omitempty"`
+
+	PackageVersion *PackageVersion `json:"package_version,omitempty"`
 
 	EnvFile *EnvFile `json:"envfile,omitempty"`
 
@@ -100,6 +103,10 @@ type Properties = properties.Spec
 // toolversion.Spec says.
 type ToolVersion = toolversion.Spec
 
+// PackageVersion returns the version a package gives itself in each of its
+// manifests, as packageversion.Spec says.
+type PackageVersion = packageversion.Spec
+
 // EnvFile returns every value of a key in a dotenv file, or of every key,
 // as envfile.Spec says.
 type EnvFile = envfile.Spec
@@ -147,6 +154,10 @@ var envReaders = env.Readers{
 	IsScript:    shell.IsScript,
 	ScriptBytes: shell.ShebangBytes,
 }
+
+// versionParsers are the json and toml readers' parsers, which tool_version
+// and package_version read their JSON and TOML files with.
+var versionParsers = core.Parsers{JSON: json.Parse, TOML: toml.Parse}
 
 // Place returns s with only what decides where it reads: each file cleaned,
 // so f, ./f and a/../f are one file, and max_bytes left out, since a limit
@@ -196,6 +207,10 @@ func (s Spec) Place() Spec {
 	if s.ToolVersion != nil {
 		t := toolversion.Place(*s.ToolVersion)
 		p.ToolVersion = &t
+	}
+	if s.PackageVersion != nil {
+		x := packageversion.Place(*s.PackageVersion)
+		p.PackageVersion = &x
 	}
 	if s.EnvFile != nil {
 		x := *s.EnvFile
@@ -278,6 +293,12 @@ func (s Spec) Resolved() Spec {
 		x.MaxBytes = core.MaxBytes(x.MaxBytes)
 		r.ToolVersion = &x
 	}
+	if s.PackageVersion != nil {
+		x := *s.PackageVersion
+		x.Files = slices.Clone(x.Files)
+		x.MaxBytes = core.MaxBytes(x.MaxBytes)
+		r.PackageVersion = &x
+	}
 	if s.EnvFile != nil {
 		x := *s.EnvFile
 		x.MaxBytes = core.MaxBytes(x.MaxBytes)
@@ -345,8 +366,9 @@ func (s Spec) kinds() []extractorKind {
 	// every block, so a comparison written in a row after the first would
 	// read as not covered to Gremlins however the tests run it.
 	set := [...]bool{s.YAML != nil, s.JSON != nil, s.TOML != nil, s.Regex != nil, s.Text != nil,
-		s.XML != nil, s.INI != nil, s.Properties != nil, s.ToolVersion != nil, s.EnvFile != nil,
-		s.GitLabCI != nil, s.Shell != nil, s.GitHubActions != nil, s.Jenkins != nil, s.Env != nil}
+		s.XML != nil, s.INI != nil, s.Properties != nil, s.ToolVersion != nil,
+		s.PackageVersion != nil, s.EnvFile != nil, s.GitLabCI != nil, s.Shell != nil,
+		s.GitHubActions != nil, s.Jenkins != nil, s.Env != nil}
 	return []extractorKind{
 		{"yaml", set[0], func() (check.Extractor, error) { return yaml.Build(*s.YAML) }},
 		{"json", set[1], func() (check.Extractor, error) { return json.Build(*s.JSON) }},
@@ -359,18 +381,22 @@ func (s Spec) kinds() []extractorKind {
 		{"tool_version", set[8], func() (check.Extractor, error) {
 			// The reader reads its JSON and TOML files with the json and
 			// toml readers' parsers, since it imports no other reader.
-			return toolversion.Build(*s.ToolVersion, toolversion.Parsers{JSON: json.Parse, TOML: toml.Parse})
+			return toolversion.Build(*s.ToolVersion, versionParsers)
 		}},
-		{"envfile", set[9], func() (check.Extractor, error) { return envfile.Build(*s.EnvFile) }},
+		{"package_version", set[9], func() (check.Extractor, error) {
+			// Its manifests are read with the json and toml readers' parsers.
+			return packageversion.Build(*s.PackageVersion, versionParsers)
+		}},
+		{"envfile", set[10], func() (check.Extractor, error) { return envfile.Build(*s.EnvFile) }},
 		// The reader reads its YAML with the yaml reader's parser.
-		{"gitlab-ci", set[10], func() (check.Extractor, error) { return gitlabci.Build(*s.GitLabCI, yaml.ParseNoted) }},
-		{"shell", set[11], func() (check.Extractor, error) { return shell.Build(*s.Shell) }},
+		{"gitlab-ci", set[11], func() (check.Extractor, error) { return gitlabci.Build(*s.GitLabCI, yaml.ParseNoted) }},
+		{"shell", set[12], func() (check.Extractor, error) { return shell.Build(*s.Shell) }},
 		// The reader reads its YAML with the yaml reader's parser.
-		{"github-actions", set[12], func() (check.Extractor, error) {
+		{"github-actions", set[13], func() (check.Extractor, error) {
 			return githubactions.Build(*s.GitHubActions, yaml.ParseNoted)
 		}},
-		{"jenkins", set[13], func() (check.Extractor, error) { return jenkins.Build(*s.Jenkins) }},
-		{"env", set[14], func() (check.Extractor, error) { return env.Build(*s.Env, envReaders) }},
+		{"jenkins", set[14], func() (check.Extractor, error) { return jenkins.Build(*s.Jenkins) }},
+		{"env", set[15], func() (check.Extractor, error) { return env.Build(*s.Env, envReaders) }},
 	}
 }
 

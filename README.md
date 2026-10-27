@@ -162,16 +162,17 @@ files, its rule, the erratum errata prints and the fix:
 
 ### Checks
 
-A check is a program check or a rule. A program check has `run`; a rule has `extract`. A check
-with both, or with neither, does not load, and neither does a file with no checks: it would run
-nothing and pass. Every check has these keys:
+A check is a program check or a rule. A program check has `run`, or takes the file's
+[default run](#a-default-run); a rule has `extract`. A check with both does not load, and neither
+does a check with neither when the file sets no default run. A file with no checks does not load
+either: it would run nothing and pass. Every check has these keys:
 
 | Key | Required | Meaning |
 |---|---|---|
 | `id` | yes | lower-case words joined by single hyphens, unique in the file |
 | `reason` | yes | why the check exists and what breaks without it |
 | `scope` | yes | `repo`, `live` or `applied`; a rule is always `repo` |
-| `run` | program check | the command, as a list of arguments, run from the repository root |
+| `run` | program check, unless the file sets a [default run](#a-default-run) | the command, as a list of arguments, run from the repository root |
 | `timeout` | no | program check only: a positive Go duration such as `10s` or `2m`; default `30s`. Zero or less does not load |
 | `extract` | rule | the rule's extractors, each under a name of its own |
 | `agree` | rule: this or `assert` | the extractors whose values must all agree |
@@ -196,6 +197,81 @@ written does not load: the error names the check, the key and the text, and says
 `id: "y"` and `run: [ls, ".inf"]`. A value that comes back as written loads, so
 `run: [head, -n, 5]`, `true` and `20.04` need no quotes. Every key that takes a string is held to
 this, the extractors' names included.
+
+#### Required checks
+
+A config of fewer checks than its author meant loads and passes: delete an entry, and a CI job
+that runs errata stays green without it. The top-level `required` key lists the id of every check
+the config must hold:
+
+```yaml
+required:
+  - lint-passes
+  - version-agrees
+checks:
+  - id: lint-passes
+    ...
+  - id: version-agrees
+    ...
+```
+
+With `required` set, the config loads only when `required` lists exactly the ids of its checks.
+An id under `required` that no check has, and a check whose id `required` does not list, each
+stop the load: `errata check` exits 2 before it runs anything, and the message names every such
+id. An empty or null `required`, and an id listed twice, do not load either. An id under
+`required` is held to the quoting rule above, as `id` is. A config without the key loads any
+number of checks, as before. `required` says which checks the config holds, not which ones run:
+a check whose scope the run cannot reach is still skipped, with its gap in the coverage.
+
+The list sits in `errata.yaml` itself. Written as above, one id a line, the change that deletes a
+check deletes its id's line under `required` in the same file and the same diff, and the change that
+deletes `required` deletes a line for every check. The flow form, `required: [a, b]`, loads the
+same, but it hides either deletion in one changed line, so write the list one id a line. A list in a
+file of its own, named by `errata.yaml`, would be switched off by deleting the one line that names
+it, with the list file left as it was. errata cannot stop an author who edits both the check and the
+list; a reviewer sees both. A gate that must not rest on review keeps the list where the author's
+change cannot reach it without an approval: a code owner on `errata.yaml`, or a CI job that compares
+the `required` that `errata list --format json` prints with a list in a file only that job's owners
+may change.
+
+#### A default run
+
+Program checks often run one program each with their own id, such as a script that takes the id
+of the check to run. The top level `defaults` key writes that command once:
+
+```yaml
+defaults:
+  run: [python3, scripts/check-invariants.py, --only, <errata.id_underscored>]
+checks:
+  - id: no-latest-tags
+    reason: An image tagged latest changes under a pinned deploy.
+    scope: repo
+```
+
+A check with no `run` and no rule key is a program check and runs `defaults.run`, with its
+placeholders replaced: `no-latest-tags` runs `python3 scripts/check-invariants.py --only
+no_latest_tags`. A check with a `run` of its own keeps it, and a rule takes no default. Without
+`defaults.run`, a check with neither `run` nor a rule key does not load, as before.
+
+| Placeholder | Becomes |
+|---|---|
+| `<errata.id>` | the check's id: `no-latest-tags` |
+| `<errata.id_underscored>` | the id with each hyphen turned into an underscore: `no_latest_tags` |
+
+errata replaces a placeholder inside one argument and never through a shell, so `--only=<errata.id>`
+and `checks/<errata.id>.sh` work, and an argument stays one argument. An id is lower-case letters,
+digits and single hyphens, so the text it puts in holds no space, slash, dot or leading hyphen: it
+adds no argument and no option, and leaves no directory. A check's own `run` takes the same
+placeholders. Any other text that starts with `<errata.`, in any case, such as a misspelt
+placeholder, does not load, and neither does a program check's `run` or a `defaults.run` that lists
+no argument. The placeholders need no quotes in YAML. A program that reads the id from
+`ERRATA_CHECK_ID` needs no placeholder. `errata list` prints each check's `run` with the
+placeholders replaced, as the command errata starts.
+
+A default `run` is a program errata starts, as a check's own `run` is: it runs from the repository
+root with the environment of the job that runs errata, secrets included. On a ref you do not
+trust, such as a merge request from a fork, the config's programs and its default `run` are that
+ref's. Run errata there with a config of rules only, or in a job without secrets.
 
 ### Rules
 
@@ -494,9 +570,9 @@ expression in a repository's configuration can stall CI.
 ### Extractors
 
 An extractor reads one file of the repository and returns a list of values, each with the file and
-the line where it starts; `tool_version` reads every file that pins one tool, and `env` one
-variable in every file a rule lists. A rule names its extractors under `extract:` and sets exactly
-one of the fifteen keys in each:
+the line where it starts; `tool_version` reads every file that pins one tool, `package_version`
+each manifest of the package, and `env` one variable in every file a rule lists. A rule names its
+extractors under `extract:` and sets exactly one of the sixteen keys in each:
 
 ```yaml
 extract:
@@ -523,6 +599,8 @@ extract:
     properties: {file: src/main/resources/application.properties, key: server.port}
   node:
     tool_version: {tool: node}
+  release:
+    package_version: {}
   api_port:
     envfile: {file: .env, name: API_PORT}
   deploy_tag:
@@ -548,6 +626,7 @@ extract:
 | `ini` | `file`, `key`, `section`, and `dialect`, `subsection` (git) or `host` (ansible) | every value of the key in the section, or the hosts or child groups of an ansible group |
 | `properties` | `file`, `key` | every value of the key |
 | `tool_version` | `tool`, and `files` to name the files | every version of the tool in the files that pin it (see [Tool versions](#tool-versions)) |
+| `package_version` | `files` to name the files, or nothing | the version the package gives itself in each manifest (see [Package versions](#package-versions)) |
 | `envfile` | `file`, and `name` for one key | every value of the key in a dotenv file, or of every key (see [Env files](#env-files)) |
 | `gitlab-ci` | `file`, `job`, and `variable` or `key` | the value the job sees of a CI/CD variable or a job keyword (see [GitLab CI](#gitlab-ci)) |
 | `shell` | `file`, `name`, and `language` to name the dialect | every value the script assigns the variable, and every default an expansion gives it (see [Shell scripts](#shell-scripts)) |
@@ -555,8 +634,9 @@ extract:
 | `jenkins` | `file`, `variable`, and `stage` | the value a stage of a declarative Jenkinsfile sees of an environment variable (see [Jenkinsfiles](#jenkinsfiles)) |
 | `env` | `name`, `files`, and `readers` to give a file its reader | every value of one variable in the files, each read by the reader its name chooses, and each naming its reader and its job, step or stage (see [One variable in many files](#one-variable-in-many-files)) |
 
-Each key also takes `max_bytes`, the largest file it reads; for `tool_version` and `env`, the files
-it reads in all, and for `gitlab-ci` the file and the files it includes in all (see Limits).
+Each key also takes `max_bytes`, the largest file it reads; for `tool_version`, `package_version`
+and `env`, the files it reads in all, and for `gitlab-ci` the file and the files it includes in all
+(see Limits).
 
 `file`, and each of `files`, is relative to the repository root. An absolute path, or one whose `..`
 leaves the root, does not load. A `..` in `file` is resolved by name, before any symlink:
@@ -696,16 +776,17 @@ for such a file marks the value as not literal. Its text is what the file wrote,
 file means, so a rule never compares it. Each extractor's documentation says whether it can return
 a not literal value. Of errata's kinds only `ini` can, for the files and sections that
 [INI files](#ini-files) lists, `properties` for a template file, `tool_version` for a version
-that names none, such as `lts/*` or `system` ([Tool versions](#tool-versions)), `envfile` for a
-substitution of a key the file does not set before it, a name alone that compose takes from the
-environment, and in a template file ([Env files](#env-files)), `gitlab-ci` for a value GitLab
-computes, such as `$CI_COMMIT_SHA` or a plain `3.10` ([GitLab CI](#gitlab-ci)), `shell` for a
-value the shell expands, such as `$(git describe)` ([Shell scripts](#shell-scripts)),
-`github-actions` for a `${{ }}` expression other than a matrix variable, or a plain `3.10`
-([GitHub Actions](#github-actions)), `jenkins` for a value Groovy computes, such as
-`credentials('id')` ([Jenkinsfiles](#jenkinsfiles)), and `env` for any of these that the reader
-of its file marks; a `${{ }}` read with `yaml:` is still plain text, and two workflows that use the
-same expression agree.
+that names none, such as `lts/*` or `system` ([Tool versions](#tool-versions)), `package_version`
+for a version the build computes, such as `dynamic = ["version"]` in pyproject.toml
+([Package versions](#package-versions)), `envfile` for a substitution of a key the file does not
+set before it, a name alone that compose takes from the environment, and in a template file
+([Env files](#env-files)), `gitlab-ci` for a value GitLab computes, such as `$CI_COMMIT_SHA` or a
+plain `3.10` ([GitLab CI](#gitlab-ci)), `shell` for a value the shell expands, such as
+`$(git describe)` ([Shell scripts](#shell-scripts)), `github-actions` for a `${{ }}` expression
+other than a matrix variable, or a plain `3.10` ([GitHub Actions](#github-actions)), `jenkins` for
+a value Groovy computes, such as `credentials('id')` ([Jenkinsfiles](#jenkinsfiles)), and `env` for
+any of these that the reader of its file marks; a `${{ }}` read with `yaml:` is still plain text,
+and two workflows that use the same expression agree.
 
 PHP reads `error_reporting = E_ALL` as the number the constant stands for, so the text `E_ALL` is
 not literal:
@@ -766,10 +847,10 @@ counts only the values left.
 
 `skip_not_literal` may list only an extractor that can return a not literal value: for any other the
 key would load and leave nothing out, so it does not load. That holds for every kind but `ini`,
-`properties`, `tool_version`, `envfile`, `gitlab-ci`, `shell`, `github-actions` and `jenkins`,
-for an `ini` extractor whose file errata models no transform for, such as `pytest.ini`, and
-for a `properties` file that is not a template. The message names the kind, and for `ini` the
-dialect and the file:
+`properties`, `tool_version`, `package_version`, `envfile`, `gitlab-ci`, `shell`, `github-actions`
+and `jenkins`, for an `ini` extractor whose file errata models no transform for, such as
+`pytest.ini`, and for a `properties` file that is not a template. The message names the kind, and
+for `ini` the dialect and the file:
 
 ```console
 $ errata check -c errata.yaml
@@ -1330,6 +1411,54 @@ bytes and 100000 values in all. A file of lines is read in one pass that keeps o
 so it needs no node limit: at 32 MiB on the build node the densest shapes take 0.2 s to 1.1 s and
 at most 110 MB, a line of 16 million versions refused at the value limit among them. The JSON and
 TOML files have the node limit of their format, and a `go.mod` a limit of its own, under Limits.
+
+#### Package versions
+
+`package_version` returns the version the package gives itself in each of its manifests, each with
+its file and line, so one rule says that a release names one version everywhere:
+
+```yaml
+checks:
+  - id: version-agrees
+    reason: The npm package, the wheel and the VERSION file the image reads name one release.
+    scope: repo
+    extract:
+      release: {package_version: {}}
+    agree: [release]
+```
+
+Without `files`, it reads each manifest of the table below that the repository root holds, in the
+table's order, and passes over one the root does not hold. It reads a name only as the table spells
+it, as the root's listing gives it, so on a file system that folds case, as macOS and Windows ship
+theirs, a `version` directory or a `Package.json` is not read as `VERSION` or `package.json`. A
+directory at a manifest's name, or a symlink inside the repository to one, is passed over too, and
+so is a symlink that dangles inside the repository; any other symlink is read as `file` reads one.
+It does not walk the repository: a manifest below the root, such as a workspace member's, is another
+package's, with a version of its own. `files` names the manifests instead, below the root too, at
+most 64 of them, and each one it names must exist and be a file. errata reads a file by its name, so
+a file the table does not name does not load. The files one extractor reads hold at most its
+`max_bytes` in all, as one file does.
+
+| File | Read as |
+|---|---|
+| `package.json` | `version`, the version npm publishes; a package.json without one, such as an application's, gives nothing. A byte order mark at its start is skipped, as npm skips it |
+| `pyproject.toml` | `project.version` (PEP 621). When `project.dynamic` lists `version`, the build backend computes it, and the value is `dynamic = ["version"]`, not literal, at that entry's line; under Poetry's backend, `build-backend = "poetry.core.masonry.api"`, poetry-core fills it from `tool.poetry.version`, which is then the value. A file with neither is Poetry's form before PEP 621 and gives `tool.poetry.version`. With `enable = true` under `[tool.poetry-dynamic-versioning]`, that plugin replaces `tool.poetry.version` from a git tag at build time, so the version the file writes, often `0.0.0`, is a placeholder and not literal. A byte order mark is refused, as Python's tomllib refuses it |
+| `Cargo.toml` | `package.version`, and `workspace.package.version`, the version a workspace's members inherit. `version.workspace = true`, or `version = { workspace = true }`, inherits it: from the same file's `workspace.package.version` when it holds one, which is then the one value, and otherwise from a Cargo.toml further up, which errata does not look for, so the value is `version.workspace = true`, not literal. A file with a `[workspace]` table is its own workspace's root, so one that inherits a version it does not set is refused, as Cargo refuses it. A byte order mark at its start is skipped, as Cargo skips it |
+| `VERSION` | the first field of the first line that holds one, as `tool_version` reads the file: a `#` starts a comment, and a blank line is passed over |
+
+A version must be a string: a TOML `version = 1.0`, a JSON `"version": 1` or a table is refused,
+since npm, the Python build tools and Cargo refuse it, and so is a `pyproject.toml` that sets
+`project.version` and lists it in `dynamic` too, which PEP 621 forbids. Cargo refuses a
+`package.version` table other than `{ workspace = true }`, and so does errata. A version that is
+empty or holds a control character, a direction control, a line separator or a byte that is not
+UTF-8 makes the rule unknown, as does a JSON or TOML file that does not parse, past the node limit
+of its format (see Limits), and a `VERSION` file of only blank lines and comments.
+
+A rule that compares a member of a Cargo workspace or a package with a dynamic version lists the
+extractor in `skip_not_literal`, and names the file that holds the version: the workspace's
+`Cargo.toml`, or the file the build backend reads, through a regex or toml extractor. errata reads
+no git tag yet: which tag a version would be compared with, the one on the commit or the newest, is
+not decided, and a CI checkout often holds no tags at all.
 
 #### GitLab CI
 
@@ -1908,6 +2037,7 @@ core machine.
 | git index | 64 MiB, whatever `max_bytes` is, and 1000000 entries; a path of 4096 bytes, and 64 MiB of paths in all | an `env` glob reads `.git/index` whole and keeps the path of each entry: an entry is about 70 bytes and its path, so 64 MiB holds some 600000 files, and the entries limit is the walk's. A version 4 index writes each path as what it keeps of the one before and a suffix, so 65 bytes of the index can make a path of 4096 and 64 MiB of them gigabytes of paths: a path is held to 4096 bytes, the longest a file may be named, and the paths together to 64 MiB, which an index of plain paths cannot pass. An index read with the wrong object format is refused, since each entry's path must be the length its flags give |
 | `env` files | 64 entries in `files`; 256 MiB of paths matched, the globs times the bytes of the tracked paths; 10000 files read | each glob is matched against every tracked file, and a match costs time in proportion to the path, about 33 ns a byte on a 3 core worker node. An index may hold 64 MiB of paths, over which 64 globs took 167 s. The bytes to match are the globs times the paths' bytes, known once the index is read, so a spec over the bound is refused before any glob is matched. The bound fits about 22 MB of paths for a dozen globs, some 450000 files of 50 bytes or 320000 of 70, and 4 globs over a million files of 60 bytes. A very large monorepo with many globs is refused, which makes the rule unknown: list fewer globs. A file costs an open, a stat and a read of its first bytes before its reader runs, however small it is, so a glob over a million empty files would run for minutes; 10000 empty files take 1.4 s on the 6 core build node and 3.7 s on a 3 core worker node |
 | an `env` extractor's values | 100000 and `max_bytes` in all | a CI file repeats a value for each job that inherits it, so the values of every file, job and step together hold to the limits of one extractor's. A Jenkinsfile is read again for each stage that sets the variable, all within the extractor's one work budget, so a file of hundreds of such stages is refused at it: 400 of them are refused in 1 s |
+| `package_version` files | 64 in `files` | a manifest gives at most two values, so 64 files stay under the limit on values by construction; a package has a manifest or two of each kind, and a rule over more packages names several extractors |
 | files one extractor reads | `max_bytes` in all | a walk may find many files, and symlinks or copies may repeat one, so the files of one extractor are read up to its `max_bytes` together, as one file is; links that end at one file read it once. 100 links to a 32 MiB file take 0.4 to 0.7 s, where reading each link took 31 to 64 s in all before |
 | file name | 4096 bytes | the longest path Linux opens. A longer `file:` in an extractor is a load error, since every message about a file names it whole |
 | quoted text | 64 bytes | errata's message that quotes a key, an anchor or a number from a file, or a path, a pattern, a file or a selector from `errata.yaml`, cuts it there and writes `...`, since a message goes into the CI log and the JUnit report. A parser's message, such as yaml.v3's for an unknown anchor, which quotes the anchor's name, is cut at 256 bytes. A rule's message quotes a value of at most 256 bytes whole. Of a longer one it quotes 256 bytes, from 32 bytes before the first byte where it differs from the other values of the message, marked as in `(from byte 266 of 299)`, so two long values that differ only at the end still print differently |
@@ -1976,6 +2106,7 @@ case, such as `<?XML ...?>`.
 
 An INI, properties or env file makes the rule unknown for what its tool refuses, as the sections
 on them say, and so does a file a `tool_version` extractor reads ([Tool versions](#tool-versions))
+or a `package_version` extractor reads ([Package versions](#package-versions)),
 a script that does not parse in its dialect ([Shell scripts](#shell-scripts)), and a Jenkinsfile
 that does not lex ([Jenkinsfiles](#jenkinsfiles)). A Markdown file parses whatever it holds, so only a bound under Limits refuses one.
 
@@ -2000,12 +2131,13 @@ The program runs with the repository root as its working directory and receives 
 | `applied` | Will this claim be true after an apply? | read access and a dry run (not built yet) |
 
 errata never applies anything. Until a provider for a running system exists, `live` and `applied`
-checks are skipped by name, and the coverage line gives the gap for each.
+checks are skipped by name, and the coverage line gives the gap for each. A skip does not fail the
+run unless `errata check` is given `--fail-on-skip`.
 
 ### Command line
 
 ```text
-errata check [--root DIR] [--config FILE] [--format text|junit|sarif]
+errata check [--root DIR] [--config FILE] [--format text|junit|sarif] [--fail-on-skip]
 errata list [--root DIR] [--config FILE] [--format text|json]
 errata version
 ```
@@ -2015,12 +2147,22 @@ errata version
 | `--root` | `.` | the repository root, and the checks' working directory |
 | `--config`, `-c` | `<root>/errata.yaml` | the config file |
 | `--format`, `-f` | `text` | `check`: `text`, `junit` or `sarif`; `list`: `text` or `json` |
+| `--fail-on-skip` | off | `check` only: a skipped check fails the run with exit code 1 |
 
 | Exit code | Meaning |
 |---|---|
 | 0 | every check that ran found its claim true; for `list`, the config loaded |
-| 1 | at least one erratum (a claim shown false) or unknown (a check that could not evaluate) |
+| 1 | at least one erratum (a claim shown false) or unknown (a check that could not evaluate), or with `--fail-on-skip` at least one skipped check |
 | 2 | bad flags, or a config that does not load |
+
+A gate in CI that must not pass on checks that never ran, such as `live` checks in a job with no
+cluster, runs `errata check --fail-on-skip`. A skip under the flag fails the run as an unknown does
+([ADR 0001](docs/adr/0001-an-unknown-fails-the-run-without-being-an-erratum.md)): exit code 1, and
+no erratum, since the check showed no claim false. It stays a skip, with its gap under the coverage
+line, and every output marks it as a failure, so a report never reads as a pass over a run that
+exits 1. The text coverage line ends `A skip fails this run.`, JUnit writes the skip as an
+`<error>` whose message is `skipped: ` and the gap, and SARIF writes its notification at level
+`error` and sets `executionSuccessful` to false.
 
 The text output, and the text format of `errata list`, writes every control character that a file
 or a program's output holds, such as ESC or a CR, as its escape (`\x1b`, `\r`), and every byte that
@@ -2043,6 +2185,8 @@ that needs to know what errata will run reads `errata list --format json` instea
 
 Every value is the one the loader resolved, with these defaults written out:
 
+- `run` of a program check: the [default run](#a-default-run) when the check sets none, and the
+  placeholders replaced by the check's id in either;
 - `timeout` of a program check: `30s` when the check sets none;
 - `max_bytes` of every extractor: 33554432 (32 MiB) when the extractor sets none;
 - `dialect` of an `ini` extractor: the one the file's name chooses when the extractor names none
@@ -2075,6 +2219,10 @@ checks:
       replicas: {yaml: {file: deploy.yaml, path: spec.replicas, max_bytes: 65536}}
       nodes: {regex: {file: README.md, pattern: '(\d+) nodes'}}
     assert: int(replicas[0]) <= int(nodes[0])
+required:
+  - lint-passes
+  - version-agrees
+  - replicas-fit
 ```
 
 `errata list --format json` prints one object:
@@ -2123,7 +2271,8 @@ checks:
       "allow_empty": [],
       "skip_not_literal": []
     }
-  ]
+  ],
+  "required": ["lint-passes", "version-agrees", "replicas-fit"]
 }
 ```
 
@@ -2137,7 +2286,7 @@ checks:
 | `at.line` | the line the check starts on, counted from 1 |
 | `at.outside` | true for a config outside the root |
 | `type` | `program` or `rule` |
-| `run` | program check: the command, as a list of arguments |
+| `run` | program check: the command, as a list of arguments, placeholders replaced |
 | `timeout` | program check: a Go duration as Go prints it, so `2m` reads `2m0s` |
 | `extract` | rule: each extractor under its name, as `errata.yaml` spells the entry, with the defaults above written out; a key at its zero value (false, 0, empty) that the defaults above do not name is left out |
 | `relation` | rule: what its values must satisfy, with exactly one of `agree` and `assert` |
@@ -2145,6 +2294,7 @@ checks:
 | `relation.compare` | beside `agree`: how its values are compared, `text` (the string form of each value after `normalize`) or `semver` (as versions and ranges) |
 | `relation.assert` | the expression as written |
 | `normalize`, `allow_empty`, `skip_not_literal` | rule: as the config lists them |
+| `required` | the ids `required` lists, in its order; an empty list when the config has no `required` (see [Required checks](#required-checks)) |
 
 Values print as the config writes them, but for the defaults above. A file path, an ini section
 and a key are not cleaned or folded, so `./f` and `f`, or git's `Remote.Origin` and
@@ -2222,7 +2372,8 @@ jobs:
           category: errata
 ```
 
-The errata step still exits 1 on an erratum or an unknown, so the job fails; `if: always()` uploads
+The errata step still exits 1 on an erratum or an unknown, or on a skip under `--fail-on-skip`,
+so the job fails; `if: always()` uploads
 the file anyway. errata runs with `docker run` instead of as the job's `container:`, so
 `upload-sarif`, a JavaScript action, runs on the runner and not in the errata image, which holds
 only errata and bash. `persist-credentials: false` keeps the job's token, which can write code
@@ -2236,7 +2387,7 @@ What goes where in the file:
 | a check | a rule in `tool.driver.rules`, with the check's id, and its reason as the full description and the help text |
 | an erratum | a result, at the location of the first value that disagrees, with links `[value 1](1)`, `[value 2](2)` and so on to every other value, then to each value `skip_not_literal` left out |
 | an unknown | an `error` notification in `invocations[0].toolExecutionNotifications`, with the message and the reason, and each value `skip_not_literal` left out as a location; `executionSuccessful` is then false |
-| a skipped check | a `note` notification with its gap, so the coverage is in the file |
+| a skipped check | a `note` notification with its gap, so the coverage is in the file; under `--fail-on-skip` an `error` notification, and `executionSuccessful` is then false |
 | a check whose claim holds | its rule, and no result |
 | a check whose claim holds with values left out | its rule, no result, and a `note` notification that counts the values `skip_not_literal` left out and lists each as a location |
 | errata itself | `tool.driver`, with errata's version as `version` |

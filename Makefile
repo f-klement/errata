@@ -65,6 +65,7 @@ FUZZ_TARGETS := ./internal/config:FuzzParse ./internal/protocol:FuzzMessage \
                 ./internal/extract/xml:FuzzXPath ./internal/extract/xml:FuzzXML \
                 ./internal/extract/ini:FuzzINI ./internal/extract/properties:FuzzProperties \
                 ./internal/extract/toolversion:FuzzToolVersion ./internal/semver:FuzzParse \
+                ./internal/extract/packageversion:FuzzPackageVersion \
                 ./internal/extract/envfile:FuzzEnvfile \
                 ./internal/extract/gitlabci:FuzzGitLabCI \
                 ./internal/extract/shell:FuzzShell \
@@ -185,6 +186,7 @@ SLOW_TESTS := ./internal/report:TestSARIFBoundsTheReviewersUpload \
               ./internal/extract/ini:TestReplayINIShapesAtFullSize \
               ./internal/extract/properties:TestReplayPropertiesShapesAtFullSize \
               ./internal/extract/toolversion:TestReplayToolVersionShapesAtFullSize \
+              ./internal/extract/packageversion:TestReplayPackageVersionShapesAtFullSize \
               ./internal/extract/envfile:TestReplayEnvfileShapesAtFullSize \
               ./internal/extract/gitlabci:TestReplayGitLabCIShapesAtFullSize \
               ./internal/extract/githubactions:TestCostIsLinearInTheFile \

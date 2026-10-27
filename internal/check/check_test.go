@@ -126,9 +126,30 @@ func TestResultFailed(t *testing.T) {
 	}
 }
 
+// A skip fails the run only when the report says skips fail; a run with no
+// skip passes either way.
+func TestReportSkipsFail(t *testing.T) {
+	skip := Result{Gap: "no provider can read a live system"}
+	pass := Result{Verdict: VerdictTrue}
+	cases := []struct {
+		rep  Report
+		want bool
+	}{
+		{Report{Results: []Result{pass, skip}}, false},
+		{Report{Results: []Result{pass, skip}, SkipsFail: true}, true},
+		{Report{Results: []Result{pass}, SkipsFail: true}, false},
+		{Report{SkipsFail: true}, false},
+	}
+	for _, tc := range cases {
+		if got := tc.rep.Failed(); got != tc.want {
+			t.Errorf("%+v.Failed() = %v, want %v", tc.rep, got, tc.want)
+		}
+	}
+}
+
 func TestPropertyReportCountsAddUp(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
-		rep := Report{Results: rapid.SliceOf(genResult()).Draw(t, "results")}
+		rep := Report{Results: rapid.SliceOf(genResult()).Draw(t, "results"), SkipsFail: rapid.Bool().Draw(t, "skips fail")}
 		ran, skipped := rep.Coverage()
 		if ran+skipped != len(rep.Results) {
 			t.Fatalf("ran %d + skipped %d != %d results", ran, skipped, len(rep.Results))
@@ -161,9 +182,16 @@ func TestPropertyReportCountsAddUp(t *testing.T) {
 		if len(errata) != wantErrata || len(unknowns) != wantUnknown {
 			t.Fatalf("errata %d unknown %d, want %d and %d", len(errata), len(unknowns), wantErrata, wantUnknown)
 		}
-		// The run fails on either, and only on these.
-		if rep.Failed() != (wantErrata+wantUnknown > 0) {
-			t.Fatalf("Failed() = %v with %d errata and %d unknown", rep.Failed(), wantErrata, wantUnknown)
+		// The run fails on either, on a skip when skips fail, and only on these.
+		wantSkips := 0
+		if rep.SkipsFail {
+			wantSkips = skipped
+		}
+		if rep.FailingSkips() != wantSkips {
+			t.Fatalf("FailingSkips() = %d, want %d (SkipsFail %v, skipped %d)", rep.FailingSkips(), wantSkips, rep.SkipsFail, skipped)
+		}
+		if rep.Failed() != (wantErrata+wantUnknown+wantSkips > 0) {
+			t.Fatalf("Failed() = %v with %d errata, %d unknown, %d skipped and SkipsFail %v", rep.Failed(), wantErrata, wantUnknown, skipped, rep.SkipsFail)
 		}
 	})
 }

@@ -1,0 +1,95 @@
+# package_version reads the version the package gives itself in each
+# manifest at the root, so one rule says they agree, and names each version
+# with its file and line when they do not.
+! exec errata check -c drifted.yaml
+stdout '^FALSE version-agrees \(repo\)$'
+stdout '^          "1.4.0" at package.json:3 \(own\), pyproject.toml:3 \(own\)$'
+stdout '^          "1.3.9" at VERSION:1 \(own\)$'
+
+# files: names the manifests to read, below the root too, and the rule holds.
+exec errata check -c named.yaml
+stdout '^0 errata, 0 unknown. Coverage: ran 1, skipped 0.$'
+
+# A member of a Cargo workspace inherits the workspace's version, which a
+# Cargo.toml further up holds: not literal, so unknown until skip_not_literal
+# lists the extractor; a dynamic version in pyproject.toml is the same.
+! exec errata check -c member.yaml
+stdout '^UNKNOWN member-agrees \(repo\)$'
+stdout '"version.workspace = true" at crates/cli/Cargo.toml:3'
+stdout '"dynamic = \[\\"version\\"\]" at py/pyproject.toml:3'
+exec errata check -c member-skipped.yaml
+stdout '^0 errata, 0 unknown. Coverage: ran 1, skipped 0.$'
+
+# A file errata does not read a version from does not load.
+! exec errata check -c unknown-file.yaml
+stderr 'package_version: errata does not know how "setup.py" names a package''s version; it reads Cargo.toml, VERSION, package.json, pyproject.toml'
+
+# errata list prints the files as written, and leaves them out for the root.
+exec errata list -c named.yaml -f json
+stdout '"package_version": \{\n\s+"files": \[\n\s+"package.json",\n\s+"crates/lib/Cargo.toml"\n\s+\],\n\s+"max_bytes": 4096'
+exec errata list -c drifted.yaml -f json
+stdout '"package_version": \{\n\s+"max_bytes": 33554432\n'
+-- package.json --
+{
+  "name": "web",
+  "version": "1.4.0"
+}
+-- pyproject.toml --
+[project]
+name = "web"
+version = "1.4.0"
+-- VERSION --
+1.3.9
+-- crates/lib/Cargo.toml --
+[package]
+name = "lib"
+version = "1.4.0"
+-- crates/cli/Cargo.toml --
+[package]
+name = "cli"
+version.workspace = true
+-- py/pyproject.toml --
+[project]
+name = "py"
+dynamic = ["version"]
+-- drifted.yaml --
+checks:
+  - id: version-agrees
+    reason: The release names one version everywhere.
+    scope: repo
+    extract:
+      own: {package_version: {}}
+    agree: [own]
+-- named.yaml --
+checks:
+  - id: version-agrees
+    reason: The library and the web package release together.
+    scope: repo
+    extract:
+      own: {package_version: {files: [package.json, crates/lib/Cargo.toml], max_bytes: 4096}}
+    agree: [own]
+-- member.yaml --
+checks:
+  - id: member-agrees
+    reason: The members release together.
+    scope: repo
+    extract:
+      members: {package_version: {files: [package.json, crates/lib/Cargo.toml, crates/cli/Cargo.toml, py/pyproject.toml]}}
+    agree: [members]
+-- member-skipped.yaml --
+checks:
+  - id: member-agrees
+    reason: The members release together.
+    scope: repo
+    extract:
+      members: {package_version: {files: [package.json, crates/lib/Cargo.toml, crates/cli/Cargo.toml, py/pyproject.toml]}}
+    agree: [members]
+    skip_not_literal: [members]
+-- unknown-file.yaml --
+checks:
+  - id: version-agrees
+    reason: r
+    scope: repo
+    extract:
+      own: {package_version: {files: [setup.py]}}
+    agree: [own]

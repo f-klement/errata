@@ -1,0 +1,61 @@
+# A config with required runs only when required lists exactly the ids of its
+# checks. A check deleted from the file, or one added without its id, exits 2
+# before any check runs: each check here writes a file, and none is written.
+exec sh -c 'errata check -c deleted.yaml 2>/dev/null; echo code=$?'
+stdout code=2
+
+! exec errata check -c deleted.yaml
+stderr 'required lists ids no check has: "second-ran", "third-ran"; restore each check, or remove its id from required'
+! stdout .
+! exists first
+
+! exec errata check -c added.yaml
+stderr 'these checks are not under required: "second-ran"; add each id to required, or remove the check'
+! stdout .
+! exists first
+! exists second
+
+# list refuses it the same way.
+! exec errata list -c deleted.yaml -f json
+stderr 'required lists ids no check has'
+! stdout .
+
+# The ids that match run, in any order, and list prints the required list
+# in its order.
+exec errata check -c matching.yaml
+exists first
+exists second
+exec errata list -c matching.yaml -f json
+stdout '"required": \[\n    "second-ran",\n    "first-ran"\n  \]\n}\n$'
+exec errata list -c matching.yaml
+stdout '^2 checks: 0 rules, 2 program checks; required lists every one\.$'
+
+-- deleted.yaml --
+required: [first-ran, second-ran, third-ran]
+checks:
+  - id: first-ran
+    reason: r
+    scope: repo
+    run: [touch, first]
+-- added.yaml --
+required: [first-ran]
+checks:
+  - id: first-ran
+    reason: r
+    scope: repo
+    run: [touch, first]
+  - id: second-ran
+    reason: r
+    scope: repo
+    run: [touch, second]
+-- matching.yaml --
+required: [second-ran, first-ran]
+checks:
+  - id: first-ran
+    reason: r
+    scope: repo
+    run: [touch, first]
+  - id: second-ran
+    reason: r
+    scope: repo
+    run: [touch, second]

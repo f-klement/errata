@@ -22,7 +22,9 @@ import (
 // so converting against the real types keeps run: [ls, .inf] a list of
 // strings ("+Inf") rather than a float that JSON cannot hold.
 type typedFile struct {
-	Checks []checkEntry `json:"checks"`
+	Checks   []checkEntry `json:"checks"`
+	Required []string     `json:"required"`
+	Defaults defaults     `json:"defaults"`
 }
 
 // toJSON converts raw YAML to JSON with the coercions of the real types and
@@ -103,8 +105,8 @@ func empty(doc *yaml.Node) bool {
 // lines returns the line each entry under the top-level checks key starts
 // on, by its index, from the document the checks were decoded from. Checks it
 // cannot place, such as those a merge key brings in, get no line, which
-// SARIF reads as the file without a line. It follows no alias: the decoder
-// refuses every top-level key but checks, so no anchor can come before it.
+// SARIF reads as the file without a line. It follows no alias: checks
+// written as an alias get no line either, as merged checks do.
 func lines(doc *yaml.Node) []int {
 	if doc == nil || len(doc.Content) == 0 {
 		return nil
@@ -259,6 +261,23 @@ func plainStrings(doc *yaml.Node) []written {
 		break
 	}
 	return out
+}
+
+// plainRequired is plainStrings for the ids under the top-level required
+// key: an error for each id YAML 1.1 reads as no string, so required: [y]
+// is refused as id: y is, rather than loading as the id "true".
+func plainRequired(doc *yaml.Node) []error {
+	if doc == nil || len(doc.Content) == 0 {
+		return nil
+	}
+	for _, p := range pairs(doc.Content[0], nil) {
+		if p.key.Value == "required" {
+			w := &stringWalk{}
+			w.walk(p.value, reflect.TypeFor[[]string](), "required")
+			return w.errs
+		}
+	}
+	return nil
 }
 
 type stringWalk struct {

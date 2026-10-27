@@ -145,13 +145,13 @@ func TestLoad(t *testing.T) {
 		write(filepath.Join(root, "ci", "checks.yaml")): {File: "ci/checks.yaml"},
 		outside: {File: outside, Outside: true},
 	} {
-		checks, err := Load(root, path)
+		cfg, err := Load(root, path)
 		if err != nil {
 			t.Fatal(err)
 		}
 		for i, line := range []int{3, 7} {
 			want.Line = line
-			if got := checks[i].At; got != want {
+			if got := cfg.Checks[i].At; got != want {
 				t.Errorf("Load(%s): check %d is at %+v, want %+v", path, i, got, want)
 			}
 		}
@@ -175,11 +175,11 @@ func TestLoadOutsideTheRootFromTheWorkingDirectory(t *testing.T) {
 	}
 	t.Chdir(dir)
 	for _, path := range []string{"ci.yaml", "repo/../ci.yaml"} {
-		checks, err := Load("repo", path)
+		cfg, err := Load("repo", path)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got, want := checks[0].At, (check.Location{File: path, Line: 3, Outside: true}); got != want {
+		if got, want := cfg.Checks[0].At, (check.Location{File: path, Line: 3, Outside: true}); got != want {
 			t.Errorf("Load(repo, %s): check is at %+v, want %+v", path, got, want)
 		}
 	}
@@ -188,11 +188,11 @@ func TestLoadOutsideTheRootFromTheWorkingDirectory(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "checks.yaml"), []byte(good), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	checks, err := Load("repo", "repo/checks.yaml")
+	cfg, err := Load("repo", "repo/checks.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := checks[0].At, (check.Location{File: "checks.yaml", Line: 3}); got != want {
+	if got, want := cfg.Checks[0].At, (check.Location{File: "checks.yaml", Line: 3}); got != want {
 		t.Errorf("Load(repo, repo/checks.yaml): check is at %+v, want %+v", got, want)
 	}
 }

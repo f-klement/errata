@@ -29,6 +29,11 @@ it ran, or its cost or time limit reached. The claim was not shown false, so an 
 erratum. It still fails the run, because a suite that passes on what it could not test passes on a
 subset. Do not call it an error.
 
+**Required list.** The ids a config lists under its top-level `required` key: the checks it must
+hold. A config whose checks are not exactly those ids does not load, so a check deleted from the
+file stops the run before anything runs. It says which checks the config holds, not which ones
+ran: a skipped check is still on it.
+
 **Errata.** The output of a run: the claims its checks showed to be false. One of them is an
 erratum. A run that ends with an unknown and no errata still fails.
 
@@ -88,10 +93,15 @@ relate: all agree, as text or as versions, or a CEL expression that must hold.
 **Program check.** A check the user writes as a program, run through the check protocol. Every check
 is either a rule or a program check. Do not call it a script, an exec check or a command check.
 
+**Default run.** The `run` a program check without one of its own takes, from the top level
+`defaults` key, with the check's id put in for its placeholders. It is a program errata starts, as
+any `run` is.
+
 **Extractor.** The part of a rule that gets values from one place. A YAML path, an XPath into an
 XML file, a key in an INI, properties or env file, a regular expression capture, a sentence of
-Markdown prose, the versions of a tool in the files that pin it, one variable in every file a rule
-lists, an image digest, a field on a live object.
+Markdown prose, the versions of a tool in the files that pin it, the version a package gives
+itself in each of its manifests, one variable in every file a rule lists, an image digest, a field
+on a live object.
 
 **Pin.** A file's statement of the version of a tool the repository uses, such as `20.11.1` in
 `.nvmrc` or `nodejs 20.11.1` in `.tool-versions`. The `tool_version` extractor reads every pin of
@@ -113,7 +123,8 @@ number, or `{posargs}` in tox.ini. Its text is what the file wrote, not what the
 rule never compares it. A rule that lists the extractor in `skip_not_literal` leaves such values
 out; any other rule with one is unknown. The `ini` extractor marks them, `properties` in a
 template file, `tool_version` a version such as `lts/*` or `system`, which a version manager
-resolves, `envfile` a value whose `${OTHER}` names a key the file does not set before it,
+resolves, `package_version` a version the build computes, such as `dynamic = ["version"]` in
+pyproject.toml, `envfile` a value whose `${OTHER}` names a key the file does not set before it,
 `gitlab-ci` a variable that names another, such as `$CI_COMMIT_SHA`, or a number GitLab's YAML
 loader retypes, such as `3.10`, `shell` a value the shell computes and errata does not
 resolve, such as `$(git describe)` or `"$HOME/bin"`, `github-actions` a `${{ }}` expression
@@ -132,7 +143,8 @@ program and reads its result. The program can be in any language.
 
 **Gap.** What a run lacks to reach a check's scope: a provider operation that no available provider
 has, for example read for a live check. A check whose scope the run cannot reach is skipped, and its
-gap is printed in the coverage.
+gap is printed in the coverage. A skip does not fail the run unless `errata check` is given
+`--fail-on-skip`.
 
 **Coverage.** The count of checks that ran and the count that were skipped, with the gap for each
 skip. errata prints coverage on every run.

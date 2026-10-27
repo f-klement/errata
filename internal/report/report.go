@@ -41,6 +41,8 @@ func FormatNames() []string {
 
 // Text is the human format. It prints each erratum and each unknown with its
 // reason, then the counts and the coverage line, which it prints on every run.
+// When the report's skips fail the run, the coverage line says so, since the
+// counts before it would read as a pass.
 // Under the coverage line it names each skipped check with its gap, each
 // value that skip_not_literal left out, whatever the check's verdict (a rule
 // that holds held on the values that were left), and the note of each rule
@@ -67,7 +69,11 @@ func (Text) Write(w io.Writer, r check.Report) error {
 	}
 
 	ran, skipped := r.Coverage()
-	fmt.Fprintf(&b, "%s, %d unknown. Coverage: ran %d, skipped %d.\n", errataCount(len(r.Errata())), len(r.Unknowns()), ran, skipped)
+	fmt.Fprintf(&b, "%s, %d unknown. Coverage: ran %d, skipped %d.", errataCount(len(r.Errata())), len(r.Unknowns()), ran, skipped)
+	if r.FailingSkips() > 0 {
+		b.WriteString(" A skip fails this run.")
+	}
+	b.WriteString("\n")
 	for _, res := range r.Results {
 		if res.Skipped() {
 			fmt.Fprintf(&b, "  skipped %s (%s): %s\n", res.Check.ID, res.Check.Scope, res.Gap)

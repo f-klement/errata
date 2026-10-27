@@ -528,6 +528,23 @@ func TestSARIFNotifications(t *testing.T) {
 	}
 }
 
+// When skips fail the run, a skip is an error notification and the
+// invocation did not succeed, as with an unknown.
+func TestSARIFSkipsFail(t *testing.T) {
+	skip := sarifSample.Results[4]
+	if !skip.Skipped() {
+		t.Fatalf("sarifSample.Results[4] = %+v, want the skip", skip)
+	}
+	for _, fail := range []bool{false, true} {
+		rep := check.Report{Results: []check.Result{sarifSample.Results[0], skip}, SkipsFail: fail}
+		inv := decodeSARIF(t, writeSARIF(t, rep)).Runs[0].Invocations[0]
+		level := map[bool]string{false: "note", true: "error"}[fail]
+		if inv.ExecutionSuccessful == fail || len(inv.Notifications) != 1 || inv.Notifications[0].Level != level {
+			t.Fatalf("SkipsFail %v: invocation = %+v, want executionSuccessful %v and one %s", fail, inv, !fail, level)
+		}
+	}
+}
+
 func TestSARIFCleanRun(t *testing.T) {
 	b := writeSARIF(t, check.Report{Results: []check.Result{sarifSample.Results[0], sarifSample.Results[4]}})
 	out := decodeSARIF(t, b)
@@ -614,7 +631,7 @@ func TestPropertySARIFIsValidAndCountsAgree(t *testing.T) {
 		_, skipped := rep.Coverage()
 		inv := out.Runs[0].Invocations[0]
 		held := heldWithLeftOut(rep)
-		if len(out.Runs[0].Results) != len(rep.Errata()) || len(inv.Notifications) != len(rep.Unknowns())+skipped+held || inv.ExecutionSuccessful != (len(rep.Unknowns()) == 0) {
+		if len(out.Runs[0].Results) != len(rep.Errata()) || len(inv.Notifications) != len(rep.Unknowns())+skipped+held || inv.ExecutionSuccessful != (len(rep.Unknowns())+rep.FailingSkips() == 0) {
 			t.Fatalf("%d results, %d notifications, successful %v; report has %d errata, %d unknown, %d skipped, %d held with values left out",
 				len(out.Runs[0].Results), len(inv.Notifications), inv.ExecutionSuccessful, len(rep.Errata()), len(rep.Unknowns()), skipped, held)
 		}

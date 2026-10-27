@@ -14,6 +14,7 @@ import (
 	"github.com/f-klement/errata/internal/extract/ini"
 	"github.com/f-klement/errata/internal/extract/jenkins"
 	"github.com/f-klement/errata/internal/extract/json"
+	"github.com/f-klement/errata/internal/extract/packageversion"
 	"github.com/f-klement/errata/internal/extract/properties"
 	"github.com/f-klement/errata/internal/extract/shell"
 	"github.com/f-klement/errata/internal/extract/text"
@@ -54,6 +55,13 @@ func TestKindsCoverSpec(t *testing.T) {
 		_, err := Build(s)
 		required := "file"
 		switch name {
+		case "package_version":
+			// Nothing is required: without files it reads the root's
+			// manifests.
+			if err != nil {
+				t.Errorf("package_version with no field set: %v", err)
+			}
+			continue
 		case "tool_version":
 			required = "tool" // it reads the files that pin the tool
 		case "env":
@@ -71,7 +79,8 @@ func TestKindsCoverSpec(t *testing.T) {
 // text case, which gave every text extractor the empty place, so a rule of
 // two text extractors was refused as reading one place.
 func TestPlaceKeepsEveryKind(t *testing.T) {
-	// A kind that reads several files, tool_version, names its one in
+	// A kind that reads several files, tool_version or package_version,
+	// names its one in
 	// Files.
 	kindSpec := func(i int, file string) Spec {
 		var s Spec
@@ -166,6 +175,7 @@ func TestSpecKind(t *testing.T) {
 		{Spec{JSON: &json.Spec{File: "a.json", Path: "$"}}, "json"},
 		{Spec{Properties: &properties.Spec{File: "a.properties", Key: "k"}}, "properties"},
 		{Spec{ToolVersion: &toolversion.Spec{Tool: "node"}}, "tool_version"},
+		{Spec{PackageVersion: &packageversion.Spec{}}, "package_version"},
 		{Spec{EnvFile: &envfile.Spec{File: ".env", Name: "A"}}, "envfile"},
 		{Spec{GitLabCI: &gitlabci.Spec{File: ".gitlab-ci.yml", Job: "build", Key: "image"}}, "gitlab-ci"},
 		{Spec{Shell: &shell.Spec{File: "deploy.sh", Name: "X"}}, "shell"},
@@ -210,7 +220,8 @@ func TestResolvedKeepsEveryKind(t *testing.T) {
 			var s Spec
 			f := reflect.ValueOf(&s).Elem().Field(i)
 			f.Set(reflect.New(f.Type().Elem()))
-			// tool_version names its files in a list, every other kind in File.
+			// tool_version and package_version name their files in a list,
+			// every other kind in File.
 			file := func(v reflect.Value) string {
 				if fs := v.FieldByName("Files"); fs.IsValid() {
 					if fs.Len() != 1 {

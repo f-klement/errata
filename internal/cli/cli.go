@@ -14,7 +14,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/f-klement/errata/internal/check"
 	"github.com/f-klement/errata/internal/config"
 	"github.com/f-klement/errata/internal/engine"
 	"github.com/f-klement/errata/internal/report"
@@ -23,15 +22,15 @@ import (
 // Exit codes. CI reads only these, so they are part of the public contract.
 const (
 	ExitOK     = 0 // every check that ran found its claim true
-	ExitErrata = 1 // at least one erratum or unknown
+	ExitErrata = 1 // at least one erratum or unknown, or a skip under --fail-on-skip
 	ExitUsage  = 2 // bad flags or a config that does not load
 )
 
 // Version is set at build time with -ldflags "-X .../cli.Version=v0.1.0".
 var Version = "dev"
 
-// errErrata marks a run that completed and failed on an erratum or an
-// unknown, so Execute can tell it apart from a usage error.
+// errErrata marks a run that completed and failed on an erratum, an unknown
+// or a skip under --fail-on-skip, so Execute can tell it apart from a usage error.
 var errErrata = errors.New("errata found")
 
 // Execute runs the CLI with args and returns the process exit code. It takes
@@ -40,9 +39,8 @@ func Execute(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	return execute(ctx, args, stdout, stderr, config.Load)
 }
 
-// loader reads the config at path under root into checks, as config.Load
-// does.
-type loader func(root, path string) ([]check.Check, error)
+// loader reads the config at path under root, as config.Load does.
+type loader func(root, path string) (config.Config, error)
 
 // execute is Execute with the loader as an argument. The testscripts pass
 // one that wraps config.Load, to run a reader that the extract package does
@@ -106,7 +104,7 @@ func resolveVersion(stamped string, buildInfo func() (*debug.BuildInfo, bool)) s
 }
 
 // configFlags are the flags that say which config a command loads. check
-// and list declare them with one function and load with loadChecks, so the
+// and list declare them with one function and load with loadConfig, so the
 // two read one config the same way.
 type configFlags struct {
 	repoRoot   string
@@ -118,30 +116,32 @@ func (f *configFlags) add(cmd *cobra.Command) {
 	cmd.Flags().StringVarP(&f.configPath, "config", "c", "", "config file (default <root>/"+config.DefaultFile+")")
 }
 
-// loadChecks is the one way a command reads its config: check runs the checks
+// loadConfig is the one way a command reads its config: check runs the checks
 // it returns, and list prints them. It returns the absolute root as well,
 // which check runs the checks from. A config that does not load is an error
-// that names the file, which Execute prints and exits 2 on.
-func loadChecks(load loader, f configFlags) (string, []check.Check, error) {
+// that names the file, which Execute prints and exits 2 on; a config whose
+// required list and checks differ is one, so check runs nothing.
+func loadConfig(load loader, f configFlags) (string, config.Config, error) {
 	absRoot, err := filepath.Abs(f.repoRoot)
 	if err != nil {
-		return "", nil, err
+		return "", config.Config{}, err
 	}
 	path := f.configPath
 	if path == "" {
 		path = filepath.Join(absRoot, config.DefaultFile)
 	}
-	checks, err := load(absRoot, path)
+	cfg, err := load(absRoot, path)
 	if err != nil {
-		return "", nil, fmt.Errorf("load %s: %w", path, err)
+		return "", config.Config{}, fmt.Errorf("load %s: %w", path, err)
 	}
-	return absRoot, checks, nil
+	return absRoot, cfg, nil
 }
 
 func newCheckCmd(load loader) *cobra.Command {
 	var (
-		flags  configFlags
-		format string
+		flags      configFlags
+		format     string
+		failOnSkip bool
 	)
 	cmd := &cobra.Command{
 		Use:   "check",
@@ -155,12 +155,14 @@ func newCheckCmd(load loader) *cobra.Command {
 				return fmt.Errorf("unknown --format %q, want one of %s", format, strings.Join(report.FormatNames(), ", "))
 			}
 			reporter := newReporter(resolveVersion(Version, debug.ReadBuildInfo))
-			absRoot, checks, err := loadChecks(load, flags)
+			absRoot, cfg, err := loadConfig(load, flags)
 			if err != nil {
 				return err
 			}
 
-			rep := engine.New(absRoot, nil).Execute(cmd.Context(), checks)
+			e := engine.New(absRoot, nil)
+			e.FailOnSkip = failOnSkip
+			rep := e.Execute(cmd.Context(), cfg.Checks)
 			if err := reporter.Write(cmd.OutOrStdout(), rep); err != nil {
 				return err
 			}
@@ -172,6 +174,7 @@ func newCheckCmd(load loader) *cobra.Command {
 	}
 	flags.add(cmd)
 	cmd.Flags().StringVarP(&format, "format", "f", "text", "output format: "+strings.Join(report.FormatNames(), ", "))
+	cmd.Flags().BoolVar(&failOnSkip, "fail-on-skip", false, "exit 1 when a check was skipped, as on an unknown")
 	return cmd
 }
 
@@ -191,11 +194,11 @@ func newListCmd(load loader) *cobra.Command {
 			if !ok {
 				return fmt.Errorf("unknown --format %q, want one of %s", format, strings.Join(report.ListFormatNames(), ", "))
 			}
-			_, checks, err := loadChecks(load, flags)
+			_, cfg, err := loadConfig(load, flags)
 			if err != nil {
 				return err
 			}
-			return lister.WriteList(cmd.OutOrStdout(), checks)
+			return lister.WriteList(cmd.OutOrStdout(), cfg.Checks, cfg.Required)
 		},
 	}
 	flags.add(cmd)

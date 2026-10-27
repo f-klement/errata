@@ -35,8 +35,9 @@ need no program at all.
   their locations, and an extractor that finds nothing is unknown.
   - YAML, JSON and TOML share one path syntax, part of JSONPath, with filters by equality.
   - XML through a subset of XPath 1.0, INI files (Ansible inventories, gitconfig, setup.cfg,
-    tox.ini, php.ini), Java properties, and toolchain version files such as `.tool-versions` and
-    `.nvmrc`.
+    tox.ini, php.ini), Java properties, toolchain version files such as `.tool-versions` and
+    `.nvmrc`, and the package's own version in package.json, pyproject.toml, Cargo.toml and
+    `VERSION`.
   - Environment variables where they are set: env files, shell scripts, GitLab CI, GitHub Actions
     and Jenkinsfiles. The CI readers return the value a job or step actually sees, resolved from
     local files only; a value that needs the network is unknown. An `env:` extractor asks every
@@ -173,11 +174,11 @@ in an issue. Otherwise the smallest plugin is built first.
 
 These integrations are core and never need a plugin: YAML, JSON, TOML, regex, CEL (with globs,
 records, string functions and the other features of v0.2.1 and v0.2.2), INI, XML, Java
-properties, version files, Markdown prose, env files and `env:`, shell, the GitLab CI, GitHub
-Actions and Jenkins readers, Markdown structure, code comments, markers, the literal reader, source
-code literals, HTML, AsciiDoc and reStructuredText, dependency versions, systemd units, Unix
-configuration files, JSONC and JSON5, Dockerfiles, Compose, Kubernetes manifests and their `env:`
-entries, image references, GitOps resources, and Starlark.
+properties, version files, package versions, Markdown prose, env files and `env:`, shell, the
+GitLab CI, GitHub Actions and Jenkins readers, Markdown structure, code comments, markers, the
+literal reader, source code literals, HTML, AsciiDoc and reStructuredText, dependency versions,
+systemd units, Unix configuration files, JSONC and JSON5, Dockerfiles, Compose, Kubernetes
+manifests and their `env:` entries, image references, GitOps resources, and Starlark.
 
 Planned as plugins, with no release yet:
 

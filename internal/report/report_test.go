@@ -43,6 +43,29 @@ UNKNOWN broken (repo)
 	}
 }
 
+// When skips fail the run, the coverage line says so, since "0 errata, 0
+// unknown" alone reads as a pass over a run that exits 1.
+func TestTextSkipsFail(t *testing.T) {
+	rep := check.Report{Results: []check.Result{sample.Results[0], sample.Results[3]}, SkipsFail: true}
+	var buf bytes.Buffer
+	if err := (Text{}).Write(&buf, rep); err != nil {
+		t.Fatal(err)
+	}
+	want := `0 errata, 0 unknown. Coverage: ran 1, skipped 1. A skip fails this run.
+  skipped owner (applied): no provider can read and predict a live system
+`
+	if got := buf.String(); got != want {
+		t.Fatalf("text output differs.\ngot:\n%s\nwant:\n%s", got, want)
+	}
+	buf.Reset()
+	if err := (Text{}).Write(&buf, check.Report{Results: sample.Results[:1], SkipsFail: true}); err != nil {
+		t.Fatal(err)
+	}
+	if got := buf.String(); got != "0 errata, 0 unknown. Coverage: ran 1, skipped 0.\n" {
+		t.Fatalf("a run with no skip says more than its counts: %q", got)
+	}
+}
+
 func TestTextSaysErratumForOne(t *testing.T) {
 	cases := map[int]string{0: "0 errata", 1: "1 erratum", 2: "2 errata"}
 	for n, want := range cases {
@@ -83,6 +106,25 @@ func TestJUnit(t *testing.T) {
 	}
 }
 
+// When skips fail the run, a skipped check is an <error> naming its gap, so
+// the suite counts a failure where the exit code does.
+func TestJUnitSkipsFail(t *testing.T) {
+	rep := sample
+	rep.SkipsFail = true
+	var buf bytes.Buffer
+	if err := (JUnit{}).Write(&buf, rep); err != nil {
+		t.Fatal(err)
+	}
+	s := decode(t, buf.Bytes())
+	if s.Tests != 4 || s.Failures != 1 || s.Errors != 2 || s.Skipped != 0 {
+		t.Fatalf("counts = %+v", s)
+	}
+	c := s.Cases[3]
+	if c.Skipped != nil || c.Error == nil || c.Error.Message != "skipped: no provider can read and predict a live system" || c.Error.Body != "r" {
+		t.Fatalf("case = %+v", c)
+	}
+}
+
 type failingWriter struct{}
 
 func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("disk full") }
@@ -118,7 +160,7 @@ func decode(t fataler, b []byte) junitSuite {
 
 func genReport(t *rapid.T) check.Report {
 	n := rapid.IntRange(0, 15).Draw(t, "n")
-	rep := check.Report{}
+	rep := check.Report{SkipsFail: rapid.Bool().Draw(t, "skips fail")}
 	for range n {
 		r := check.Result{
 			Check: check.Check{
@@ -154,8 +196,13 @@ func TestPropertyJUnitIsValidAndCountsAgree(t *testing.T) {
 		}
 		s := decode(t, buf.Bytes())
 		ran, skipped := rep.Coverage()
-		if s.Tests != len(rep.Results) || s.Skipped != skipped || s.Failures != len(rep.Errata()) || s.Errors != len(rep.Unknowns()) || len(s.Cases) != ran+skipped {
-			t.Fatalf("suite %+v disagrees with report (ran %d, skipped %d, errata %d, unknown %d)", s, ran, skipped, len(rep.Errata()), len(rep.Unknowns()))
+		failing := rep.FailingSkips()
+		if s.Tests != len(rep.Results) || s.Skipped != skipped-failing || s.Failures != len(rep.Errata()) || s.Errors != len(rep.Unknowns())+failing || len(s.Cases) != ran+skipped {
+			t.Fatalf("suite %+v disagrees with report (ran %d, skipped %d, errata %d, unknown %d, skips fail %v)", s, ran, skipped, len(rep.Errata()), len(rep.Unknowns()), rep.SkipsFail)
+		}
+		// The suite fails exactly when the run does.
+		if (s.Failures+s.Errors > 0) != rep.Failed() {
+			t.Fatalf("suite %+v, but the run's Failed() is %v", s, rep.Failed())
 		}
 		for i, c := range s.Cases {
 			left := len(leftOut(rep.Results[i]))
@@ -182,6 +229,9 @@ func TestPropertyTextAlwaysPrintsCoverage(t *testing.T) {
 			if r.Skipped() && !strings.Contains(buf.String(), "skipped "+r.Check.ID+" ") {
 				t.Fatalf("skipped check %s not named", r.Check.ID)
 			}
+		}
+		if strings.Contains(buf.String(), ". A skip fails this run.\n") != (rep.FailingSkips() > 0) {
+			t.Fatalf("SkipsFail %v with %d skips, output:\n%s", rep.SkipsFail, rep.FailingSkips(), buf.String())
 		}
 	})
 }

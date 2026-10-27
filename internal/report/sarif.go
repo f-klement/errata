@@ -20,7 +20,9 @@ import (
 // a result. An unknown and a skipped check are notifications of the
 // invocation, not results: neither showed a claim false, and code scanning
 // would open an alert for any result. So is a rule that holds with values
-// that skip_not_literal left out, since it held on what was left.
+// that skip_not_literal left out, since it held on what was left. A skip is a
+// note, or, when the report's skips fail the run, an error that sets
+// executionSuccessful false, as an unknown does.
 type SARIF struct {
 	// Version is errata's version, written as the driver's version so a
 	// reader knows which errata wrote the file.
@@ -363,8 +365,13 @@ func (p pieces) shrink(full int) (cuts, error) {
 func build(r check.Report) pieces {
 	p := pieces{run: sarifRun{
 		Tool:        sarifTool{Driver: sarifDriver{Name: "errata", InformationURI: "https://github.com/f-klement/errata"}},
-		Invocations: []sarifInvocation{{ExecutionSuccessful: len(r.Unknowns()) == 0}},
+		Invocations: []sarifInvocation{{ExecutionSuccessful: len(r.Unknowns())+r.FailingSkips() == 0}},
 	}}
+	// A skip that fails the run is an error, as an unknown is.
+	skipLevel := "note"
+	if r.SkipsFail {
+		skipLevel = "error"
+	}
 	index := map[string]int{}
 	for _, res := range r.Results {
 		// The key is the id as encoding/json writes it, each invalid byte
@@ -384,7 +391,7 @@ func build(r check.Report) pieces {
 		case res.Skipped():
 			note := func(limit int) sarifNotification {
 				return sarifNotification{
-					Level:   "note",
+					Level:   skipLevel,
 					Message: sarifMessage{fmt.Sprintf("check %s skipped (%s): %s", plain(res.Check.ID), plain(string(res.Check.Scope)), cut(res.Gap, "gap", limit))},
 					Rule:    ref,
 				}

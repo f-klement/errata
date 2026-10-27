@@ -184,12 +184,17 @@ func (s Source) open(root string) (*os.File, int64, error) {
 // errDevice refuses a device, such as /dev/null, before it is opened.
 var errDevice = errors.New("it is a device, which errata does not open")
 
+// ErrDirectory refuses a directory where a file was named, as the read of
+// one would. A reader that passes over a file it looked for and did not
+// find tests for it with errors.Is, to pass over a directory at that name too.
+var ErrDirectory = errors.New("is a directory")
+
 // regular refuses a file that is not a regular file: a directory as the
 // read of one would, and a FIFO, a socket or a device as no file of the
 // repository.
 func regular(info fs.FileInfo) error {
 	if info.IsDir() {
-		return errors.New("is a directory")
+		return ErrDirectory
 	}
 	if !info.Mode().IsRegular() {
 		return errors.New("it is not a regular file")

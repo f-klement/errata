@@ -32,7 +32,7 @@ func listChecks() []check.Check {
 func listDocument(t *testing.T, checks []check.Check) map[string]any {
 	t.Helper()
 	var buf bytes.Buffer
-	if err := (ListJSON{}).WriteList(&buf, checks); err != nil {
+	if err := (ListJSON{}).WriteList(&buf, checks, nil); err != nil {
 		t.Fatal(err)
 	}
 	var doc map[string]any
@@ -53,7 +53,7 @@ func TestListCompare(t *testing.T) {
 		t.Errorf("a semver rule lists compare %v, want semver", rel["compare"])
 	}
 	var buf bytes.Buffer
-	if err := (ListText{}).WriteList(&buf, checks); err != nil {
+	if err := (ListText{}).WriteList(&buf, checks, nil); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(buf.String(), "y, x (compare semver)") {
@@ -115,7 +115,7 @@ func TestListText(t *testing.T) {
 	checks := listChecks()
 	checks[0].Reason = "first line\nsecond line"
 	var b bytes.Buffer
-	if err := (ListText{}).WriteList(&b, checks); err != nil {
+	if err := (ListText{}).WriteList(&b, checks, nil); err != nil {
 		t.Fatal(err)
 	}
 	want := `p (repo) program check
@@ -146,7 +146,7 @@ s (repo) rule
 	b.Reset()
 	one := checks[2]
 	one.Rule.Extractors = []check.NamedExtractor{{Name: "x", Spec: make(chan int)}}
-	if err := (ListText{}).WriteList(&b, []check.Check{one}); err != nil {
+	if err := (ListText{}).WriteList(&b, []check.Check{one}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(b.String(), "  extract: x: (json: unsupported type: chan int)\n") || !strings.HasSuffix(b.String(), "\n1 check: 1 rule, 0 program checks.\n") {
@@ -171,7 +171,7 @@ func TestListTextQuotesWhatCouldReadAsTwo(t *testing.T) {
 	}}
 	p := check.Check{ID: "p", Reason: "r", Scope: check.ScopeRepo, Run: []string{"sh", "-c", `echo "a b"`, "", "x\ty"}}
 	var b bytes.Buffer
-	if err := (ListText{}).WriteList(&b, []check.Check{c, p}); err != nil {
+	if err := (ListText{}).WriteList(&b, []check.Check{c, p}, nil); err != nil {
 		t.Fatal(err)
 	}
 	for _, line := range []string{

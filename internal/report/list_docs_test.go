@@ -54,12 +54,12 @@ func TestListJSONExampleIsWhatListPrints(t *testing.T) {
 	if err := os.WriteFile(path, []byte(fenced(t, section, "yaml")), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	checks, err := config.Load(root, path)
+	cfg, err := config.Load(root, path)
 	if err != nil {
 		t.Fatalf("the README's errata.yaml does not load: %v", err)
 	}
 	var buf bytes.Buffer
-	if err := (ListJSON{}).WriteList(&buf, checks); err != nil {
+	if err := (ListJSON{}).WriteList(&buf, cfg.Checks, cfg.Required); err != nil {
 		t.Fatal(err)
 	}
 	var got, want any
@@ -106,7 +106,7 @@ func keyPaths(v map[string]any, prefix string, into map[string]bool) {
 // and ListJSON writing at.outside as external.
 func TestListJSONKeysAreDocumented(t *testing.T) {
 	var buf bytes.Buffer
-	if err := (ListJSON{}).WriteList(&buf, listChecks()); err != nil {
+	if err := (ListJSON{}).WriteList(&buf, listChecks(), nil); err != nil {
 		t.Fatal(err)
 	}
 	var doc map[string]any

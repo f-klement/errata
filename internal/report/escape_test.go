@@ -85,14 +85,14 @@ func TestListEscapesWhatATerminalActsOn(t *testing.T) {
 		}},
 	}
 	var text bytes.Buffer
-	if err := (ListText{}).WriteList(&text, checks); err != nil {
+	if err := (ListText{}).WriteList(&text, checks, nil); err != nil {
 		t.Fatal(err)
 	}
 	if r := rawActedOn(text.Bytes()); r >= 0 {
 		t.Errorf("the text listing holds %U raw:\n%s", r, text.Bytes())
 	}
 	var b bytes.Buffer
-	if err := (ListJSON{}).WriteList(&b, checks); err != nil {
+	if err := (ListJSON{}).WriteList(&b, checks, nil); err != nil {
 		t.Fatal(err)
 	}
 	if r := rawActedOn(b.Bytes()); r >= 0 {

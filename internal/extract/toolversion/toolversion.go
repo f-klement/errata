@@ -13,8 +13,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/f-klement/errata/internal/check"
 	"github.com/f-klement/errata/internal/extract/core"
@@ -32,12 +30,9 @@ type Spec struct {
 }
 
 // Parsers are the JSON and TOML readers the extractor reads package.json,
-// pyproject.toml, Cargo.toml and rust-toolchain.toml with. The facade hands
-// it the json and toml extractors' own, since no reader imports another.
-type Parsers struct {
-	JSON func([]byte) (*core.Node, error)
-	TOML func([]byte) (*core.Node, error)
-}
+// pyproject.toml, Cargo.toml and rust-toolchain.toml with, as core.Parsers
+// says.
+type Parsers = core.Parsers
 
 // maxTool is the longest tool name that loads, in bytes. Each line of a
 // .tool-versions or .sdkmanrc file compares its name with the tool's, so the
@@ -254,11 +249,8 @@ func (r *reading) add(f file, got []check.Value) error {
 func (x extractor) FromData(f file, data []byte) ([]check.Value, error) {
 	var out []check.Value
 	add := func(text string, line int) error {
-		if text == "" {
-			return core.LineError(line, "the version is empty")
-		}
-		if strings.ContainsFunc(text, actedOn) {
-			return core.LineError(line, "the version %s holds a control character, a direction control, a line separator or a byte that is not UTF-8, which no version holds", core.Quote(text))
+		if err := core.CheckVersion(line, text); err != nil {
+			return err
 		}
 		if len(out) == core.MaxValues {
 			return named{core.TooManyValues(f.File)}
@@ -278,14 +270,6 @@ func (x extractor) FromData(f file, data []byte) ([]check.Value, error) {
 		return nil, fmt.Errorf("%s: %w", f.File, err)
 	}
 	return out, nil
-}
-
-// actedOn reports whether a terminal or a viewer acts on c rather than
-// showing it, as the report package's test has it (a control character, a
-// direction control, a line or paragraph separator), or c is the U+FFFD a
-// byte that is not UTF-8 decodes to.
-func actedOn(c rune) bool {
-	return unicode.IsControl(c) || unicode.Is(unicode.Bidi_Control, c) || unicode.In(c, unicode.Zl, unicode.Zp) || c == utf8.RuneError
 }
 
 // named is an error whose message names the file already.

@@ -1,0 +1,40 @@
+# --fail-on-skip makes a skipped check fail the run with exit code 1, as an
+# unknown does, for a CI gate that must not go green on checks that never ran.
+# Every format names the skip with its gap as it does without the flag, and
+# counts it where the exit code does. check_skip.txtar runs without the flag.
+exec sh -c 'errata check --fail-on-skip >/dev/null; echo code=$?'
+stdout code=1
+! exec errata check --fail-on-skip
+stdout '^0 errata, 0 unknown. Coverage: ran 1, skipped 1. A skip fails this run.$'
+stdout '^  skipped pinned-image \(live\): no provider can read a live system$'
+
+! exec errata check --fail-on-skip --format junit
+stdout '<testsuite name="errata" tests="2" failures="0" errors="1" skipped="0">'
+stdout '<error message="skipped: no provider can read a live system">r</error>'
+! stdout '<skipped'
+
+! exec errata check --fail-on-skip --format sarif
+stdout '"executionSuccessful": false,$'
+stdout '"level": "error",\n\s+"message": \{\n\s+"text": "check pinned-image skipped \(live\): no provider can read a live system"'
+
+# A run with no skip passes with the flag, and says nothing about it.
+exec errata check --fail-on-skip -c repo.yaml
+stdout '^0 errata, 0 unknown. Coverage: ran 1, skipped 0.$'
+! stdout 'A skip fails'
+
+# Without the flag, the same skip passes in every format.
+exec errata check
+! stdout 'A skip fails'
+exec errata check --format junit
+stdout 'errors="0" skipped="1"'
+exec errata check --format sarif
+stdout '"executionSuccessful": true,$'
+stdout '"level": "note",\n\s+"message": \{\n\s+"text": "check pinned-image skipped'
+
+-- errata.yaml --
+checks:
+  - {id: always, reason: r, scope: repo, run: ['true']}
+  - {id: pinned-image, reason: r, scope: live, run: ['true']}
+-- repo.yaml --
+checks:
+  - {id: always, reason: r, scope: repo, run: ['true']}
