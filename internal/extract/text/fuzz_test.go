@@ -97,7 +97,7 @@ func FuzzText(f *testing.F) {
 		if len(p.text) > maxProseRatio*len(data) {
 			t.Fatalf("prose of %d bytes from %d", len(p.text), len(data))
 		}
-		orig := bytes.TrimPrefix(bytes.ReplaceAll([]byte(data), []byte("\r\n"), []byte("\n")), bom)
+		orig := bytes.TrimPrefix(bytes.ReplaceAll([]byte(data), []byte("\r\n"), []byte("\n")), []byte(core.BOM))
 		for i, pc := range p.pieces {
 			end := len(p.text)
 			if i+1 < len(p.pieces) {

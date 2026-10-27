@@ -1,6 +1,7 @@
 package core
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 	"strconv"
@@ -164,8 +165,8 @@ func TestEval(t *testing.T) {
 	}
 }
 
-// filter is a filter selector of comparisons.
-func filter(cs ...comparison) selector {
+// filter is a filter selector of terms.
+func filter(cs ...term) selector {
 	sel := selector{kind: selFilter, filter: cs}
 	for _, c := range cs {
 		sel.cost += c.cost()
@@ -174,8 +175,18 @@ func filter(cs ...comparison) selector {
 }
 
 // eq is the comparison of the path from @ with lit.
-func eq(lit literal, current ...selector) comparison {
-	return comparison{current: current, lit: lit}
+func eq(lit literal, current ...selector) term {
+	return term{current: current, lit: lit}
+}
+
+// has is the query that tests the path from @ selects a node.
+func has(current ...selector) term {
+	return term{current: current, query: true}
+}
+
+// hasNot is the query that tests the path from @ selects none.
+func hasNot(current ...selector) term {
+	return term{current: current, query: true, not: true}
 }
 
 func str(s string) literal { return literal{typ: TypeString, str: s} }
@@ -229,6 +240,17 @@ func TestParseFilter(t *testing.T) {
 		"a[ 0 ]":                                  {name("a"), index(0)},
 		"a[ 'k' ][ * ]":                           {name("a"), name("k"), wild},
 		"$.a[?@.b == 'kilo']":                     {name("a"), filter(eq(str("kilo"), name("b")))},
+		"a[?@.b]":                                 {name("a"), filter(has(name("b")))},
+		"a[?@]":                                   {name("a"), filter(has())},
+		"a[?!@.b]":                                {name("a"), filter(hasNot(name("b")))},
+		"a[? ! @ .b ]":                            {name("a"), filter(hasNot(name("b")))},
+		"a[?@.b && !@.c[1]]":                      {name("a"), filter(has(name("b")), hasNot(name("c"), index(1)))},
+		"a[?@.b == 1 && @.c]":                     {name("a"), filter(eq(num("1"), name("b")), has(name("c")))},
+		"a[?@[*]]":                                {name("a"), filter(has(wild))},
+		"a[?@.tags[?@ == 'docker']]":              {name("a"), filter(has(name("tags"), filter(eq(str("docker")))))},
+		"a[?@.ports[?@.port == 6443]].to":         {name("a"), filter(has(name("ports"), filter(eq(num("6443"), name("port"))))), name("to")},
+		"a[?@.x[*][?!@.y && @ == 1]]":             {name("a"), filter(has(name("x"), wild, filter(hasNot(name("y")), eq(num("1")))))},
+		"a[?@[?@[?@[?@ == 1]]]]":                  {name("a"), filter(has(filter(has(filter(has(filter(eq(num("1")))))))))},
 		"spec.containers[?@.name == 'api'].image": {name("spec"), name("containers"), filter(eq(str("api"), name("name"))), name("image")},
 	} {
 		got, err := parsePath(in)
@@ -247,16 +269,12 @@ func TestParseFilter(t *testing.T) {
 // refusal names the construct and the column where it starts.
 func TestParseFilterRefuses(t *testing.T) {
 	for in, want := range map[string]string{
-		"a[?@.b]":                      `path "a[?@.b]": column 7: a test that a path exists is not supported in a filter; compare it with ==`,
-		"a[?@.b == 1 && @.c]":          `column 19: a test that a path exists is not supported in a filter`,
-		"a[?@.b && @.c == 1]":          `column 8: a test that a path exists is not supported in a filter`,
-		"a[?@.b || @.c == 1]":          `column 8: a test that a path exists is not supported in a filter`,
+		"a[?@.b || @.c == 1]":          `column 8: || is not supported in a filter; only && joins terms`,
 		"a[?@.b == False]":             `column 11: write false in lower case`,
 		"a[?@.b == true1]":             `column 11: expected @ or a literal in the filter but found true1; quote a string`,
-		"a[?@.b":                       `column 7: a test that a path exists is not supported in a filter`,
-		"a[?@.b == 'x' || @.c == 'y']": `column 15: || is not supported in a filter; only && joins comparisons`,
-		"a[?!@.b]":                     `column 4: ! is not supported in a filter`,
-		"a[?(@.b == 'kilo')]":          `column 4: parentheses are not supported in a filter; join comparisons with &&`,
+		"a[?@.b":                       `column 7: expected ] but the path ends`,
+		"a[?@.b == 'x' || @.c == 'y']": `column 15: || is not supported in a filter; only && joins terms`,
+		"a[?(@.b == 'kilo')]":          `column 4: parentheses are not supported in a filter; join terms with &&`,
 		"a[?@.b != 'x']":               `column 8: operator != is not supported in a filter; only == is`,
 		"a[?@.b < 1]":                  `column 8: operator < is not supported in a filter; only == is`,
 		"a[?@.b <= 1]":                 `column 8: operator <= is not supported in a filter; only == is`,
@@ -273,14 +291,33 @@ func TestParseFilterRefuses(t *testing.T) {
 		"a[?@.b == @.c]":               `column 11: a filter compares a path from @ with a literal, not with another path`,
 		"a[?@ == @]":                   `column 9: a filter compares a path from @ with a literal, not with another path`,
 		"a[?1 == 1]":                   `column 9: a filter compares a path from @ with a literal, not two literals`,
-		"a[?@[*] == 1]":                `column 6: [*] in a filter selects many nodes, and a comparison takes one; after @ write only .key, ['key'] or [n]`,
-		"a[?@.b[?@.c == 1] == 1]":      `column 8: a filter inside a filter is not supported`,
+		"a[?@[*] == 1]":                `column 6: [*] selects many nodes, and a comparison takes one; after @ write only .key, ['key'] or [n], or leave out the == to test that the path selects a node`,
+		"a[?1 == @.b[*]]":              `column 13: [*] selects many nodes, and a comparison takes one`,
+		"a[?@.b[?@.c == 1] == 1]":      `column 8: a filter after @ selects many nodes, and a comparison takes one; leave out the == to test that the path selects a node`,
+		"a[?@.b[*].c[?@ == 1] == 1]":   `column 8: [*] selects many nodes`,
+		"a[?!@.b == 1]":                `column 4: ! takes a path from @ alone, not a comparison`,
+		"a[?!(@.b == 1)]":              `column 5: parentheses are not supported in a filter; ! takes a path from @, such as !@.key`,
+		"a[?!'x']":                     `column 4: ! takes a path from @, such as !@.key, and tests that it selects nothing`,
+		"a[?!":                         `column 4: ! takes a path from @`,
+		"a[?!!@.b]":                    `column 4: ! takes a path from @`,
+		"a[?@.b == !@.c]":              `column 11: ! is not supported in a comparison`,
+		"a[?!@.b 'x']":                 `column 4: ! takes a path from @ alone, not a comparison`,
+		"a[?@.b[?@.c]":                 `column 13: expected ] but the path ends`,
+		"a[?@.b[?@ == 1 || @ == 2]]":   `column 16: || is not supported in a filter`,
+		"a[?@.b[?$.c]]":                `column 9: $ is not supported in a filter`,
+		"a[?@.b[?@.c[1:2]]]":           `column 14: slices are not supported`,
 		"a[?@..b == 1]":                `column 6: recursive descent (..) is not supported`,
 		"a[?@.* == 1]":                 `column 6: write [*] for every member, not .*`,
 		"a[?@.b[1:2] == 1]":            `column 9: slices are not supported`,
 		"a[?@.b == True]":              `column 11: write true in lower case`,
 		"a[?@.b == NULL]":              `column 11: write null in lower case`,
 		"a[?@.b == api]":               `column 11: expected @ or a literal in the filter but found api; quote a string`,
+		"a[?@.b == zeta]":              `column 11: expected @ or a literal in the filter but found zeta; quote a string`,
+		"a[?@.b == Alpha]":             `column 11: expected @ or a literal in the filter but found Alpha; quote a string`,
+		"a[?@.b == Zed]":               `column 11: expected @ or a literal in the filter but found Zed; quote a string`,
+		"a[?@.b == `x`]":               "column 11: expected @ or a literal in the filter but found '`'",
+		"a[?@.b == {x}]":               `column 11: expected @ or a literal in the filter but found '{'`,
+		"a[?@.b == [x]]":               `column 11: expected @ or a literal in the filter but found '['`,
 		"a[?@.b == +1]":                `column 11: expected @ or a literal in the filter but found '+'`,
 		"a[?@.b == .5]":                `column 11: expected @ or a literal in the filter but found '.'`,
 		"a[?@.b == 01]":                `column 11: a number has no leading zero`,
@@ -440,7 +477,7 @@ func TestFilterLimits(t *testing.T) {
 		t.Errorf("%d comparisons: %v", MaxComparisons, err)
 	}
 	_, err := parsePath(comparisons(MaxComparisons + 1))
-	extracttest.WantError(t, err, fmt.Sprintf("column %d: a filter holds more than 64 comparisons, the limit", 4+10*MaxComparisons))
+	extracttest.WantError(t, err, fmt.Sprintf("column %d: a filter joins more than 64 terms, the limit", 4+10*MaxComparisons))
 
 	dear := "@['" + strings.Repeat("k", MaxLiteral) + "'] == '" + strings.Repeat("v", 565) + "'"
 	filterAtTheLimit(t, "a[?"+strings.Repeat(dear+" && ", MaxComparisons-1)+dear+"]", 20000)
@@ -524,6 +561,9 @@ func TestFilterCost(t *testing.T) {
 		"a[?@[0] == true]":                     2 * StepBytes,
 		"a[?@['" + long + "'] == null]":        2*StepBytes + MaxLiteral,
 		"a[?@.a.b == '' && @[-1] == 'x']":      3*StepBytes + 2 + 2*StepBytes + 1,
+		"a[?@.ab]":                             StepBytes,
+		"a[?!@.ab.cd[?@ == 'xyz']]":            StepBytes,
+		"a[?@.ab && @.c == 1]":                 StepBytes + 2*StepBytes + 2 + 1,
 		"a[?'" + long + "' == @." + long + "]": 2*StepBytes + 2*MaxLiteral,
 	} {
 		p, err := parsePath(in)
@@ -555,5 +595,119 @@ func TestFilterKeyLimit(t *testing.T) {
 			continue
 		}
 		extracttest.WantError(t, err, c.want)
+	}
+}
+
+// Filters nest MaxFilterDepth deep and no deeper: the planted break is the
+// depth test removed, after which a path of nested filters as long as the
+// configuration recurses once for each. The refusal comes at the filter
+// past the limit, so a far deeper path is refused at the same column.
+func TestFilterDepthLimit(t *testing.T) {
+	nested := func(depth int) string {
+		return "a" + strings.Repeat("[?@", depth) + " == 1" + strings.Repeat("]", depth)
+	}
+	if _, err := parsePath(nested(MaxFilterDepth)); err != nil {
+		t.Errorf("filters %d deep: %v", MaxFilterDepth, err)
+	}
+	want := fmt.Sprintf("column %d: filters nest more than %d deep, the limit", 3+3*MaxFilterDepth, MaxFilterDepth)
+	for _, depth := range []int{MaxFilterDepth + 1, 100000} {
+		_, err := parsePath(nested(depth))
+		extracttest.WantError(t, err, want)
+	}
+}
+
+// A query is charged StepBytes and its key for each step it takes, so a
+// query whose steps fan out through shared nodes stops at MaxFilterBytes.
+// Here 24 levels of a sequence that holds the level below twice, the shape
+// YAML aliases build, give 2^25 steps down, about twice the 15.6 million
+// that MaxFilterBytes pays for, and no way down ends in the key z. The
+// planted break is a query that charges nothing, which walks them all and
+// selects nothing. Under -race the walk to the limit takes about a minute,
+// so it runs in make slow; TestQueryChargesItsSteps pins the charge itself.
+func TestQueryWorkIsBounded(t *testing.T) {
+	slowOnly(t)
+	level := &Node{Shape: Sequence, Items: []*Node{{Text: "1"}, {Text: "1"}}}
+	for range 24 {
+		level = &Node{Shape: Sequence, Items: []*Node{level, level}}
+	}
+	root := NewMapping(1)
+	root.Set("a", &Node{Shape: Sequence, Items: []*Node{level}})
+	p, err := parsePath("a[?@" + strings.Repeat("[*]", 24) + ".z]")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Eval(root); !errors.Is(err, ErrFilterWork) {
+		t.Fatalf("got %v, want the filter work refusal", err)
+	}
+}
+
+// A filter inside a query charges its cost for each member it tests,
+// against the same total as the filter of the path. The outer list holds
+// k references to one mapping whose list b holds 100 members, and the inner
+// filter's 64 terms cost 200000 bytes as in TestFilterLimits, so the
+// limit falls at an exact k: k members are tested and k+1 refused. The
+// planted break is the inner filter charging nothing, which the k+1 pass.
+func TestNestedFilterWorkIsBounded(t *testing.T) {
+	dear := "@['" + strings.Repeat("k", MaxLiteral) + "'] == '" + strings.Repeat("v", 565) + "'"
+	p, err := parsePath("a[?@.b[?" + strings.Repeat(dear+" && ", MaxComparisons-1) + dear + "]]")
+	if err != nil {
+		t.Fatal(err)
+	}
+	inner := p.sels[1].filter[0].current[1].cost
+	if inner != 200000 {
+		t.Fatalf("the inner filter costs %d, want 200000", inner)
+	}
+	member := NewMapping(1)
+	list := &Node{Shape: Sequence}
+	for range 100 {
+		list.Items = append(list.Items, &Node{Type: TypeNumber, Text: "1", Line: 1})
+	}
+	member.Set("b", list)
+	// For each member: the query's term, its step .b, and 100 inner tests.
+	per := p.sels[1].cost + StepBytes + 1 + 100*inner
+	outer := &Node{Shape: Sequence}
+	for range MaxFilterBytes / per {
+		outer.Items = append(outer.Items, member)
+	}
+	root := NewMapping(1)
+	root.Set("a", outer)
+	if got, err := p.Eval(root); err != nil || len(got) != 0 {
+		t.Fatalf("%d members at the limit: %d nodes, %v", len(outer.Items), len(got), err)
+	}
+	outer.Items = append(outer.Items, member)
+	if _, err := p.Eval(root); !errors.Is(err, ErrFilterWork) {
+		t.Fatalf("one member past the limit: got %v, want the filter work refusal", err)
+	}
+}
+
+// A query charges StepBytes and the bytes of its key for each step it
+// takes, on top of the StepBytes of its term, so a query whose key holds
+// MaxLiteral bytes costs 2560 bytes a member and the limit falls at an
+// exact count: that many scalar members pass, one more is refused. The
+// planted breaks: a step charged StepBytes less its key, which never
+// reaches the limit, and a step charged nothing.
+func TestQueryChargesItsSteps(t *testing.T) {
+	key := strings.Repeat("k", MaxLiteral)
+	p, err := parsePath("a[?@['" + key + "']]")
+	if err != nil {
+		t.Fatal(err)
+	}
+	per := int64(StepBytes + StepBytes + MaxLiteral)
+	one := &Node{Type: TypeNumber, Text: "1", Line: 1}
+	list := &Node{Shape: Sequence}
+	for range MaxFilterBytes / per {
+		list.Items = append(list.Items, one)
+	}
+	if len(list.Items) != 1562500 {
+		t.Fatalf("%d members at the limit, want 1562500", len(list.Items))
+	}
+	root := NewMapping(1)
+	root.Set("a", list)
+	if got, err := p.Eval(root); err != nil || len(got) != 0 {
+		t.Fatalf("at the limit: %d nodes, %v", len(got), err)
+	}
+	list.Items = append(list.Items, one)
+	if _, err := p.Eval(root); !errors.Is(err, ErrFilterWork) {
+		t.Fatalf("one member past the limit: got %v, want the filter work refusal", err)
 	}
 }

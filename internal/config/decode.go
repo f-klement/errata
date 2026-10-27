@@ -30,7 +30,7 @@ type typedFile struct {
 // toJSON converts raw YAML to JSON with the coercions of the real types and
 // the keys exactly as the author spelt them. The library decodes the JSON
 // into the target with encoding/json, which matches keys without regard to
-// case; capturing the JSON before that decode lets Parse refuse a key in the
+// case; capturing the JSON before that decode lets parse refuse a key in the
 // wrong case instead of having it merged with the right one.
 func toJSON(raw []byte) (json.RawMessage, error) {
 	var (
@@ -105,8 +105,10 @@ func empty(doc *yaml.Node) bool {
 // lines returns the line each entry under the top-level checks key starts
 // on, by its index, from the document the checks were decoded from. Checks it
 // cannot place, such as those a merge key brings in, get no line, which
-// SARIF reads as the file without a line. It follows no alias: checks
-// written as an alias get no line either, as merged checks do.
+// SARIF reads as the file without a line. It follows no alias. When the
+// whole value of checks is an alias, no check gets a line, as merged checks
+// do not. One entry written as an alias, - *name, gets the line of the alias
+// it is written as, not that of the anchor it names.
 func lines(doc *yaml.Node) []int {
 	if doc == nil || len(doc.Content) == 0 {
 		return nil
@@ -237,47 +239,71 @@ type written struct {
 // the field, so id: y loads as the id "true" and 007 as "7". The fields come from the types the file
 // decodes into, so a string field added later is looked at too.
 func plainStrings(doc *yaml.Node) []written {
-	if doc == nil || len(doc.Content) == 0 {
+	seq := topLevel(doc, "checks")
+	if seq == nil {
+		return nil
+	}
+	seq = resolve(seq)
+	if seq.Kind != yaml.SequenceNode {
 		return nil
 	}
 	var out []written
-	for _, p := range pairs(doc.Content[0], nil) {
-		seq := resolve(p.value)
-		if p.key.Value != "checks" || seq.Kind != yaml.SequenceNode {
-			continue
-		}
-		for _, entry := range seq.Content {
-			var e written
-			for _, f := range pairs(entry, nil) {
-				if f.key.Value == "id" {
-					e.id = resolve(f.value).Value
-				}
+	for _, entry := range seq.Content {
+		var e written
+		for _, f := range pairs(entry, nil) {
+			if f.key.Value == "id" {
+				e.id = resolve(f.value).Value
 			}
-			w := &stringWalk{}
-			w.walk(entry, reflect.TypeFor[checkEntry](), "")
-			e.errs = w.errs
-			out = append(out, e)
 		}
-		break
+		w := &stringWalk{}
+		w.walk(entry, reflect.TypeFor[checkEntry](), "")
+		e.errs = w.errs
+		out = append(out, e)
 	}
 	return out
 }
 
-// plainRequired is plainStrings for the ids under the top-level required
-// key: an error for each id YAML 1.1 reads as no string, so required: [y]
-// is refused as id: y is, rather than loading as the id "true".
-func plainRequired(doc *yaml.Node) []error {
+// topLevel is the value of key at the top of doc, the first document, after
+// any alias and as merge keys bring it in, or nil when the document has no
+// such key.
+func topLevel(doc *yaml.Node, key string) *yaml.Node {
 	if doc == nil || len(doc.Content) == 0 {
 		return nil
 	}
 	for _, p := range pairs(doc.Content[0], nil) {
-		if p.key.Value == "required" {
-			w := &stringWalk{}
-			w.walk(p.value, reflect.TypeFor[[]string](), "required")
-			return w.errs
+		if p.key.Value == key {
+			return p.value
 		}
 	}
 	return nil
+}
+
+// hasKey reports whether the mapping n, after any alias and as merge keys
+// bring keys in, has key. A nil n has none.
+func hasKey(n *yaml.Node, key string) bool {
+	if n == nil {
+		return false
+	}
+	for _, p := range pairs(n, nil) {
+		if p.key.Value == key {
+			return true
+		}
+	}
+	return false
+}
+
+// plainKey is plainStrings for the top-level key, read as a value of type t:
+// an error for each string under it that YAML 1.1 loads as other text than
+// was written, so required: [y] is refused as id: y is, rather than loading
+// as the id "true", and so is a defaults.run argument of yes.
+func plainKey(doc *yaml.Node, key string, t reflect.Type) []error {
+	n := topLevel(doc, key)
+	if n == nil {
+		return nil
+	}
+	w := &stringWalk{}
+	w.walk(n, t, key)
+	return w.errs
 }
 
 type stringWalk struct {

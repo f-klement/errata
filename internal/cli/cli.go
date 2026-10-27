@@ -23,7 +23,7 @@ import (
 const (
 	ExitOK     = 0 // every check that ran found its claim true
 	ExitErrata = 1 // at least one erratum or unknown, or a skip under --fail-on-skip
-	ExitUsage  = 2 // bad flags or a config that does not load
+	ExitUsage  = 2 // bad flags, a config that does not load, or an --output file errata cannot write
 )
 
 // Version is set at build time with -ldflags "-X .../cli.Version=v0.1.0".
@@ -116,6 +116,15 @@ func (f *configFlags) add(cmd *cobra.Command) {
 	cmd.Flags().StringVarP(&f.configPath, "config", "c", "", "config file (default <root>/"+config.DefaultFile+")")
 }
 
+// file is the config file the flags name: --config, or errata.yaml in the
+// absolute root.
+func (f configFlags) file(absRoot string) string {
+	if f.configPath == "" {
+		return filepath.Join(absRoot, config.DefaultFile)
+	}
+	return f.configPath
+}
+
 // loadConfig is the one way a command reads its config: check runs the checks
 // it returns, and list prints them. It returns the absolute root as well,
 // which check runs the checks from. A config that does not load is an error
@@ -126,10 +135,7 @@ func loadConfig(load loader, f configFlags) (string, config.Config, error) {
 	if err != nil {
 		return "", config.Config{}, err
 	}
-	path := f.configPath
-	if path == "" {
-		path = filepath.Join(absRoot, config.DefaultFile)
-	}
+	path := f.file(absRoot)
 	cfg, err := load(absRoot, path)
 	if err != nil {
 		return "", config.Config{}, fmt.Errorf("load %s: %w", path, err)
@@ -141,29 +147,48 @@ func newCheckCmd(load loader) *cobra.Command {
 	var (
 		flags      configFlags
 		format     string
+		outputs    []string
 		failOnSkip bool
 	)
 	cmd := &cobra.Command{
 		Use:   "check",
 		Short: "Run the checks in errata.yaml and print the errata",
 		Long: "Run every check the available providers can reach, skip the rest with the reason,\n" +
-			"and print the errata and the coverage. errata never applies anything.",
+			"and print the errata and the coverage. errata never applies anything.\n" +
+			"--format picks what goes to stdout; each --output FORMAT=PATH writes one more file.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			newReporter, ok := report.Formats[format]
 			if !ok {
 				return fmt.Errorf("unknown --format %q, want one of %s", format, strings.Join(report.FormatNames(), ", "))
 			}
-			reporter := newReporter(resolveVersion(Version, debug.ReadBuildInfo))
+			version := resolveVersion(Version, debug.ReadBuildInfo)
+			outs, err := parseOutputs(outputs)
+			if err != nil {
+				return err
+			}
 			absRoot, cfg, err := loadConfig(load, flags)
 			if err != nil {
 				return err
 			}
+			if err := refuseConfigOutput(outs, flags.file(absRoot)); err != nil {
+				return err
+			}
+			pending, err := openOutputs(outs)
+			if err != nil {
+				return err
+			}
+			defer discardOutputs(pending)
 
 			e := engine.New(absRoot, nil)
-			e.FailOnSkip = failOnSkip
+			e.SkipsFail = failOnSkip
 			rep := e.Execute(cmd.Context(), cfg.Checks)
-			if err := reporter.Write(cmd.OutOrStdout(), rep); err != nil {
+			var errs []error
+			if err := newReporter(version).Write(cmd.OutOrStdout(), rep); err != nil {
+				errs = append(errs, err)
+			}
+			errs = append(errs, commitOutputs(pending, rep, version)...)
+			if err := joinErrors(errs); err != nil {
 				return err
 			}
 			if rep.Failed() {
@@ -174,6 +199,7 @@ func newCheckCmd(load loader) *cobra.Command {
 	}
 	flags.add(cmd)
 	cmd.Flags().StringVarP(&format, "format", "f", "text", "output format: "+strings.Join(report.FormatNames(), ", "))
+	cmd.Flags().StringArrayVarP(&outputs, "output", "o", nil, "also write the report in FORMAT to PATH, as FORMAT=PATH; repeatable")
 	cmd.Flags().BoolVar(&failOnSkip, "fail-on-skip", false, "exit 1 when a check was skipped, as on an unknown")
 	return cmd
 }

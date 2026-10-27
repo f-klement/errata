@@ -12,5 +12,6 @@ const MaxQuote = maxQuote
 type TreeExtractor = treeExtractor
 
 var CheckFilterSelectsLess = checkFilterSelectsLess
+var CheckQuerySplits = checkQuerySplits
 var CheckTyped = checkTyped
 var ParsePath = parsePath

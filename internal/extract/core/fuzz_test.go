@@ -22,12 +22,16 @@ import (
 // A path either parses or names a column inside it; it never panics, and
 // evaluating it on any tree does not either. A filter only removes: with
 // every filter replaced by [*], the path selects the same nodes and more, in
-// the same order.
+// the same order. A query and the same query after ! split what the rest of
+// their filter keeps.
 func FuzzPath(f *testing.F) {
 	for _, s := range []string{
 		"$", "a.b[0]", "$['a.b'][*][-1]", `["x\"y"]`, "a..b", "a[01]", "é[?x]",
 		"a[?@.n == 1].s", "a[?@.s == 'x' && @.n == 1e0]", "a[?'x' == @.s].b", "$[?@ == 'x']",
 		"a[?@[0] == null]", "a[?@.b == true][?@ == 1]", "a[?@.b != 1]", "b[?@.n == 1].n", "a[?@.n == -0.0e+1 && @['s'] == \"x\"]",
+		"a[?@.b]", "a[?!@.b].s", "a[?@[?@ == 'x']]", "a[?@.t[?@ == 'docker'] && !@.b]", "a[?@.p[?@.port == 6443]].n",
+		"$[?@[*][?@.n == 1]]", "a[?@[*]]", "a[? ! @ [ * ] ]", "a[?@[?@[?@[?@ == 1]]]]", "a[?@[?@[?@[?@[?@ == 1]]]]]",
+		"a[?!@.b == 1]", "a[?@.b[*] == 1]",
 	} {
 		f.Add(s)
 	}
@@ -36,6 +40,8 @@ func FuzzPath(f *testing.F) {
   - {n: "1", s: x}
   - {n: 1.0, s: y, b: True}
   - {n: 0x1, s: ~}
+  - {t: [docker, helm], p: [{port: 6443}, {port: 80}], n: 2}
+  - {t: [helm], b: null, p: [{port: 443}]}
   - [x, 1, null]
   - x
   - 1
@@ -64,6 +70,7 @@ b: {k: {n: 1}, l: x, m: {n: 1.0}}
 			t.Fatalf("values: %v", err)
 		}
 		core.CheckFilterSelectsLess(t, p, trees)
+		core.CheckQuerySplits(t, p, trees)
 	})
 }
 
@@ -124,6 +131,9 @@ func FuzzExtract(f *testing.F) {
 	f.Add(uint8(2), []byte("[[d]]\nn = 0x10\ns = 'x'\n[[d]]\nn = '16'\n"), "d[?@.n == 16 && @.s == 'x'].s", "", "")
 	f.Add(uint8(0), []byte("a: [{n: 1, s: x}, {n: 2}, {n: 1.0, s: y}, [1], 1]\nb: {k: {n: 1}, l: {n: 0e9}}\n"), "$[*][?@.n == 1].s", "", "")
 	f.Add(uint8(1), []byte(`{"a": [{"n": 0e1000000000000000}, {"n": 0}, {"n": 1e3}]}`), "a[?@.n == 0]", "", "")
+	f.Add(uint8(0), []byte("r:\n  - {d: [docker], m: 1d}\n  - {d: [helm], m: 2d}\n  - {d: [docker]}\n"), "r[?@.m && @.d[?@ == 'docker']].m", "", "")
+	f.Add(uint8(1), []byte(`{"e": [{"ports": [{"port": 6443}], "to": ["x"]}, {"ports": [{"port": 80}], "to": ["y"]}]}`), "e[?@.ports[?@.port == 6443]].to[*]", "", "")
+	f.Add(uint8(2), []byte("[[r]]\nnames = ['alpine/k8s']\nallowed = '<1.38'\n[[r]]\nnames = ['x']\n"), "r[?@.names[?@ == 'alpine/k8s'] && !@.enabled].allowed", "", "")
 	f.Fuzz(func(t *testing.T, format uint8, data []byte, path, kind, name string) {
 		var s extract.Spec
 		switch format % 3 {
@@ -140,6 +150,7 @@ func FuzzExtract(f *testing.F) {
 		}
 		if p, roots := extractorRoots(s, data); roots != nil {
 			core.CheckFilterSelectsLess(t, p, roots)
+			core.CheckQuerySplits(t, p, roots)
 		}
 		got, err := e.(fromData).FromData(data)
 		if err != nil {

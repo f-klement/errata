@@ -280,7 +280,6 @@ type binding struct {
 }
 
 var (
-	utf8BOM  = []byte("\xef\xbb\xbf")
 	utf16BOM = [][]byte{[]byte("\xff\xfe"), []byte("\xfe\xff")}
 )
 
@@ -295,7 +294,7 @@ func parseXML(data []byte, limit int64) (*xmlDoc, error) {
 		}
 	}
 	// A byte order mark holds no newline, so lines count the same without it.
-	data = bytes.TrimPrefix(data, utf8BOM)
+	data = core.DropBOM(data)
 	b := &xmlBuilder{
 		doc:   &xmlDoc{spaces: map[string]int32{"": 0}, names: map[string]int32{}},
 		data:  data,

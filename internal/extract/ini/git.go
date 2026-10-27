@@ -132,11 +132,11 @@ func readGit(data []byte, m *core.Meter, visit func(*core.Entry) error) error {
 		return core.LineError(bytes.Count(data[:i], newline)+1, "a NUL byte, which git reads as the end of a name or a value")
 	}
 	// git skips a byte order mark, and refuses a part of one.
-	if len(data) > 0 && data[0] == bom[0] {
-		if !bytes.HasPrefix(data, bom) {
+	if bytes.HasPrefix(data, []byte(core.BOM[:1])) {
+		if !bytes.HasPrefix(data, []byte(core.BOM)) {
 			return core.LineError(1, "a part of a UTF-8 byte order mark")
 		}
-		s.pos = len(bom)
+		s.pos = len(core.BOM)
 	}
 	var (
 		section []byte // the section and subsection, as git names them

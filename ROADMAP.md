@@ -68,6 +68,8 @@ The checks a GitOps repository still writes as programs because one file is not 
   on a rule. This is a breaking change: a config that loads today with one is turned away.
 - Version files that start with a byte order mark parse, as npm, Cargo and the version managers
   accept them.
+- `errata check --output junit=errata.xml` writes a machine format to a file, repeatable, while
+  the text report still goes to stdout, so one run feeds the pipeline and the log.
 
 ## v0.2.2: records and derived patterns
 

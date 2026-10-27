@@ -344,7 +344,7 @@ func TestGitAgreesWithGitConfig(t *testing.T) {
 		}
 		data := []byte(b.String())
 		if rapid.Bool().Draw(t, "bom") {
-			data = append(append([]byte{}, bom...), data...)
+			data = append([]byte(core.BOM), data...)
 		}
 		if err := os.WriteFile(p, data, 0o600); err != nil {
 			t.Fatal(err)

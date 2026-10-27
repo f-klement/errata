@@ -128,7 +128,7 @@ func readEnv(data []byte, visit func(*core.Entry) error) error {
 // computed too.
 func readFile(data []byte, m *core.Meter, rendered func(*core.Entry) bool, visit func(*core.Entry) error) error {
 	r := envReader{data: data, m: m, lines: core.NewLineCursor(data), vars: map[string]binding{}}
-	r.pos = len(data) - len(bytes.TrimPrefix(data, bom))
+	r.pos = len(data) - len(core.DropBOM(data))
 	var e core.Entry
 	for {
 		more, err := r.statement()
@@ -158,8 +158,6 @@ func readFile(data []byte, m *core.Meter, rendered func(*core.Entry) bool, visit
 		}
 	}
 }
-
-var bom = []byte("\uFEFF")
 
 // binding is what the file set a key to: known is false when the value
 // depends on the environment.

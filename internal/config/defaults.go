@@ -33,8 +33,10 @@ type defaults struct {
 // parseDefaults decodes raw, the value of the top level defaults key, as the
 // checks are decoded: strictly, with keys matched in case, and a run that
 // lists no argument or holds a placeholder errata does not know is refused.
-// No key, or defaults: null, sets no default.
-func parseDefaults(raw json.RawMessage) (defaults, []error) {
+// No key, or defaults: null, sets no default. node is the same value in the
+// document tree, which tells a run written empty or null from no run without
+// decoding raw a second time.
+func parseDefaults(raw json.RawMessage, node *yaml.Node) (defaults, []error) {
 	var d defaults
 	if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 		return d, nil
@@ -45,28 +47,34 @@ func parseDefaults(raw json.RawMessage) (defaults, []error) {
 	if err := decodeStrict(raw, &d); err != nil {
 		return d, []error{fmt.Errorf("defaults: %w", err)}
 	}
-	var keys map[string]json.RawMessage
-	_ = json.Unmarshal(raw, &keys) // decodeStrict above read it as an object
-	if _, ok := keys["run"]; ok && len(d.Run) == 0 {
+	if hasKey(node, "run") && len(d.Run) == 0 {
 		return d, []error{errors.New("defaults: run lists no argument: write the command, or remove the key")}
 	}
 	return d, unknownPlaceholders("defaults.run", d.Run)
 }
 
-// runOf is the run c has once d applies and the placeholders are replaced: its
-// own run, or the default when it is a program check with none. A rule keeps
-// what it has, so validation still refuses a rule that sets run.
-func (d defaults) runOf(c check.Check) ([]string, error) {
-	if c.IsRule() {
-		return c.Run, nil
+// apply gives c what d sets for a key the entry does not write, and
+// replaces the placeholders in its run. keys are the entry's keys as written
+// and isRule is build's reading of them. It decides on keys, not on the
+// built check, since a built check cannot tell a key left out from one
+// written with the value build fills in for it: a later default, such as a
+// timeout, decides on keys too. A program check that does not write run gets
+// the default; one that writes run keeps its own, even an empty one, which
+// build refuses. A rule takes no default, and build refuses a rule that
+// writes run.
+func (d defaults) apply(c *check.Check, keys map[string]json.RawMessage, isRule bool) error {
+	if isRule {
+		return nil
 	}
-	if len(c.Run) == 0 {
-		return substitute(d.Run, c.ID), nil
+	if _, written := keys["run"]; !written {
+		c.Run = substitute(d.Run, c.ID)
+		return nil
 	}
 	if errs := unknownPlaceholders("run", c.Run); len(errs) > 0 {
-		return c.Run, fmt.Errorf("check %q: %w", c.ID, errors.Join(errs...))
+		return errors.Join(errs...)
 	}
-	return substitute(c.Run, c.ID), nil
+	c.Run = substitute(c.Run, c.ID)
+	return nil
 }
 
 // substitute is run with each placeholder replaced by id, argument by
@@ -109,21 +117,4 @@ func unknownPlaceholders(key string, run []string) []error {
 		}
 	}
 	return errs
-}
-
-// plainDefaults is plainStrings for the defaults key of doc, the first
-// document: an error for each string under it that YAML 1.1 loads as other
-// text than was written.
-func plainDefaults(doc *yaml.Node) []error {
-	if doc == nil || len(doc.Content) == 0 {
-		return nil
-	}
-	for _, p := range pairs(doc.Content[0], nil) {
-		if p.key.Value == "defaults" {
-			w := &stringWalk{}
-			w.walk(p.value, reflect.TypeFor[defaults](), "defaults")
-			return w.errs
-		}
-	}
-	return nil
 }

@@ -1,9 +1,12 @@
 package config
 
 import (
+	"encoding/json"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/f-klement/errata/internal/check"
 )
 
 // kube's shape: many program checks that each run one script with their own
@@ -34,11 +37,11 @@ checks:
 
 // A program check with no run of its own gets the default, with the id put
 // into each argument that holds a placeholder; one with a run keeps its own,
-// placeholders replaced; a rule gets no run. The planted breaks: runOf
-// returning c.Run for a check with none, and substitute leaving the
+// placeholders replaced; a rule gets no run. The planted breaks: apply
+// leaving the run of a check with none as it is, and substitute leaving the
 // arguments as written.
 func TestDefaultRunAppliesToAProgramCheckWithNone(t *testing.T) {
-	checks, err := Parse([]byte(withDefault))
+	cfg, err := parseRaw([]byte(withDefault))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,24 +50,24 @@ func TestDefaultRunAppliesToAProgramCheckWithNone(t *testing.T) {
 		"own-run":        {"sh", "checks/own-run.sh", "own_run"},
 		"a-rule":         nil,
 	}
-	for _, c := range checks {
+	for _, c := range cfg.Checks {
 		if !slices.Equal(c.Run, want[c.ID]) {
 			t.Errorf("%s: run = %q, want %q", c.ID, c.Run, want[c.ID])
 		}
 	}
-	if len(checks) != len(want) {
-		t.Errorf("loaded %d checks, want %d", len(checks), len(want))
+	if len(cfg.Checks) != len(want) {
+		t.Errorf("loaded %d checks, want %d", len(cfg.Checks), len(want))
 	}
 }
 
 // Two checks share the default, and the substitution for one does not
 // write into the default the other gets.
 func TestDefaultRunIsCopiedForEachCheck(t *testing.T) {
-	checks, err := Parse([]byte("defaults: {run: [x, <errata.id>]}\nchecks:\n- {id: a, reason: r, scope: repo}\n- {id: b, reason: r, scope: repo}\n"))
+	cfg, err := parseRaw([]byte("defaults: {run: [x, <errata.id>]}\nchecks:\n- {id: a, reason: r, scope: repo}\n- {id: b, reason: r, scope: repo}\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := checks[0].Run[1] + " " + checks[1].Run[1]; got != "a b" {
+	if got := cfg.Checks[0].Run[1] + " " + cfg.Checks[1].Run[1]; got != "a b" {
 		t.Errorf("runs end in %q, want a b", got)
 	}
 }
@@ -73,7 +76,7 @@ func TestDefaultRunIsCopiedForEachCheck(t *testing.T) {
 // sets no default run, whether or not it has a defaults key.
 func TestNoRunAndNoDefaultIsRefused(t *testing.T) {
 	for _, top := range []string{"", "defaults: {}\n", "defaults: null\n", "defaults:\n"} {
-		_, err := Parse([]byte(top + "checks:\n- {id: a, reason: r, scope: repo}\n"))
+		_, err := parseRaw([]byte(top + "checks:\n- {id: a, reason: r, scope: repo}\n"))
 		if err == nil || !strings.Contains(err.Error(), `check "a": run or extract is required`) {
 			t.Errorf("%q: error = %v, want run or extract is required", top, err)
 		}
@@ -90,6 +93,12 @@ func TestDefaultsRefusals(t *testing.T) {
 		},
 		"null default run": {
 			"defaults: {run: null}\nchecks:\n- {id: a, reason: r, scope: repo}\n",
+			"defaults: run lists no argument",
+		},
+		// parseDefaults reads whether run is written from the document
+		// tree, so a run a merge key brings in counts as written too.
+		"empty default run through a merge key": {
+			"defaults: {<<: {run: []}}\nchecks:\n- {id: a, reason: r, scope: repo}\n",
 			"defaults: run lists no argument",
 		},
 		"misspelt placeholder in the default": {
@@ -124,16 +133,6 @@ func TestDefaultsRefusals(t *testing.T) {
 			"defaults: {run: [x, yes]}\nchecks:\n- {id: a, reason: r, scope: repo}\n",
 			`defaults.run[1]: YAML 1.1 reads yes, unquoted, as the bool true`,
 		},
-		// A check that empties its run wants anything but the shared
-		// command. The planted break: build without the empty-run check.
-		"empty own run beside a default": {
-			"defaults: {run: [x, <errata.id>]}\nchecks:\n- {id: a, reason: r, scope: repo, run: []}\n",
-			`check "a": run lists no argument: write the command, or remove the key, which takes the default run if the file sets one`,
-		},
-		"null own run beside a default": {
-			"defaults: {run: [x]}\nchecks:\n- {id: a, reason: r, scope: repo, run: null}\n",
-			`check "a": run lists no argument`,
-		},
 		// The planted break: unknownPlaceholders without strings.ToLower.
 		"placeholder in another case": {
 			"defaults: {run: [x, <Errata.id>]}\nchecks:\n- {id: a, reason: r, scope: repo}\n",
@@ -153,7 +152,7 @@ func TestDefaultsRefusals(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			_, err := Parse([]byte(tc.yaml))
+			_, err := parseRaw([]byte(tc.yaml))
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("error = %v, want it to contain %q", err, tc.want)
 			}
@@ -161,10 +160,31 @@ func TestDefaultsRefusals(t *testing.T) {
 	}
 }
 
+// A program check that empties its run wants anything but the shared
+// command, and is refused with the one error that says so, with or without
+// a default and however the empty run is written. The whole error is
+// compared, so a second message after it, such as "run or extract is
+// required", fails the test. The planted breaks: build without the
+// empty-run check, and build validating the refused run as missing.
+func TestAnEmptyOwnRunIsTheOneError(t *testing.T) {
+	const want = `checks[0]: check "a": run lists no argument: write the command, or remove the key, which takes the default run if the file sets one`
+	for _, raw := range []string{
+		"defaults: {run: [x, <errata.id>]}\nchecks:\n- {id: a, reason: r, scope: repo, run: []}\n",
+		"defaults: {run: [x]}\nchecks:\n- {id: a, reason: r, scope: repo, run: null}\n",
+		"defaults: {run: [x]}\nchecks:\n- {<<: {run: []}, id: a, reason: r, scope: repo}\n",
+		"checks:\n- {id: a, reason: r, scope: repo, run: []}\n",
+	} {
+		_, err := parseRaw([]byte(raw))
+		if err == nil || err.Error() != want {
+			t.Errorf("%q: error = %v, want %q alone", raw, err, want)
+		}
+	}
+}
+
 // A default that does not load is the one error, not one more for each
 // check that has no run.
 func TestABrokenDefaultIsTheOneError(t *testing.T) {
-	_, err := Parse([]byte("defaults: {run: []}\nchecks:\n- {id: a, reason: r, scope: repo}\n- {id: b, reason: r, scope: repo}\n"))
+	_, err := parseRaw([]byte("defaults: {run: []}\nchecks:\n- {id: a, reason: r, scope: repo}\n- {id: b, reason: r, scope: repo}\n"))
 	if err == nil || strings.Contains(err.Error(), "run or extract is required") {
 		t.Errorf("error = %v, want the defaults error alone", err)
 	}
@@ -194,9 +214,9 @@ func TestSubstituteNeverPutsInAnInvalidID(t *testing.T) {
 // A check with an id validation refuses never loads, whatever the default:
 // the whole file is refused.
 func TestAnInvalidIDWithADefaultDoesNotLoad(t *testing.T) {
-	checks, err := Parse([]byte("defaults: {run: [sh, checks/<errata.id>.sh]}\nchecks:\n- {id: ../../etc/x, reason: r, scope: repo}\n"))
-	if err == nil || checks != nil || !strings.Contains(err.Error(), "must be lower-case words") {
-		t.Errorf("Parse = %v, %v; want the id refused", checks, err)
+	cfg, err := parseRaw([]byte("defaults: {run: [sh, checks/<errata.id>.sh]}\nchecks:\n- {id: ../../etc/x, reason: r, scope: repo}\n"))
+	if err == nil || cfg.Checks != nil || !strings.Contains(err.Error(), "must be lower-case words") {
+		t.Errorf("parse = %v, %v; want the id refused", cfg.Checks, err)
 	}
 	if strings.Contains(err.Error(), "run or extract") {
 		t.Errorf("error = %v, also says the check has no run", err)
@@ -207,20 +227,65 @@ func TestAnInvalidIDWithADefaultDoesNotLoad(t *testing.T) {
 // a check's own run (README, Checks). The planted break: typedFile without
 // its Defaults field, which reads 5 as a JSON number the decode refuses.
 func TestDefaultRunTakesNumbersAndBoolsAsWritten(t *testing.T) {
-	checks, err := Parse([]byte("defaults: {run: [head, -n, 5, 20.04, true]}\nchecks:\n- {id: a, reason: r, scope: repo}\n"))
+	cfg, err := parseRaw([]byte("defaults: {run: [head, -n, 5, 20.04, true]}\nchecks:\n- {id: a, reason: r, scope: repo}\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"head", "-n", "5", "20.04", "true"}; !slices.Equal(checks[0].Run, want) {
-		t.Errorf("run = %q, want %q", checks[0].Run, want)
+	if want := []string{"head", "-n", "5", "20.04", "true"}; !slices.Equal(cfg.Checks[0].Run, want) {
+		t.Errorf("run = %q, want %q", cfg.Checks[0].Run, want)
 	}
 }
 
-// A rule's run: [] loads as it did before defaults: only a program check's
-// empty run is refused.
-func TestARulesEmptyRunStillLoads(t *testing.T) {
-	_, err := Parse([]byte("defaults: {run: [x]}\nchecks:\n- {id: a, reason: r, scope: repo, run: [], extract: {p: {yaml: {file: a, path: a}}, q: {yaml: {file: b, path: b}}}, agree: [p, q]}\n"))
-	if err != nil {
-		t.Errorf("a rule with run: [] does not load: %v", err)
+// A rule's run is refused whatever its value, as a rule's timeout is: an
+// empty or a null run would load as a key that does nothing, and a run with
+// arguments is refused once, not also as a check of both kinds. A program
+// check, with no rule key, still takes its run from the default. The planted
+// breaks: build without the refusal of a rule's run, and the refusal
+// reading extract alone as the mark of a rule.
+func TestARulesRunIsRefusedWhateverItsValue(t *testing.T) {
+	const rule = "extract: {p: {yaml: {file: a, path: a}}, q: {yaml: {file: b, path: b}}}, agree: [p, q]"
+	for _, run := range []string{"[]", "null", "[z]"} {
+		_, err := parseRaw([]byte("defaults: {run: [x]}\nchecks:\n- {id: a, reason: r, scope: repo, run: " + run + ", " + rule + "}\n"))
+		want := `checks[0]: check "a": run is set on a rule, whatever its value: a check is a program check (run) or a rule (extract), never both`
+		if err == nil || err.Error() != want {
+			t.Errorf("a rule with run: %s: error = %v, want %q alone", run, err, want)
+		}
+	}
+	// An entry is a rule through any rule key, not extract alone, so its
+	// run is refused first; the rest of what the rule lacks follows.
+	_, err := parseRaw([]byte("defaults: {run: [x]}\nchecks:\n- {id: a, reason: r, scope: repo, run: [], allow_empty: [p]}\n"))
+	want := `checks[0]: check "a": run is set on a rule, whatever its value: a check is a program check (run) or a rule (extract), never both`
+	if err == nil || strings.SplitN(err.Error(), "\n", 2)[0] != want {
+		t.Errorf("a rule through allow_empty alone with run: []: error = %v, want it to start %q", err, want)
+	}
+	cfg, err := parseRaw([]byte("defaults: {run: [x, <errata.id>]}\nchecks:\n- {id: a, reason: r, scope: repo}\n- {id: b, reason: r, scope: repo, " + rule + "}\n"))
+	if err != nil || !slices.Equal(cfg.Checks[0].Run, []string{"x", "a"}) || cfg.Checks[1].Run != nil {
+		t.Errorf("a program check and a rule beside a default: %v; want the program check to run [x a] and the rule no run", err)
+	}
+}
+
+// apply decides on the keys the entry wrote, not on the built check, so it
+// tells a run left out, which takes the default, from a run written empty,
+// which does not: both are an empty Run once built. A later default, such
+// as a timeout that build fills in when the key is left out, needs the same
+// distinction. The planted breaks: apply reading an empty Run as no key,
+// and apply deciding rule from the built check.
+func TestDefaultsApplyByTheKeysTheEntryWrites(t *testing.T) {
+	d := defaults{Run: []string{"x", "<errata.id>"}}
+	unset := check.Check{ID: "a"}
+	if err := d.apply(&unset, map[string]json.RawMessage{"id": json.RawMessage(`"a"`)}, false); err != nil || !slices.Equal(unset.Run, []string{"x", "a"}) {
+		t.Errorf("run left out: run %q, %v; want [x a]", unset.Run, err)
+	}
+	for _, written := range []string{"[]", "null"} {
+		empty := check.Check{ID: "a"}
+		if err := d.apply(&empty, map[string]json.RawMessage{"run": json.RawMessage(written)}, false); err != nil || empty.Run != nil {
+			t.Errorf("run: %s: run %q, %v; want no run, for build to refuse", written, empty.Run, err)
+		}
+	}
+	// A rule is told by isRule, build's reading of the keys, not by the
+	// built check: here the check has no Rule, and still takes no default.
+	rule := check.Check{ID: "a"}
+	if err := d.apply(&rule, map[string]json.RawMessage{"agree": json.RawMessage(`["p"]`)}, true); err != nil || rule.Run != nil {
+		t.Errorf("a rule: run %q, %v; want no run", rule.Run, err)
 	}
 }

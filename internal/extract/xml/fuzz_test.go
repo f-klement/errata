@@ -160,7 +160,7 @@ func refAttrValue(t *testing.T, quoted []byte) string {
 // of it through RawToken.
 func refParse(t *testing.T, data []byte) ([]*refElem, error) {
 	t.Helper()
-	data = bytes.TrimPrefix(data, utf8BOM)
+	data = core.DropBOM(data)
 	d := xml.NewDecoder(bytes.NewReader(data))
 	d.CharsetReader = asciiOnly(data)
 	lineAt := func(off int) int { return xmlLineCount(data[:off]) }

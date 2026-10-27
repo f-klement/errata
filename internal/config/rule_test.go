@@ -32,14 +32,14 @@ checks:
 `
 
 func TestParseRule(t *testing.T) {
-	checks, err := Parse([]byte(goodRule))
+	cfg, err := parseRaw([]byte(goodRule))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(checks) != 2 {
-		t.Fatalf("got %d checks, want 2", len(checks))
+	if len(cfg.Checks) != 2 {
+		t.Fatalf("got %d checks, want 2", len(cfg.Checks))
 	}
-	r := checks[0].Rule
+	r := cfg.Checks[0].Rule
 	if r == nil {
 		t.Fatal("rule decoded without a Rule")
 	}
@@ -64,10 +64,10 @@ func TestParseRule(t *testing.T) {
 		t.Errorf("allow_empty = %q, want \"client\"", got)
 	}
 	// A rule's extractors take no timeout; a program check keeps the default.
-	if checks[0].Timeout != 0 || checks[1].Timeout != DefaultTimeout {
-		t.Errorf("timeouts = %s and %s, want 0 and %s", checks[0].Timeout, checks[1].Timeout, DefaultTimeout)
+	if cfg.Checks[0].Timeout != 0 || cfg.Checks[1].Timeout != DefaultTimeout {
+		t.Errorf("timeouts = %s and %s, want 0 and %s", cfg.Checks[0].Timeout, cfg.Checks[1].Timeout, DefaultTimeout)
 	}
-	if checks[1].Rule != nil {
+	if cfg.Checks[1].Rule != nil {
 		t.Error("program check decoded with a Rule")
 	}
 	// The loader wires the real extractor: the client regex reads its file.
@@ -97,27 +97,27 @@ func TestParseCompare(t *testing.T) {
 		head + "  compare: text\n":   check.CompareText,
 		head:                         check.CompareText,
 	} {
-		checks, err := Parse([]byte(yaml))
+		cfg, err := parseRaw([]byte(yaml))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := checks[0].Rule.Compare; got != want {
+		if got := cfg.Checks[0].Rule.Compare; got != want {
 			t.Errorf("compare %q, want %q, from:\n%s", got, want, yaml)
 		}
 	}
-	checks, err := Parse([]byte("checks:\n- id: r\n  reason: r\n  scope: repo\n  extract: {v: {json: {file: f.json, path: a}}}\n  assert: size(v) > 0\n"))
-	if err != nil || checks[0].Rule.Compare != "" {
-		t.Errorf("an assert rule has compare %q, %v; want none", checks[0].Rule.Compare, err)
+	cfg, err := parseRaw([]byte("checks:\n- id: r\n  reason: r\n  scope: repo\n  extract: {v: {json: {file: f.json, path: a}}}\n  assert: size(v) > 0\n"))
+	if err != nil || cfg.Checks[0].Rule.Compare != "" {
+		t.Errorf("an assert rule has compare %q, %v; want none", cfg.Checks[0].Rule.Compare, err)
 	}
 }
 
 // An assert is compiled at load, so a rule that loads can run it.
 func TestParseAssertRule(t *testing.T) {
-	checks, err := Parse([]byte("checks:\n- id: a\n  reason: r\n  scope: repo\n  extract: {v: {json: {file: f.json, path: a}}, w: {json: {file: g.json, path: a}}}\n  assert: v[0] == w[0]\n"))
+	cfg, err := parseRaw([]byte("checks:\n- id: a\n  reason: r\n  scope: repo\n  extract: {v: {json: {file: f.json, path: a}}, w: {json: {file: g.json, path: a}}}\n  assert: v[0] == w[0]\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := checks[0].Rule
+	r := cfg.Checks[0].Rule
 	if r.Assert != "v[0] == w[0]" {
 		t.Fatalf("assert = %q", r.Assert)
 	}
@@ -130,8 +130,8 @@ func TestParseAssertRule(t *testing.T) {
 			t.Errorf("%v: %v, %v; want %v", values, got, err, want)
 		}
 	}
-	if checks, err := Parse([]byte(goodRule)); err != nil || checks[0].Rule.Compiled != nil {
-		t.Errorf("an agree rule: err %v, compiled %v; want no assert compiled", err, checks[0].Rule.Compiled)
+	if cfg, err := parseRaw([]byte(goodRule)); err != nil || cfg.Checks[0].Rule.Compiled != nil {
+		t.Errorf("an agree rule: err %v, compiled %v; want no assert compiled", err, cfg.Checks[0].Rule.Compiled)
 	}
 }
 
@@ -175,7 +175,7 @@ func TestParseRejectsAsserts(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			_, err := Parse([]byte(tc.yaml))
+			_, err := parseRaw([]byte(tc.yaml))
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("error:\n%v\nwant it to contain:\n%s", err, tc.want)
 			}
@@ -190,11 +190,11 @@ func TestParseRejectsAsserts(t *testing.T) {
 // the expression, and an assert is compiled even when an extractor does not
 // build, so one pass reports both.
 func TestParseAssertErrorsOnePass(t *testing.T) {
-	_, err := Parse([]byte("checks:\n- id: a\n  reason: r\n  scope: repo\n  extract: {v: {json: {file: f.json, path: a}}}\n  agree: [v]\n  assert: v == 1\n"))
+	_, err := parseRaw([]byte("checks:\n- id: a\n  reason: r\n  scope: repo\n  extract: {v: {json: {file: f.json, path: a}}}\n  agree: [v]\n  assert: v == 1\n"))
 	if err == nil || !strings.Contains(err.Error(), "agree and assert are both set") || strings.Contains(err.Error(), "no matching overload") {
 		t.Fatalf("error = %v, want only the agree and assert refusal", err)
 	}
-	_, err = Parse([]byte("checks:\n- id: a\n  reason: r\n  scope: repo\n  extract: {v: {}}\n  assert: v == 1\n"))
+	_, err = parseRaw([]byte("checks:\n- id: a\n  reason: r\n  scope: repo\n  extract: {v: {}}\n  assert: v == 1\n"))
 	for _, want := range []string{`extractor "v": an extractor sets exactly one`, "no matching overload for '_==_' applied to '(list(string), int)'"} {
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("error = %v, want it to contain %q", err, want)
@@ -433,7 +433,7 @@ func TestParseRejectsRules(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			_, err := Parse([]byte(tc.yaml))
+			_, err := parseRaw([]byte(tc.yaml))
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("error = %v, want it to contain %q", err, tc.want)
 			}
@@ -447,7 +447,7 @@ func TestParseRejectsRules(t *testing.T) {
 // A check whose extractor does not build is still validated, so one pass
 // names both problems, and agree does not also report the extractor missing.
 func TestParseReportsEveryProblemWithARule(t *testing.T) {
-	_, err := Parse([]byte("checks:\n- id: a\n  scope: repo\n  extract: {v: {}}\n  agree: [v]\n- id: b\n  reason: r\n  scope: repo\n  extract: {w: {json: {file: f, path: a}}}\n  agree: [w, x]\n"))
+	_, err := parseRaw([]byte("checks:\n- id: a\n  scope: repo\n  extract: {v: {}}\n  agree: [v]\n- id: b\n  reason: r\n  scope: repo\n  extract: {w: {json: {file: f, path: a}}}\n  agree: [w, x]\n"))
 	if err == nil {
 		t.Fatal("broken rules loaded")
 	}
@@ -465,7 +465,7 @@ func TestParseReportsEveryProblemWithARule(t *testing.T) {
 // A check that does not decode is named by its id and does not stop the next
 // check from being validated.
 func TestParseNamesACheckThatDoesNotDecode(t *testing.T) {
-	_, err := Parse([]byte("checks:\n- {id: a, reson: r, scope: repo, run: [x]}\n- {id: b, scope: repo, run: [x]}\n"))
+	_, err := parseRaw([]byte("checks:\n- {id: a, reson: r, scope: repo, run: [x]}\n- {id: b, scope: repo, run: [x]}\n"))
 	if err == nil {
 		t.Fatal("broken checks loaded")
 	}
@@ -479,7 +479,7 @@ func TestParseNamesACheckThatDoesNotDecode(t *testing.T) {
 // The top level is matched exactly too: a second list under Checks used to
 // merge with checks and drop a check without an error.
 func TestParseRejectsTopLevelKeyInAnotherCase(t *testing.T) {
-	_, err := Parse([]byte("checks:\n- {id: a, reason: r, scope: repo, run: [x]}\nChecks:\n- {id: b, reason: r, scope: repo, run: [x]}\n"))
+	_, err := parseRaw([]byte("checks:\n- {id: a, reason: r, scope: repo, run: [x]}\nChecks:\n- {id: b, reason: r, scope: repo, run: [x]}\n"))
 	if err == nil || !strings.Contains(err.Error(), `decode: key "Checks" must be spelled "checks"`) {
 		t.Fatalf("error = %v, want the misspelt key named", err)
 	}
@@ -489,7 +489,7 @@ func TestParseRejectsTopLevelKeyInAnotherCase(t *testing.T) {
 // not by the JSON step, which cannot hold infinity; quoted, it is the file
 // extension the author wrote.
 func TestParseInfAndNaNInStrings(t *testing.T) {
-	_, err := Parse([]byte("checks:\n- {id: a, reason: .nan, scope: repo, run: [ls, .inf, -.inf]}\n"))
+	_, err := parseRaw([]byte("checks:\n- {id: a, reason: .nan, scope: repo, run: [ls, .inf, -.inf]}\n"))
 	for _, want := range []string{
 		`reason: YAML 1.1 reads .nan, unquoted, as the number NaN`,
 		`run[1]: YAML 1.1 reads .inf, unquoted, as the number +Inf`,
@@ -499,12 +499,12 @@ func TestParseInfAndNaNInStrings(t *testing.T) {
 			t.Errorf("error = %v, want it to contain %q", err, want)
 		}
 	}
-	checks, err := Parse([]byte("checks:\n- {id: a, reason: '.nan', scope: repo, run: [ls, '.inf', \"-.inf\"]}\n"))
+	cfg, err := parseRaw([]byte("checks:\n- {id: a, reason: '.nan', scope: repo, run: [ls, '.inf', \"-.inf\"]}\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(checks[0].Run, " "); got != "ls .inf -.inf" || checks[0].Reason != ".nan" {
-		t.Errorf("run = %q, reason = %q, want \"ls .inf -.inf\" and \".nan\"", got, checks[0].Reason)
+	if got := strings.Join(cfg.Checks[0].Run, " "); got != "ls .inf -.inf" || cfg.Checks[0].Reason != ".nan" {
+		t.Errorf("run = %q, reason = %q, want \"ls .inf -.inf\" and \".nan\"", got, cfg.Checks[0].Reason)
 	}
 }
 
@@ -520,7 +520,7 @@ func TestParseAcceptsExtractorsThatDifferInOneField(t *testing.T) {
 		{"{yaml: {file: f, path: x}}", "{json: {file: f, path: x}}"},
 	} {
 		raw := "checks:\n- id: a\n  reason: r\n  scope: repo\n  extract:\n    a: " + pair[0] + "\n    b: " + pair[1] + "\n  agree: [a, b]\n"
-		_, err := Parse([]byte(raw))
+		_, err := parseRaw([]byte(raw))
 		if err != nil && strings.Contains(err.Error(), "read the same place") {
 			t.Errorf("%s and %s: %v", pair[0], pair[1], err)
 		}
@@ -552,13 +552,13 @@ func TestParseRefusesSeveralDocuments(t *testing.T) {
 	}
 	for name, raw := range cases {
 		t.Run(name, func(t *testing.T) {
-			_, err := Parse([]byte(raw))
+			_, err := parseRaw([]byte(raw))
 			if err == nil || !strings.Contains(err.Error(), "YAML documents; errata reads one, so put every check in one document under checks") {
 				t.Fatalf("error = %v, want the several-documents refusal", err)
 			}
 		})
 	}
-	_, err := Parse([]byte(cases["three documents"]))
+	_, err := parseRaw([]byte(cases["three documents"]))
 	if err == nil || !strings.Contains(err.Error(), "the file holds 3 YAML documents") {
 		t.Fatalf("error = %v, want the count", err)
 	}
@@ -579,7 +579,7 @@ func TestParseRefusesADocumentTheDecoderCannotRead(t *testing.T) {
 		"a document after ... at the end": {a + "...\nchecks: []\n", "decode: yaml: line 3: did not find expected <document start>"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := Parse([]byte(tc.raw))
+			_, err := parseRaw([]byte(tc.raw))
 			if err == nil || err.Error() != tc.want {
 				t.Fatalf("error = %v, want %q", err, tc.want)
 			}
@@ -599,9 +599,9 @@ func TestParseAcceptsTrailingEmptyDocuments(t *testing.T) {
 		"a last --- in CR":       strings.ReplaceAll(a+"---\n", "\n", "\r"),
 	} {
 		t.Run(name, func(t *testing.T) {
-			checks, err := Parse([]byte(raw))
-			if err != nil || len(checks) != 1 || checks[0].ID != "first" {
-				t.Fatalf("Parse = %v, %v; want the one check", checks, err)
+			cfg, err := parseRaw([]byte(raw))
+			if err != nil || len(cfg.Checks) != 1 || cfg.Checks[0].ID != "first" {
+				t.Fatalf("parse = %v, %v; want the one check", cfg.Checks, err)
 			}
 		})
 	}
@@ -611,7 +611,7 @@ func TestParseAcceptsTrailingEmptyDocuments(t *testing.T) {
 // alone: compiling the expression against no names would add an error for
 // every name it uses.
 func TestParseRuleWithoutExtractorsCompilesNothing(t *testing.T) {
-	_, err := Parse([]byte("checks:\n- id: a\n  reason: r\n  scope: repo\n  extract: {}\n  assert: v[0] == '1'\n"))
+	_, err := parseRaw([]byte("checks:\n- id: a\n  reason: r\n  scope: repo\n  extract: {}\n  assert: v[0] == '1'\n"))
 	if err == nil || !strings.Contains(err.Error(), "extract is required for a rule and must declare at least one extractor") {
 		t.Fatalf("error = %v, want the missing extract", err)
 	}
@@ -644,7 +644,7 @@ func TestParseAcceptsOneDocument(t *testing.T) {
 		"byte order mark":       "\ufeff---\nchecks:\n- {id: a, reason: r, scope: repo, run: [x]}\n",
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := Parse([]byte(raw)); err != nil {
+			if _, err := parseRaw([]byte(raw)); err != nil {
 				t.Fatal(err)
 			}
 		})
@@ -680,24 +680,24 @@ checks:
     agree: [chart, shell]
     skip_not_literal: [shell, chart]
 `
-	checks, err := ParseWith([]byte(yaml), buildComputing)
+	cfg, err := parse([]byte(yaml), buildComputing)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(checks[0].Rule.SkipNotLiteral, " "); got != "shell chart" {
+	if got := strings.Join(cfg.Checks[0].Rule.SkipNotLiteral, " "); got != "shell chart" {
 		t.Errorf("skip_not_literal = %q, want \"shell chart\"", got)
 	}
 	// An ini extractor whose dialect's tool computes values may be listed.
-	if _, err := Parse([]byte("checks:\n- id: a\n  reason: r\n  scope: repo\n  extract:\n    php: {ini: {file: php.ini, key: error_reporting}}\n    tox: {ini: {file: tox.ini, section: testenv, key: deps}}\n  agree: [php, tox]\n  skip_not_literal: [php, tox]\n")); err != nil {
+	if _, err := parseRaw([]byte("checks:\n- id: a\n  reason: r\n  scope: repo\n  extract:\n    php: {ini: {file: php.ini, key: error_reporting}}\n    tox: {ini: {file: tox.ini, section: testenv, key: deps}}\n  agree: [php, tox]\n  skip_not_literal: [php, tox]\n")); err != nil {
 		t.Errorf("skip_not_literal over php and tox: %v", err)
 	}
-	_, err = Parse([]byte(yaml))
+	_, err = parseRaw([]byte(yaml))
 	for _, want := range []string{
 		`skip_not_literal names "shell", whose kind of extractor, regex, returns only literal values, so it has nothing to leave out`,
 		`skip_not_literal names "chart", whose kind of extractor, yaml, returns only literal values`,
 	} {
 		if err == nil || !strings.Contains(err.Error(), want) {
-			t.Errorf("Parse: error = %v, want it to contain %q", err, want)
+			t.Errorf("parse: error = %v, want it to contain %q", err, want)
 		}
 	}
 }
@@ -717,7 +717,7 @@ checks:
     agree: [shell]
     skip_not_literal: [shell]
 `
-	_, err := ParseWith([]byte(yaml), func(extract.Spec) (check.Extractor, error) { return nil, nil })
+	_, err := parse([]byte(yaml), func(extract.Spec) (check.Extractor, error) { return nil, nil })
 	if want := `extractor "shell": built nothing, and gave no error`; err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("error = %v, want it to contain %q", err, want)
 	}
@@ -742,12 +742,12 @@ func manyExtractors(n, places int) []byte {
 	return []byte(b.String())
 }
 
-// parseAllocs is the bytes Parse allocates for raw, and its error.
+// parseAllocs is the bytes parse allocates for raw, and its error.
 func parseAllocs(raw []byte) (uint64, error) {
 	var before, after runtime.MemStats
 	runtime.GC()
 	runtime.ReadMemStats(&before)
-	_, err := Parse(raw)
+	_, err := parseRaw(raw)
 	runtime.ReadMemStats(&after)
 	return after.TotalAlloc - before.TotalAlloc, err
 }
@@ -769,7 +769,7 @@ func TestManyExtractorsLoadInLinearMemory(t *testing.T) {
 		!strings.Contains(err.Error(), fmt.Sprintf("and %d more extractors read a place an extractor above reads", 5000-8-maxSamePlace)) {
 		t.Errorf("5000 extractors over 8 places: %v", err)
 	}
-	if _, err := Parse(manyExtractors(5000, 0)); err != nil {
+	if _, err := parseRaw(manyExtractors(5000, 0)); err != nil {
 		t.Errorf("5000 extractors over 5000 places: %v", err)
 	}
 }

@@ -70,6 +70,11 @@ const (
 var baseEnv = sync.OnceValues(func() (*cel.Env, error) {
 	opts := []cel.EnvOption{stdlib(), cel.ParserRecursionLimit(MaxDepth), cel.ParserExpressionSizeLimit(MaxLength)}
 	opts = append(opts, helpers()...)
+	strs, err := stringsExtension()
+	if err != nil {
+		return nil, err
+	}
+	opts = append(opts, strs...)
 	return cel.NewCustomEnv(append(opts, noting()...)...)
 })
 
@@ -368,11 +373,12 @@ type outcome struct {
 // Eval evaluates the compiled expression under the cost limit and the
 // timeout. CEL looks at the context every interruptEvery comprehension steps,
 // and Eval waits a grace after the timeout for that look. Every helper reads
-// an argument of at most MaxArgument bytes, so a step is short and the look
-// comes soon. An evaluation that does not look within the grace, such as one
-// in a call that does not return, keeps its goroutine until it ends, and Eval
-// returns without it; the run goes on. An error that && or || absorbed is
-// still the result.
+// an argument of at most MaxArgument bytes. split, join and replace are
+// linear in what they read, and each builds at most MaxBuilt bytes. So a step
+// is short and the look comes soon. An evaluation that does not look within
+// the grace, such as one in a call that does not return, keeps its goroutine
+// until it ends, and Eval returns without it; the run goes on. An error that
+// && or || absorbed is still the result.
 func (a *assertion) Eval(parent context.Context, values map[string][]string) (bool, error) {
 	log := &errorLog{}
 	vars := make(map[string]any, len(values)+1)

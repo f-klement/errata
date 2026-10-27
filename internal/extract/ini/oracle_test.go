@@ -142,7 +142,7 @@ func toxInputs() []string {
 	return extracttest.GenerateCorpus(43, func(r *rand.Rand) string {
 		var b strings.Builder
 		if r.IntN(10) == 0 {
-			b.Write(bom)
+			b.WriteString(core.BOM)
 		}
 		if r.IntN(10) > 0 {
 			b.WriteString("[testenv]\n")
@@ -158,7 +158,7 @@ func phpInputs() []string {
 	return extracttest.GenerateCorpus(44, func(r *rand.Rand) string {
 		var b strings.Builder
 		if r.IntN(10) == 0 {
-			b.Write(bom)
+			b.WriteString(core.BOM)
 		}
 		used := map[string]bool{}
 		for range r.IntN(10) {

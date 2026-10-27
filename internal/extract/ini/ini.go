@@ -370,10 +370,6 @@ func Place(i Spec) Spec {
 	return i
 }
 
-// bom is the UTF-8 byte order mark, which a git config file, a php.ini and a
-// tox.ini may start with.
-var bom = []byte("\xef\xbb\xbf")
-
 // hasDir reports whether one of dirs is one of names.
 func hasDir(dirs []string, names ...string) bool {
 	return slices.ContainsFunc(dirs, func(d string) bool { return slices.Contains(names, d) })

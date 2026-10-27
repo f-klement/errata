@@ -141,3 +141,8 @@ func TestLoadReturnsRequired(t *testing.T) {
 		t.Errorf("Load returned required %q, check at %+v", cfg.Required, cfg.Checks[0].At)
 	}
 }
+
+// parseRaw is parse with the extractors errata runs with.
+func parseRaw(raw []byte) (Config, error) {
+	return parse(raw, extract.Build)
+}

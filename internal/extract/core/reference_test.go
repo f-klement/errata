@@ -285,7 +285,8 @@ func toTOML(v value) string {
 }
 
 // referencePath draws a path, and reports whether it holds a construct
-// outside errata's subset: one RFC 9535 allows, or one it refuses too.
+// outside errata's subset: one RFC 9535 allows, or one it refuses too. Its
+// filters nest as deep as errata allows, MaxFilterDepth.
 func referencePath(t *rapid.T) (string, bool) {
 	outside := false
 	// RFC 9535 allows blank space before each step after @. The reference
@@ -310,16 +311,61 @@ func referencePath(t *rapid.T) (string, bool) {
 			return rapid.SampledFrom([]string{
 				c + " != " + l, c + " < " + l, c + " <= " + l, c + " > " + l, c + " >= " + l,
 				c + " == " + l + " || " + c + " == " + l, "!(" + c + " == " + l + ")", "(" + c + " == " + l + ")",
-				"!" + c, c, "@[*]", c + " == " + c, l + " == " + l, "length(" + c + ") == " + l,
-				c + " == $.a", "@[?@ == 1]",
+				c + " == " + c, l + " == " + l, "length(" + c + ") == " + l, c + " == $.a",
+				"!(" + c + ")",
 				// RFC 9535 refuses these as well.
+				"!!" + c,
 				c + " == 01", c + " == True", c + " = " + l, c + " == +1", c + " == 1.", c + " === " + l, c + " ==",
+				"!" + c + " == " + l, "@[*] == " + l, "@[?@ == 1] == " + l,
 			}).Draw(t, "construct")
 		}
 		if first {
 			return l + " == " + c
 		}
 		return c + " == " + l
+	}
+	// A term is a comparison or a query: a path from @ whose steps may hold
+	// [*] and filters, nested up to depth more, tested alone or after !.
+	var filter func(t *rapid.T, depth int) string
+	query := func(t *rapid.T, depth int) string {
+		var b strings.Builder
+		b.WriteString("@")
+		for range rapid.IntRange(0, 3).Draw(t, "query steps") {
+			if rapid.Bool().Draw(t, "space") {
+				b.WriteString(" ")
+			}
+			switch rapid.IntRange(0, 3).Draw(t, "query step") {
+			case 0:
+				b.WriteString("[*]")
+			case 1:
+				if depth > 0 {
+					b.WriteString(filter(t, depth-1))
+					continue
+				}
+				fallthrough
+			default:
+				b.WriteString(rapid.SampledFrom(referenceSteps).Draw(t, "step"))
+			}
+		}
+		return b.String()
+	}
+	term := func(t *rapid.T, depth int) string {
+		switch rapid.IntRange(0, 3).Draw(t, "term") {
+		case 0:
+			return query(t, depth)
+		case 1:
+			return rapid.SampledFrom([]string{"!", "! "}).Draw(t, "not") + query(t, depth)
+		default:
+			return comparison(t)
+		}
+	}
+	filter = func(t *rapid.T, depth int) string {
+		var cs []string
+		for range rapid.IntRange(1, 3).Draw(t, "terms") {
+			cs = append(cs, term(t, depth))
+		}
+		open := rapid.SampledFrom([]string{"[?", "[ ?"}).Draw(t, "open")
+		return open + strings.Join(cs, " && ") + "]"
 	}
 	var b strings.Builder
 	b.WriteString("$")
@@ -330,12 +376,7 @@ func referencePath(t *rapid.T) (string, bool) {
 		case 1:
 			b.WriteString("[*]")
 		default:
-			var cs []string
-			for range rapid.IntRange(1, 3).Draw(t, "comparisons") {
-				cs = append(cs, comparison(t))
-			}
-			open := rapid.SampledFrom([]string{"[?", "[ ?"}).Draw(t, "open")
-			b.WriteString(open + strings.Join(cs, " && ") + "]")
+			b.WriteString(filter(t, core.MaxFilterDepth-1))
 		}
 	}
 	return b.String(), outside

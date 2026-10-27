@@ -33,10 +33,11 @@ const DefaultTimeout = 30 * time.Second
 
 // file is the top level. Each check stays raw until it is decoded on its own,
 // so a check that does not decode is named in the error and the others are
-// still validated.
+// still validated. Required and Defaults stay raw too, so one decode of the
+// document tells a key left out (no bytes) from one written null.
 type file struct {
 	Checks   []json.RawMessage `json:"checks"`
-	Required []string          `json:"required"`
+	Required json.RawMessage   `json:"required"`
 	Defaults json.RawMessage   `json:"defaults"`
 }
 
@@ -169,20 +170,11 @@ func firstDocumentError(raw []byte, v3err error) error {
 // none would run nothing and pass, so a gate on it would go green on nothing.
 var ErrNoChecks = errors.New("the file holds no checks: a config with none would run nothing and pass")
 
-// Parse decodes raw config bytes. Decoding is strict: an unknown key is an
-// error, because a misspelt key that is silently ignored turns a check off
-// with no symptom, and so is a key that differs from a known one only in case.
-func Parse(raw []byte) ([]check.Check, error) {
-	return ParseWith(raw, extract.Build)
-}
-
-// ParseWith is Parse with the extractors made by build.
-func ParseWith(raw []byte, newExtractor Builder) ([]check.Check, error) {
-	cfg, err := parse(raw, newExtractor)
-	return cfg.Checks, err
-}
-
-// parse is ParseWith that returns the required list with the checks.
+// parse decodes raw config bytes into the checks and the required list.
+// Decoding is strict: an unknown key is an error, because a misspelt key
+// that is silently ignored turns a check off with no symptom, and so is a
+// key that differs from a known one only in case. newExtractor makes each
+// rule's extractors.
 func parse(raw []byte, newExtractor Builder) (Config, error) {
 	// The document tree keeps each alias as a reference, so its expanded
 	// size is counted before toJSON expands it, whenever the first document
@@ -211,26 +203,23 @@ func parse(raw []byte, newExtractor Builder) (Config, error) {
 	if errs := exactKeys(doc, reflect.TypeFor[file](), ""); len(errs) > 0 {
 		return Config{}, fmt.Errorf("decode: %w", errors.Join(errs...))
 	}
-	var keys map[string]json.RawMessage
-	_ = json.Unmarshal(doc, &keys) // a document that is not an object fails decodeStrict below
-	if v, ok := keys["required"]; ok {
-		if b := string(bytes.TrimSpace(v)); b != "null" && !strings.HasPrefix(b, "[") {
-			return Config{}, fmt.Errorf("decode: required takes a list of check ids, one id a line; %s is not accepted", clip(b))
-		}
-	}
 	var f file
 	if !bytes.Equal(doc, []byte("null")) {
 		if err := decodeStrict(doc, &f); err != nil {
 			return Config{}, fmt.Errorf("decode: %w", err)
 		}
 	}
+	required, hasRequired, err := parseRequired(f.Required)
+	if err != nil {
+		return Config{}, fmt.Errorf("decode: %w", err)
+	}
 	if len(f.Checks) == 0 {
 		return Config{}, ErrNoChecks
 	}
 	// A default that does not load is the one error: every check that relies
 	// on it would otherwise add one of its own for having no run.
-	def, errs := parseDefaults(f.Defaults)
-	if errs = append(errs, plainDefaults(first)...); len(errs) > 0 {
+	def, errs := parseDefaults(f.Defaults, topLevel(first, "defaults"))
+	if errs = append(errs, plainKey(first, "defaults", reflect.TypeFor[defaults]())...); len(errs) > 0 {
 		return Config{}, errors.Join(errs...)
 	}
 
@@ -254,17 +243,9 @@ func parse(raw []byte, newExtractor Builder) (Config, error) {
 			errs = append(errs, fmt.Errorf("checks[%d]: check %q: decode: %w", i, plain[i].id, errors.Join(plain[i].errs...)))
 			continue
 		}
-		c, decoded, err := build(raw, newExtractor)
+		c, err := build(raw, def, newExtractor)
 		if i < len(at) {
 			c.At.Line = at[i]
-		}
-		if decoded {
-			// Validate even after a build error, so one pass reports every
-			// problem with the check, and after the default run applies, so a
-			// program check that has neither is refused as one with no run.
-			var rerr error
-			c.Run, rerr = def.runOf(c)
-			err = errors.Join(err, rerr, c.Validate())
 		}
 		if err != nil {
 			errs = append(errs, fmt.Errorf("checks[%d]: %w", i, err))
@@ -277,17 +258,35 @@ func parse(raw []byte, newExtractor Builder) (Config, error) {
 		seen[c.ID] = true
 		checks = append(checks, c)
 	}
-	if _, ok := keys["required"]; ok {
-		if perrs := plainRequired(first); len(perrs) > 0 {
+	if hasRequired {
+		if perrs := plainKey(first, "required", reflect.TypeFor[[]string]()); len(perrs) > 0 {
 			errs = append(errs, fmt.Errorf("decode: %w", errors.Join(perrs...)))
 		} else {
-			errs = append(errs, requiredErrors(f.Required, ids)...)
+			errs = append(errs, requiredErrors(required, ids)...)
 		}
 	}
 	if len(errs) > 0 {
 		return Config{}, errors.Join(errs...)
 	}
-	return Config{Checks: checks, Required: f.Required}, nil
+	return Config{Checks: checks, Required: required}, nil
+}
+
+// parseRequired decodes raw, the value of the top-level required key, and
+// reports whether the file has the key at all: a null list (required: with
+// nothing after it) is the key written, and requiredErrors refuses it as an
+// empty one. A value that is not a list, such as one bare id, is refused
+// with what to write instead of a Go type's name.
+func parseRequired(raw json.RawMessage) (ids []string, present bool, err error) {
+	if len(raw) == 0 {
+		return nil, false, nil
+	}
+	if b := string(bytes.TrimSpace(raw)); b != "null" && !strings.HasPrefix(b, "[") {
+		return nil, true, fmt.Errorf("required takes a list of check ids, one id a line; %s is not accepted", clip(b))
+	}
+	if err := json.Unmarshal(raw, &ids); err != nil {
+		return nil, true, fmt.Errorf("required: %w", err)
+	}
+	return ids, true, nil
 }
 
 // requiredErrors compares required, the ids the file lists under required,
@@ -349,16 +348,16 @@ func entryID(raw json.RawMessage) string {
 	return named.ID
 }
 
-// build decodes one check strictly and builds its extractors. decoded reports
-// whether the check decoded, so it is worth validating; err names the check,
-// by its id when the id itself decodes.
-func build(raw json.RawMessage, newExtractor Builder) (c check.Check, decoded bool, err error) {
+// build decodes one check strictly, applies the defaults def while the
+// entry's own keys are known, builds its extractors and validates it. err
+// names the check, by its id when the id itself decodes.
+func build(raw json.RawMessage, def defaults, newExtractor Builder) (c check.Check, err error) {
 	var named struct {
 		ID string `json:"id"`
 	}
 	_ = json.Unmarshal(raw, &named) // best effort: the id names the check in an error
-	refuse := func(err error) (check.Check, bool, error) {
-		return check.Check{}, false, fmt.Errorf("check %q: decode: %w", named.ID, err)
+	refuse := func(err error) (check.Check, error) {
+		return check.Check{}, fmt.Errorf("check %q: decode: %w", named.ID, err)
 	}
 
 	if errs := exactKeys(raw, reflect.TypeFor[checkEntry](), ""); len(errs) > 0 {
@@ -419,9 +418,18 @@ func build(raw json.RawMessage, newExtractor Builder) (c check.Check, decoded bo
 		errs = append(errs, errors.New("compare is blank: write text or semver, or remove the key for text"))
 	}
 	// An empty run on a program check would take the default run, a program
-	// the entry says it does not have. A rule's run: [] loads as before.
-	if _, ok := keys["run"]; ok && !isRule && len(e.Run) == 0 {
+	// the entry says it does not have.
+	_, wroteRun := keys["run"]
+	emptyRun := wroteRun && !isRule && len(e.Run) == 0
+	if emptyRun {
 		errs = append(errs, errors.New("run lists no argument: write the command, or remove the key, which takes the default run if the file sets one"))
+	}
+	// Refused whatever its value, as a rule's timeout is: a rule's empty or
+	// null run would load as a key that does nothing. The check keeps no
+	// run, so validation does not refuse it a second time as both kinds.
+	if _, ok := keys["run"]; ok && isRule {
+		errs = append(errs, errors.New("run is set on a rule, whatever its value: a check is a program check (run) or a rule (extract), never both"))
+		c.Run = nil
 	}
 	if _, ok := keys["normalize"]; ok && len(e.Normalize) == 0 {
 		errs = append(errs, errors.New("normalize lists no option: name trim, lower or both, or remove the key"))
@@ -437,10 +445,24 @@ func build(raw json.RawMessage, newExtractor Builder) (c check.Check, decoded bo
 		c.Rule = r
 		errs = append(errs, rerrs...)
 	}
-	if len(errs) > 0 {
-		return c, true, fmt.Errorf("check %q: %w", e.ID, errors.Join(errs...))
+	if err := def.apply(&c, keys, isRule); err != nil {
+		errs = append(errs, err)
 	}
-	return c, true, nil
+	var berr error
+	if len(errs) > 0 {
+		berr = fmt.Errorf("check %q: %w", e.ID, errors.Join(errs...))
+	}
+	// Validate even after a build error, so one pass reports every problem
+	// with the check, and after the defaults apply, so a program check that
+	// has neither its own run nor the default is refused as one with no run.
+	// A run refused above for listing no argument is validated as present:
+	// the specific error stands alone, without "run or extract is required"
+	// after it, which would tell an author who wrote run to write run.
+	v := c
+	if emptyRun {
+		v.Run = []string{"the refused run"}
+	}
+	return c, errors.Join(berr, v.Validate())
 }
 
 // buildRule builds a rule's extractors in the order of their names, so the

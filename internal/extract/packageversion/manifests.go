@@ -56,7 +56,7 @@ func parse(
 	}
 	if skipBOM {
 		// The mark is on line 1 and holds no line end, so no line moves.
-		data = bytes.TrimPrefix(data, bom)
+		data = core.DropBOM(data)
 	}
 	if err := f.CheckNodes(data, format); err != nil {
 		return nil, named{err}
@@ -238,17 +238,13 @@ func readCargo(x *extractor, f file, data []byte, add func(string, int, bool) er
 	return nil
 }
 
-// bom is the UTF-8 byte order mark, which an editor on Windows may write at
-// the start of a file.
-var bom = []byte("\xef\xbb\xbf")
-
 // readVersionFile reads a VERSION file: the first field of its first line
 // that holds one, as tool_version reads it. A # starts a comment, a blank
 // line is passed over, and fields are split at white space, so a CRLF file
 // reads as an LF one. A file of blank lines and comments holds no version,
 // and is refused.
 func readVersionFile(_ *extractor, _ file, data []byte, add func(string, int, bool) error) error {
-	data = bytes.TrimPrefix(data, bom)
+	data = core.DropBOM(data)
 	for n := 1; len(data) > 0; n++ {
 		text, after, _ := bytes.Cut(data, []byte("\n"))
 		data = after

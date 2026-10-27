@@ -31,7 +31,13 @@ type fileKind struct {
 	// single files hold one version a line, at least one: an empty file,
 	// or one of comments, is one its tool refuses.
 	single bool
-	read   func(x *extractor, f file, data []byte, add func(text string, line int) error) error
+	// skipsBOM says whether readTree drops a byte order mark at the start
+	// of the file, as the file's tool skips it: npm in package.json, Cargo
+	// and rustup in their TOML files. Python's tomllib refuses one, so
+	// pyproject.toml does not set it, and the parser refuses the file. The
+	// files of lines drop the mark in their own readers.
+	skipsBOM bool
+	read     func(x *extractor, f file, data []byte, add func(text string, line int) error) error
 }
 
 // kinds is the table of every file the extractor reads, by name. The
@@ -48,14 +54,14 @@ var kinds = []*fileKind{
 	{name: "go.mod", tools: []string{"go"}, searched: true, read: readGoMod},
 	{name: ".terraform-version", tools: []string{"terraform"}, searched: true, single: true, read: readFirst},
 	{name: ".java-version", tools: []string{"java"}, searched: true, single: true, read: readFirst},
-	{name: "rust-toolchain", tools: []string{"rust"}, searched: true, read: readRustToolchain},
-	{name: "rust-toolchain.toml", tools: []string{"rust"}, searched: true, read: readTOML},
+	{name: "rust-toolchain", tools: []string{"rust"}, searched: true, skipsBOM: true, read: readRustToolchain},
+	{name: "rust-toolchain.toml", tools: []string{"rust"}, searched: true, skipsBOM: true, read: readTOML},
 	{name: ".bazelversion", tools: []string{"bazel"}, searched: true, single: true, read: readFirst},
 	{name: ".bun-version", tools: []string{"bun"}, searched: true, single: true, read: readFirst},
 	{name: "VERSION", anyTool: true, single: true, read: readFirst},
-	{name: "package.json", read: readPackageJSON},
+	{name: "package.json", skipsBOM: true, read: readPackageJSON},
 	{name: "pyproject.toml", tools: []string{"python"}, read: readTOML},
-	{name: "Cargo.toml", tools: []string{"rust"}, read: readTOML},
+	{name: "Cargo.toml", tools: []string{"rust"}, skipsBOM: true, read: readTOML},
 }
 
 // kindOf is the row for a file's base name, nil when the table has none.
@@ -136,7 +142,9 @@ func isDate(s string) bool {
 // line ends reads as one with LF. A line that holds only a comment, or
 // nothing, is passed over.
 func eachLine(data []byte, line func(first []byte, rest *fields, n int) error) error {
-	data = dropBOM(data)
+	// Kept, a byte order mark would hide a .tool-versions line's tool and
+	// stick to a version as a character no one sees.
+	data = core.DropBOM(data)
 	for n := 1; len(data) > 0; n++ {
 		text, after, _ := bytes.Cut(data, []byte("\n"))
 		data = after
@@ -174,18 +182,6 @@ func (f *fields) next() ([]byte, bool) {
 	return field, true
 }
 
-// bom is the UTF-8 byte order mark, which an editor on Windows may write at
-// the start of a file.
-var bom = []byte("\xef\xbb\xbf")
-
-// dropBOM is data without a byte order mark at its start, which the ini,
-// git, Markdown and XML readers drop too: kept, it would hide a
-// .tool-versions line's tool and stick to a version as a character no one
-// sees.
-func dropBOM(data []byte) []byte {
-	return bytes.TrimPrefix(data, bom)
-}
-
 // errNoVersion refuses a file of one version that holds none: pyenv's
 // version-file-read and rustup refuse an empty file, and nvm, rbenv and the
 // others read no version from it.
@@ -216,7 +212,7 @@ func readToolVersions(x *extractor, _ file, data []byte, add func(string, int) e
 // =, and its version on each line. A line without = is refused, and so is a
 // candidate the spec names with no version.
 func readSdkmanrc(x *extractor, _ file, data []byte, add func(string, int) error) error {
-	data = dropBOM(data)
+	data = core.DropBOM(data)
 	for n := 1; len(data) > 0; n++ {
 		text, rest, _ := bytes.Cut(data, []byte("\n"))
 		data = rest
@@ -291,7 +287,8 @@ func readRuntime(_ *extractor, _ file, data []byte, add func(string, int) error)
 // parses as TOML is read as rust-toolchain.toml is, and a file of one line
 // that does not is the legacy form, that line the channel.
 func readRustToolchain(x *extractor, f file, data []byte, add func(string, int) error) error {
-	data = dropBOM(data)
+	raw := data // readTOML drops the mark itself
+	data = core.DropBOM(data)
 	text := bytes.TrimSpace(data)
 	if len(text) == 0 {
 		return errNoVersion
@@ -305,7 +302,7 @@ func readRustToolchain(x *extractor, f file, data []byte, add func(string, int) 
 			return add(string(text), 1+bytes.Count(data[:lead], []byte("\n")))
 		}
 	}
-	return readTOML(x, f, data, add)
+	return readTOML(x, f, raw, add)
 }
 
 // readGoMod reads the Go a go.mod pins with golang.org/x/mod/modfile, which

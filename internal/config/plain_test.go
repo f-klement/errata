@@ -43,7 +43,7 @@ func TestParseRefusesPlainScalarsThatAreNotStrings(t *testing.T) {
 		"every check": {"checks:\n- {id: y, reason: r, scope: repo, run: [x]}\n- {id: n, reason: r, scope: repo, run: [x]}\n", `checks[1]: check "n": decode: id: YAML 1.1 reads n`},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := Parse([]byte(tc.yaml))
+			_, err := parseRaw([]byte(tc.yaml))
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("error = %v, want it to contain %q", err, tc.want)
 			}
@@ -74,11 +74,11 @@ func TestParseRefusesOnlyATextThatLoadsAsAnother(t *testing.T) {
 		`"y"`, `'yes'`, `"1e3"`, `'~'`, `"true"`,
 	}
 	parse := func(text string) ([]string, error) {
-		checks, err := Parse([]byte("checks:\n- id: a\n  reason: " + text + "\n  scope: repo\n  run:\n    - " + text + "\n"))
+		cfg, err := parseRaw([]byte("checks:\n- id: a\n  reason: " + text + "\n  scope: repo\n  run:\n    - " + text + "\n"))
 		if err != nil {
 			return nil, err
 		}
-		return []string{checks[0].Reason, checks[0].Run[0]}, nil
+		return []string{cfg.Checks[0].Reason, cfg.Checks[0].Run[0]}, nil
 	}
 	for _, text := range refused {
 		value := text[strings.LastIndex(text, " ")+1:]
@@ -122,11 +122,11 @@ func TestParseKeepsStringsThatAreWrittenAsStrings(t *testing.T) {
 		"a line of dots": {"1\n\n      ...", "1\n..."},
 	} {
 		t.Run(name, func(t *testing.T) {
-			checks, err := Parse([]byte("checks:\n- id: a\n  reason: r\n  scope: repo\n  run:\n    - " + tc.value + "\n"))
+			cfg, err := parseRaw([]byte("checks:\n- id: a\n  reason: r\n  scope: repo\n  run:\n    - " + tc.value + "\n"))
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got := checks[0].Run[0]; got != tc.want {
+			if got := cfg.Checks[0].Run[0]; got != tc.want {
 				t.Fatalf("run[0] = %q, want %q", got, tc.want)
 			}
 		})
@@ -151,9 +151,9 @@ func TestParseRefusesYInEveryStringField(t *testing.T) {
 				field = strings.Join(p[:len(p)-1], ".")
 				want = field + ": YAML 1.1 reads the name y, unquoted, as the bool true"
 			}
-			_, err := Parse([]byte(raw))
+			_, err := parseRaw([]byte(raw))
 			if err == nil || !strings.Contains(err.Error(), want) {
-				t.Fatalf("Parse(%s): error = %v, want it to contain %q", raw, err, want)
+				t.Fatalf("parse(%s): error = %v, want it to contain %q", raw, err, want)
 			}
 		})
 	}
@@ -209,7 +209,7 @@ func flowTo(p []string) string {
 }
 
 // yaml/v3 builds a node graph with a cycle for an anchor that names itself.
-// Parse never walks one, since sigs.k8s.io/yaml refuses such a file first,
+// parse never walks one, since sigs.k8s.io/yaml refuses such a file first,
 // but the walk ends on it all the same.
 func TestPlainStringsEndsOnACycle(t *testing.T) {
 	for _, raw := range []string{
@@ -225,8 +225,8 @@ func TestPlainStringsEndsOnACycle(t *testing.T) {
 		if len(got) != 1 || got[0].id != "y" || len(got[0].errs) != 1 || !strings.Contains(got[0].errs[0].Error(), "id: YAML 1.1 reads y") {
 			t.Errorf("%q: plainStrings = %+v, want the one id refused", raw, got)
 		}
-		if _, err := Parse([]byte(raw)); err == nil || strings.Contains(err.Error(), "YAML 1.1 reads") {
-			t.Errorf("%q: Parse error = %v, want the YAML decoder's refusal first", raw, err)
+		if _, err := parseRaw([]byte(raw)); err == nil || strings.Contains(err.Error(), "YAML 1.1 reads") {
+			t.Errorf("%q: parse error = %v, want the YAML decoder's refusal first", raw, err)
 		}
 	}
 }
@@ -234,11 +234,11 @@ func TestPlainStringsEndsOnACycle(t *testing.T) {
 // An extractor name that loads as its text, such as 1 or 20.04, loads, and
 // agree names it the same way.
 func TestParseKeepsAnExtractorNameThatLoadsAsWritten(t *testing.T) {
-	checks, err := Parse([]byte("checks:\n- id: a\n  reason: r\n  scope: repo\n  extract: {1: {json: {file: f, path: a}}, 20.04: {json: {file: g, path: a}}}\n  agree: [1, 20.04]\n"))
+	cfg, err := parseRaw([]byte("checks:\n- id: a\n  reason: r\n  scope: repo\n  extract: {1: {json: {file: f, path: a}}, 20.04: {json: {file: g, path: a}}}\n  agree: [1, 20.04]\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := checks[0].Rule.Agree; len(got) != 2 || got[0] != "1" || got[1] != "20.04" {
+	if got := cfg.Checks[0].Rule.Agree; len(got) != 2 || got[0] != "1" || got[1] != "20.04" {
 		t.Fatalf("agree = %q, want [1 20.04]", got)
 	}
 }

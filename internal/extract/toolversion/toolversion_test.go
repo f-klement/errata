@@ -315,10 +315,12 @@ func TestToolVersionRefusesWhatDoesNotParse(t *testing.T) {
 	}
 }
 
-// A byte order mark at the start of a file of lines is dropped: the values
-// and their lines are those of the file without it. The planted break: no
-// dropBOM, which keeps the mark in the version and hides the
-// .tool-versions line's tool.
+// A byte order mark at the start of a file is dropped: the values and their
+// lines are those of the file without it. npm skips it in package.json, and
+// Cargo and rustup in their TOML files. The planted breaks: eachLine without
+// its core.DropBOM, which keeps the mark in the version and hides the
+// .tool-versions line's tool, and readTree without its core.DropBOM, which
+// refuses the JSON and TOML files.
 func TestToolVersionDropsAByteOrderMark(t *testing.T) {
 	for _, c := range []struct{ name, tool, body, want string }{
 		{".nvmrc", "node", "\ufeff20.11.1\n", "20.11.1@.nvmrc:1"},
@@ -327,10 +329,27 @@ func TestToolVersionDropsAByteOrderMark(t *testing.T) {
 		{".sdkmanrc", "java", "\ufeffjava=21\n", "21@.sdkmanrc:1"},
 		{"runtime.txt", "python", "\ufeffpython-3.12.1\n", "3.12.1@runtime.txt:1"},
 		{"rust-toolchain", "rust", "\ufeffstable\n", "stable!@rust-toolchain:1"},
+		{"rust-toolchain", "rust", "\ufeff[toolchain]\nchannel = \"1.75.0\"\n", "1.75.0@rust-toolchain:2"},
+		{"rust-toolchain.toml", "rust", "\ufeff[toolchain]\nchannel = \"1.75.0\"\n", "1.75.0@rust-toolchain.toml:2"},
+		{"package.json", "node", "\ufeff{\"engines\": {\"node\": \">=20\"}}\n", ">=20@package.json:1"},
+		{"Cargo.toml", "rust", "\ufeff[package]\nrust-version = \"1.70\"\n", "1.70@Cargo.toml:2"},
 	} {
 		if got := values(t, map[string]string{c.name: c.body}, Spec{Tool: c.tool, Files: []string{c.name}}); got != c.want {
 			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
 		}
+	}
+}
+
+// pyproject.toml keeps a byte order mark, so the file does not parse, as
+// Python's tomllib refuses it. The planted break: readTree dropping the
+// mark for every kind.
+func TestToolVersionPyprojectKeepsAByteOrderMark(t *testing.T) {
+	got := refusal(t, map[string]string{"pyproject.toml": "\ufeff[project]\nrequires-python = \">=3.10\"\n"}, Spec{Tool: "python", Files: []string{"pyproject.toml"}})
+	if !strings.HasPrefix(got, "pyproject.toml: ") {
+		t.Errorf("got %q, want the TOML parser's refusal of pyproject.toml", got)
+	}
+	if !strings.Contains(got, "U+00EF") {
+		t.Errorf("got %q, want the refusal to name the mark's first byte, U+00EF", got)
 	}
 }
 

@@ -1,0 +1,34 @@
+# --output writes a machine format to a file and stdout keeps the text report,
+# as the k3s CI job runs it: a path relative to the working directory, with
+# --root naming the same directory. The exit code is the run's: 1 on an
+# erratum, as without --output.
+exec sh -c 'errata check --fail-on-skip --root . --output junit=errata.xml >/dev/null; echo code=$?'
+stdout '^code=1$'
+! exec errata check --fail-on-skip --root . --output junit=errata.xml -o sarif=errata.sarif
+stdout '^FALSE bad \(repo\)$'
+stdout '^1 erratum, 0 unknown. Coverage: ran 2, skipped 0.$'
+! stderr .
+grep '<testsuite name="errata" tests="2" failures="1" errors="0" skipped="0">' errata.xml
+grep '<failure message="bad">' errata.xml
+grep '"ruleId": "bad"' errata.sarif
+
+# --format still picks stdout.
+! exec errata check --format junit --output text=errata.txt
+stdout '<failure message="bad">'
+grep '^FALSE bad \(repo\)$' errata.txt
+
+# A bad value is a usage error and runs nothing; the exit code, 2, is
+# checked with echo after the last one.
+! exec errata check --output junit
+stderr '^errata: --output "junit": want FORMAT=PATH, such as junit=errata.xml$'
+! stdout .
+! exec errata check --output junit=no-such-dir/errata.xml
+stderr '^errata: --output "junit=no-such-dir/errata.xml": '
+! stdout .
+exec sh -c 'errata check -o junit=no-such-dir/errata.xml 2>/dev/null; echo code=$?'
+stdout '^code=2$'
+
+-- errata.yaml --
+checks:
+  - {id: good, reason: r, scope: repo, run: ['true']}
+  - {id: bad, reason: r, scope: repo, run: [sh, -c, 'echo bad; exit 1']}

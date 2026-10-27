@@ -102,10 +102,6 @@ const (
 	markdownBytesPerPiece = 4
 )
 
-// bom is the UTF-8 byte order mark, which a file may start with and a
-// browser does not show.
-var bom = []byte("\xef\xbb\xbf")
-
 // markdownTime is the time limit of the parse of a file of up to limit
 // bytes: markdownTimeLimit up to the default size, and in proportion to the
 // limit above it.
@@ -196,7 +192,7 @@ func parseMarkdown(file string, data []byte, limit int64, timeLimit time.Duratio
 	if crlf := []byte("\r\n"); bytes.Contains(data, crlf) {
 		data = bytes.ReplaceAll(data, crlf, []byte("\n"))
 	}
-	data = bytes.TrimPrefix(data, bom) // three bytes on the first line: the lines stay the file's
+	data = core.DropBOM(data) // three bytes on the first line: the lines stay the file's
 	doc = &markdownDoc{src: data, maxPieces: int(limit / markdownBytesPerPiece)}
 	if at, end, ok := frontMatter(data); ok {
 		doc.front, doc.frontAt = bytes.Clone(data[at:end]), at

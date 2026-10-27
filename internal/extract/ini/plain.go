@@ -67,7 +67,7 @@ var toxDialect = &iniDialect{
 	query:      configparserQuery(true),
 	notLiteral: toxNotLiteral,
 	read: func(data []byte, m *core.Meter, visit func(*core.Entry) error) error {
-		return readConfigparser(bytes.TrimPrefix(data, bom), configparser{tox: true}, m, visit)
+		return readConfigparser(core.DropBOM(data), configparser{tox: true}, m, visit)
 	},
 }
 

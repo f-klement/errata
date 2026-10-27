@@ -325,8 +325,9 @@ same fields; a different `max_bytes` does not make a second place. An INI entry 
 however the spec spells it, as its tool reads it: `section: remote, subsection: origin` and
 `section: remote.origin` are one git entry. The load error names each extractor that reads a place
 an extractor before it in name order reads, beside the first one, at most 8 of them, and then
-counts the rest. A rule takes no `timeout`, because its extractors read files inside errata rather
-than running a program, and its scope is `repo` for the same reason.
+counts the rest. A rule takes no `run` and no `timeout`: one that writes either does not load,
+whatever the value, an empty or null `run` included. Its extractors read files inside errata
+rather than running a program, and its scope is `repo` for the same reason.
 
 #### Comparing versions
 
@@ -479,6 +480,9 @@ the type of every part of the expression when it loads the file.
 | `subset(a, b)` | true when every member of `a` is in `b` |
 | `semver(s)` | the version `s`, which `<`, `<=`, `>`, `>=`, `==` and `!=` compare with another `semver()`, a missing number as 0, so `semver('20') == semver('20.0.0')`; `string()` writes it |
 | `semver_satisfies(v, r)` | true when the version `v` satisfies the range `r`, as `compare: semver` decides (see [Comparing versions](#comparing-versions)) |
+| `s.split(sep)`, `s.split(sep, n)` | the parts of `s` between each `sep`, as a list; with `n`, at most `n` parts, the last holding the rest, and none for `n` of 0 |
+| `list.join()`, `list.join(sep)` | the members of a list of strings, with `sep` between them |
+| `s.replace(old, new)`, `s.replace(old, new, n)` | `s` with each `old` replaced by `new`; with `n`, the first `n` of them, and every one for a negative `n` |
 
 `same_set` and `subset` compare lists of strings, ints, uints, doubles or bools, so
 `same_set(ports.map(p, int(p)), [80, 443])` works. A duration times a whole number is a duration.
@@ -494,6 +498,19 @@ hold, such as `'Local'`, makes the rule unknown.
 A helper reads a string of at most 1024 bytes; a longer one makes the rule unknown, naming the
 limit. The longest real arguments are far shorter: about 270 bytes for a cron schedule that lists
 every minute, every hour and every day by name.
+
+`split`, `join` and `replace` are cel-go's strings extension, with its cost model, so a list
+written one way in one file and another way in a second compares as one list:
+`buckets[0].split(',') == loop[0].split(' ')` holds for `loki,mimir` and `loki mimir`. An empty
+`sep` splits `s` into its characters, and an empty `old` inserts `new` before each character and at
+the end. They read strings of any length, since CEL charges them by what they read and build. A
+call whose result would be a string of more than 4000000 bytes, or a split into more than 1000000
+parts, makes the rule unknown before it is built, naming the bound: `v[0].replace('', v[0])` over
+a value of 3000 bytes would build 9006000 bytes, and is refused. A smaller result can still exceed
+the cost limit, since CEL charges a string one for each character, and the cost limit then stops
+the evaluation once the call returns. The rule is unknown either way. The
+extension's other functions, such as `indexOf`, `substring` and `format`, are not there, and an
+expression that names one does not load.
 
 `cron_interval` reads the minute, hour and day of week fields: numbers, `*`, ranges, lists, steps
 such as `*/15` and `5/15`, day names, and Jenkins' `H` and `H/N`. A step past the field's range
@@ -658,7 +675,8 @@ it.
 #### Paths
 
 `yaml`, `json` and `toml` share one path grammar: part of
-[RFC 9535](https://www.rfc-editor.org/rfc/rfc9535) JSONPath, with one extension.
+[RFC 9535](https://www.rfc-editor.org/rfc/rfc9535) JSONPath, with two extensions: the leading `$` is
+optional, and a key after a dot may hold `-`.
 
 | Form | Selects | Example |
 |---|---|---|
@@ -668,9 +686,11 @@ it.
 | `[n]` | element `n` of a sequence, counted from 0; a negative `n` counts from the end | `spec.containers[0].image`, `args[-1]` |
 | `[*]` | every element of a sequence, or every member of a mapping, in file order | `spec.containers[*].image` |
 | `[?@.key == 'value']` | every element of a sequence, or every member of a mapping, in file order, whose `key` equals the literal (see Filters) | `spec.containers[?@.name == 'api'].image` |
+| `[?@.key]`, `[?!@.key]` | every element or member that has `key`, or that lacks it (see Filters) | `packageRules[?@.allowedVersions].allowedVersions` |
+| `[?@.list[?@ == 'value']]` | every element or member whose `list` holds the literal: a filter inside a filter (see Filters) | `packageRules[?@.matchDatasources[?@ == 'docker']]` |
 
 A key after a dot starts with a letter, `_` or a non-ASCII character, and goes on with those, digits
-and `-`. The `-` is the extension: RFC 9535 does not allow it, and without it a key such as
+and `-`. The `-` is an extension: RFC 9535 does not allow it, and without it a key such as
 `node-label` would need brackets. A key that starts with a digit does not load, since
 `spec.containers.0.image` reads as an index and would select nothing; the message says to write
 `[0]` for an index or `['0']` for a key. A quoted key takes RFC 9535's escapes: `\b`, `\f`, `\n`,
@@ -700,10 +720,13 @@ extract:
     yaml: {file: deploy/api.yaml, path: "spec.template.spec.containers[?@.name == 'api' && @.env == 'prod'].image"}
 ```
 
-It is RFC 9535's filter selector cut down to equality. Inside `[?...]` stand one or more
-comparisons joined by `&&`, and every one must hold. A comparison is a path from `@`, the element
-or member being tested, then `==`, then a literal; the literal may come first. The path after `@`
-takes `.key`, `['key']` and `[n]` steps, or none, so `ports[?@ == 80]` tests the element itself.
+It is RFC 9535's filter selector without `||`, parentheses, functions and every comparison but
+`==`. Inside `[?...]` stand one or more terms joined by `&&`, and every one must hold. A term is a
+comparison or a test that a path exists.
+
+A comparison is a path from `@`, the element or member being tested, then `==`, then a literal;
+the literal may come first. The path after `@` takes `.key`, `['key']` and `[n]` steps, or none,
+so `ports[?@ == 80]` tests the element itself.
 A literal is a string in single or double quotes with the same escapes as a quoted key, a number
 as JSON writes it (`8080`, `-1.5`, `1e3`), `true`, `false` or `null`. Spaces are optional around
 the parts of a filter, inside the brackets and before each step after `@`
@@ -734,17 +757,47 @@ A path after `@` that selects nothing equals no literal, `null` included: `[?@.e
 selects the elements where `env` is null, not those without it. A path that selects a mapping or
 a sequence equals no literal either. A filter on a scalar selects nothing.
 
-A filter joins at most 64 comparisons, and a literal or a key after `@` holds at most 2048 bytes
-(a string as its escapes decode it, a number as written). A path past either does not load. The
-filters of one path may cost at most 4000000000 bytes: for each member tested, each comparison
-and each step after `@` counts 256, plus the bytes of each key it looks up and of the literal it
-compares. A path that would cost more makes the rule unknown, and the message names the limit.
-At the limit a filter takes up to about 1.5 s.
+A path from `@` with no `==` is a test that it exists, RFC 9535's existence test: it holds when
+the path selects at least one node from the member, whatever that node holds, `null` and an empty
+list included. After `!` it holds when the path selects nothing. Its path takes `[*]` and filters
+as well as keys and indices, so a filter can stand inside another:
 
-Every other filter construct does not load, and the message names it and its column: `||`, `!`,
+```yaml
+extract:
+  # the cap of the one rule that names alpine/k8s and sets allowedVersions
+  ceiling:
+    json: {file: renovate.json, path: "packageRules[?@.matchPackageNames[?@ == 'alpine/k8s'] && @.allowedVersions].allowedVersions"}
+  # the rules on the docker datasource that set minimumReleaseAge
+  aged:
+    json: {file: renovate.json, path: "packageRules[?@.minimumReleaseAge && @.matchDatasources[?@ == 'docker']].minimumReleaseAge"}
+  # the destinations of the egress rules that open port 6443
+  api:
+    yaml: {file: netpol.yaml, path: "spec.egress[?@.ports[?@.port == 6443]].to[*].ipBlock.cidr"}
+```
+
+`[?@.list[?@ == 'x']]` is the test that `list` holds `x`: the inner filter keeps the elements of
+`list` equal to `x`, and the outer one keeps the members where it keeps one. On a mapping it tests
+the values. `[?@.list[0] == 'x' && !@.list[1]]` tests that `list` is exactly `['x']`. A `!` stands
+only before a path from `@`, never before a comparison, since RFC 9535 needs parentheses for that.
+A comparison takes no `[*]` or filter after `@`, since either can select many nodes.
+[ADR 0004](docs/adr/0004-filters-test-membership-with-rfc-9535s-existence-test.md) says why
+membership has no `in` operator.
+
+A filter joins at most 64 terms, and a literal or a key after `@` holds at most 2048 bytes (a
+string as its escapes decode it, a number as written). Filters nest at most 4 deep, the filter of
+the path itself counting as one: `[?@.a[?@.b[?@.c[?@ == 1]]]]` is the deepest. A path past any of
+these does not load. The filters of one path may cost at most 4000000000 bytes. For each member
+tested, each term counts 256, and each step after `@` in a comparison counts 256 plus the bytes
+of its key, as does the literal compared. A test that a path exists counts 256, plus 256 and the
+bytes of its key for each step it takes as it runs, and an inner filter counts its own members the
+same way. A path that would cost more makes the rule unknown, and the message names the limit.
+At the limit a filter of comparisons takes up to about 1.5 s. On the build node, a test that a path
+exists whose `[*]` steps fan out through shared nodes reaches the limit in 0.18 s.
+
+Every other filter construct does not load, and the message names it and its column: `||`,
 `!=`, `<`, `<=`, `>`, `>=`, parentheses, functions such as `length()`, `$` inside a filter, two
-paths or two literals compared, a test that a path exists (`[?@.name]`), `[*]` after `@`, and a
-filter inside a filter:
+paths or two literals compared, `!` before a comparison, and `[*]` or a filter after `@` in a
+comparison:
 
 ```text
 path "containers[?@.name != 'api']": column 20: operator != is not supported in a filter; only == is
@@ -1404,7 +1457,9 @@ file that does not parse, a file of one version (each file the table reads as th
 `.python-version`, `runtime.txt`, a legacy `rust-toolchain`) that holds none, only blank lines and
 comments, and a version that is empty or holds a control character, a direction control such as
 U+202E, a line separator or a byte that is not UTF-8. A byte order mark at the start of a file of
-lines is dropped, as errata's other readers drop it.
+lines is dropped, as errata's other readers drop it, and so is one at the start of `package.json`,
+`Cargo.toml`, `rust-toolchain` and `rust-toolchain.toml`, as npm, Cargo and rustup skip it.
+`pyproject.toml` keeps it and does not parse, as Python's tomllib refuses it.
 
 Each file is read up to `max_bytes`, and the versions of all the files hold at most `max_bytes`
 bytes and 100000 values in all. A file of lines is read in one pass that keeps only the versions,
@@ -2012,7 +2067,8 @@ core machine.
 | GitHub Actions matrix | 256 jobs, 65536 combinations before `exclude:`, 1000000 steps | GitHub's own limit on a matrix's jobs, and a step for each key an `include:` or `exclude:` entry compares and for each 64 bytes of a value it compares, the bound YAML aliases have, since each entry is matched against every combination (see [GitHub Actions](#github-actions)) |
 | regex time | 10 s for each 32 MiB of `max_bytes`, and never less than 10 s | the search looks at the clock every 256 characters it reads, so one long search is stopped too. A pattern whose optional tail scans the rest of the line, such as `(\d)(?:.*x)?`, searches the line again after every match: 40 KB of one line took 27 s. One search that finds nothing costs the file times the pattern's width: `([0-9a-f]{40})` over 32 MiB of hex words took 28 s, and `([ab]{0,1000}c)` over 1 MiB 62 s; each is refused at 10 s. The slowest ordinary pattern measured over 32 MiB, `([A-Za-z0-9+/]{64,}={0,2})`, takes 4.7 s. A pattern that starts with a literal skips to each place the literal occurs and tries the pattern there. Where the next place is less than 64 bytes past the text the last try read, or a try reads more than 4 KiB, it searches every place from there on, as it does a pattern without a literal, so it reads at most 4 KiB more than a search of every place does. Over 32 MiB of this README, repeated, on the build node, `commit ([0-9a-f]{40})` takes 0.01 s, where a search of every place takes 0.82 s, and `(\d+\.\d+\.\d+)`, which starts with no literal, 1.2 s |
 | regex capture groups | 32 | a search tracks every group for every thread it keeps alive; 100000 matches of a pattern of 32 groups take 0.5 s and 29 MB |
-| filter work | 4000000000 bytes for the filters of one path | for each member tested, each comparison and each step after `@` counts 256, plus the bytes of each key it looks up and of the literal it compares, counted before the members are tested. At the limit, with 64 comparisons on each member, the worst shapes measured take 0.36 s to 1.42 s |
+| filter work | 4000000000 bytes for the filters of one path | for each member tested, each comparison and each step after `@` counts 256, plus the bytes of each key it looks up and of the literal it compares, counted before the members are tested. A test that a path exists counts each step as it takes it, and a filter inside it counts its members as the outer one does, against the same total. At the limit, with 64 comparisons on each member, the worst shapes measured take 0.36 s to 1.42 s; on the build node, a test whose `[*]` steps fan out through shared nodes reaches the limit and is refused in 0.18 s |
+| filter depth | 4 | parsing a filter and testing a member each recurse once for each filter nested inside another; membership takes 2 |
 | XML path terms | 32 steps and predicates | each step reads at most every node of the file once, and each predicate the nodes its step keeps, so a path costs the file's nodes times its terms. 32 `//` steps over 8.4 million elements take 2.4 s after the parse. A comparison is counted against the filter work: 256 for each child or attribute it looks at, and the literal's length for each value of the same length it compares |
 | Markdown parse time | 30 s for each 32 MiB of `max_bytes`, and never less than 30 s | goldmark is quadratic on some shapes and cannot be stopped from outside, so errata looks at the clock on every call goldmark makes into its parsers. 32 MiB of express's changelog, repeated, parsed in 15 s on a loaded 4 core machine and in 1.9 s on the build node. Of 42 hostile shapes at 32 MiB, each was read or refused at most 0.08 s after the limit on the build node. Three of them, lines of `*` and `_` runs, ran to the limit until the scan for closing runs below had a limit of its own. A fourth ran to the limit until that scan counted goldmark's walk of the paragraph's runs: a paragraph of runs followed by lines of emphasis inside words |
 | Markdown nodes | `max_bytes` divided by 4 | counted as the parse builds them: three for each inline node, two for each line, one for each block and each emphasis. The aws-sdk-go-v2 changelog of 2.9 MB makes the most of 5962 real Markdown files, 321763, 4% of the limit at the default |
@@ -2137,7 +2193,7 @@ run unless `errata check` is given `--fail-on-skip`.
 ### Command line
 
 ```text
-errata check [--root DIR] [--config FILE] [--format text|junit|sarif] [--fail-on-skip]
+errata check [--root DIR] [--config FILE] [--format text|junit|sarif] [--output FORMAT=PATH]... [--fail-on-skip]
 errata list [--root DIR] [--config FILE] [--format text|json]
 errata version
 ```
@@ -2146,14 +2202,15 @@ errata version
 |---|---|---|
 | `--root` | `.` | the repository root, and the checks' working directory |
 | `--config`, `-c` | `<root>/errata.yaml` | the config file |
-| `--format`, `-f` | `text` | `check`: `text`, `junit` or `sarif`; `list`: `text` or `json` |
+| `--format`, `-f` | `text` | what goes to stdout. `check`: `text`, `junit` or `sarif`; `list`: `text` or `json` |
+| `--output`, `-o` | none | `check` only, repeatable: also write the report in FORMAT, any name `--format` takes, to the file PATH, such as `--output junit=errata.xml` |
 | `--fail-on-skip` | off | `check` only: a skipped check fails the run with exit code 1 |
 
 | Exit code | Meaning |
 |---|---|
 | 0 | every check that ran found its claim true; for `list`, the config loaded |
 | 1 | at least one erratum (a claim shown false) or unknown (a check that could not evaluate), or with `--fail-on-skip` at least one skipped check |
-| 2 | bad flags, or a config that does not load |
+| 2 | bad flags, a config that does not load, or an `--output` file errata cannot write |
 
 A gate in CI that must not pass on checks that never ran, such as `live` checks in a job with no
 cluster, runs `errata check --fail-on-skip`. A skip under the flag fails the run as an unknown does
@@ -2163,6 +2220,21 @@ line, and every output marks it as a failure, so a report never reads as a pass 
 exits 1. The text coverage line ends `A skip fails this run.`, JUnit writes the skip as an
 `<error>` whose message is `skipped: ` and the gap, and SARIF writes its notification at level
 `error` and sets `executionSuccessful` to false.
+
+`--output FORMAT=PATH` writes one more copy of the report, in any format, to a file, while
+`--format` picks what goes to stdout; `--output junit=errata.xml --output sarif=errata.sarif`
+writes both files and prints the text report. The exit code and each format's content are the
+same as without it, and every file is written whatever the run found. PATH is relative to the
+working directory, as a redirect's is. Each file is written to a temporary file in its directory
+and renamed into place, so PATH holds the old file or the whole report, never part of one. A run
+that is killed leaves its temporary file, `.<name>.<random>.tmp`, beside PATH. A new file's mode
+is 0666 less the umask, and a file that is there keeps its mode. A value without `=`, with a
+format errata does not know, or that names the same file as another `--output` or the config, is
+exit 2 before any check runs, and so is a file errata cannot create. A file that cannot be written
+after the run is exit 2 too, in place of exit 1: errata still prints the report and writes every
+other file.
+[ADR 0005](docs/adr/0005-output-writes-a-format-to-a-file-beside-the-text-report.md) has the
+reasons and the rest of the rules.
 
 The text output, and the text format of `errata list`, writes every control character that a file
 or a program's output holds, such as ESC or a CR, as its escape (`\x1b`, `\r`), and every byte that
@@ -2319,7 +2391,8 @@ as two. Its layout may change from one release to the next; a program reads the 
 ### In CI
 
 errata has no integration with any CI system, on purpose: it is one binary that exits non-zero and
-writes JUnit or SARIF. GitLab CI:
+writes JUnit or SARIF. In this GitLab CI job the log shows the text report and the pipeline's
+test report reads the JUnit file:
 
 ```yaml
 errata:
@@ -2327,7 +2400,7 @@ errata:
     name: fklement/errata:latest
     entrypoint: [""]
   script:
-    - errata check --root "$CI_PROJECT_DIR" --format junit > errata.xml
+    - errata check --root "$CI_PROJECT_DIR" --output junit=errata.xml
   artifacts:
     when: always
     reports:
@@ -2364,7 +2437,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
-      - run: docker run --rm -v "$PWD:/repo" fklement/errata:latest check --root /repo --format sarif > errata.sarif
+      - run: docker run --rm -v "$PWD:/repo" fklement/errata:latest check --root /repo --output sarif=/repo/errata.sarif
       - uses: github/codeql-action/upload-sarif@v4
         if: always()
         with:

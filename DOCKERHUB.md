@@ -52,7 +52,7 @@ errata:
     name: fklement/errata:latest
     entrypoint: [""]
   script:
-    - errata check --root "$CI_PROJECT_DIR" --format junit > errata.xml
+    - errata check --root "$CI_PROJECT_DIR" --output junit=errata.xml
   artifacts:
     when: always
     reports:

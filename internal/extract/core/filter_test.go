@@ -344,3 +344,102 @@ func TestMembersAreNotLookedUp(t *testing.T) {
 		}
 	}
 }
+
+// Membership, existence and nesting, on each format, through the
+// extractors. Each file holds the same rules list, which has the shape of
+// Renovate's packageRules, and the same egress list, which has the shape of
+// a NetworkPolicy's. The planted breaks each row guards: a member of a list
+// that is only a prefix of the value, a key that is present only in another
+// member, a value that is null where a key must exist, and a port that
+// stands in a sibling of the list the inner filter reads.
+func TestFilterQueriesOnEachFormat(t *testing.T) {
+	root := extracttest.Repo(t, map[string]string{
+		"f.yaml": `rules:
+  - {id: a, datasources: [docker, helm], names: [python], types: [minor], schedule: ["* * * 3-5 *"]}
+  - {id: b, datasources: [dockerfile], names: [alpine/k8s], allowed: "<1.38"}
+  - {id: c, datasources: [docker], names: [alpine/k8s], enabled: false}
+  - {id: d, datasources: [helm], age: 3 days, names: [python], types: [minor, patch]}
+  - {id: e, datasources: [docker], age: null}
+egress:
+  - {name: dns, ports: [{port: 53}], to: [{cidr: 10.0.0.10/32}]}
+  - {name: api, ports: [{port: 443}, {port: 6443}], to: [{cidr: 203.0.113.5/32}]}
+  - {name: decoy, port: 6443, ports: [{port: 80}], to: [{cidr: 10.9.9.9/32}]}
+`,
+		"f.json": `{
+"rules": [
+  {"id": "a", "datasources": ["docker", "helm"], "names": ["python"], "types": ["minor"], "schedule": ["* * * 3-5 *"]},
+  {"id": "b", "datasources": ["dockerfile"], "names": ["alpine/k8s"], "allowed": "<1.38"},
+  {"id": "c", "datasources": ["docker"], "names": ["alpine/k8s"], "enabled": false},
+  {"id": "d", "datasources": ["helm"], "age": "3 days", "names": ["python"], "types": ["minor", "patch"]},
+  {"id": "e", "datasources": ["docker"], "age": null}
+],
+"egress": [
+  {"name": "dns", "ports": [{"port": 53}], "to": [{"cidr": "10.0.0.10/32"}]},
+  {"name": "api", "ports": [{"port": 443}, {"port": 6443}], "to": [{"cidr": "203.0.113.5/32"}]},
+  {"name": "decoy", "port": 6443, "ports": [{"port": 80}], "to": [{"cidr": "10.9.9.9/32"}]}
+]}
+`,
+		// TOML has no null: rule e's age is the empty string instead.
+		"f.toml": `rules = [
+  {id = "a", datasources = ["docker", "helm"], names = ["python"], types = ["minor"], schedule = ["* * * 3-5 *"]},
+  {id = "b", datasources = ["dockerfile"], names = ["alpine/k8s"], allowed = "<1.38"},
+  {id = "c", datasources = ["docker"], names = ["alpine/k8s"], enabled = false},
+  {id = "d", datasources = ["helm"], age = "3 days", names = ["python"], types = ["minor", "patch"]},
+  {id = "e", datasources = ["docker"], age = ""},
+]
+egress = [
+  {name = "dns", ports = [{port = 53}], to = [{cidr = "10.0.0.10/32"}]},
+  {name = "api", ports = [{port = 443}, {port = 6443}], to = [{cidr = "203.0.113.5/32"}]},
+  {name = "decoy", port = 6443, ports = [{port = 80}], to = [{cidr = "10.9.9.9/32"}]},
+]
+`,
+	})
+	for _, c := range []struct{ path, want string }{
+		{"rules[?@.datasources[?@ == 'docker']].id", "a c e"},
+		{"rules[?@.names[?@ == 'alpine/k8s'] && @.allowed].allowed", "<1.38"},
+		{"rules[?@.age].id", "d e"},
+		{"rules[?!@.age].id", "a b c"},
+		{"rules[?@.age && @.datasources[?@ == 'docker']].id", "e"},
+		{"rules[?@.names[?@ == 'python'] && @.types[0] == 'minor' && !@.types[1]].id", "a"},
+		{"rules[?@.names[?@ == 'python'] && !@.schedule].id", "d"},
+		{"rules[?@.datasources[*]][?@ == 'helm']", ""},
+		{"rules[?@.datasources[?@ == 'helm']].datasources[?@ == 'helm']", "helm helm"},
+		{"rules[?!@.datasources[?@ == 'docker' || @ == 'helm']].id", "unparsed"},
+		{"egress[?@.ports[?@.port == 6443]].to[*].cidr", "203.0.113.5/32"},
+		{"egress[?!@.ports[?@.port == 6443]].name", "dns decoy"},
+		{"egress[?@.ports[*].port].name", "dns api decoy"},
+		{"egress[?@[?@ == 6443]].name", "decoy"},
+		{"$[?@[?@.ports[?@.port == 6443]]][?@.name == 'api'].to[0].cidr", "203.0.113.5/32"},
+	} {
+		for _, file := range []string{"f.yaml", "f.json", "f.toml"} {
+			var spec extract.Spec
+			switch filepath.Ext(file) {
+			case ".yaml":
+				spec.YAML = &extract.YAML{File: file, Path: c.path}
+			case ".json":
+				spec.JSON = &extract.JSON{File: file, Path: c.path}
+			default:
+				spec.TOML = &extract.TOML{File: file, Path: c.path}
+			}
+			e, err := extract.Build(spec)
+			if c.want == "unparsed" {
+				extracttest.WantError(t, err, "|| is not supported in a filter")
+				continue
+			}
+			if err != nil {
+				t.Fatalf("%s %s: %v", file, c.path, err)
+			}
+			values, err := e.Extract(root)
+			if err != nil {
+				t.Fatalf("%s %s: %v", file, c.path, err)
+			}
+			var got []string
+			for _, v := range values {
+				got = append(got, v.Text)
+			}
+			if strings.Join(got, " ") != c.want {
+				t.Errorf("%s %s: got %q, want %q", file, c.path, got, c.want)
+			}
+		}
+	}
+}

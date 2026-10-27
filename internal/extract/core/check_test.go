@@ -39,6 +39,53 @@ func checkFilterSelectsLess(t *testing.T, p Path, roots []*Node) {
 	}
 }
 
+// checkQuerySplits fails unless, at each filter of p's own segments, a
+// query term and its negation split the members the filter's other terms
+// keep: with the term the filter keeps some of them, with the term after !
+// it keeps the rest, and each keeps them in order. A path that stops at a
+// limit proves nothing and passes.
+func checkQuerySplits(t *testing.T, p Path, roots []*Node) {
+	t.Helper()
+	for k, sel := range p.sels {
+		if sel.kind != selFilter {
+			continue
+		}
+		for i, c := range sel.filter {
+			if !c.query {
+				continue
+			}
+			stopped := false
+			with := func(f []term) []*Node {
+				sels := slices.Clone(p.sels[:k+1])
+				sels[k] = selector{kind: selFilter, filter: f, cost: sel.cost}
+				got, err := Path{text: p.text, sels: sels}.Eval(roots...)
+				stopped = stopped || err != nil
+				return got
+			}
+			flipped := slices.Clone(sel.filter)
+			flipped[i].not = !c.not
+			yes, no := with(sel.filter), with(flipped)
+			rest := with(slices.Delete(slices.Clone(sel.filter), i, i+1))
+			if stopped {
+				continue
+			}
+			for _, n := range rest {
+				switch {
+				case len(yes) > 0 && yes[0] == n:
+					yes = yes[1:]
+				case len(no) > 0 && no[0] == n:
+					no = no[1:]
+				default:
+					t.Fatalf("%s: a node the filter keeps without term %d is kept neither with it nor with it negated, or out of order", p.text, i+1)
+				}
+			}
+			if len(yes) > 0 || len(no) > 0 {
+				t.Fatalf("%s: term %d or its negation keeps a node the other terms do not", p.text, i+1)
+			}
+		}
+	}
+}
+
 // checkTyped fails unless n, a scalar errata read, has the type and the
 // value of want, the decoder's value of the same text.
 func checkTyped(t *testing.T, format string, n *Node, want any) {

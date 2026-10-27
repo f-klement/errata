@@ -9,7 +9,8 @@ import (
 )
 
 // FuzzAssert compiles an arbitrary expression over one extractor and
-// evaluates it over an arbitrary value, and calls each helper on the value.
+// evaluates it over an arbitrary value, and calls each helper and string
+// function on the value.
 // A load error always names assert or the extractor, and no helper panics:
 // CEL turns a panic in a binding into an "internal error", which fails here.
 func FuzzAssert(f *testing.F) {
@@ -26,6 +27,7 @@ func FuzzAssert(f *testing.F) {
 		{"subset([1], v.map(x, int(x)))", "a"},
 		{"same_set(v, [v[5]])", "a"},
 		{"semver(v[0]) < semver('2') && semver_satisfies(v[0], '^1.2 || ~> 3.2')", "1.2.3"},
+		{"v[0].split(',').filter(b, b != '') == v[1].replace(' ', ',').split(',')", "loki,mimir"},
 	} {
 		f.Add(seed[0], seed[1])
 	}
@@ -40,6 +42,8 @@ func FuzzAssert(f *testing.F) {
 		"same_set(v, v.map(x, x + v[0]))", "subset(v.map(x, int(x)), [1])", "subset([1], v.map(x, int(x)))",
 		"same_set(v, [v[5]])", "same_set([v[5]], v)",
 		"semver(v[0]) > semver('1')", "semver_satisfies(v[0], '>=1')", "semver_satisfies('1.2.3', v[0])",
+		"size(v[0].split(v[0])) >= 0", "size(v[0].split('', 3)) >= 0", "v.join(v[0]) != 'x'",
+		"v[0].replace(v[0], v[0] + v[0]) != 'x'", "v[0].replace('', v[0], 2) != 'x'",
 	} {
 		a, err := compile(h, []string{"v"}, limits{cost: 10_000, timeout: time.Second, grace: stopGrace})
 		if err != nil {

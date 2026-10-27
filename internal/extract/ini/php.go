@@ -782,8 +782,10 @@ func readPHP(data []byte, m *core.Meter, visit func(*core.Entry) error) error {
 		return core.LineError(bytes.Count(data[:i], newline)+1, "a NUL byte, at which PHP stops reading the file")
 	}
 	l := &phpLexer{data: data}
-	if len(data) > 3 && bytes.HasPrefix(data, bom) {
-		l.pos = len(bom)
+	// PHP skips a byte order mark, and a file that is only the mark reads as
+	// empty (the oracle corpus holds one).
+	if bytes.HasPrefix(data, []byte(core.BOM)) {
+		l.pos = len(core.BOM)
 	}
 	p := &phpParser{l: l, lines: core.NewLineCursor(data), m: m}
 	var e core.Entry

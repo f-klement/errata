@@ -36,20 +36,20 @@ checks:
 `
 
 func TestParse(t *testing.T) {
-	checks, err := Parse([]byte(good))
+	cfg, err := parseRaw([]byte(good))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(checks) != 2 {
-		t.Fatalf("got %d checks, want 2", len(checks))
+	if len(cfg.Checks) != 2 {
+		t.Fatalf("got %d checks, want 2", len(cfg.Checks))
 	}
-	if checks[0].Timeout != DefaultTimeout {
-		t.Errorf("default timeout = %s, want %s", checks[0].Timeout, DefaultTimeout)
+	if cfg.Checks[0].Timeout != DefaultTimeout {
+		t.Errorf("default timeout = %s, want %s", cfg.Checks[0].Timeout, DefaultTimeout)
 	}
-	if checks[1].Timeout != 5*time.Second {
-		t.Errorf("timeout = %s, want 5s", checks[1].Timeout)
+	if cfg.Checks[1].Timeout != 5*time.Second {
+		t.Errorf("timeout = %s, want 5s", cfg.Checks[1].Timeout)
 	}
-	if got := strings.Join(checks[0].Run, " "); got != "sh one.sh" {
+	if got := strings.Join(cfg.Checks[0].Run, " "); got != "sh one.sh" {
 		t.Errorf("run = %q", got)
 	}
 }
@@ -58,9 +58,9 @@ func TestParse(t *testing.T) {
 // gate on it would go green on nothing.
 func TestParseRefusesNoChecks(t *testing.T) {
 	for _, raw := range []string{"", "# only a comment\n", "checks:\n", "checks: []\n", "checks: ~\n"} {
-		checks, err := Parse([]byte(raw))
+		cfg, err := parseRaw([]byte(raw))
 		if !errors.Is(err, ErrNoChecks) || !strings.Contains(err.Error(), "the file holds no checks") {
-			t.Errorf("Parse(%q) = %v, %v; want the no-checks refusal", raw, checks, err)
+			t.Errorf("parse(%q) = %v, %v; want the no-checks refusal", raw, cfg.Checks, err)
 		}
 	}
 }
@@ -101,7 +101,7 @@ func TestParseRejects(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			_, err := Parse([]byte(tc.yaml))
+			_, err := parseRaw([]byte(tc.yaml))
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("error = %v, want it to contain %q", err, tc.want)
 			}
@@ -112,14 +112,14 @@ func TestParseRejects(t *testing.T) {
 // A negative timeout is refused by the loader's message alone, not a second
 // time by validation.
 func TestNegativeTimeoutIsRefusedOnce(t *testing.T) {
-	_, err := Parse([]byte("checks:\n- {id: a, reason: r, scope: repo, run: [x], timeout: -1s}\n"))
+	_, err := parseRaw([]byte("checks:\n- {id: a, reason: r, scope: repo, run: [x], timeout: -1s}\n"))
 	if err == nil || strings.Count(err.Error(), "timeout") != 1 {
 		t.Fatalf("error = %v, want one message about the timeout", err)
 	}
 }
 
 func TestParseReportsAllInvalidChecks(t *testing.T) {
-	_, err := Parse([]byte("checks:\n- {id: a, scope: repo, run: [x]}\n- {id: b, scope: repo, run: [x]}\n"))
+	_, err := parseRaw([]byte("checks:\n- {id: a, scope: repo, run: [x]}\n- {id: b, scope: repo, run: [x]}\n"))
 	if err == nil || !strings.Contains(err.Error(), `"a"`) || !strings.Contains(err.Error(), `"b"`) {
 		t.Fatalf("error = %v, want both checks named", err)
 	}
@@ -197,7 +197,7 @@ func TestLoadOutsideTheRootFromTheWorkingDirectory(t *testing.T) {
 	}
 }
 
-// Parse sets the line each check's entry starts on, as the decoder counts
+// parse sets the line each check's entry starts on, as the decoder counts
 // lines, so a file with CR line ends or an alias entry places its checks too.
 func TestParseSetsLines(t *testing.T) {
 	for name, tc := range map[string]struct {
@@ -213,21 +213,44 @@ func TestParseSetsLines(t *testing.T) {
 		"utf-16 file":   {utf16Text(good, false), []int{3, 7}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			checks, err := Parse([]byte(tc.raw))
+			cfg, err := parseRaw([]byte(tc.raw))
 			if err != nil {
 				t.Fatal(err)
 			}
 			var got []int
-			for _, c := range checks {
+			for _, c := range cfg.Checks {
 				got = append(got, c.At.Line)
 				if c.At.File != "" {
-					t.Errorf("Parse set the file %q; only Load knows it", c.At.File)
+					t.Errorf("parse set the file %q; only Load knows it", c.At.File)
 				}
 			}
 			if !slices.Equal(got, tc.want) {
 				t.Fatalf("lines = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// lines follows no alias. One entry written as an alias gets the alias's
+// own line, and checks written whole as an alias give no line at all. No
+// config that loads holds either, since an anchor before checks sits under
+// a key that refuses a check, so lines is read here on the tree. The
+// planted break: lines taking the line of the node an alias names.
+func TestLinesFollowsNoAlias(t *testing.T) {
+	for name, tc := range map[string]struct {
+		raw  string
+		want []int
+	}{
+		"an aliased entry": {"checks:\n- &e {id: a}\n- *e\n", []int{2, 3}},
+		"aliased checks":   {"x: &c [{id: a}]\nchecks: *c\n", nil},
+	} {
+		_, doc, err := documents([]byte(tc.raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := lines(doc); !slices.Equal(got, tc.want) {
+			t.Errorf("%s: lines = %v, want %v", name, got, tc.want)
+		}
 	}
 }
 
@@ -259,23 +282,23 @@ func FuzzParse(f *testing.F) {
 	f.Add([]byte("checks:\n- {id: a, reason: r, scope: repo, run: [x]}\n... {checks: [{id: b, reason: r, scope: repo, run: [x]}]}\n"))
 	f.Add([]byte("checks:\n- {id: a, reason: r, scope: repo, run: [x]}\n---\n"))
 	f.Fuzz(func(t *testing.T, raw []byte) {
-		checks, err := Parse(raw)
+		cfg, err := parseRaw(raw)
 		if err != nil {
 			return
 		}
 		// sigs.k8s.io/yaml decodes the first document with yaml/v2, and Parse
-		// counts with yaml/v3. A file Parse accepts must be one document to
+		// counts with yaml/v3. A file parse accepts must be one document to
 		// v2 as well, or a check v2 reads in a second document is dropped.
 		if n, err := v2Documents(raw); err != nil || n > 1 {
-			t.Fatalf("Parse accepted a file that yaml/v2 reads as %d documents (%v)", n, err)
+			t.Fatalf("parse accepted a file that yaml/v2 reads as %d documents (%v)", n, err)
 		}
 		seen := map[string]bool{}
-		for _, c := range checks {
+		for _, c := range cfg.Checks {
 			if verr := c.Validate(); verr != nil {
-				t.Fatalf("Parse accepted an invalid check: %v", verr)
+				t.Fatalf("parse accepted an invalid check: %v", verr)
 			}
 			if seen[c.ID] {
-				t.Fatalf("Parse accepted duplicate id %q", c.ID)
+				t.Fatalf("parse accepted duplicate id %q", c.ID)
 			}
 			seen[c.ID] = true
 		}
@@ -346,11 +369,11 @@ func aliasedReason(n int) []byte {
 // aliases, counted in one pass over the tree. The planted break: Parse
 // without checkExpansion, which loads the config over the limit.
 func TestAliasesMayNotExpandAConfigPastTheLimit(t *testing.T) {
-	if _, err := Parse(aliasedReason(60)); err != nil {
+	if _, err := parseRaw(aliasedReason(60)); err != nil {
 		t.Errorf("60 aliases of 64 KiB, 3.8 MiB expanded: %v", err)
 	}
 	want := "decode: aliases expand the file to more than 4194304 bytes (4 MiB), the most a config may hold; write the repeated part out"
-	if _, err := Parse(aliasedReason(70)); err == nil || err.Error() != want {
+	if _, err := parseRaw(aliasedReason(70)); err == nil || err.Error() != want {
 		t.Errorf("70 aliases of 64 KiB, 4.4 MiB expanded: %v", err)
 	}
 	// A later document that the tree cannot read used to skip the count,
@@ -373,7 +396,7 @@ func TestAliasesMayNotExpandAConfigPastTheLimit(t *testing.T) {
 		fmt.Fprintf(&laughs, "l%d: &l%d [%s]\n", i, i, strings.TrimSuffix(strings.Repeat(fmt.Sprintf("*l%d, ", i-1), 10), ", "))
 	}
 	laughs.WriteString("checks: []\n")
-	if _, err := Parse([]byte(laughs.String())); err == nil || err.Error() != want {
+	if _, err := parseRaw([]byte(laughs.String())); err == nil || err.Error() != want {
 		t.Errorf("aliases of aliases, 10^11 nodes expanded: %v", err)
 	}
 }
@@ -409,7 +432,7 @@ func TestFirstDocumentSyntaxErrorNamesItsLine(t *testing.T) {
 		"checks:\n  - id: a\n\treason: r\n":           "decode: error converting YAML to JSON: yaml: line 3: found a tab character that violates indentation",
 		"checks:\n  - {id: a, reason: r\n":            "decode: error converting YAML to JSON: yaml: line 2: did not find expected ',' or '}'",
 	} {
-		if _, err := Parse([]byte(raw)); err == nil || err.Error() != want {
+		if _, err := parseRaw([]byte(raw)); err == nil || err.Error() != want {
 			t.Errorf("%q: error %v, want %s", raw, err, want)
 		}
 	}
