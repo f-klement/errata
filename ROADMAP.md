@@ -51,7 +51,30 @@ need no program at all.
 - First real user: an existing suite of 64 invariant checks from a GitOps repository, moved under
   errata, then converted to rules where they fit.
 
-## v0.2.1: docs claims
+## v0.2.1: claims across many files
+
+The checks a GitOps repository still writes as programs because one file is not enough.
+
+- Globs for the regex, YAML and JSON extractors, with the values kept per file, so one rule
+  covers every Application or every manifest under a directory.
+- CEL string functions: split, join and replace.
+- Filters that test membership, existence and nesting, such as the item whose list holds a name.
+- Paths into a YAML or TOML document carried inside a string, such as a config in a Helm value.
+- A file's existence and its size as values, so a rule can say a file must not come back.
+
+## v0.2.2: records and derived patterns
+
+Claims about how values sit together, not only what they are.
+
+- Lists of objects handed to CEL as maps, in file order, for rules where a later entry overrides
+  an earlier one.
+- Fields of one element kept together: a regex match's named groups, or several fields of one
+  list item, as one record.
+- A regex built from another extractor's values, each quoted as a literal.
+- A regex match with the lines around it, so a rule can require or refuse a context. Go's regex
+  engine has no lookaround, and this keeps matching in linear time.
+
+## v0.2.3: docs claims
 
 The claims documentation makes, read by its structure.
 
@@ -62,7 +85,7 @@ The claims documentation makes, read by its structure.
 - Markers: a claim tagged inline in a document or a comment, found anywhere in the repository and
   bound to the rule with the same id. A marker that no rule checks is an erratum.
 
-## v0.2.2: literals and dependencies
+## v0.2.4: literals and dependencies
 
 Values written in code, and one version pinned in many places.
 
@@ -73,7 +96,7 @@ Values written in code, and one version pinned in many places.
   Composer, Maven, Gradle, NuGet), so one rule checks that a package pinned in several places
   agrees.
 
-## v0.2.3: host config and formats
+## v0.2.5: host config and formats
 
 The files a host is configured with, and the formats the earlier readers left open.
 
@@ -146,7 +169,8 @@ from the releases above, and a plugin that is not scheduled has no release yet.
 A plugin is built when a real repository needs it: one errata already checks, or one a user names
 in an issue. Otherwise the smallest plugin is built first.
 
-These integrations are core and never need a plugin: YAML, JSON, TOML, regex, CEL, INI, XML, Java
+These integrations are core and never need a plugin: YAML, JSON, TOML, regex, CEL (with globs,
+records, string functions and the other features of v0.2.1 and v0.2.2), INI, XML, Java
 properties, version files, Markdown prose, env files and `env:`, shell, the GitLab CI, GitHub
 Actions and Jenkins readers, Markdown structure, code comments, markers, the literal reader, source
 code literals, HTML, AsciiDoc and reStructuredText, dependency versions, systemd units, Unix
