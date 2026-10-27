@@ -62,6 +62,12 @@ The checks a GitOps repository still writes as programs because one file is not 
 - Filters that test membership, existence and nesting, such as the item whose list holds a name.
 - Paths into a YAML or TOML document carried inside a string, such as a config in a Helm value.
 - A file's existence and its size as values, so a rule can say a file must not come back.
+- Config loading cleaned up first: one decode of errata.yaml, and defaults applied while a
+  check's own keys are still known, so a later default can tell an unset key from a set one.
+- A rule's empty `run` is refused, as its `timeout` already is, since neither key does anything
+  on a rule. This is a breaking change: a config that loads today with one is turned away.
+- Version files that start with a byte order mark parse, as npm, Cargo and the version managers
+  accept them.
 
 ## v0.2.2: records and derived patterns
 
@@ -98,6 +104,8 @@ Values written in code, and one version pinned in many places.
 - Dependency versions across manifests and lockfiles (Go, npm, pnpm, Yarn, Python, Cargo, Ruby,
   Composer, Maven, Gradle, NuGet), so one rule checks that a package pinned in several places
   agrees.
+- A package's version read from the git tag on HEAD, and unknown on a checkout with no tags.
+- A TOML date written as a version is refused, as Cargo and the Python tools refuse it.
 
 ## v0.2.5: host config and formats
 
