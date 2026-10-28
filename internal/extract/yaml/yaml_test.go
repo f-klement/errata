@@ -15,16 +15,20 @@ import (
 	"github.com/f-klement/errata/internal/extract/extracttest"
 )
 
+// build is Build without parsers, which no spec of these tests needs: the
+// embedded steps are tested in internal/extract/core, through the facade.
+func build(s Spec) (check.Extractor, error) { return Build(s, core.Parsers{}) }
+
 // run builds s and extracts from root.
 func run(t *testing.T, s Spec, root string) ([]check.Value, error) {
 	t.Helper()
-	return extracttest.Run(t, Build, s, root)
+	return extracttest.Run(t, build, s, root)
 }
 
 // mustRun is run for an extraction that must succeed.
 func mustRun(t *testing.T, s Spec, root string) []check.Value {
 	t.Helper()
-	return extracttest.MustRun(t, Build, s, root)
+	return extracttest.MustRun(t, build, s, root)
 }
 
 // slowOnly skips t under -race, -short and Gremlins' mutation tag, as
@@ -409,9 +413,9 @@ func TestYAMLDepthBoundary(t *testing.T) {
 // and TestNodeLimit find the same through every kind; this is the reader's
 // own wiring of each, whose planted break is the refusal passed by.
 func TestYAMLBuildAndReadRefuse(t *testing.T) {
-	_, err := Build(Spec{File: "../f.yaml", Path: "a"})
+	_, err := build(Spec{File: "../f.yaml", Path: "a"})
 	extracttest.WantError(t, err, `yaml: file "../f.yaml" is outside the repository`)
-	_, err = Build(Spec{File: "f.yaml"})
+	_, err = build(Spec{File: "f.yaml"})
 	extracttest.WantError(t, err, "yaml: path is required")
 	_, err = run(t, yamlSpec("a"), extracttest.Repo(t, nil))
 	extracttest.WantError(t, err, "read f.yaml: no such file or directory")
@@ -475,4 +479,66 @@ func TestParseNotedCarriesTheAliasCount(t *testing.T) {
 	}
 	_, _, err = ParseNoted(data, used, nil)
 	extracttest.WantError(t, err, "aliases and merge keys expand to more than 1000000 nodes, the limit")
+}
+
+// In a set, a file with no document of the kind and name adds no value,
+// where one file is refused for it; a file of several documents without a
+// selector is refused in a set too. Planted breaks: the set's files read
+// as one file, which refused the Service file; a file of one file read as
+// a file of a set, which passed the one without the kind.
+func TestYAMLFilesSelectByKind(t *testing.T) {
+	root := extracttest.Tracked(t, map[string]string{
+		"k/svc.yaml":  "kind: Service\nmetadata: {name: web}\n",
+		"k/apps.yaml": "kind: Application\nmetadata: {name: a}\nspec: {rev: '1'}\n---\nkind: Application\nmetadata: {name: b}\nspec: {rev: '2'}\n",
+		"k/x/c.yaml":  "kind: Application\nmetadata: {name: c}\nspec: {rev: '3'}\n",
+	})
+	vs, err := extracttest.Run(t, build, Spec{Files: []string{"k/**/*.yaml"}, Path: "spec.rev", Kind: "Application"}, root)
+	if err != nil || extracttest.Texts(vs) != "1@3 2@7 3@3" || vs[0].At.File != "k/apps.yaml" || vs[2].At.File != "k/x/c.yaml" {
+		t.Errorf("got %v, %v", vs, err)
+	}
+	_, err = extracttest.Run(t, build, Spec{File: "k/svc.yaml", Path: "spec.rev", Kind: "Application"}, root)
+	extracttest.WantError(t, err, `k/svc.yaml: no document has kind "Application"`)
+	_, err = extracttest.Run(t, build, Spec{Files: []string{"k/*.yaml"}, Path: "kind"}, root)
+	extracttest.WantError(t, err, "k/apps.yaml: holds 2 documents; set kind or name to select one")
+}
+
+// merged is the review's shape: an anchor of 100 keys that m mappings
+// merge.
+func merged(m int) string {
+	var b strings.Builder
+	b.WriteString("base: &k {")
+	for i := range 99 {
+		fmt.Fprintf(&b, "k%d: 0, ", i)
+	}
+	b.WriteString("z: 0}\nm:\n")
+	for range m {
+		b.WriteString("- {<<: *k}\n")
+	}
+	return b.String()
+}
+
+// The files of a set share the budget on what aliases and merge keys add,
+// as they share max_bytes: a file whose merges add more than half the
+// budget reads alone and in a set of one, and two of them are refused at
+// the second, naming the shared limit. 613 such files at the full budget
+// each ran 82 s on builder before. Planted break: each file's parse
+// started at 0, which read both.
+func TestYAMLFilesShareTheAliasBudget(t *testing.T) {
+	one := merged(2600)
+	_, n, err := ParseNoted([]byte(one), 0, nil)
+	if err != nil || n <= core.MaxExpanded/2 || n > core.MaxExpanded {
+		t.Fatalf("one file adds %d nodes, %v; want more than half of %d and at most all", n, err, core.MaxExpanded)
+	}
+	alone := extracttest.Tracked(t, map[string]string{"d/a.yaml": one})
+	if _, err := extracttest.Run(t, build, Spec{Files: []string{"d/*.yaml"}, Path: "m[0].z"}, alone); err != nil {
+		t.Fatalf("one file: %v", err)
+	}
+	two := extracttest.Tracked(t, map[string]string{"d/a.yaml": one, "d/b.yaml": one})
+	_, err = extracttest.Run(t, build, Spec{Files: []string{"d/*.yaml"}, Path: "m[0].z"}, two)
+	extracttest.WantError(t, err, "d/b.yaml: line ")
+	extracttest.WantError(t, err, fmt.Sprintf("aliases and merge keys expand to more than %d nodes", core.MaxExpanded))
+	extracttest.WantError(t, err, "; the files of a set share the limits on aliases and merge keys")
+	if _, err := extracttest.Run(t, build, Spec{File: "d/b.yaml", Path: "m[0].z"}, two); err != nil {
+		t.Errorf("the second file alone: %v", err)
+	}
 }

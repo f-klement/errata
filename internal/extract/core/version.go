@@ -6,10 +6,14 @@ import (
 	"unicode/utf8"
 )
 
-// Parsers are the JSON and TOML readers a reader of version files parses a
-// manifest with, such as package.json or Cargo.toml. The facade hands them
-// the json and toml extractors' own, since no reader imports another.
+// Parsers are the YAML, JSON and TOML readers' parsers: a reader of version
+// files parses a manifest with them, such as package.json or Cargo.toml,
+// and the yaml, json and toml readers a document embedded in a string. The
+// facade hands them the readers' own, since no reader imports another. YAML
+// starts the count of the nodes aliases and merge keys add at its second
+// argument and returns the count it ends at, as yaml.ParseNoted does.
 type Parsers struct {
+	YAML func([]byte, int) ([]*Node, int, error)
 	JSON func([]byte) (*Node, error)
 	TOML func([]byte) (*Node, error)
 }

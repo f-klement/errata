@@ -1,0 +1,97 @@
+# exists says whether a file is there, and a missing file is the value
+# false, not an unknown, so a rule can say a file stays removed. size is the
+# file's size in bytes. Neither value has a line, so a message names the
+# file alone.
+exec errata check
+stdout '^0 errata, 0 unknown. Coverage: ran 3, skipped 0.$'
+
+# The removed file comes back: an erratum, at the file and no line.
+cp restored.conf legacy/old.conf
+! exec errata check
+stdout '^FALSE old-config-stays-removed \(repo\)$'
+stdout '^          old\[0\] = "true" at legacy/old.conf$'
+stdout '^1 erratum, 0 unknown.'
+
+# A directory at the name is unknown: kustomize, for one, reads a directory
+# where a file was, so it is neither there nor gone.
+rm legacy/old.conf
+mkdir legacy/old.conf
+! exec errata check
+stdout '^UNKNOWN old-config-stays-removed \(repo\)$'
+stdout 'said: extractor "old": stat legacy/old.conf: is a directory$'
+rm legacy/old.conf
+
+# The notes grow past their ceiling: an erratum naming the size.
+cp long.md docs/NOTES.md
+! exec errata check
+stdout '^FALSE notes-stay-small \(repo\)$'
+stdout '^          notes\[0\] = "41" at docs/NOTES.md$'
+
+# A size of no file is unknown, as any read of one is.
+rm docs/NOTES.md
+! exec errata check
+stdout '^UNKNOWN notes-stay-small \(repo\)$'
+stdout 'said: extractor "notes": stat docs/NOTES.md: no such file or directory$'
+
+# A glob does not load: read as a name it would be no file, and the rule
+# would hold whatever the glob matched. Nor does max_bytes, since nothing
+# is read.
+! exec errata check -c glob.yaml
+stderr 'extractor "old": exists: file "legacy/\*.conf" holds \*, \? or \[, which errata reads as a glob; exists reads the one file it names$'
+! exec errata check -c max_bytes.yaml
+stderr 'decode: json: unknown field "max_bytes"$'
+
+# errata list prints each kind with its file, and no max_bytes.
+exec errata list
+stdout '^  extract: old: exists file legacy/old.conf$'
+stdout '^  extract: notes: size file docs/NOTES.md$'
+exec errata list -f json
+stdout '"old": \{\n\s+"exists": \{\n\s+"file": "legacy/old.conf"\n\s+\}\n'
+
+-- errata.yaml --
+required: [old-config-stays-removed, notes-stay-small, config-is-there]
+checks:
+  - id: old-config-stays-removed
+    reason: A re-vendor of upstream brought the old config back once.
+    scope: repo
+    extract:
+      old: {exists: {file: legacy/old.conf}}
+    assert: old[0] == 'false'
+  - id: notes-stay-small
+    reason: The notes are read on every turn.
+    scope: repo
+    extract:
+      notes: {size: {file: docs/NOTES.md}}
+    assert: int(notes[0]) <= 20
+  - id: config-is-there
+    reason: The service reads it at start.
+    scope: repo
+    extract:
+      config: {exists: {file: ./legacy/../app.conf}}
+    assert: config[0] == 'true'
+-- glob.yaml --
+checks:
+  - id: old-config-stays-removed
+    reason: r
+    scope: repo
+    extract:
+      old: {exists: {file: 'legacy/*.conf'}}
+    assert: old[0] == 'false'
+-- max_bytes.yaml --
+checks:
+  - id: notes-stay-small
+    reason: r
+    scope: repo
+    extract:
+      notes: {size: {file: docs/NOTES.md, max_bytes: 100}}
+    assert: int(notes[0]) <= 20
+-- app.conf --
+port = 80
+-- legacy/README --
+The old config lived here.
+-- restored.conf --
+generator = on
+-- docs/NOTES.md --
+Short notes.
+-- long.md --
+Notes that have grown past their ceiling

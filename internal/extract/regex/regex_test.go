@@ -21,3 +21,18 @@ func TestBuild(t *testing.T) {
 		t.Errorf("a refusal returns the extractor %#v", e)
 	}
 }
+
+// files reads each file a glob names with the one pattern, each value with
+// its own file, and refuses file beside files. Planted break: the pattern
+// of the set's reader not the spec's.
+func TestBuildFiles(t *testing.T) {
+	root := extracttest.Tracked(t, map[string]string{"a/f.txt": "v=1\n", "b/c/f.txt": "v=2\nv=3\n", "g.md": "v=4\n"})
+	vs := extracttest.MustRun(t, Build, Spec{Files: []string{"**/f.txt"}, Pattern: `v=(\d)`}, root)
+	if got := extracttest.Texts(vs); got != "1@1 2@1 3@2" || vs[0].At.File != "a/f.txt" || vs[2].At.File != "b/c/f.txt" {
+		t.Errorf("got %q at %v", got, vs)
+	}
+	_, err := Build(Spec{File: "g.md", Files: []string{"*.md"}, Pattern: `(v)`})
+	extracttest.WantError(t, err, "regex: file and files are both set")
+	_, err = Build(Spec{Files: []string{"*.md"}, Pattern: `v`})
+	extracttest.WantError(t, err, "regex: pattern \"v\" has no capture group")
+}

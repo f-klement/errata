@@ -291,8 +291,9 @@ func writeSpecValue(b *strings.Builder, dec *json.Decoder, depth int) {
 	}
 	switch t := tok.(type) {
 	case json.Delim:
-		// No spec holds a list yet; one would be its values, each written
-		// as a value here is, between brackets.
+		// A list is its values, each written as a value here is, between
+		// brackets, such as the embedded steps of a yaml, json or toml
+		// extractor: [{format toml, path x}].
 		if t == '[' {
 			b.WriteString("[")
 			for i := 0; dec.More(); i++ {

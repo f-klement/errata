@@ -96,7 +96,7 @@ func TestPropertyStringFunctionsAgreeWithGo(t *testing.T) {
 			"v": {s, sep, strconv.Itoa(n), strings.Join(parts, sep), repl, strings.Replace(s, sep, repl, n)},
 			"w": parts,
 		}
-		if ok, err := a.Eval(context.Background(), values); err != nil || !ok {
+		if ok, err := a.Eval(context.Background(), values, nil); err != nil || !ok {
 			t.Fatalf("over %q: %v, %v", values, ok, err)
 		}
 		if got := splitParts(s, sep, int64(n)); got != int64(len(parts)) {
@@ -161,10 +161,10 @@ func TestStringFunctionsCountTowardTheCostLimit(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := a.Eval(context.Background(), map[string][]string{"v": {strings.Repeat("a,", 100)}}); err == nil || err.Error() != "the evaluation exceeded the cost limit of 100" {
+		if _, err := a.Eval(context.Background(), map[string][]string{"v": {strings.Repeat("a,", 100)}}, nil); err == nil || err.Error() != "the evaluation exceeded the cost limit of 100" {
 			t.Errorf("%s over 200 bytes under a limit of 100: error = %v", expr, err)
 		}
-		if ok, err := a.Eval(context.Background(), map[string][]string{"v": {"a,b"}}); err != nil || !ok {
+		if ok, err := a.Eval(context.Background(), map[string][]string{"v": {"a,b"}}, nil); err != nil || !ok {
 			t.Errorf("%s over 3 bytes under a limit of 100: %v, %v", expr, ok, err)
 		}
 	}

@@ -623,7 +623,8 @@ func TestFilterDepthLimit(t *testing.T) {
 // that MaxFilterBytes pays for, and no way down ends in the key z. The
 // planted break is a query that charges nothing, which walks them all and
 // selects nothing. Under -race the walk to the limit takes about a minute,
-// so it runs in make slow; TestQueryChargesItsSteps pins the charge itself.
+// so it runs in make slow, as TestQueryChargesItsSteps, which pins the
+// charge itself, does.
 func TestQueryWorkIsBounded(t *testing.T) {
 	slowOnly(t)
 	level := &Node{Shape: Sequence, Items: []*Node{{Text: "1"}, {Text: "1"}}}
@@ -685,8 +686,11 @@ func TestNestedFilterWorkIsBounded(t *testing.T) {
 // MaxLiteral bytes costs 2560 bytes a member and the limit falls at an
 // exact count: that many scalar members pass, one more is refused. The
 // planted breaks: a step charged StepBytes less its key, which never
-// reaches the limit, and a step charged nothing.
+// reaches the limit, and a step charged nothing. Its 1.5 million members
+// took 8.8 s under -race with coverage on the build node, so it runs in
+// make slow.
 func TestQueryChargesItsSteps(t *testing.T) {
+	slowOnly(t)
 	key := strings.Repeat("k", MaxLiteral)
 	p, err := parsePath("a[?@['" + key + "']]")
 	if err != nil {

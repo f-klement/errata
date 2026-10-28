@@ -297,7 +297,10 @@ func TestWalkRefusesAListingThatFails(t *testing.T) {
 // their paths: 10000 directories below a path of 3000 bytes keep the heap
 // in use under 8 MB, sampled inside the walk, where their paths alone are
 // 30 MB. The planted break: read keeping each subdirectory's whole path.
+// Its 10000 directories took 3.9 s under -race with coverage on the build
+// node, so it runs in make slow.
 func TestWalkHoldsNamesNotPaths(t *testing.T) {
+	slowOnly(t)
 	root := t.TempDir()
 	r, err := os.OpenRoot(root)
 	if err != nil {

@@ -98,11 +98,11 @@ var replays = []extracttest.Replay[Spec]{
 // extracttest.OtherBound is the bound of a case that replays no quadratic pass. The
 // slowest of them takes 0.17 s, and 0.48 s under -race.
 func TestReplayMeasuredInputs(t *testing.T) {
-	extracttest.RunReplays(t, Build, replays, false)
+	extracttest.RunReplays(t, build, replays, false)
 }
 
 // The full cases, at the sizes their times were measured at.
 func TestReplayMeasuredInputsAtFullSize(t *testing.T) {
 	slowOnly(t)
-	extracttest.RunReplays(t, Build, replays, true)
+	extracttest.RunReplays(t, build, replays, true)
 }

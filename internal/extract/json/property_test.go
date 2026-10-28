@@ -20,6 +20,6 @@ func TestPropertyJSONValuesSitAtTheirLine(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		extracttest.CheckLeaves(t, Build, root, "f.json", data, doc, func(p string) Spec { return Spec{File: "f.json", Path: p} })
+		extracttest.CheckLeaves(t, build, root, "f.json", data, doc, func(p string) Spec { return Spec{File: "f.json", Path: p} })
 	})
 }

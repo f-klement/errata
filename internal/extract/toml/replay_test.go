@@ -99,13 +99,13 @@ var replays = []extracttest.Replay[Spec]{
 }
 
 func TestReplayMeasuredInputs(t *testing.T) {
-	extracttest.RunReplays(t, Build, replays, false)
+	extracttest.RunReplays(t, build, replays, false)
 }
 
 // The full cases, at the sizes their times were measured at.
 func TestReplayMeasuredInputsAtFullSize(t *testing.T) {
 	slowOnly(t)
-	extracttest.RunReplays(t, Build, replays, true)
+	extracttest.RunReplays(t, build, replays, true)
 }
 
 // poetryLock is a poetry.lock of format 1.1: n packages, then one array of

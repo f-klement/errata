@@ -53,7 +53,7 @@ func zoneVerdicts(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if ok, err := a.Eval(context.Background(), map[string][]string{"v": {zone}}); err != nil || !ok {
+		if ok, err := a.Eval(context.Background(), map[string][]string{"v": {zone}}, nil); err != nil || !ok {
 			t.Errorf("getHours(%q): %v, %v; want %s", zone, ok, err, want)
 		}
 	}

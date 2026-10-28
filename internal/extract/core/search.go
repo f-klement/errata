@@ -34,6 +34,10 @@ type Search struct {
 	// TimeLimit bounds the matching. CompileSearch sets it from the limit
 	// (regexTime); a test shortens it, so a refusal on time comes fast.
 	TimeLimit time.Duration
+	// shared is the deadline the searches of a file set share, which a
+	// FileSet sets in place of TimeLimit from now; zero for a search of
+	// one file.
+	shared time.Time
 }
 
 // CompileSearch checks the file and the pattern of an extractor of kind that
@@ -166,6 +170,12 @@ func (e Search) Extract(root string) ([]check.Value, error) {
 	return e.FromData(data)
 }
 
+// FromShared is FromData: a search's time is shared through its deadline,
+// and it spends no other budget of a set.
+func (e Search) FromShared(data []byte, _ *Spent) ([]check.Value, error) {
+	return e.FromData(data)
+}
+
 // FromData matches data with every CRLF line ending read as LF, so $ matches
 // before a CRLF too and no value ends in its CR. Only CRs go, so the lines
 // are those of the file.
@@ -204,7 +214,20 @@ type Match [4]int
 // search reads the file through a clock that ends it once the time limit has
 // passed, so one search that finds nothing is stopped too.
 func (e Search) Matches(data []byte) ([]Match, error) {
-	return e.matches(data, newClock(e.TimeLimit))
+	clock := newClock(e.TimeLimit)
+	if !e.shared.IsZero() {
+		clock.deadline = e.shared
+	}
+	return e.matches(data, clock)
+}
+
+// whoseLimit is what a refusal on time calls TimeLimit: the limit of the
+// one file, or of every file of a set together.
+func (e Search) whoseLimit() string {
+	if e.shared.IsZero() {
+		return "the limit"
+	}
+	return "the limit of the files the extractor reads, together"
 }
 
 // newClock is the clock of one Matches: its deadline limit from now, and
@@ -219,10 +242,10 @@ func (e Search) matches(data []byte, clock *clockedReader) ([]Match, error) {
 	for pos, prevEnd := 0, -1; pos <= len(data); {
 		m := e.find(data, pos, clock)
 		if clock.stopped || clock.late() {
-			return nil, fmt.Errorf("%s: matching took more than %s, the limit, and stopped after %d matches; "+
+			return nil, fmt.Errorf("%s: matching took more than %s, %s, and stopped after %d matches; "+
 				"start the pattern with ^, drop an optional part that scans to the end of the line, such as (?:.*x)?, "+
 				"or shorten a counted repeat, such as {0,1000}",
-				e.File, e.TimeLimit, len(out))
+				e.File, e.TimeLimit, e.whoseLimit(), len(out))
 		}
 		if m == nil {
 			break

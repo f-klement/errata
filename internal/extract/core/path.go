@@ -959,8 +959,16 @@ func (m *meter) pop(stack *[]frame) (*Node, int, error) {
 // testing a member costs the steps of the comparisons, whatever the length
 // of its text.
 func (p Path) Eval(roots ...*Node) ([]*Node, error) {
-	cur := roots
 	var m meter
+	return p.eval(&m, roots)
+}
+
+// eval is Eval charging the work of the filters to m, so the paths of one
+// extractor, its own and those of its embedded steps, share one budget, and
+// so do the files of a set, whose meter starts at the work the files before
+// it spent.
+func (p Path) eval(m *meter, roots []*Node) ([]*Node, error) {
+	cur := roots
 	for _, sel := range p.sels {
 		var next []*Node
 		for _, n := range cur {

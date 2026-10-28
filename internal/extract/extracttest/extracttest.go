@@ -7,6 +7,7 @@ package extracttest
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -28,6 +29,22 @@ func Repo(t *testing.T, files map[string]string) string {
 		}
 		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
 			t.Fatal(err)
+		}
+	}
+	return root
+}
+
+// Tracked writes files into a new git repository and adds every one, so a
+// glob of a files: key matches them, and returns its root.
+func Tracked(t *testing.T, files map[string]string) string {
+	t.Helper()
+	root := Repo(t, files)
+	for _, args := range [][]string{{"init", "-q"}, {"add", "-A"}} {
+		cmd := exec.CommandContext(t.Context(), "git", args...)
+		cmd.Dir = root
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
 	}
 	return root

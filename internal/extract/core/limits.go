@@ -118,8 +118,18 @@ func TooDeep(line int) error {
 }
 
 func tooLarge(file string, size, limit int64) error {
-	return fmt.Errorf("read %s: the file is %d bytes, over the limit of %d bytes; set max_bytes: on the extractor to read a larger file", file, size, limit)
+	return tooLargeError(fmt.Sprintf("read %s: the file is %d bytes, over the limit of %d bytes; set max_bytes: on the extractor to read a larger file", file, size, limit))
 }
+
+// ErrTooLarge is what a file over its limit is, by errors.Is: a reader
+// of several files names the limit they share.
+var ErrTooLarge = errors.New("the file is over its limit")
+
+// tooLargeError is a refusal of a file over its limit, which is ErrTooLarge.
+type tooLargeError string
+
+func (e tooLargeError) Error() string        { return string(e) }
+func (e tooLargeError) Is(target error) bool { return target == ErrTooLarge }
 
 // Format is what the node limit knows of a file format: the bytes after
 // which its parser can start a node, a key, a value, an item or a
@@ -176,11 +186,22 @@ var (
 func (s Source) CheckNodes(data []byte, f *Format) error {
 	limit := s.Limit / f.BytesPerNode
 	if n := f.CountNodes(data); int64(n) > limit {
-		return fmt.Errorf("%s: the file can hold up to %d nodes, over the limit of %d, one for every %d bytes of max_bytes; set max_bytes: higher to read a file this dense",
-			s.File, n, limit, f.BytesPerNode)
+		return tooDenseError(fmt.Sprintf("%s: the file can hold up to %d nodes, over the limit of %d, one for every %d bytes of max_bytes; set max_bytes: higher to read a file this dense",
+			s.File, n, limit, f.BytesPerNode))
 	}
 	return nil
 }
+
+// ErrTooDense is what a file over the node limit is, by errors.Is: a set
+// names the bytes its earlier files left, which set the limit.
+var ErrTooDense = errors.New("the file holds more nodes than its limit")
+
+// tooDenseError is a refusal of a file over the node limit, which is
+// ErrTooDense.
+type tooDenseError string
+
+func (e tooDenseError) Error() string        { return string(e) }
+func (e tooDenseError) Is(target error) bool { return target == ErrTooDense }
 
 // CountNodes is an upper bound on the nodes f's parser builds from data,
 // with errata's tree, found in one pass before the parser runs: four for the

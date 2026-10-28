@@ -1,6 +1,7 @@
 package extract
 
 import (
+	encjson "encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -9,6 +10,7 @@ import (
 	"github.com/f-klement/errata/internal/extract/env"
 	"github.com/f-klement/errata/internal/extract/envfile"
 	"github.com/f-klement/errata/internal/extract/extracttest"
+	"github.com/f-klement/errata/internal/extract/filestat"
 	"github.com/f-klement/errata/internal/extract/githubactions"
 	"github.com/f-klement/errata/internal/extract/gitlabci"
 	"github.com/f-klement/errata/internal/extract/ini"
@@ -18,6 +20,7 @@ import (
 	"github.com/f-klement/errata/internal/extract/properties"
 	"github.com/f-klement/errata/internal/extract/shell"
 	"github.com/f-klement/errata/internal/extract/text"
+	"github.com/f-klement/errata/internal/extract/toml"
 	"github.com/f-klement/errata/internal/extract/toolversion"
 	"github.com/f-klement/errata/internal/extract/xml"
 	"github.com/f-klement/errata/internal/extract/yaml"
@@ -91,8 +94,16 @@ func TestPlaceKeepsEveryKind(t *testing.T) {
 		} else {
 			f.Elem().FieldByName("Files").Set(reflect.ValueOf([]string{file}))
 		}
-		f.Elem().FieldByName("MaxBytes").SetInt(10)
+		if n := f.Elem().FieldByName("MaxBytes"); n.IsValid() { // exists and size have none
+			n.SetInt(10)
+		}
 		return s
+	}
+	maxBytes := func(v reflect.Value) int64 {
+		if n := v.FieldByName("MaxBytes"); n.IsValid() {
+			return n.Int()
+		}
+		return 0
 	}
 	fileOf := func(v reflect.Value) string {
 		if one := v.FieldByName("File"); one.IsValid() {
@@ -106,12 +117,68 @@ func TestPlaceKeepsEveryKind(t *testing.T) {
 			t.Errorf("%s: Place drops the kind", k.name)
 			continue
 		}
-		if file, n := fileOf(p.Elem()), p.Elem().FieldByName("MaxBytes").Int(); file != "f" || n != 0 {
+		if file, n := fileOf(p.Elem()), maxBytes(p.Elem()); file != "f" || n != 0 {
 			t.Errorf("%s: Place keeps file %q and max_bytes %d, want f and 0", k.name, file, n)
 		}
 		if reflect.DeepEqual(kindSpec(i, "f").Place(), kindSpec(i, "g").Place()) {
 			t.Errorf("%s: files f and g have one place", k.name)
 		}
+	}
+}
+
+// Every kind with files: reads one place for the same files in any order
+// and spelling, and another place for other files; a kind that takes file:
+// too reads one place for file: f and files: [f], and Resolved copies the
+// files. A kind that gains files: without Place cleaning and sorting them
+// fails here. Planted breaks: the files of yaml left unsorted; a list of
+// one file not read as file:; Resolved sharing the spec's slice.
+func TestPlaceOfFiles(t *testing.T) {
+	spec := func(i int, set func(reflect.Value)) Spec {
+		var s Spec
+		f := reflect.ValueOf(&s).Elem().Field(i)
+		f.Set(reflect.New(f.Type().Elem()))
+		set(f.Elem())
+		return s
+	}
+	files := func(fs ...string) func(reflect.Value) {
+		return func(v reflect.Value) { v.FieldByName("Files").Set(reflect.ValueOf(fs)) }
+	}
+	key := func(s Spec) string {
+		b, err := encjson.Marshal(s.Place())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	took := 0
+	for i, k := range (Spec{}).kinds() {
+		typ := reflect.TypeFor[Spec]().Field(i).Type.Elem()
+		if _, ok := typ.FieldByName("Files"); !ok {
+			continue
+		}
+		took++
+		if a, b := key(spec(i, files("./b/*.yaml", "a/**"))), key(spec(i, files("a/**", "b/*.yaml"))); a != b {
+			t.Errorf("%s: one set of files, two places: %s and %s", k.name, a, b)
+		}
+		if a, b := key(spec(i, files("*.y"))), key(spec(i, files("*.z"))); a == b {
+			t.Errorf("%s: two globs, one place %s", k.name, a)
+		}
+		s := spec(i, files("a", "b"))
+		r := reflect.ValueOf(s.Resolved()).Field(i).Elem().FieldByName("Files")
+		r.Index(0).SetString("changed")
+		if got := reflect.ValueOf(s).Field(i).Elem().FieldByName("Files").Index(0).String(); got != "a" {
+			t.Errorf("%s: Resolved shares the files, which now read %q", k.name, got)
+		}
+		if _, ok := typ.FieldByName("File"); !ok {
+			continue
+		}
+		one := spec(i, func(v reflect.Value) { v.FieldByName("File").SetString("f") })
+		if a, b := key(one), key(spec(i, files("./f"))); a != b {
+			t.Errorf("%s: file f and files [./f] read two places: %s and %s", k.name, a, b)
+		}
+	}
+	if took < 7 {
+		t.Errorf("%d kinds take files, want yaml, json, toml, regex, tool_version, package_version and env", took)
 	}
 }
 
@@ -130,6 +197,38 @@ func TestXMLPlace(t *testing.T) {
 	} {
 		if reflect.DeepEqual(a.Place(), c.Place()) {
 			t.Errorf("another place reads as one: %+v", c.XML)
+		}
+	}
+}
+
+// Two yaml, json or toml extractors over one file and path read another
+// place when their embedded steps differ, and one place when only their
+// max_bytes does. The planted break: Place clearing embedded, which refused
+// a rule that reads two keys of one embedded document as reading one place.
+func TestEmbeddedPlace(t *testing.T) {
+	one := func(format, path string) []core.Embedded { return []core.Embedded{{Format: format, Path: path}} }
+	for _, c := range []struct{ a, b, other Spec }{
+		{
+			Spec{YAML: &yaml.Spec{File: "f", Path: "c", Embedded: one("toml", "x"), MaxBytes: 10}},
+			Spec{YAML: &yaml.Spec{File: "./f", Path: "c", Embedded: one("toml", "x")}},
+			Spec{YAML: &yaml.Spec{File: "f", Path: "c", Embedded: one("toml", "y")}},
+		},
+		{
+			Spec{JSON: &json.Spec{File: "f", Path: "c", Embedded: one("yaml", "x"), MaxBytes: 10}},
+			Spec{JSON: &json.Spec{File: "./f", Path: "c", Embedded: one("yaml", "x")}},
+			Spec{JSON: &json.Spec{File: "f", Path: "c", Embedded: one("json", "x")}},
+		},
+		{
+			Spec{TOML: &toml.Spec{File: "f", Path: "c", Embedded: one("json", "x"), MaxBytes: 10}},
+			Spec{TOML: &toml.Spec{File: "./f", Path: "c", Embedded: one("json", "x")}},
+			Spec{TOML: &toml.Spec{File: "f", Path: "c"}},
+		},
+	} {
+		if !reflect.DeepEqual(c.a.Place(), c.b.Place()) {
+			t.Errorf("one place reads as two: %s", c.a.Kind())
+		}
+		if reflect.DeepEqual(c.a.Place(), c.other.Place()) {
+			t.Errorf("another place reads as one: %s", c.a.Kind())
 		}
 	}
 }
@@ -182,6 +281,9 @@ func TestSpecKind(t *testing.T) {
 		{Spec{GitHubActions: &githubactions.Spec{File: "ci.yml", Job: "test", Key: "runs-on"}}, "github-actions"},
 		{Spec{Jenkins: &jenkins.Spec{File: "Jenkinsfile", Variable: "X"}}, "jenkins"},
 		{Spec{Env: &env.Spec{Name: "X", Files: []string{".env"}}}, "env"},
+		{Spec{Exists: &filestat.Spec{File: "a"}}, "exists"},
+		{Spec{Size: &filestat.Spec{File: "a"}}, "size"},
+		{Spec{Exists: &filestat.Spec{File: "a"}, Size: &filestat.Spec{File: "a"}}, ""},
 		{iniSpec("php.ini", "", "a"), "ini, php dialect on php.ini"},
 		{iniSpec("etc/php.ini-production", "", "a"), "ini, php dialect on php.ini-production"},
 		{gitINI(".gitconfig", "a", nil, "k"), "ini, git dialect on .gitconfig"},
@@ -236,8 +338,18 @@ func TestResolvedKeepsEveryKind(t *testing.T) {
 			} else {
 				f.Elem().FieldByName("File").SetString("f")
 			}
-			f.Elem().FieldByName("MaxBytes").SetInt(set)
+			n := f.Elem().FieldByName("MaxBytes")
 			r := reflect.ValueOf(s.Resolved()).Field(i)
+			if !n.IsValid() {
+				// exists and size read no byte, so they have no limit to
+				// write out: Resolved keeps the kind and its file.
+				if r.IsNil() || file(r.Elem()) != "f" || r.Pointer() == f.Pointer() {
+					t.Errorf("%s: Resolved gives %v, want a copy of the kind with file f", k.name, r)
+				}
+				continue
+			}
+			n.SetInt(set)
+			r = reflect.ValueOf(s.Resolved()).Field(i)
 			if r.IsNil() {
 				t.Errorf("%s: Resolved drops the kind", k.name)
 				continue

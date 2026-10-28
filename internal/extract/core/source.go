@@ -94,6 +94,60 @@ func (s Source) Resolved(root string) (string, error) {
 	return rel, nil
 }
 
+// Stat is what is at the file under root once the symlinks on the way are
+// followed as Read follows them, by Lstat, and it opens nothing, so a device
+// or a FIFO there is only looked at. A link that leads out, or a route
+// through a directory outside the repository, is refused as Read refuses
+// it, before anything outside is looked at. When nothing is at the name, or
+// a name on the way to it is a file and no directory, the error is one
+// that errors.Is reads as fs.ErrNotExist. Every error names the file as the
+// spec wrote it.
+func (s Source) Stat(root string) (fs.FileInfo, error) {
+	// A root that is not there, or is no directory, says nothing of the
+	// file, so its error keeps the text and drops the fs.ErrNotExist. The
+	// root is opened before resolve, since resolve would read a file at the
+	// root as a name below a file, ENOTDIR, which is a missing file.
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return nil, fmt.Errorf("open the repository root: %s", bare(err).Error())
+	}
+	r, err := os.OpenRoot(realRoot)
+	if err != nil {
+		return nil, fmt.Errorf("open the repository root: %s", bare(err).Error())
+	}
+	defer r.Close()
+	rel, _, err := resolve(realRoot, s.File)
+	if err != nil {
+		return nil, fmt.Errorf("stat %s: %w", s.File, notThere(err))
+	}
+	// Through os.Root, which refuses a link that leads out, so a link
+	// swapped in on the way after resolve is refused too. Lstat does not
+	// follow a link swapped in at the name itself: the caller sees a
+	// symlink, which is no regular file.
+	info, err := r.Lstat(rel)
+	if err != nil {
+		return nil, fmt.Errorf("stat %s: %w", s.File, notThere(bare(err)))
+	}
+	return info, nil
+}
+
+// noDirectory is the error of a lookup through a name that is a file and no
+// directory, such as a/b where a is a file: nothing is at the name, so
+// errors.Is reads it as fs.ErrNotExist.
+type noDirectory struct{ err error }
+
+func (e noDirectory) Error() string { return e.err.Error() }
+
+func (e noDirectory) Is(target error) bool { return target == fs.ErrNotExist }
+
+// notThere is err, read as fs.ErrNotExist when it is ENOTDIR.
+func notThere(err error) error {
+	if errors.Is(err, syscall.ENOTDIR) {
+		return noDirectory{err}
+	}
+	return err
+}
+
 // Read reads the file under root. A file over the limit is refused before
 // it is read, and a file that grows past it while it is read is refused too.
 // Every error names the file as the spec wrote it, never an absolute path.

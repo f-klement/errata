@@ -18,6 +18,16 @@ type Location struct {
 	Outside bool
 }
 
+// String is l as a message names it: the file and the line, as f.yaml:3, or
+// the file alone for a line below 1, which a value has when it holds for the
+// file as a whole, such as whether the file exists.
+func (l Location) String() string {
+	if l.Line < 1 {
+		return l.File
+	}
+	return l.File + ":" + strconv.Itoa(l.Line)
+}
+
 // Value is one value an extractor returned, in its string form, with the
 // place it was found. A rule compares values; the text and SARIF reports
 // point at their locations.

@@ -14,16 +14,22 @@ import (
 	"github.com/f-klement/errata/internal/extract/core"
 )
 
-// Spec reads a path in a JSON file.
+// Spec reads a path in a JSON file, File, or in each file Files names, a
+// file or a glob (core.Files). Embedded reads a path in the document each
+// string the path selects holds, and so on, step by step, as core.Embedded
+// says.
 type Spec struct {
-	File     string `json:"file"`
-	Path     string `json:"path"`
-	MaxBytes int64  `json:"max_bytes,omitempty"`
+	File     string          `json:"file,omitempty"`
+	Files    []string        `json:"files,omitempty"`
+	Path     string          `json:"path"`
+	Embedded []core.Embedded `json:"embedded,omitempty"`
+	MaxBytes int64           `json:"max_bytes,omitempty"`
 }
 
-// Build checks s and returns its extractor.
-func Build(s Spec) (check.Extractor, error) {
-	return core.BuildTree("json", s.File, s.Path, s.MaxBytes, core.JSONFormat, Parse)
+// Build checks s and returns its extractor, which reads the documents
+// embedded names with p.
+func Build(s Spec, p core.Parsers) (check.Extractor, error) {
+	return core.BuildTree("json", core.Tree{File: s.File, Files: s.Files, Path: s.Path, Embedded: s.Embedded, MaxBytes: s.MaxBytes}, core.JSONFormat, Parse, p)
 }
 
 // Parse reads one JSON value into a tree. encoding/json's Decoder.Token

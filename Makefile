@@ -184,6 +184,10 @@ SLOW_TESTS := ./internal/report:TestSARIFBoundsTheReviewersUpload \
               ./internal/extract/ini:TestGitConfigReadsNoRepositoryAround \
               ./internal/extract/core:TestINIValueLimitAtItsSize \
               ./internal/extract/core:TestQueryWorkIsBounded \
+              ./internal/extract/core:TestQueryChargesItsSteps \
+              ./internal/extract/core:TestRegexTriesReadTheFileAboutOnce \
+              ./internal/extract/core:TestWalkHoldsNamesNotPaths \
+              ./internal/extract/core:TestExtractValueLimit \
               ./internal/extract/ini:TestReplayINIShapesAtFullSize \
               ./internal/extract/properties:TestReplayPropertiesShapesAtFullSize \
               ./internal/extract/toolversion:TestReplayToolVersionShapesAtFullSize \

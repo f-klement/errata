@@ -122,7 +122,7 @@ func notLiteral(name string, values []check.Value) string {
 	fmt.Fprintf(&b, "extractor %q returned %s, which a rule does not compare as text, since the file only computes such a value; list %q in skip_not_literal to leave such values out",
 		name, count(len(computed), "not literal value"), name)
 	for _, v := range computed {
-		fmt.Fprintf(&b, "\n  %s at %s:%d%s", q.quote(v.Text), v.At.File, v.At.Line, v.Notes())
+		fmt.Fprintf(&b, "\n  %s at %s%s", q.quote(v.Text), v.At, v.Notes())
 	}
 	return b.String()
 }
@@ -149,14 +149,16 @@ func assert(ctx context.Context, root string, r check.Rule) (check.Verdict, stri
 	}
 
 	values := make(map[string][]string, len(extracted))
+	files := make(map[string][]string, len(extracted))
 	for _, x := range extracted {
 		texts := make([]string, len(x.Values))
+		where := make([]string, len(x.Values))
 		for i, v := range x.Values {
-			texts[i] = r.Normalized(v.Text)
+			texts[i], where[i] = r.Normalized(v.Text), v.At.File
 		}
-		values[x.Extractor] = texts
+		values[x.Extractor], files[x.Extractor] = texts, where
 	}
-	holds, err := r.Compiled.Eval(ctx, values)
+	holds, err := r.Compiled.Eval(ctx, values, files)
 	switch {
 	case err != nil:
 		return check.VerdictUnknown, "assert: " + err.Error() + "\n" + saw(r, extracted), extracted
@@ -304,7 +306,7 @@ func saw(r check.Rule, extracted []check.Extracted) string {
 			fmt.Fprintf(&b, "  %s = [] (allow_empty)\n", x.Extractor)
 		}
 		for i, v := range x.Values {
-			fmt.Fprintf(&b, "  %s[%d] = %s at %s:%d%s\n", x.Extractor, i, q.quote(r.Normalized(v.Text)), v.At.File, v.At.Line, v.Notes())
+			fmt.Fprintf(&b, "  %s[%d] = %s at %s%s\n", x.Extractor, i, q.quote(r.Normalized(v.Text)), v.At, v.Notes())
 		}
 	}
 	return strings.TrimSuffix(b.String(), "\n")
@@ -348,8 +350,8 @@ func agree(ctx context.Context, root string, r check.Rule) (check.Verdict, strin
 		// lists coming back empty makes one value a comparison the author
 		// asked for.
 		f := all[0]
-		return check.VerdictUnknown, fmt.Sprintf("agree found one value, so it has nothing to compare: %s at %s:%d%s (%s)",
-			newQuoter(nil).quote(f.value.Text), f.value.At.File, f.value.At.Line, f.value.Notes(), f.extractor), "", extracted
+		return check.VerdictUnknown, fmt.Sprintf("agree found one value, so it has nothing to compare: %s at %s%s (%s)",
+			newQuoter(nil).quote(f.value.Text), f.value.At, f.value.Notes(), f.extractor), "", extracted
 	}
 
 	groups := group(all, r)
@@ -488,7 +490,7 @@ func clip(s string) string {
 func places(g distinct) string {
 	out := make([]string, len(g.where))
 	for i, f := range g.where {
-		out[i] = fmt.Sprintf("%s:%d%s (%s)", f.value.At.File, f.value.At.Line, f.value.Notes(), f.extractor)
+		out[i] = fmt.Sprintf("%s%s (%s)", f.value.At, f.value.Notes(), f.extractor)
 	}
 	return strings.Join(out, ", ")
 }

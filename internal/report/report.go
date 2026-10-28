@@ -214,5 +214,5 @@ func prefix(s string, n int) (string, bool) {
 // where is a value quoted, with its file and line and its extractor, as a
 // rule's message names it.
 func where(f named) string {
-	return fmt.Sprintf("%s at %s:%d%s (%s)", quoteValue(f.value.Text), f.value.At.File, f.value.At.Line, f.value.Notes(), f.extractor)
+	return fmt.Sprintf("%s at %s%s (%s)", quoteValue(f.value.Text), f.value.At, f.value.Notes(), f.extractor)
 }

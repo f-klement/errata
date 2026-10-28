@@ -18,6 +18,7 @@ import (
 	"cel.dev/cel-go/common/operators"
 	"cel.dev/cel-go/common/types"
 	"cel.dev/cel-go/common/types/ref"
+	"cel.dev/cel-go/common/types/traits"
 	"cel.dev/cel-go/interpreter"
 
 	"github.com/f-klement/errata/internal/check"
@@ -88,6 +89,31 @@ var reserved = []string{
 	"let", "loop", "package", "namespace", "null", "return", "true", "var", "void", "while",
 }
 
+// by_file(x) is the values of the extractor x grouped by file: a map from
+// each file that gave x a value to its values, in the order x found them.
+// A macro rewrites it as a hidden variable of x's, byFilePrefix and x's
+// name, which a name that starts with @ keeps out of reach of an
+// expression; Eval fills it from the files of x's values.
+const (
+	byFile       = "by_file"
+	byFilePrefix = "@errata_by_file_"
+)
+
+// byFileType is the type of by_file(x).
+var byFileType = cel.MapType(cel.StringType, cel.ListType(cel.StringType))
+
+// byFileMacro rewrites by_file(x), for x one of extractors, as x's hidden
+// variable. Any other argument is a load error, at the argument.
+func byFileMacro(extractors []string) cel.EnvOption {
+	return cel.Macros(cel.GlobalMacro(byFile, 1, func(eh cel.MacroExprFactory, _ celast.Expr, args []celast.Expr) (celast.Expr, *common.Error) {
+		arg := args[0]
+		if arg.Kind() == celast.IdentKind && slices.Contains(extractors, arg.AsIdent()) {
+			return eh.NewIdent(byFilePrefix + arg.AsIdent()), nil
+		}
+		return nil, eh.NewError(arg.ID(), "by_file takes the name of one of the rule's extractors, such as by_file(apps)")
+	}))
+}
+
 // Compile type checks expr over the named extractors, each a list(string),
 // and returns it ready to evaluate. Each of these is a load error: a name that
 // is not an extractor, a type error, a result that is not a bool and a parse
@@ -118,11 +144,12 @@ func compile(expr string, extractors []string, lim limits, extra ...cel.EnvOptio
 			errs = append(errs, fmt.Errorf("extractor %q: assert refers to an extractor by its name, so the name must be letters, digits and _, must not start with a digit and must not be one of CEL's reserved words", name))
 			continue
 		}
-		vars = append(vars, cel.Variable(name, cel.ListType(cel.StringType)))
+		vars = append(vars, cel.Variable(name, cel.ListType(cel.StringType)), cel.Variable(byFilePrefix+name, byFileType))
 	}
 	if len(errs) > 0 {
 		return nil, errors.Join(errs...)
 	}
+	vars = append(vars, byFileMacro(extractors))
 	env, err := base.Extend(append(vars, extra...)...)
 	if err != nil {
 		return nil, fmt.Errorf("assert: the CEL environment: %w", err)
@@ -141,8 +168,12 @@ func compile(expr string, extractors []string, lim limits, extra ...cel.EnvOptio
 			fmt.Sprintf("the expression has type %s; assert needs a bool", cel.FormatCELType(t)))
 	}
 	used := free(ast.NativeRep())
+	var grouped []string
 	for _, name := range extractors {
-		if !used[name] {
+		if used[byFilePrefix+name] {
+			grouped = append(grouped, name)
+		}
+		if !used[name] && !used[byFilePrefix+name] {
 			// It would still run, but the relation would hold or fail without
 			// testing the place the author added it for.
 			errs = append(errs, fmt.Errorf("extractor %q is declared but assert does not use it", name))
@@ -163,7 +194,7 @@ func compile(expr string, extractors []string, lim limits, extra ...cel.EnvOptio
 	if err != nil {
 		return nil, fmt.Errorf("assert: %w", err)
 	}
-	return &assertion{program: program, limits: lim}, nil
+	return &assertion{program: program, limits: lim, grouped: grouped}, nil
 }
 
 // The names of the hidden function and variable noteOperands adds. A name
@@ -363,6 +394,8 @@ func located(expr string, loc common.Location, msg string) error {
 type assertion struct {
 	program cel.Program
 	limits  limits
+	// grouped are the extractors the expression reads by_file of.
+	grouped []string
 }
 
 type outcome struct {
@@ -379,11 +412,18 @@ type outcome struct {
 // the grace, such as one in a call that does not return, keeps its goroutine
 // until it ends, and Eval returns without it; the run goes on. An error that
 // && or || absorbed is still the result.
-func (a *assertion) Eval(parent context.Context, values map[string][]string) (bool, error) {
+func (a *assertion) Eval(parent context.Context, values, files map[string][]string) (bool, error) {
 	log := &errorLog{}
-	vars := make(map[string]any, len(values)+1)
+	vars := map[string]any{}
 	for name, v := range values {
 		vars[name] = v
+	}
+	for _, name := range a.grouped {
+		groups, err := groupByFile(values[name], files[name])
+		if err != nil {
+			return false, fmt.Errorf("by_file(%s): %w", name, err)
+		}
+		vars[byFilePrefix+name] = groups
 	}
 	vars[logVariable] = log
 	ctx, cancel := context.WithTimeout(parent, a.limits.timeout)
@@ -426,6 +466,67 @@ func (a *assertion) Eval(parent context.Context, values map[string][]string) (bo
 	}
 	return result, nil
 }
+
+// groupByFile is values grouped by the file of each, files[i] the file of
+// values[i], as a CEL map whose keys come in the order of each file's
+// first value, so a comprehension over it, and the first error one meets,
+// is the same on every run. A count of files other than the values' is
+// refused, so a group never holds a value under a file that did not give
+// it.
+func groupByFile(values, files []string) (ref.Val, error) {
+	if len(files) != len(values) {
+		return nil, fmt.Errorf("%d values came with %d files, so they cannot be grouped", len(values), len(files))
+	}
+	groups := map[string][]string{}
+	var order []string
+	for i, v := range values {
+		if _, ok := groups[files[i]]; !ok {
+			order = append(order, files[i])
+		}
+		groups[files[i]] = append(groups[files[i]], v)
+	}
+	m, ok := types.DefaultTypeAdapter.NativeToValue(groups).(traits.Mapper)
+	if !ok {
+		return nil, errors.New("the groups do not form a CEL map")
+	}
+	return orderedMap{Mapper: m, keys: order}, nil
+}
+
+// orderedMap is a CEL map that iterates its keys in the order keys gives,
+// where a Go map's order changes from run to run.
+type orderedMap struct {
+	traits.Mapper
+	keys []string
+}
+
+func (m orderedMap) Iterator() traits.Iterator { return &keyIterator{keys: m.keys} }
+
+// keyIterator yields an orderedMap's keys in order: keys holds those not
+// yet yielded.
+type keyIterator struct {
+	keys []string
+}
+
+func (it *keyIterator) HasNext() ref.Val { return types.Bool(len(it.keys) != 0) }
+
+func (it *keyIterator) Next() ref.Val {
+	if len(it.keys) == 0 {
+		return types.NewErr("the iterator has no key left")
+	}
+	key := it.keys[0]
+	it.keys = it.keys[1:]
+	return types.String(key)
+}
+
+func (it *keyIterator) ConvertToNative(reflect.Type) (any, error) {
+	return nil, errors.New("an iterator has no native form")
+}
+func (it *keyIterator) ConvertToType(ref.Type) ref.Val {
+	return types.NewErr("an iterator converts to no type")
+}
+func (it *keyIterator) Equal(ref.Val) ref.Val { return types.False }
+func (it *keyIterator) Type() ref.Type        { return types.IteratorType }
+func (it *keyIterator) Value() any            { return it }
 
 // stopped says why an evaluation stopped before it finished. cause is CEL's
 // interruption when CEL saw the context end, and nil when Eval stopped

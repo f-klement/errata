@@ -9,16 +9,20 @@ import (
 	"github.com/f-klement/errata/internal/extract/extracttest"
 )
 
+// build is Build without parsers, which no spec of these tests needs: the
+// embedded steps are tested in internal/extract/core, through the facade.
+func build(s Spec) (check.Extractor, error) { return Build(s, core.Parsers{}) }
+
 // run builds s and extracts from root.
 func run(t *testing.T, s Spec, root string) ([]check.Value, error) {
 	t.Helper()
-	return extracttest.Run(t, Build, s, root)
+	return extracttest.Run(t, build, s, root)
 }
 
 // mustRun is run for an extraction that must succeed.
 func mustRun(t *testing.T, s Spec, root string) []check.Value {
 	t.Helper()
-	return extracttest.MustRun(t, Build, s, root)
+	return extracttest.MustRun(t, build, s, root)
 }
 
 // fromData is what every extractor runs on the bytes of its file.
@@ -144,7 +148,7 @@ func TestJSONDepthBoundary(t *testing.T) {
 // is the same for the regex search.
 func TestJSONLinesCostNoMemoryForEachNewline(t *testing.T) {
 	data := []byte("1" + strings.Repeat("\n", 1<<18) + "x")
-	e, err := Build(Spec{File: "f", Path: "$"})
+	e, err := build(Spec{File: "f", Path: "$"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,4 +157,19 @@ func TestJSONLinesCostNoMemoryForEachNewline(t *testing.T) {
 	if bound := 5 * uint64(len(data)); n > bound {
 		t.Errorf("%d bytes allocated for a file of %d, over %d", n, len(data), bound)
 	}
+}
+
+// files reads the path in each file a glob names, in git's order, each
+// value with its own file; a file that does not parse fails the set.
+// Planted breaks: the files of a spec not passed to the tree's builder,
+// which read file: "" and refused it; a parse error passed over.
+func TestJSONFiles(t *testing.T) {
+	root := extracttest.Tracked(t, map[string]string{"p/b/package.json": `{"v": "2"}`, "p/a/package.json": `{"v": "1"}`, "package.json": `{"w": 0}`})
+	vs, err := run(t, Spec{Files: []string{"p/*/package.json"}, Path: "v"}, root)
+	if err != nil || extracttest.Texts(vs) != "1@1 2@1" || vs[0].At.File != "p/a/package.json" || vs[1].At.File != "p/b/package.json" {
+		t.Errorf("got %v, %v", vs, err)
+	}
+	broken := extracttest.Tracked(t, map[string]string{"a.json": `{"v": "1"}`, "b.json": `{`})
+	_, err = run(t, Spec{Files: []string{"*.json"}, Path: "v"}, broken)
+	extracttest.WantError(t, err, "b.json: unexpected end of JSON input")
 }

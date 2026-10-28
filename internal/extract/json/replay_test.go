@@ -27,5 +27,5 @@ var replays = []extracttest.Replay[Spec]{
 }
 
 func TestReplayMeasuredInputs(t *testing.T) {
-	extracttest.RunReplays(t, Build, replays, false)
+	extracttest.RunReplays(t, build, replays, false)
 }

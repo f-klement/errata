@@ -13,16 +13,20 @@ import (
 	"github.com/f-klement/errata/internal/extract/extracttest"
 )
 
+// build is Build without parsers, which no spec of these tests needs: the
+// embedded steps are tested in internal/extract/core, through the facade.
+func build(s Spec) (check.Extractor, error) { return Build(s, core.Parsers{}) }
+
 // run builds s and extracts from root.
 func run(t *testing.T, s Spec, root string) ([]check.Value, error) {
 	t.Helper()
-	return extracttest.Run(t, Build, s, root)
+	return extracttest.Run(t, build, s, root)
 }
 
 // mustRun is run for an extraction that must succeed.
 func mustRun(t *testing.T, s Spec, root string) []check.Value {
 	t.Helper()
-	return extracttest.MustRun(t, Build, s, root)
+	return extracttest.MustRun(t, build, s, root)
 }
 
 // slowOnly skips t under -race, -short and Gremlins' mutation tag, as
@@ -312,5 +316,16 @@ func TestTOMLDepthBoundary(t *testing.T) {
 		if err == nil || err.Error() != want {
 			t.Errorf("error %v, want %q", err, want)
 		}
+	}
+}
+
+// files reads the path in each file a glob names, each value with its own
+// file. Planted break: the files of a spec not passed to the tree's
+// builder.
+func TestTOMLFiles(t *testing.T) {
+	root := extracttest.Tracked(t, map[string]string{"crates/a/Cargo.toml": "[package]\nversion = \"1\"\n", "crates/b/Cargo.toml": "[package]\nversion = \"2\"\n"})
+	vs, err := extracttest.Run(t, build, Spec{Files: []string{"crates/**/Cargo.toml"}, Path: "package.version"}, root)
+	if err != nil || extracttest.Texts(vs) != "1@2 2@2" || vs[1].At.File != "crates/b/Cargo.toml" {
+		t.Errorf("got %v, %v", vs, err)
 	}
 }

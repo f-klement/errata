@@ -18,6 +18,6 @@ func TestPropertyTOMLValuesSitAtTheirLine(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		extracttest.CheckLeaves(t, Build, root, "f.toml", data, doc, func(p string) Spec { return Spec{File: "f.toml", Path: p} })
+		extracttest.CheckLeaves(t, build, root, "f.toml", data, doc, func(p string) Spec { return Spec{File: "f.toml", Path: p} })
 	})
 }

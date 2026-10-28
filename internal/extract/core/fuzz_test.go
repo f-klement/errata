@@ -117,32 +117,48 @@ func FuzzNumber(f *testing.F) {
 }
 
 // FuzzExtract runs an extractor end to end after the read: the parse, the
-// document selection, the path and the values. Whatever the file and the
-// path, it returns values at lines inside the file and no more than
-// maxValues of them, or an error and no values.
+// document selection, the path, up to two embedded steps and the values.
+// Whatever the file, the paths and the steps' formats, it returns values at
+// lines inside the file and no more than maxValues of them, or an error and
+// no values. steps picks how many embedded steps the spec takes, 0, 1 or 2,
+// and f1 and f2 their formats.
 func FuzzExtract(f *testing.F) {
-	f.Add(uint8(0), []byte(extracttest.Manifests), "spec.replicas", "Deployment", "")
-	f.Add(uint8(0), []byte("a: &x {b: [1, 2]}\nc:\n  <<: *x\n  d: *x\n"), "c[*][-1]", "", "")
-	f.Add(uint8(0), []byte("kind: K\nmetadata: {name: n}\nv: [x]\n"), "$.v[*]", "K", "n")
-	f.Add(uint8(1), []byte(`{"a": [1, {"b": "x"}], "c": null}`), "a[*].b", "", "")
-	f.Add(uint8(2), []byte(extracttest.RunnerConfig), "runners[*].kubernetes['node_selector'][*]", "", "")
-	f.Add(uint8(0), []byte(extracttest.Manifests), "metadata[?@ == 'web']", "Deployment", "")
-	f.Add(uint8(1), []byte(`{"a": [{"n": 1e3, "s": "x"}, {"n": "1000"}]}`), "a[?@.n == 1000].s", "", "")
-	f.Add(uint8(2), []byte("[[d]]\nn = 0x10\ns = 'x'\n[[d]]\nn = '16'\n"), "d[?@.n == 16 && @.s == 'x'].s", "", "")
-	f.Add(uint8(0), []byte("a: [{n: 1, s: x}, {n: 2}, {n: 1.0, s: y}, [1], 1]\nb: {k: {n: 1}, l: {n: 0e9}}\n"), "$[*][?@.n == 1].s", "", "")
-	f.Add(uint8(1), []byte(`{"a": [{"n": 0e1000000000000000}, {"n": 0}, {"n": 1e3}]}`), "a[?@.n == 0]", "", "")
-	f.Add(uint8(0), []byte("r:\n  - {d: [docker], m: 1d}\n  - {d: [helm], m: 2d}\n  - {d: [docker]}\n"), "r[?@.m && @.d[?@ == 'docker']].m", "", "")
-	f.Add(uint8(1), []byte(`{"e": [{"ports": [{"port": 6443}], "to": ["x"]}, {"ports": [{"port": 80}], "to": ["y"]}]}`), "e[?@.ports[?@.port == 6443]].to[*]", "", "")
-	f.Add(uint8(2), []byte("[[r]]\nnames = ['alpine/k8s']\nallowed = '<1.38'\n[[r]]\nnames = ['x']\n"), "r[?@.names[?@ == 'alpine/k8s'] && !@.enabled].allowed", "", "")
-	f.Fuzz(func(t *testing.T, format uint8, data []byte, path, kind, name string) {
+	embedFormats := [3]string{"yaml", "json", "toml"}
+	f.Add(uint8(0), []byte(extracttest.Manifests), "spec.replicas", "Deployment", "", uint8(0), "", uint8(0), "", uint8(0))
+	f.Add(uint8(0), []byte("a: &x {b: [1, 2]}\nc:\n  <<: *x\n  d: *x\n"), "c[*][-1]", "", "", uint8(0), "", uint8(0), "", uint8(0))
+	f.Add(uint8(0), []byte("kind: K\nmetadata: {name: n}\nv: [x]\n"), "$.v[*]", "K", "n", uint8(0), "", uint8(0), "", uint8(0))
+	f.Add(uint8(1), []byte(`{"a": [1, {"b": "x"}], "c": null}`), "a[*].b", "", "", uint8(0), "", uint8(0), "", uint8(0))
+	f.Add(uint8(2), []byte(extracttest.RunnerConfig), "runners[*].kubernetes['node_selector'][*]", "", "", uint8(0), "", uint8(0), "", uint8(0))
+	f.Add(uint8(0), []byte(extracttest.Manifests), "metadata[?@ == 'web']", "Deployment", "", uint8(0), "", uint8(0), "", uint8(0))
+	f.Add(uint8(1), []byte(`{"a": [{"n": 1e3, "s": "x"}, {"n": "1000"}]}`), "a[?@.n == 1000].s", "", "", uint8(0), "", uint8(0), "", uint8(0))
+	f.Add(uint8(2), []byte("[[d]]\nn = 0x10\ns = 'x'\n[[d]]\nn = '16'\n"), "d[?@.n == 16 && @.s == 'x'].s", "", "", uint8(0), "", uint8(0), "", uint8(0))
+	f.Add(uint8(0), []byte("a: [{n: 1, s: x}, {n: 2}, {n: 1.0, s: y}, [1], 1]\nb: {k: {n: 1}, l: {n: 0e9}}\n"), "$[*][?@.n == 1].s", "", "", uint8(0), "", uint8(0), "", uint8(0))
+	f.Add(uint8(1), []byte(`{"a": [{"n": 0e1000000000000000}, {"n": 0}, {"n": 1e3}]}`), "a[?@.n == 0]", "", "", uint8(0), "", uint8(0), "", uint8(0))
+	f.Add(uint8(0), []byte("r:\n  - {d: [docker], m: 1d}\n  - {d: [helm], m: 2d}\n  - {d: [docker]}\n"), "r[?@.m && @.d[?@ == 'docker']].m", "", "", uint8(0), "", uint8(0), "", uint8(0))
+	f.Add(uint8(1), []byte(`{"e": [{"ports": [{"port": 6443}], "to": ["x"]}, {"ports": [{"port": 80}], "to": ["y"]}]}`), "e[?@.ports[?@.port == 6443]].to[*]", "", "", uint8(0), "", uint8(0), "", uint8(0))
+	f.Add(uint8(2), []byte("[[r]]\nnames = ['alpine/k8s']\nallowed = '<1.38'\n[[r]]\nnames = ['x']\n"), "r[?@.names[?@ == 'alpine/k8s'] && !@.enabled].allowed", "", "", uint8(0), "", uint8(0), "", uint8(0))
+	f.Add(uint8(0), []byte("c: |\n  a: |\n    [t]\n    v = 3\n"), "c", "", "", uint8(0), "a", uint8(2), "t.v", uint8(2))
+	f.Add(uint8(0), []byte("s: &s 'x = 1'\nl: [*s, *s]\n"), "l[*]", "", "", uint8(2), "x", uint8(0), "", uint8(1))
+	f.Add(uint8(0), []byte("a: 0\rb: 1\rs: |\n  y = 2"), "s", "", "", uint8(2), "y", uint8(0), "", uint8(1))
+	f.Add(uint8(0), []byte("a: 0\ns: &a\n  |\n  x = 1\nt: *a\n"), "t", "", "", uint8(2), "x", uint8(0), "", uint8(1))
+	f.Add(uint8(1), []byte(`{"cfg": "a: |\n  x = 1\n", "e": ""}`), "cfg", "", "", uint8(0), "a", uint8(2), "x", uint8(2))
+	f.Add(uint8(2), []byte("cfg = '''\n{\"a\": [\"b: 1\"]}\n'''\n"), "cfg", "", "", uint8(1), "a[*]", uint8(0), "b", uint8(2))
+	f.Fuzz(func(t *testing.T, format uint8, data []byte, path, kind, name string, f1 uint8, p1 string, f2 uint8, p2 string, steps uint8) {
+		var embedded []core.Embedded
+		if steps%3 > 0 {
+			embedded = append(embedded, core.Embedded{Format: embedFormats[f1%3], Path: p1})
+		}
+		if steps%3 > 1 {
+			embedded = append(embedded, core.Embedded{Format: embedFormats[f2%3], Path: p2})
+		}
 		var s extract.Spec
 		switch format % 3 {
 		case 0:
-			s.YAML = &extract.YAML{File: "f", Path: path, Kind: kind, Name: name}
+			s.YAML = &extract.YAML{File: "f", Path: path, Kind: kind, Name: name, Embedded: embedded}
 		case 1:
-			s.JSON = &extract.JSON{File: "f", Path: path}
+			s.JSON = &extract.JSON{File: "f", Path: path, Embedded: embedded}
 		default:
-			s.TOML = &extract.TOML{File: "f", Path: path}
+			s.TOML = &extract.TOML{File: "f", Path: path, Embedded: embedded}
 		}
 		e, err := extract.Build(s)
 		if err != nil {

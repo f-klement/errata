@@ -42,9 +42,10 @@ type Rule struct {
 // Assertion is a rule's assert: expression, compiled and type checked at load.
 type Assertion interface {
 	// Eval evaluates the expression over each extractor's values, by
-	// extractor name. An error means it could not decide, and the rule is
-	// unknown.
-	Eval(ctx context.Context, values map[string][]string) (bool, error)
+	// extractor name, and the file of each value, by the same name and the
+	// value's index, which by_file groups the values by. An error means it
+	// could not decide, and the rule is unknown.
+	Eval(ctx context.Context, values, files map[string][]string) (bool, error)
 }
 
 // NamedExtractor is one entry under a rule's extract:, with the name agree:

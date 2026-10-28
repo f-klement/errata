@@ -1,0 +1,260 @@
+# Two rules that read documents embedded in strings, after two checks of a
+# GitOps repository: a runner's config.toml in a Helm value, Garage's
+# garage.toml in a ConfigMap, and a JSON list of tenants in an env var. On
+# the real tree both hold. Each planted break is an erratum: a table header
+# moved above the resource keys, which TOML then reads as node selector
+# labels, and a region the cache signs with that Garage does not serve. A
+# config.toml that does not parse is unknown, naming both paths.
+exec errata check
+stdout '^0 errata, 0 unknown. Coverage: ran 2, skipped 0.$'
+! stderr .
+
+cp swallowed/values.yaml infra/gitlab-runner/values.yaml
+! exec errata check
+stdout '^FALSE runner-config-keys-land-where-written \(repo\)$'
+stdout '^          selector\[1\] = "500m" at infra/gitlab-runner/values.yaml:11$'
+stdout '^1 erratum, 0 unknown. Coverage: ran 2, skipped 0.$'
+
+cp good/values.yaml infra/gitlab-runner/values.yaml
+cp drifted/15-garage.yaml infra/observability/15-garage.yaml
+! exec errata check
+stdout '^FALSE runner-cache-reaches-a-provisioned-tenant \(repo\)$'
+stdout '^          region\[0\] = "us-east-1" at infra/observability/15-garage.yaml:9$'
+stdout '^          location\[0\] = "garage" at infra/gitlab-runner/values.yaml:22$'
+stdout '^1 erratum, 0 unknown. Coverage: ran 2, skipped 0.$'
+
+cp good/15-garage.yaml infra/observability/15-garage.yaml
+cp broken/values.yaml infra/gitlab-runner/values.yaml
+! exec errata check
+stdout '^UNKNOWN runner-config-keys-land-where-written \(repo\)$'
+stdout 'infra/gitlab-runner/values.yaml: path "runners.config" then toml path "runners\[\*\].kubernetes.node_selector\[\*\]": the toml document in the string at line 4: toml: line 3: '
+stdout '^0 errata, 2 unknown. Coverage: ran 2, skipped 0.$'
+
+-- errata.yaml --
+checks:
+  # A path selects values, not keys, so this rule cannot name the keys a
+  # header swallowed. It counts them instead, which fits this fixture alone:
+  # a runner with a second node selector label would be an erratum here.
+  - id: runner-config-keys-land-where-written
+    reason: >
+      A TOML table header takes every key below it. With [runners.kubernetes.node_selector]
+      above the resource keys, cpu_limit and the rest became node selector labels, every job
+      pod waited for a node labelled cpu_limit=2, and every pipeline stopped in prepare.
+    scope: repo
+    extract:
+      selector:
+        yaml:
+          file: infra/gitlab-runner/values.yaml
+          path: runners.config
+          embedded: [{format: toml, path: "runners[*].kubernetes.node_selector[*]"}]
+      hostname:
+        yaml:
+          file: infra/gitlab-runner/values.yaml
+          path: runners.config
+          embedded: [{format: toml, path: "runners[*].kubernetes.node_selector['kubernetes.io/hostname']"}]
+      cpu_limit:
+        yaml:
+          file: infra/gitlab-runner/values.yaml
+          path: runners.config
+          embedded: [{format: toml, path: "runners[*].kubernetes.cpu_limit"}]
+    allow_empty: [cpu_limit]
+    assert: size(selector) == size(hostname) && size(cpu_limit) == size(hostname)
+
+  - id: runner-cache-reaches-a-provisioned-tenant
+    reason: >
+      A runner treats a cache it cannot reach as a miss and the job passes. A bucket Garage
+      does not provision, a region Garage does not serve or a virtual host address all look
+      like a cold cache forever.
+    scope: repo
+    extract:
+      region:
+        yaml:
+          file: infra/observability/15-garage.yaml
+          kind: ConfigMap
+          path: "data['garage.toml']"
+          embedded: [{format: toml, path: s3_api.s3_region}]
+      tenants:
+        yaml:
+          file: infra/observability/15-garage.yaml
+          kind: Deployment
+          path: "spec.template.spec.containers[*].env[?@.name == 'GARAGE_TENANTS'].value"
+          embedded: [{format: json, path: "[*].name"}]
+      bucket:
+        yaml:
+          file: infra/gitlab-runner/values.yaml
+          path: runners.config
+          embedded: [{format: toml, path: "runners[*].cache.s3.BucketName"}]
+      location:
+        yaml:
+          file: infra/gitlab-runner/values.yaml
+          path: runners.config
+          embedded: [{format: toml, path: "runners[*].cache.s3.BucketLocation"}]
+      path_style:
+        yaml:
+          file: infra/gitlab-runner/values.yaml
+          path: runners.config
+          embedded: [{format: toml, path: "runners[*].cache.s3.PathStyle"}]
+    assert: |
+      size(bucket) == 1 && subset(bucket, tenants) && location == region &&
+      path_style == ['true']
+-- infra/gitlab-runner/values.yaml --
+gitlabUrl: https://gitlab.com/
+runners:
+  cache: {secretName: runner-cache}
+  config: |
+    [[runners]]
+      [runners.kubernetes]
+        namespace = "{{.Release.Namespace}}"
+        image = "alpine:3.20"
+        cpu_request = "500m"
+        cpu_limit = "2"
+        memory_request = "256Mi"
+        memory_limit = "2Gi"
+        [runners.kubernetes.node_selector]
+          "kubernetes.io/hostname" = "ci-worker"
+      [runners.cache]
+        Type = "s3"
+        Path = "runner"
+        Shared = true
+        [runners.cache.s3]
+          ServerAddress = "garage.observability.svc:3900"
+          BucketName = "ci-cache"
+          BucketLocation = "garage"
+          Insecure = true
+          PathStyle = true
+-- good/values.yaml --
+gitlabUrl: https://gitlab.com/
+runners:
+  cache: {secretName: runner-cache}
+  config: |
+    [[runners]]
+      [runners.kubernetes]
+        namespace = "{{.Release.Namespace}}"
+        image = "alpine:3.20"
+        cpu_request = "500m"
+        cpu_limit = "2"
+        memory_request = "256Mi"
+        memory_limit = "2Gi"
+        [runners.kubernetes.node_selector]
+          "kubernetes.io/hostname" = "ci-worker"
+      [runners.cache]
+        Type = "s3"
+        Path = "runner"
+        Shared = true
+        [runners.cache.s3]
+          ServerAddress = "garage.observability.svc:3900"
+          BucketName = "ci-cache"
+          BucketLocation = "garage"
+          Insecure = true
+          PathStyle = true
+-- swallowed/values.yaml --
+gitlabUrl: https://gitlab.com/
+runners:
+  cache: {secretName: runner-cache}
+  config: |
+    [[runners]]
+      [runners.kubernetes]
+        namespace = "{{.Release.Namespace}}"
+        image = "alpine:3.20"
+        [runners.kubernetes.node_selector]
+          "kubernetes.io/hostname" = "ci-worker"
+        cpu_request = "500m"
+        cpu_limit = "2"
+        memory_request = "256Mi"
+        memory_limit = "2Gi"
+      [runners.cache]
+        Type = "s3"
+        Path = "runner"
+        Shared = true
+        [runners.cache.s3]
+          ServerAddress = "garage.observability.svc:3900"
+          BucketName = "ci-cache"
+          BucketLocation = "garage"
+          Insecure = true
+          PathStyle = true
+-- broken/values.yaml --
+gitlabUrl: https://gitlab.com/
+runners:
+  cache: {secretName: runner-cache}
+  config: |
+    [[runners]]
+      [runners.kubernetes]
+        namespace = = "gitlab-runner"
+-- infra/observability/15-garage.yaml --
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: garage-config
+  namespace: observability
+data:
+  garage.toml: |
+    [s3_api]
+    s3_region = "garage"
+    api_bind_addr = "[::]:3900"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: garage-bootstrap
+  namespace: observability
+spec:
+  template:
+    spec:
+      containers:
+        - name: bootstrap
+          image: alpine/k8s:1.31.2
+          env:
+            - name: GARAGE_TENANTS
+              value: '[{"name": "loki"}, {"name": "mimir"}, {"name": "ci-cache"}]'
+-- good/15-garage.yaml --
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: garage-config
+  namespace: observability
+data:
+  garage.toml: |
+    [s3_api]
+    s3_region = "garage"
+    api_bind_addr = "[::]:3900"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: garage-bootstrap
+  namespace: observability
+spec:
+  template:
+    spec:
+      containers:
+        - name: bootstrap
+          image: alpine/k8s:1.31.2
+          env:
+            - name: GARAGE_TENANTS
+              value: '[{"name": "loki"}, {"name": "mimir"}, {"name": "ci-cache"}]'
+-- drifted/15-garage.yaml --
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: garage-config
+  namespace: observability
+data:
+  garage.toml: |
+    [s3_api]
+    s3_region = "us-east-1"
+    api_bind_addr = "[::]:3900"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: garage-bootstrap
+  namespace: observability
+spec:
+  template:
+    spec:
+      containers:
+        - name: bootstrap
+          image: alpine/k8s:1.31.2
+          env:
+            - name: GARAGE_TENANTS
+              value: '[{"name": "loki"}, {"name": "mimir"}, {"name": "ci-cache"}]'

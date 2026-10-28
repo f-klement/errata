@@ -347,11 +347,11 @@ func TestFileBounds(t *testing.T) {
 		t.Fatal(err)
 	}
 	limited := x.(extractor)
-	limited.fileLimit = 3
+	limited.files.FileLimit = 3
 	if _, err := limited.Extract(root); err != nil {
 		t.Errorf("3 files under a limit of 3: %v", err)
 	}
-	limited.fileLimit = 2
+	limited.files.FileLimit = 2
 	_, err = limited.Extract(root)
 	extracttest.WantError(t, err, `env: files names more than 10000 files, the limit, at "*.sh"`)
 }
@@ -373,12 +373,12 @@ func TestMatchBound(t *testing.T) {
 		t.Fatal(err)
 	}
 	limited := x.(extractor)
-	limited.matchLimit = 48
+	limited.files.MatchLimit = 48
 	if _, err := limited.Extract(root); err != nil {
 		t.Errorf("48 bytes matched under a limit of 48: %v", err)
 	}
-	limited.matchLimit = 47
-	limited.fileLimit = 1
+	limited.files.MatchLimit = 47
+	limited.files.FileLimit = 1
 	_, err = limited.Extract(root)
 	extracttest.WantError(t, err, fmt.Sprintf(`env: files lists 3 globs, and matching each against the 16 bytes of path git tracks takes more than %d bytes, the limit; list fewer globs`, maxMatchBytes))
 }

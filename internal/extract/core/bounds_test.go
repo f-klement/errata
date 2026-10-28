@@ -14,8 +14,10 @@ import (
 
 // An extractor returns maxValues values, and refuses one more, as the
 // planted break. The yaml, json and toml extractors share values, so JSON
-// stands for the three.
+// stands for the three. It took 3 s under -race with coverage on the build
+// node, so it runs in make slow.
 func TestExtractValueLimit(t *testing.T) {
+	slowOnly(t)
 	list := func(n int) string { return "[" + strings.Repeat("1,", n-1) + "1]" }
 	for _, c := range []struct {
 		file string

@@ -104,9 +104,11 @@ docker run --rm -v "$PWD:/repo" -w /repo fklement/errata check
   cluster says out loud which checks it could not reach.
 - **Rules in YAML.** A rule reads values out of YAML, JSON, TOML, XML, INI, Java properties
   and dotenv files, the files that pin a tool's version, the variables of shell scripts, regular
-  expression captures and the prose of Markdown files, and states that they agree
+  expression captures, the prose of Markdown files, and whether a file is there and its size,
+  and states that they agree
   or that a [CEL](https://cel.dev) expression over them holds.
-  An erratum names every value with the `file:line` it came from.
+  An erratum names every value with the `file:line` it came from, or the file alone for whether a
+  file is there and its size.
 - **Output for people and for CI.** Readable text, JUnit XML that GitLab, GitHub Actions and
   Jenkins render per check, or SARIF that GitHub code scanning turns into alerts on the line that
   disagrees.
@@ -480,6 +482,7 @@ the type of every part of the expression when it loads the file.
 | `subset(a, b)` | true when every member of `a` is in `b` |
 | `semver(s)` | the version `s`, which `<`, `<=`, `>`, `>=`, `==` and `!=` compare with another `semver()`, a missing number as 0, so `semver('20') == semver('20.0.0')`; `string()` writes it |
 | `semver_satisfies(v, r)` | true when the version `v` satisfies the range `r`, as `compare: semver` decides (see [Comparing versions](#comparing-versions)) |
+| `by_file(x)` | the values of the extractor `x` grouped by the file each came from, as a map from file to list (see [A set of files](#a-set-of-files)) |
 | `s.split(sep)`, `s.split(sep, n)` | the parts of `s` between each `sep`, as a list; with `n`, at most `n` parts, the last holding the rest, and none for `n` of 0 |
 | `list.join()`, `list.join(sep)` | the members of a list of strings, with `sep` between them |
 | `s.replace(old, new)`, `s.replace(old, new, n)` | `s` with each `old` replaced by `new`; with `n`, the first `n` of them, and every one for a negative `n` |
@@ -587,9 +590,12 @@ expression in a repository's configuration can stall CI.
 ### Extractors
 
 An extractor reads one file of the repository and returns a list of values, each with the file and
-the line where it starts; `tool_version` reads every file that pins one tool, `package_version`
-each manifest of the package, and `env` one variable in every file a rule lists. A rule names its
-extractors under `extract:` and sets exactly one of the sixteen keys in each:
+the line where it starts, or the file alone for `exists` and `size`; `yaml`, `json`, `toml` and
+`regex` read every file `files:` names instead of one (see [A set of files](#a-set-of-files)),
+`tool_version` reads every file that pins one tool, `package_version` each manifest of the package,
+and `env` one variable in every file a rule lists; `exists` and `size` look at one file and read
+none of it. A rule names its extractors under `extract:` and sets exactly one of the eighteen keys
+in each:
 
 ```yaml
 extract:
@@ -630,14 +636,18 @@ extract:
     jenkins: {file: Jenkinsfile, variable: IMAGE_TAG, stage: deploy}
   every_port:
     env: {name: API_PORT, files: [.env, deploy.sh, .gitlab-ci.yml, .github/workflows/*.yml, Jenkinsfile]}
+  old_config:
+    exists: {file: legacy/old.conf}
+  notes_bytes:
+    size: {file: docs/NOTES.md}
 ```
 
 | Key | Fields | Returns |
 |---|---|---|
-| `yaml` | `file`, `path`, and `kind` or `name` for a file of several documents | every scalar the path selects |
-| `json` | `file`, `path` | every scalar the path selects |
-| `toml` | `file`, `path` | every scalar the path selects |
-| `regex` | `file`, `pattern` | capture group 1 of every match |
+| `yaml` | `file` or `files`, `path`, `kind` or `name` for a file of several documents, and `embedded` to read a document in a string | every scalar the path selects |
+| `json` | `file` or `files`, `path`, and `embedded` | every scalar the path selects |
+| `toml` | `file` or `files`, `path`, and `embedded` | every scalar the path selects |
+| `regex` | `file` or `files`, `pattern` | capture group 1 of every match |
 | `text` | `file`, `pattern`, and `code` to read code blocks too | capture group 1 of every match in the prose of a Markdown file |
 | `xml` | `file`, `path`, and `namespaces` for a file with namespaces | every node the path selects: an element's text, an attribute's value or a text node |
 | `ini` | `file`, `key`, `section`, and `dialect`, `subsection` (git) or `host` (ansible) | every value of the key in the section, or the hosts or child groups of an ansible group |
@@ -650,9 +660,12 @@ extract:
 | `github-actions` | `file`, `job`, `step` for a step by its id or name, and `variable` or `key` | the value the step, or the job, sees of an environment variable or a key such as `runs-on` or `with.node-version`, one for each job of a matrix (see [GitHub Actions](#github-actions)) |
 | `jenkins` | `file`, `variable`, and `stage` | the value a stage of a declarative Jenkinsfile sees of an environment variable (see [Jenkinsfiles](#jenkinsfiles)) |
 | `env` | `name`, `files`, and `readers` to give a file its reader | every value of one variable in the files, each read by the reader its name chooses, and each naming its reader and its job, step or stage (see [One variable in many files](#one-variable-in-many-files)) |
+| `exists` | `file` | `true` when a regular file is there, and `false` when none is, not an unknown (see [Whether a file is there](#whether-a-file-is-there)) |
+| `size` | `file` | the size of the regular file in bytes, in decimal (see [Whether a file is there](#whether-a-file-is-there)) |
 
-Each key also takes `max_bytes`, the largest file it reads; for `tool_version`, `package_version`
-and `env`, the files it reads in all, and for `gitlab-ci` the file and the files it includes in all
+Each key but `exists` and `size`, which read no byte, also takes `max_bytes`, the largest file it
+reads; for `files:`, `tool_version`, `package_version` and `env`, the files it reads in all, and
+for `gitlab-ci` the file and the files it includes in all
 (see Limits).
 
 `file`, and each of `files`, is relative to the repository root. An absolute path, or one whose `..`
@@ -665,12 +678,90 @@ A link that ends outside is refused when the file is read, which makes the rule 
 link whose route passes through any other directory outside the repository, even when it ends
 inside, and an absolute link written through a symlink, such as one to `/tmp/...` on a machine where
 `/tmp` is a link. The message says only that a symlink leads outside the repository: not where it
-points, nor whether that exists. errata looks at nothing outside the repository to decide. A file
+points, nor whether that exists. errata looks at nothing outside the repository to decide. These
+rules hold for each file a glob in `files:` matches too. A file
 that is not a regular file, such as a FIFO or a device, which git never checks out, is refused
 before a byte of it is read, so a FIFO with no writer makes the rule unknown rather than hang the
 run. A device is refused before it is even opened, since opening one can act on it: `/dev/watchdog`
 arms, and a serial port raises DTR. A location, and every message, names the file as `file` wrote
 it.
+
+#### A set of files
+
+`yaml`, `json`, `toml` and `regex` take `files:` in place of `file:`, a list of files and globs, and
+read each file as `file:` would, so one rule holds every file of a kind to a claim, the file added
+tomorrow included. Setting both does not load. This rule says that every Argo CD Application that
+ignores a Secret's data syncs with `RespectIgnoreDifferences=true`, without which a sync rewrites
+the data the ignore was meant to keep:
+
+```yaml
+checks:
+  - id: ignored-secret-data-is-respected-on-sync
+    reason: A sync applies the whole manifest unless RespectIgnoreDifferences is set.
+    scope: repo
+    extract:
+      apps:
+        yaml: {files: [infra/argocd/applications/*.yaml], kind: Application, path: metadata.name}
+      ignores:
+        yaml:
+          files: [infra/argocd/applications/*.yaml]
+          kind: Application
+          path: "spec.ignoreDifferences[?@.kind == 'Secret' && @.jsonPointers[?@ == '/data']].kind"
+      options:
+        yaml: {files: [infra/argocd/applications/*.yaml], kind: Application, path: "spec.syncPolicy.syncOptions[*]"}
+    allow_empty: [ignores, options]
+    assert: |
+      size(apps) > 0 &&
+      by_file(ignores).all(f, f in by_file(options) && 'RespectIgnoreDifferences=true' in by_file(options)[f])
+```
+
+An entry with `*`, `?` or `[` is a glob, and any other entry names one file, which must exist. A
+glob is matched a path segment at a time, as Go's `path.Match` matches one: `*` and `?` never cross
+a `/`, and `[a-z]` is a class. A segment that is exactly `**` matches zero or more whole segments:
+`infra/**/*.yaml` matches `infra/a.yaml` and `infra/a/b/c.yaml`, `**/Chart.yaml` matches a
+`Chart.yaml` at any depth, the root's included, and `docs/**` matches every file below `docs`. A
+`**` inside a segment, as in `a**`, is a `*`. `env`'s `files:` matches the same way.
+
+A glob matches the files git tracks, read from `.git/index` without running git, so it reads what a
+clone holds: never an untracked or ignored file, a submodule, or a file a sparse checkout leaves
+out. It needs the repository root to be the top of a git repository; the cases that make such a
+rule unknown are those of [One variable in many files](#one-variable-in-many-files). The values come
+in a fixed order: the entries in the order `files:` lists them, a glob's files in the order of
+git's index, which sorts paths byte by byte, and each file's values in the order its reader finds
+them. A file two entries name is read once, at its first place, and so is a file two names resolve
+to, such as a tracked symlink and its target, so a rule that each value occurs once does not count
+one file twice.
+
+Each file is read and parsed alone, and the location of each value names its own file, so every
+message names the file and line of each value. A file that its reader refuses makes the whole rule
+unknown, naming it: one that does not parse, a symlink that leads outside the repository, a file
+git tracks that the working tree lacks. A glob over `**/*.yaml` that meets a Helm template, which is
+not YAML, is unknown, so narrow the glob or read such files with `regex`. One refusal of `yaml`
+does not apply in a set: a `kind` or `name` that selects no document of a file makes that file add
+no value, since a glob over every manifest finds the kind in some of them. A file of several
+documents still needs `kind` or `name`.
+
+A glob that matches no file adds no value. An extractor that finds no value makes its rule unknown
+unless `allow_empty` lists it, so a mistyped glob fails the run, and a rule about every file of a
+kind that may have none lists the extractor in `allow_empty`. The rule above lists `ignores` and
+`options`, since a repository may have neither, and holds `apps`, which it does not list, to at
+least one file.
+
+`max_bytes` is the most bytes the files of the set hold in all, 32 MiB by default and at most 64
+MiB, each file read to what the files before it left. The values of every file together hold to
+one extractor's limits: 100000 values and `max_bytes` bytes. The files also spend one budget on
+what YAML aliases and merge keys add, one on a path's filter work, and one regex time limit, each
+file starting at what the files before it spent. A file's node limit is scaled from the bytes the
+files before it left, and its refusal names them. `files` lists at most 64 entries, one extractor reads at most 10000 files,
+and the globs are matched against at most 256 MiB of path (see [Limits](#limits)).
+
+In `assert`, `by_file(x)` is the values of the extractor `x` grouped by file: a map from each file
+that gave `x` a value to its values, in the order `x` found them. A file that gave none is no key,
+so `f in by_file(x)` asks whether a file gave `x` a value, and `by_file(x).all(f, ...)` runs over
+the files that did, in the order of each file's first value, the same on every run. `by_file`
+takes the name of one of the rule's extractors, and an expression that
+passes it anything else does not load. `x` itself is still the list of every value, in the order
+above.
 
 #### Paths
 
@@ -926,6 +1017,62 @@ trailing `---` makes, do not count. With `kind`, `name` or both, errata keeps ea
 top-level `kind` and `metadata.name` equal them, and returns the values from all of them. A
 selector that matches no document, and a file of several documents without a selector, make the
 rule unknown with a message that says which.
+
+#### Documents in strings
+
+A config is often carried in a string of another file: Gatus's `config.yaml` in a ConfigMap, a
+GitLab runner's `config.toml` in a Helm value, a JSON list in an env var's `value`. `embedded` on a
+`yaml`, `json` or `toml` extractor reads such a document. It is a list of steps, and each step
+names the `format` the string is parsed in, `yaml`, `json` or `toml`, and a `path` read in that
+document, in the grammar and with the filters above:
+
+```yaml
+extract:
+  region:
+    yaml:
+      file: infra/observability/15-garage.yaml
+      kind: ConfigMap
+      path: "data['garage.toml']"
+      embedded: [{format: toml, path: s3_api.s3_region}]
+  tenants:
+    yaml:
+      file: infra/observability/15-garage.yaml
+      kind: Deployment
+      path: "spec.template.spec.containers[*].env[?@.name == 'GARAGE_TENANTS'].value"
+      embedded: [{format: json, path: "[*].name"}]
+```
+
+A step reads every string the path, or the step before it, selected, and the values are what the
+last step selects. A document in a string in a document in a string is two steps, and
+`embedded` takes at most 4. A step past the fourth, a format left out or one errata does not read,
+and a path left out or that does not parse do not load.
+
+errata parses the string with the parser a file of its format goes through, with the same
+refusals: a repeated key, a depth past the limit, a tag that does not fit. A YAML string holds at
+most one document, since a step has no `kind` or `name`; an empty one holds none, so its step
+selects nothing, which `allow_empty` decides. A value a step reads that is not a string (a number,
+a bool, null, a mapping or a sequence), and a string that does not parse, make the rule unknown.
+The message names the file, every path and the line where the string starts:
+
+```text
+infra/gitlab-runner/values.yaml: path "runners.config" then toml path "runners[*].cache.s3.BucketName": the toml document in the string at line 4: toml: line 3: ...
+```
+
+A value is reported at a line of the outer file. When every string on its way is a YAML literal
+block scalar (`|`), whose lines are the file's lines, that is the line the value is on, also when
+an anchor, a tag or a comment stands on a line between the key and the `|`, and through an alias
+of such an anchor. Any other string folds or escapes its lines, as `>`, a quoted string, a JSON
+string or a TOML multi-line string can, so every value in it is reported at the line where the
+outermost such string starts. A block scalar that holds an LS or a PS counts as such a string,
+since YAML breaks the file's lines there and JSON and TOML do not, and so does one in a UTF-16
+file. No value is reported past the file's last line: in a file whose lines end in CR, NEL, LS or
+PS, which YAML counts as line breaks, a value that would land past it is reported at the last.
+
+The documents in an extractor's strings count against its limits together, as one more file (see
+Limits): a string that YAML aliases repeat counts each time it is read. Over a set of files they
+count together across every file of the set.
+[ADR 0007](docs/adr/0007-embedded-reads-a-document-a-string-holds.md) says why the steps are a
+list and how lines are reported.
 
 #### Regular expressions
 
@@ -1997,7 +2144,8 @@ env:
 
 An entry with `*`, `?` or `[` is a glob. errata matches it against the files git tracks, read from
 `.git/index` without running git, a path segment at a time as Go's `path.Match` does: `*` never
-crosses a `/`. A file git does not track is not read, nor is a submodule or a file a sparse checkout
+crosses a `/`, and a segment `**` matches any number of segments, as in
+[A set of files](#a-set-of-files). A file git does not track is not read, nor is a submodule or a file a sparse checkout
 leaves out. A glob that matches no file adds no value, so a rule whose `env` finds none is unknown
 unless `allow_empty` lists it. A glob needs the repository root to be the top of a git repository. A
 worktree's or a submodule's `.git` file is followed to the git directory it names, and one that
@@ -2035,6 +2183,77 @@ holds (see Limits). Dockerfile
 `ENV` and `ARG`, compose `environment:`, Kubernetes `env:` entries and systemd units join the
 readers in later releases.
 
+#### Whether a file is there
+
+`exists` gives one value, `true` or `false`, so a rule can say that a file stays removed, or that
+one is there:
+
+```yaml
+checks:
+  - id: secret-generators-stay-removed
+    reason: >
+      The key files are gitignored, so with the generators Argo cannot render the app. A re-vendor
+      of upstream restores them.
+    scope: repo
+    extract:
+      app: {exists: {file: infra/argocd/applications/wazuh.yaml}}
+      generator: {regex: {file: infra/wazuh/upstream/kustomization.yml, pattern: '^(secretGenerator):'}}
+    allow_empty: [generator]
+    assert: (app[0] == 'true') == (size(generator) == 0)
+```
+
+A missing file is the value `false`, not an unknown. Every other extractor is unknown for a file
+that is not there, because it was asked for a value inside the file; `exists` was asked whether
+the file is there, and "no" is that answer
+([ADR 0006](docs/adr/0006-a-missing-file-is-a-value-for-exists.md)). What `exists` cannot decide
+still makes the rule unknown.
+
+| At the name | `exists` | `size` |
+|---|---|---|
+| a regular file, readable or not | `true` | its size |
+| nothing, or a name below a regular file, such as `f/x` | `false` | unknown |
+| a directory | unknown | unknown |
+| a symlink that ends at a file inside the repository | `true` | the size of the file it ends at |
+| a symlink that ends at a directory | unknown | unknown |
+| a symlink that dangles inside the repository | `false` | unknown |
+| a symlink that leads outside the repository, whether or not its target exists | unknown | unknown |
+| a loop of symlinks, a FIFO, a socket or a device | unknown | unknown |
+| a name below a directory errata cannot open, to read it and search it | unknown | unknown |
+| a root that is not there, or is no directory | unknown | unknown |
+
+`file` is read as for any extractor: relative to the root, its `..` resolved by name before any
+symlink, and its symlinks followed as the operating system follows them, with the same refusal of
+a link that leads out. errata looks at nothing outside the repository, so a link out is unknown
+even when its target is missing. Both kinds look at the file with `lstat` once its links are
+followed, and open no file, so a FIFO does not hang the run and a device is not acted on. The
+`lstat` goes through Go's `os.Root`, which opens each directory on the way, so a file below a
+directory errata may search but not read (mode 0111) is unknown. A directory at the name is
+unknown: a rule that a file is there is about a file, and a directory is no file, while a rule
+that a file stays removed is about what reads that name, and kustomize, for one, reads a
+directory in a file's place. A file is what the working tree holds, tracked by git or not, as for
+every extractor. On a file system that ignores case, as macOS and Windows set theirs up by
+default, `exists: {file: Values.yaml}` is `true` when `values.yaml` is there, where a Linux CI
+job finds nothing; every reader reads such a name the same way.
+
+`size` is the byte count `lstat` gives once the links are followed, as `wc -c` counts it. It has
+no limit, since nothing is read, and so takes no `max_bytes`. `size(bytes(...))` over a regex
+capture of the whole file counts differently: the regex reads a CRLF line end as LF, so a file
+of CRLF lines counts one byte fewer for each line, and a file over `max_bytes` is unknown.
+Compare the value as a number with `int()`:
+
+```yaml
+    extract:
+      notes: {size: {file: CLAUDE.md}}
+    assert: int(notes[0]) <= 7000
+```
+
+Each value is at the file as `file` wrote it, at no line, so a message names the file alone, and
+a SARIF result has no region. A `file` with `*`, `?` or `[` does not load. A `files:` entry with
+one is a glob, and `exists` would look for a file of that very name, find none, and say `false`,
+so a rule that files stay removed would hold whatever the glob matched. `exists` and `size` take
+no `files:`. A file whose name
+holds one of these characters, such as `app/[slug]/page.tsx`, cannot be named yet.
+
 #### Limits
 
 A file in a pull request can be large or hostile, and an extractor must not stall or kill the run
@@ -2061,13 +2280,14 @@ core machine.
 | file size | 32 MiB, or `max_bytes` | checked before reading. An ordinary file costs about 27 times its size in memory: an 8.2 MB OpenAPI document takes 0.95 s and 223 MB |
 | nodes | `max_bytes` divided by 7 (YAML), 3 (TOML), 8 (JSON) or 3 (XML) | checked before parsing, since the YAML and TOML parsers build a whole document or expression before errata sees it. errata counts in one pass an upper bound on the nodes the parser can build: two for each byte after which a key, a value or an item can start, with YAML's NEL, LS and PS line breaks among them, and a UTF-16 YAML file counted as the UTF-8 the parser reads. A file of one-character items counts one for each byte, an ordinary file one for every 3 to 16: a 6.3 MB Helm index has 6 times room at the default, a 7.9 MB uv.lock 4.8 times, a 7.4 MB Google API document 8 times. The limit bounds nodes, not memory, since a node costs more or less by its shape. The densest files measured so far at the default peak at 2.0 GB in YAML (mappings of 62 anchored, tagged keys), 2.55 GB in TOML (inline tables of dotted keys of 500 parts) and 0.42 GB in JSON (objects nested 900 deep), and grow in proportion to `max_bytes`; 32 MiB of one-character items ran out of 4.7 GB in YAML without the limit. Raise `max_bytes` to read a denser file. For XML errata counts each element, attribute, namespace declaration and text node as it builds them from encoding/xml's tokens, since it builds the tree itself. The densest of 39 real XML files, MARC library records, holds a node for every 11.5 bytes, almost 4 times the room at the default. The densest file XML can write, text between empty elements (`x<a/>`), reaches the limit at 28 MB, which takes 1.0 GB; 32 MiB of empty elements takes 1.3 GB. An attribute costs more memory than an element, since encoding/xml builds a whole start tag before errata counts it: the densest XML measured so far, one start tag of 8.4 million attributes in 32 MiB, peaks at 1.94 GB before it is refused |
 | values per extractor | 100000 | every value is kept in memory and printed; a regex `(\d*)` matches at every byte. A path that selects more nodes at any step stops there. The values of one extractor also hold at most `max_bytes` bytes in all, since YAML aliases can repeat a value, decoding can lengthen one, and an XML element's value holds the text of every element inside it: `//a` over 1000 nested elements around 30 MB would return 30 GB, and is refused. 100000 regex matches in 4.3 MB take 0.8 s and 45 MB |
+| documents in strings | `max_bytes` in all, and the nodes `max_bytes` allows | the documents an extractor's `embedded` steps parse out of strings count together, as one more file: their bytes against `max_bytes`, and the nodes each can hold, counted as for a file of its format at its bytes per node, against `max_bytes` too. A string YAML aliases repeat counts each time. The nodes YAML aliases add, the filter work and the values count over the file and its documents together, so a run reads at most twice `max_bytes` for one extractor. Over a set of files, the documents in the strings of every file count together against the set's `max_bytes`, as one more file of the set |
 | depth | 1000 | each key, each part of a dotted TOML key or table header, and each element is one level, and an array table's element one more. The deepest of 56 real files measured nests 25 |
-| YAML aliases and merge keys | 1000000 nodes | each alias adds the nodes of its anchor, and so does each mapping a merge key names, counted for the whole file before anything is built from them. A key counts by its length too: each 64 bytes of a key that a merge key copies count as one node more, and an alias used as a key counts one node and one more for each 64 bytes of its anchor's text, so a file that merges or repeats long keys many times reaches the limit instead of taking minutes. errata keeps one copy of an anchor, so 5000 mappings that merge one of 99 keys, at the limit, take 0.15 s and 51 MB |
+| YAML aliases and merge keys | 1000000 nodes, for every file of `files` together | each alias adds the nodes of its anchor, and so does each mapping a merge key names, counted for the whole file before anything is built from them. A key counts by its length too: each 64 bytes of a key that a merge key copies count as one node more, and an alias used as a key counts one node and one more for each 64 bytes of its anchor's text, so a file that merges or repeats long keys many times reaches the limit instead of taking minutes. errata keeps one copy of an anchor, so 5000 mappings that merge one of 99 keys, at the limit, take 0.15 s and 51 MB |
 | GitLab CI resolution | 150 included files, 11 levels of `extends`, 10 of `!reference`, 200 `parallel:matrix` jobs, 1000000 steps | GitLab's own limits on includes (its default), extends, `!reference` and matrices, and a step for each key a merge, an extends or a `!reference` touches, the bound YAML aliases have, since nested `!reference` lists repeat what they select without the file growing. Each is checked as the configuration is built (see [GitLab CI](#gitlab-ci)) |
 | GitHub Actions matrix | 256 jobs, 65536 combinations before `exclude:`, 1000000 steps | GitHub's own limit on a matrix's jobs, and a step for each key an `include:` or `exclude:` entry compares and for each 64 bytes of a value it compares, the bound YAML aliases have, since each entry is matched against every combination (see [GitHub Actions](#github-actions)) |
-| regex time | 10 s for each 32 MiB of `max_bytes`, and never less than 10 s | the search looks at the clock every 256 characters it reads, so one long search is stopped too. A pattern whose optional tail scans the rest of the line, such as `(\d)(?:.*x)?`, searches the line again after every match: 40 KB of one line took 27 s. One search that finds nothing costs the file times the pattern's width: `([0-9a-f]{40})` over 32 MiB of hex words took 28 s, and `([ab]{0,1000}c)` over 1 MiB 62 s; each is refused at 10 s. The slowest ordinary pattern measured over 32 MiB, `([A-Za-z0-9+/]{64,}={0,2})`, takes 4.7 s. A pattern that starts with a literal skips to each place the literal occurs and tries the pattern there. Where the next place is less than 64 bytes past the text the last try read, or a try reads more than 4 KiB, it searches every place from there on, as it does a pattern without a literal, so it reads at most 4 KiB more than a search of every place does. Over 32 MiB of this README, repeated, on the build node, `commit ([0-9a-f]{40})` takes 0.01 s, where a search of every place takes 0.82 s, and `(\d+\.\d+\.\d+)`, which starts with no literal, 1.2 s |
+| regex time | 10 s for each 32 MiB of `max_bytes`, and never less than 10 s; for `files`, one limit the searches of every file share | the search looks at the clock every 256 characters it reads, so one long search is stopped too. A pattern whose optional tail scans the rest of the line, such as `(\d)(?:.*x)?`, searches the line again after every match: 40 KB of one line took 27 s. One search that finds nothing costs the file times the pattern's width: `([0-9a-f]{40})` over 32 MiB of hex words took 28 s, and `([ab]{0,1000}c)` over 1 MiB 62 s; each is refused at 10 s. The slowest ordinary pattern measured over 32 MiB, `([A-Za-z0-9+/]{64,}={0,2})`, takes 4.7 s. A pattern that starts with a literal skips to each place the literal occurs and tries the pattern there. Where the next place is less than 64 bytes past the text the last try read, or a try reads more than 4 KiB, it searches every place from there on, as it does a pattern without a literal, so it reads at most 4 KiB more than a search of every place does. Over 32 MiB of this README, repeated, on the build node, `commit ([0-9a-f]{40})` takes 0.01 s, where a search of every place takes 0.82 s, and `(\d+\.\d+\.\d+)`, which starts with no literal, 1.2 s |
 | regex capture groups | 32 | a search tracks every group for every thread it keeps alive; 100000 matches of a pattern of 32 groups take 0.5 s and 29 MB |
-| filter work | 4000000000 bytes for the filters of one path | for each member tested, each comparison and each step after `@` counts 256, plus the bytes of each key it looks up and of the literal it compares, counted before the members are tested. A test that a path exists counts each step as it takes it, and a filter inside it counts its members as the outer one does, against the same total. At the limit, with 64 comparisons on each member, the worst shapes measured take 0.36 s to 1.42 s; on the build node, a test whose `[*]` steps fan out through shared nodes reaches the limit and is refused in 0.18 s |
+| filter work | 4000000000 bytes for the filters of one path, over every file of `files` together | for each member tested, each comparison and each step after `@` counts 256, plus the bytes of each key it looks up and of the literal it compares, counted before the members are tested. A test that a path exists counts each step as it takes it, and a filter inside it counts its members as the outer one does, against the same total. At the limit, with 64 comparisons on each member, the worst shapes measured take 0.36 s to 1.42 s; on the build node, a test whose `[*]` steps fan out through shared nodes reaches the limit and is refused in 0.18 s |
 | filter depth | 4 | parsing a filter and testing a member each recurse once for each filter nested inside another; membership takes 2 |
 | XML path terms | 32 steps and predicates | each step reads at most every node of the file once, and each predicate the nodes its step keeps, so a path costs the file's nodes times its terms. 32 `//` steps over 8.4 million elements take 2.4 s after the parse. A comparison is counted against the filter work: 256 for each child or attribute it looks at, and the literal's length for each value of the same length it compares |
 | Markdown parse time | 30 s for each 32 MiB of `max_bytes`, and never less than 30 s | goldmark is quadratic on some shapes and cannot be stopped from outside, so errata looks at the clock on every call goldmark makes into its parsers. 32 MiB of express's changelog, repeated, parsed in 15 s on a loaded 4 core machine and in 1.9 s on the build node. Of 42 hostile shapes at 32 MiB, each was read or refused at most 0.08 s after the limit on the build node. Three of them, lines of `*` and `_` runs, ran to the limit until the scan for closing runs below had a limit of its own. A fourth ran to the limit until that scan counted goldmark's walk of the paragraph's runs: a paragraph of runs followed by lines of emphasis inside words |
@@ -2090,11 +2310,11 @@ core machine.
 | walk directories | 200000 | a directory costs the walk an open and a listing, and a pin in it a read, so this is the walk's bound on time: 199000 directories with a 144-byte `.tool-versions` of another tool in each take 26.3 to 30.0 s and 69 MB on the build node (66.4 s on a busier node), and 199999 empty ones, which git cannot check out, 7.0 to 9.2 s. A million empty directories took 82 s before the limit. The largest tree measured holds 27149 |
 | walk names | 16 MiB | the walk opens each directory from the one above it and holds the names of the directories it has still to walk, not their paths, so a long path costs its length once: 60000 directories of 250-byte names below a path of 3765 bytes take 8.2 s and 36 MB, where whole paths took 1.67 GB for 200000. Past the limit, as for 200000 such names in one directory, the walk is refused in 0.9 s |
 | walk depth | 64 directories | the deepest tree measured nests 17. A chain 64 deep with 15000 files in each directory takes 3.9 s and 3 MB |
-| git index | 64 MiB, whatever `max_bytes` is, and 1000000 entries; a path of 4096 bytes, and 64 MiB of paths in all | an `env` glob reads `.git/index` whole and keeps the path of each entry: an entry is about 70 bytes and its path, so 64 MiB holds some 600000 files, and the entries limit is the walk's. A version 4 index writes each path as what it keeps of the one before and a suffix, so 65 bytes of the index can make a path of 4096 and 64 MiB of them gigabytes of paths: a path is held to 4096 bytes, the longest a file may be named, and the paths together to 64 MiB, which an index of plain paths cannot pass. An index read with the wrong object format is refused, since each entry's path must be the length its flags give |
-| `env` files | 64 entries in `files`; 256 MiB of paths matched, the globs times the bytes of the tracked paths; 10000 files read | each glob is matched against every tracked file, and a match costs time in proportion to the path, about 33 ns a byte on a 3 core worker node. An index may hold 64 MiB of paths, over which 64 globs took 167 s. The bytes to match are the globs times the paths' bytes, known once the index is read, so a spec over the bound is refused before any glob is matched. The bound fits about 22 MB of paths for a dozen globs, some 450000 files of 50 bytes or 320000 of 70, and 4 globs over a million files of 60 bytes. A very large monorepo with many globs is refused, which makes the rule unknown: list fewer globs. A file costs an open, a stat and a read of its first bytes before its reader runs, however small it is, so a glob over a million empty files would run for minutes; 10000 empty files take 1.4 s on the 6 core build node and 3.7 s on a 3 core worker node |
-| an `env` extractor's values | 100000 and `max_bytes` in all | a CI file repeats a value for each job that inherits it, so the values of every file, job and step together hold to the limits of one extractor's. A Jenkinsfile is read again for each stage that sets the variable, all within the extractor's one work budget, so a file of hundreds of such stages is refused at it: 400 of them are refused in 1 s |
+| git index | 64 MiB, whatever `max_bytes` is, and 1000000 entries; a path of 4096 bytes, and 64 MiB of paths in all | a glob in `files` reads `.git/index` whole and keeps the path of each entry: an entry is about 70 bytes and its path, so 64 MiB holds some 600000 files, and the entries limit is the walk's. A version 4 index writes each path as what it keeps of the one before and a suffix, so 65 bytes of the index can make a path of 4096 and 64 MiB of them gigabytes of paths: a path is held to 4096 bytes, the longest a file may be named, and the paths together to 64 MiB, which an index of plain paths cannot pass. An index read with the wrong object format is refused, since each entry's path must be the length its flags give |
+| `files` of `env`, `yaml`, `json`, `toml` and `regex` | 64 entries in `files`; 256 MiB of paths matched, the globs' weights times the bytes of the tracked paths; 10000 files read | each glob is matched against every tracked file, and a match costs time in proportion to the path, about 33 ns a byte on a 3 core worker node. A glob without `**` weighs 1, and one with `**` weighs its other segments, since the match retries what follows the last `**` at each later segment of a path: `infra/**/*.yaml` weighs 2. The weight is then multiplied by one for each 8 bytes of the glob's longest segment that holds a `*`, since a match tries what follows a `*` at each byte where it could end: `**/*` and 251 more bytes, over segments of 255 bytes, took 655 ns a byte of path at a weight of 1, and takes 28 ns a weighed byte on a 2 core worker node at its weight of 32. Each byte of a character class, its brackets included, counts as 3 bytes of the segment, since a match reads a class again at each byte it tests: twenty classes of 13 bytes after a `*` took 72 ns a weighed byte with each byte counted once, and take 21 ns with 3 cores at their weight of 98. An index may hold 64 MiB of paths, over which 64 globs took 167 s. The bytes to match are the weights times the paths' bytes, known once the index is read, so a spec over the bound is refused before any glob is matched. The bound fits about 22 MB of paths for a dozen globs, some 450000 files of 50 bytes or 320000 of 70, and 4 globs over a million files of 60 bytes. A very large monorepo with many globs is refused, which makes the rule unknown: list fewer globs. A file costs an open, a stat and a read of its first bytes before its reader runs, however small it is, so a glob over a million empty files would run for minutes; 10000 empty files take 1.4 s on the 6 core build node and 3.7 s on a 3 core worker node |
+| the values of `env`, or of `files` | 100000 and `max_bytes` in all | a CI file repeats a value for each job that inherits it, so the values of every file, job and step together hold to the limits of one extractor's. A Jenkinsfile is read again for each stage that sets the variable, all within the extractor's one work budget, so a file of hundreds of such stages is refused at it: 400 of them are refused in 1 s |
 | `package_version` files | 64 in `files` | a manifest gives at most two values, so 64 files stay under the limit on values by construction; a package has a manifest or two of each kind, and a rule over more packages names several extractors |
-| files one extractor reads | `max_bytes` in all | a walk may find many files, and symlinks or copies may repeat one, so the files of one extractor are read up to its `max_bytes` together, as one file is; links that end at one file read it once. 100 links to a 32 MiB file take 0.4 to 0.7 s, where reading each link took 31 to 64 s in all before |
+| files one extractor reads | `max_bytes` in all | a walk may find many files, and symlinks or copies may repeat one, so the files of one extractor are read up to its `max_bytes` together, as one file is; in `tool_version` and the `files:` of yaml, json, toml and regex, links that end at one file read it once, and `env` and `package_version` read each name they list. 100 links to a 32 MiB file take 0.4 to 0.7 s, where reading each link took 31 to 64 s in all before |
 | file name | 4096 bytes | the longest path Linux opens. A longer `file:` in an extractor is a load error, since every message about a file names it whole |
 | quoted text | 64 bytes | errata's message that quotes a key, an anchor or a number from a file, or a path, a pattern, a file or a selector from `errata.yaml`, cuts it there and writes `...`, since a message goes into the CI log and the JUnit report. A parser's message, such as yaml.v3's for an unknown anchor, which quotes the anchor's name, is cut at 256 bytes. A rule's message quotes a value of at most 256 bytes whole. Of a longer one it quotes 256 bytes, from 32 bytes before the first byte where it differs from the other values of the message, marked as in `(from byte 266 of 299)`, so two long values that differ only at the end still print differently |
 
@@ -2135,7 +2355,8 @@ extract:
 
 #### When a rule is unknown
 
-A file that is missing, does not parse or is over a limit makes the rule unknown. So does a YAML or
+A file that is missing, does not parse or is over a limit makes the rule unknown, except a missing
+file for `exists`, which is the value `false` (see [Whether a file is there](#whether-a-file-is-there)). So does a YAML or
 JSON file that repeats a key in one mapping, and a TOML file that defines a key or a table twice or
 holds a number or a date out of range. errata finds a repeated key itself, with one hash map per
 mapping, since the checks of the YAML and TOML libraries compare every key with every other. A YAML

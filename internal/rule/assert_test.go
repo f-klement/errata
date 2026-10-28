@@ -257,7 +257,7 @@ func TestAssertStalenessThreshold(t *testing.T) {
 // counting is an Assertion that records whether it ran.
 type counting struct{ calls *int }
 
-func (c counting) Eval(context.Context, map[string][]string) (bool, error) {
+func (c counting) Eval(context.Context, map[string][]string, map[string][]string) (bool, error) {
 	*c.calls++
 	return true, nil
 }
@@ -415,7 +415,7 @@ func TestAssertTimeout(t *testing.T) {
 		values[i] = strconv.Itoa(i)
 	}
 	start := time.Now()
-	_, err = a.Eval(context.Background(), map[string][]string{"v": values})
+	_, err = a.Eval(context.Background(), map[string][]string{"v": values}, nil)
 	if err == nil || err.Error() != "the evaluation did not finish within the timeout of 1ms" {
 		t.Fatalf("error = %v, want the timeout named", err)
 	}
@@ -428,7 +428,7 @@ func TestAssertTimeout(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := a.Eval(ctx, map[string][]string{"v": values}); err == nil || !strings.HasPrefix(err.Error(), "cancelled: context canceled") {
+	if _, err := a.Eval(ctx, map[string][]string{"v": values}, nil); err == nil || !strings.HasPrefix(err.Error(), "cancelled: context canceled") {
 		t.Fatalf("cancelled: error = %v", err)
 	}
 }
@@ -448,7 +448,7 @@ func TestAssertTimeoutInsideAHelper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = a.Eval(context.Background(), map[string][]string{"v": {"x"}})
+	_, err = a.Eval(context.Background(), map[string][]string{"v": {"x"}}, nil)
 	if err == nil || err.Error() != "the evaluation did not finish within the timeout of 1ms" {
 		t.Fatalf("error = %v, want the timeout named", err)
 	}
@@ -474,7 +474,7 @@ func TestAssertTimeoutInsideAHelper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.Eval(context.Background(), map[string][]string{"v": {"x"}}); err == nil || err.Error() != "the evaluation did not finish within the timeout of 1ms" {
+	if _, err := a.Eval(context.Background(), map[string][]string{"v": {"x"}}, nil); err == nil || err.Error() != "the evaluation did not finish within the timeout of 1ms" {
 		t.Fatalf("a helper that ended in the grace: error = %v, want the timeout named", err)
 	}
 }
@@ -496,7 +496,7 @@ func TestAssertTimeoutLooksEveryStep(t *testing.T) {
 	for i := range values {
 		values[i] = strconv.Itoa(i)
 	}
-	_, err = a.Eval(context.Background(), map[string][]string{"v": values})
+	_, err = a.Eval(context.Background(), map[string][]string{"v": values}, nil)
 	if err == nil || err.Error() != "the evaluation did not finish within the timeout of 1ms" || !errors.Is(err, interpreter.InterruptError{}) {
 		t.Fatalf("error = %v, want the timeout, with CEL stopping in the grace", err)
 	}
@@ -741,7 +741,7 @@ func TestAssertPanicAfterAbsorbedError(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := a.Eval(context.Background(), map[string][]string{"v": {"a"}}); err == nil || !strings.Contains(err.Error(), "internal error") {
+		if _, err := a.Eval(context.Background(), map[string][]string{"v": {"a"}}, nil); err == nil || !strings.Contains(err.Error(), "internal error") {
 			t.Errorf("%s: error %v, want the panic's internal error", expr, err)
 		}
 	}

@@ -17,6 +17,6 @@ func TestPropertyYAMLValuesSitAtTheirLine(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		extracttest.CheckLeaves(t, Build, root, "f.yaml", data, doc, func(p string) Spec { return Spec{File: "f.yaml", Path: p} })
+		extracttest.CheckLeaves(t, build, root, "f.yaml", data, doc, func(p string) Spec { return Spec{File: "f.yaml", Path: p} })
 	})
 }

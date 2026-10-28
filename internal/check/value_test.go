@@ -75,3 +75,23 @@ func TestOriginNote(t *testing.T) {
 		t.Errorf("Notes: %q, want %q", got, want)
 	}
 }
+
+// A location names its file and line, and the file alone when the line is
+// below 1, as for a value that holds for the whole file. Planted breaks: the
+// test at Line < 0, which printed f.yaml:0; at Line < 2, which dropped
+// line 1.
+func TestLocationString(t *testing.T) {
+	for _, c := range []struct {
+		at   Location
+		want string
+	}{
+		{Location{File: "f.yaml", Line: 3}, "f.yaml:3"},
+		{Location{File: "f.yaml", Line: 1}, "f.yaml:1"},
+		{Location{File: "f.yaml"}, "f.yaml"},
+		{Location{File: "f.yaml", Line: -1}, "f.yaml"},
+	} {
+		if got := c.at.String(); got != c.want {
+			t.Errorf("%+v: %q, want %q", c.at, got, c.want)
+		}
+	}
+}

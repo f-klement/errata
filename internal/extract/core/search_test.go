@@ -133,8 +133,10 @@ func TestRegexTooDeepToAnchorSearchesWithoutTries(t *testing.T) {
 // would read the rest. The last reads its tries again before its first
 // match and cuts a try after it: the two take from one maxTry, and not
 // charging the first would read 7 KiB again. The tests take Matches' own
-// clock, so its spare bytes are the ones tested.
+// clock, so its spare bytes are the ones tested. It took 6.3 s under -race
+// with coverage on the build node, so it runs in make slow.
 func TestRegexTriesReadTheFileAboutOnce(t *testing.T) {
+	slowOnly(t)
 	n := 1 << 16
 	sparse := func(n int) string { return strings.Repeat("x"+strings.Repeat(" ", 127), n) }
 	for _, c := range []struct {

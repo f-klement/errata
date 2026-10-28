@@ -20,7 +20,8 @@ claim holds. It is not the same as an observation, which only says that a differ
 
 **Unknown.** The verdict of a check that could not evaluate. A program check is unknown when its
 program crashed, did not finish in time, or could not be found. A rule is unknown when an extractor
-could not read its file, reached a limit such as the file size or the regex time, or found no value
+could not read its file (a file that is not there is no such case for `exists`, whose value it
+is: `false`), reached a limit such as the file size or the regex time, or found no value
 while `allow_empty` does not list it. A rule is also unknown when an extractor returned a not
 literal value while `skip_not_literal` does not list it. An agree rule is also unknown when it has
 no value at all, or one value while no extractor that `allow_empty` lists came back empty. An assert
@@ -100,8 +101,17 @@ any `run` is.
 **Extractor.** The part of a rule that gets values from one place. A YAML path, an XPath into an
 XML file, a key in an INI, properties or env file, a regular expression capture, a sentence of
 Markdown prose, the versions of a tool in the files that pin it, the version a package gives
-itself in each of its manifests, one variable in every file a rule lists, an image digest, a field
-on a live object.
+itself in each of its manifests, one variable in every file a rule lists, whether a file is there and its size in bytes, an image
+digest, a field on a live object.
+
+**Embedded document.** A document a string of another file holds, such as a runner's
+`config.toml` in a Helm value or a JSON list in an env var's value. A `yaml`, `json` or `toml`
+extractor reads one through its `embedded` steps, each naming the string's format and a path in
+it.
+
+**File set.** The files an extractor's `files:` names: each entry a file, or a glob matched against
+the files git tracks, where `**` matches any number of path segments. The extractor reads each file
+as it would read one, and each value keeps its own file, which `by_file` groups by in an assert.
 
 **Pin.** A file's statement of the version of a tool the repository uses, such as `20.11.1` in
 `.nvmrc` or `nodejs 20.11.1` in `.tool-versions`. The `tool_version` extractor reads every pin of

@@ -17,34 +17,50 @@ import (
 )
 
 // Spec reads a path in a YAML file. A file holding several documents needs
-// Kind or Name, or both, to select one.
+// Kind or Name, or both, to select one. Embedded reads a path in the
+// document each string the path selects holds, and so on, step by step, as
+// core.Embedded says.
 type Spec struct {
-	File     string `json:"file"`
-	Path     string `json:"path"`
-	Kind     string `json:"kind,omitempty"`
-	Name     string `json:"name,omitempty"`
-	MaxBytes int64  `json:"max_bytes,omitempty"`
+	File     string          `json:"file,omitempty"`
+	Files    []string        `json:"files,omitempty"`
+	Path     string          `json:"path"`
+	Kind     string          `json:"kind,omitempty"`
+	Name     string          `json:"name,omitempty"`
+	Embedded []core.Embedded `json:"embedded,omitempty"`
+	MaxBytes int64           `json:"max_bytes,omitempty"`
 }
 
 // yamlExtractor reads a path in the documents of a YAML file that its kind
-// and name select.
+// and name select, and its embedded steps in the strings the path selects.
+// inSet marks a file of a set, where a file with no document they select
+// adds no value rather than being refused.
 type yamlExtractor struct {
 	core.Source
 	path       core.Path
+	embedded   core.Embedding
 	kind, name string
+	inSet      bool
 }
 
-// Build checks y and returns its extractor.
-func Build(y Spec) (check.Extractor, error) {
-	src, err := core.CheckSource("yaml", y.File, y.MaxBytes)
-	if err != nil {
-		return nil, err
-	}
-	p, err := core.CheckPath("yaml", y.Path)
-	if err != nil {
-		return nil, err
-	}
-	return yamlExtractor{Source: src, path: p, kind: y.Kind, name: y.Name}, nil
+// Build checks y and returns its extractor, which reads the documents
+// embedded names with p: of File, or a core.FileSet of one for each file
+// Files names.
+func Build(y Spec, p core.Parsers) (check.Extractor, error) {
+	return core.BuildOneOrSet("yaml", y.File, y.Files, y.MaxBytes, func(file string, maxBytes int64, inSet bool) (core.FileReader, error) {
+		src, err := core.CheckSource("yaml", file, maxBytes)
+		if err != nil {
+			return nil, err
+		}
+		path, err := core.CheckPath("yaml", y.Path)
+		if err != nil {
+			return nil, err
+		}
+		embedded, err := core.CheckEmbedded("yaml", y.Embedded, p)
+		if err != nil {
+			return nil, err
+		}
+		return yamlExtractor{Source: src, path: path, embedded: embedded, kind: y.Kind, name: y.Name, inSet: inSet}, nil
+	})
 }
 
 // Extract reads the file under root, selects its documents and returns every
@@ -60,10 +76,21 @@ func (e yamlExtractor) Extract(root string) ([]check.Value, error) {
 // FromData returns the values in data, the bytes of the file, as Extract
 // does once it has read them.
 func (e yamlExtractor) FromData(data []byte) ([]check.Value, error) {
+	return e.FromShared(data, &core.Spent{})
+}
+
+// FromShared is FromData with the budgets the files of a set read before
+// it have spent: the nodes aliases and merge keys added, and the filter
+// work, which it adds to.
+func (e yamlExtractor) FromShared(data []byte, spent *core.Spent) ([]check.Value, error) {
 	if err := e.CheckNodes(data, core.YAMLFormat); err != nil {
 		return nil, err
 	}
-	docs, err := Parse(data)
+	docs, expanded, err := ParseNoted(data, spent.Expanded, nil)
+	spent.Expanded = expanded
+	if err != nil && e.inSet && expanded > core.MaxExpanded {
+		return nil, fmt.Errorf("%s: %w; the files of a set share the limits on aliases and merge keys", e.File, err)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", e.File, err)
 	}
@@ -71,13 +98,15 @@ func (e yamlExtractor) FromData(data []byte) ([]check.Value, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", e.File, err)
 	}
-	return e.Values(e.path, docs...)
+	vs, err := e.EmbeddedValues(e.path, e.embedded, core.Reading{Last: core.LastLine(data)}, spent, docs...)
+	return vs, spent.SharedAliases(err)
 }
 
 // selectDocs keeps the documents whose kind and metadata.name match. Without
 // a selector, a file must hold at most one document: picking one of several
 // for the user could compare the wrong object, so that is an error, and so is
-// a selector that matches nothing.
+// a selector that matches nothing, but in a file of a set, which then adds
+// no value: a glob over every manifest selects the kind in some of them.
 func (e yamlExtractor) selectDocs(docs []*core.Node) ([]*core.Node, error) {
 	if e.kind == "" && e.name == "" {
 		if len(docs) > 1 {
@@ -91,7 +120,7 @@ func (e yamlExtractor) selectDocs(docs []*core.Node) ([]*core.Node, error) {
 			out = append(out, d)
 		}
 	}
-	if len(out) == 0 {
+	if len(out) == 0 && !e.inSet {
 		return nil, fmt.Errorf("no document has kind %s and name %s", core.Quote(e.kind), core.Quote(e.name))
 	}
 	return out, nil
@@ -137,6 +166,7 @@ func ParseNoted(data []byte, expanded int, note func(n *core.Node, tag string, p
 		expanded: expanded,
 		note:     note,
 		last:     bytes.Count(data, []byte("\n")) + 1,
+		blocks:   newBlocks(data),
 		anchors:  map[*yaml.Node]converted{},
 		merges:   map[*core.Node]mergeable{},
 		ids:      map[*yaml.Node]any{},
@@ -192,6 +222,7 @@ type yamlWalker struct {
 	ids      map[*yaml.Node]any       // a key as yaml.v3 decodes it into any, once decoded
 	unmerged map[*core.Node]error     // a merged mapping's refusal, made if an alias decodes it on its own
 	note     func(n *core.Node, tag string, plain bool)
+	blocks   *blocks // the lines of the | of literal block scalars
 }
 
 // mergeable is what a merge key adds of a mapping, as yaml.v3 decodes it:
@@ -245,7 +276,7 @@ func (w *yamlWalker) convert(y *yaml.Node, depth int, merged bool) (*core.Node, 
 	default:
 		// A scalar keeps the text the file wrote: 1.0 stays 1.0, and a null
 		// is null, ~ or the empty string, as written.
-		c, err = converted{&core.Node{Type: yamlType(y), Text: y.Value, Line: w.line(y)}, 1}, checkTag(y)
+		c, err = converted{&core.Node{Type: yamlType(y), Block: w.blocks.lineOf(y), Text: y.Value, Line: w.line(y)}, 1}, checkTag(y)
 	}
 	if err != nil {
 		return nil, 0, err

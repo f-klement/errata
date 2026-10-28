@@ -2,7 +2,8 @@
 // reads one file and returns every value it finds there, with its location.
 // Each kind is a reader in a package of its own below this one (yaml, json,
 // toml, regex, text, xml, ini, properties, toolversion, packageversion,
-// envfile, gitlabci, shell, githubactions, jenkins), and the readers share internal/extract/core;
+// envfile, gitlabci, shell, githubactions, jenkins, and filestat for exists
+// and size), and the readers share internal/extract/core;
 // no reader imports another. The env kind asks five of them for one variable
 // across several files, through the functions this package hands it. This
 // package holds what sees every kind: the Spec a rule decodes into, the kinds
@@ -23,6 +24,7 @@ import (
 	"github.com/f-klement/errata/internal/extract/core"
 	"github.com/f-klement/errata/internal/extract/env"
 	"github.com/f-klement/errata/internal/extract/envfile"
+	"github.com/f-klement/errata/internal/extract/filestat"
 	"github.com/f-klement/errata/internal/extract/githubactions"
 	"github.com/f-klement/errata/internal/extract/gitlabci"
 	"github.com/f-klement/errata/internal/extract/ini"
@@ -66,10 +68,14 @@ type Spec struct {
 	Jenkins *Jenkins `json:"jenkins,omitempty"`
 
 	Env *Env `json:"env,omitempty"`
+
+	Exists *Exists `json:"exists,omitempty"`
+	Size   *Size   `json:"size,omitempty"`
 }
 
-// Each kind takes MaxBytes, the largest file it reads. Zero, or the key
-// left out, is the default of 32 MiB.
+// Each kind but exists and size, which read no byte of their file, takes
+// MaxBytes, the largest file it reads. Zero, or the key left out, is the
+// default of 32 MiB.
 
 // YAML reads a path in a YAML file, as yaml.Spec says.
 type YAML = yaml.Spec
@@ -132,6 +138,14 @@ type Jenkins = jenkins.Spec
 // read by the reader its name chooses, as env.Spec says.
 type Env = env.Spec
 
+// Exists returns whether a regular file is at a name, true or false, as
+// filestat.BuildExists says.
+type Exists = filestat.Spec
+
+// Size returns the size in bytes of the regular file at a name, as
+// filestat.BuildSize says.
+type Size = filestat.Spec
+
 // envReaders are the readers the env kind asks, each for one variable in
 // one file: envfile and shell as their own Build reads it, and the CI
 // readers in every job, step or stage, as their Every reads it.
@@ -155,34 +169,46 @@ var envReaders = env.Readers{
 	ScriptBytes: shell.ShebangBytes,
 }
 
-// versionParsers are the json and toml readers' parsers, which tool_version
-// and package_version read their JSON and TOML files with.
-var versionParsers = core.Parsers{JSON: json.Parse, TOML: toml.Parse}
+// parsers are the yaml, json and toml readers' parsers, which tool_version
+// and package_version read their JSON and TOML files with, and the yaml,
+// json and toml readers the documents embedded in strings.
+var parsers = core.Parsers{
+	YAML: func(data []byte, expanded int) ([]*core.Node, int, error) {
+		return yaml.ParseNoted(data, expanded, nil)
+	},
+	JSON: json.Parse,
+	TOML: toml.Parse,
+}
 
 // Place returns s with only what decides where it reads: each file cleaned,
 // so f, ./f and a/../f are one file, and max_bytes left out, since a limit
-// does not change what is read. Two specs with one place return the same
-// values at the same locations.
+// does not change what is read. Two specs with one place read the same
+// files, and return the same values at the same locations wherever both
+// return values.
 func (s Spec) Place() Spec {
 	var p Spec
 	if s.YAML != nil {
 		y := *s.YAML
-		y.File, y.MaxBytes = filepath.Clean(y.File), 0
+		y.File, y.Files = placeFiles(y.File, y.Files)
+		y.MaxBytes = 0
 		p.YAML = &y
 	}
 	if s.JSON != nil {
 		j := *s.JSON
-		j.File, j.MaxBytes = filepath.Clean(j.File), 0
+		j.File, j.Files = placeFiles(j.File, j.Files)
+		j.MaxBytes = 0
 		p.JSON = &j
 	}
 	if s.TOML != nil {
 		t := *s.TOML
-		t.File, t.MaxBytes = filepath.Clean(t.File), 0
+		t.File, t.Files = placeFiles(t.File, t.Files)
+		t.MaxBytes = 0
 		p.TOML = &t
 	}
 	if s.Regex != nil {
 		r := *s.Regex
-		r.File, r.MaxBytes = filepath.Clean(r.File), 0
+		r.File, r.Files = placeFiles(r.File, r.Files)
+		r.MaxBytes = 0
 		p.Regex = &r
 	}
 	if s.Text != nil {
@@ -237,7 +263,34 @@ func (s Spec) Place() Spec {
 		x := env.Place(*s.Env)
 		p.Env = &x
 	}
+	if s.Exists != nil {
+		x := filestat.Spec{File: filepath.Clean(s.Exists.File)}
+		p.Exists = &x
+	}
+	if s.Size != nil {
+		x := filestat.Spec{File: filepath.Clean(s.Size.File)}
+		p.Size = &x
+	}
 	return p
+}
+
+// placeFiles is the file or the files of a spec that takes either, as Place
+// writes them: the file cleaned, or the files cleaned, with slashes, and in
+// order, since the same files in another order read the same values, and
+// a list of one file that is no glob as that file. The two read one file
+// and return the same values where both read it, though a yaml kind that
+// selects no document is refused for file: and gives no value in a set, so
+// samePlaces refuses the pair as two names for one place.
+func placeFiles(file string, files []string) (string, []string) {
+	if files == nil {
+		return filepath.Clean(file), nil
+	}
+	clean := core.Clean(files)
+	slices.Sort(clean)
+	if len(clean) == 1 && !core.HasGlob(clean[0]) {
+		return filepath.Clean(clean[0]), nil
+	}
+	return "", clean
 }
 
 // Resolved returns s with the defaults Build fills in written out: the
@@ -249,21 +302,25 @@ func (s Spec) Resolved() Spec {
 	var r Spec
 	if s.YAML != nil {
 		y := *s.YAML
+		y.Files = slices.Clone(y.Files)
 		y.MaxBytes = core.MaxBytes(y.MaxBytes)
 		r.YAML = &y
 	}
 	if s.JSON != nil {
 		j := *s.JSON
+		j.Files = slices.Clone(j.Files)
 		j.MaxBytes = core.MaxBytes(j.MaxBytes)
 		r.JSON = &j
 	}
 	if s.TOML != nil {
 		t := *s.TOML
+		t.Files = slices.Clone(t.Files)
 		t.MaxBytes = core.MaxBytes(t.MaxBytes)
 		r.TOML = &t
 	}
 	if s.Regex != nil {
 		x := *s.Regex
+		x.Files = slices.Clone(x.Files)
 		x.MaxBytes = core.MaxBytes(x.MaxBytes)
 		r.Regex = &x
 	}
@@ -328,6 +385,15 @@ func (s Spec) Resolved() Spec {
 		x := env.Resolve(*s.Env)
 		r.Env = &x
 	}
+	// exists and size have no default to write out: they read no byte.
+	if s.Exists != nil {
+		x := *s.Exists
+		r.Exists = &x
+	}
+	if s.Size != nil {
+		x := *s.Size
+		r.Size = &x
+	}
 	return r
 }
 
@@ -368,11 +434,11 @@ func (s Spec) kinds() []extractorKind {
 	set := [...]bool{s.YAML != nil, s.JSON != nil, s.TOML != nil, s.Regex != nil, s.Text != nil,
 		s.XML != nil, s.INI != nil, s.Properties != nil, s.ToolVersion != nil,
 		s.PackageVersion != nil, s.EnvFile != nil, s.GitLabCI != nil, s.Shell != nil,
-		s.GitHubActions != nil, s.Jenkins != nil, s.Env != nil}
+		s.GitHubActions != nil, s.Jenkins != nil, s.Env != nil, s.Exists != nil, s.Size != nil}
 	return []extractorKind{
-		{"yaml", set[0], func() (check.Extractor, error) { return yaml.Build(*s.YAML) }},
-		{"json", set[1], func() (check.Extractor, error) { return json.Build(*s.JSON) }},
-		{"toml", set[2], func() (check.Extractor, error) { return toml.Build(*s.TOML) }},
+		{"yaml", set[0], func() (check.Extractor, error) { return yaml.Build(*s.YAML, parsers) }},
+		{"json", set[1], func() (check.Extractor, error) { return json.Build(*s.JSON, parsers) }},
+		{"toml", set[2], func() (check.Extractor, error) { return toml.Build(*s.TOML, parsers) }},
 		{"regex", set[3], func() (check.Extractor, error) { return regex.Build(*s.Regex) }},
 		{"text", set[4], func() (check.Extractor, error) { return text.Build(*s.Text) }},
 		{"xml", set[5], func() (check.Extractor, error) { return xml.Build(*s.XML) }},
@@ -381,11 +447,11 @@ func (s Spec) kinds() []extractorKind {
 		{"tool_version", set[8], func() (check.Extractor, error) {
 			// The reader reads its JSON and TOML files with the json and
 			// toml readers' parsers, since it imports no other reader.
-			return toolversion.Build(*s.ToolVersion, versionParsers)
+			return toolversion.Build(*s.ToolVersion, parsers)
 		}},
 		{"package_version", set[9], func() (check.Extractor, error) {
 			// Its manifests are read with the json and toml readers' parsers.
-			return packageversion.Build(*s.PackageVersion, versionParsers)
+			return packageversion.Build(*s.PackageVersion, parsers)
 		}},
 		{"envfile", set[10], func() (check.Extractor, error) { return envfile.Build(*s.EnvFile) }},
 		// The reader reads its YAML with the yaml reader's parser.
@@ -397,6 +463,8 @@ func (s Spec) kinds() []extractorKind {
 		}},
 		{"jenkins", set[14], func() (check.Extractor, error) { return jenkins.Build(*s.Jenkins) }},
 		{"env", set[15], func() (check.Extractor, error) { return env.Build(*s.Env, envReaders) }},
+		{"exists", set[16], func() (check.Extractor, error) { return filestat.BuildExists(*s.Exists) }},
+		{"size", set[17], func() (check.Extractor, error) { return filestat.BuildSize(*s.Size) }},
 	}
 }
 

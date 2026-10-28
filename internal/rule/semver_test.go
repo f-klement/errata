@@ -243,10 +243,10 @@ func TestSemverCountsTowardTheCostLimit(t *testing.T) {
 		for i := range long {
 			long[i] = "1.0.0" + strings.Repeat(" ", 600)
 		}
-		if _, err := a.Eval(context.Background(), map[string][]string{"v": long}); err == nil || err.Error() != "the evaluation exceeded the cost limit of 2000" {
+		if _, err := a.Eval(context.Background(), map[string][]string{"v": long}, nil); err == nil || err.Error() != "the evaluation exceeded the cost limit of 2000" {
 			t.Errorf("%s over four values of 605 bytes under a limit of 2000: %v", expr, err)
 		}
-		if ok, err := a.Eval(context.Background(), map[string][]string{"v": {"1.0.0", "1.0.0"}}); err != nil || !ok {
+		if ok, err := a.Eval(context.Background(), map[string][]string{"v": {"1.0.0", "1.0.0"}}, nil); err != nil || !ok {
 			t.Errorf("%s over two short values: %v, %v", expr, ok, err)
 		}
 	}

@@ -20,8 +20,8 @@ import (
 
 // Spec returns every value of the variable Name in the files Files lists,
 // each read by the reader its name chooses, or the one Readers gives its
-// entry. An entry with *, ? or [ is a glob, matched one path segment at a
-// time against the files git tracks; one that matches none adds no value.
+// entry. An entry with *, ? or [ is a glob, matched against the files git
+// tracks as core.Files matches it; one that matches none adds no value.
 // Any other entry names one file, which must exist. MaxBytes is the most
 // bytes the files hold in all.
 type Spec struct {
@@ -52,25 +52,12 @@ var readerNames = []string{"envfile", "shell", "gitlab-ci", "github-actions", "j
 // maxName is the longest name that loads, in bytes, as the CI readers'.
 const maxName = 1024
 
-// maxEntries is the most entries files may list.
-const maxEntries = 64
-
-// maxMatchBytes is the most bytes of path the globs are matched against in
-// all: each glob against every file git tracks, so their count times the
-// bytes of the index's paths. path.Match costs time in proportion to the
-// path, about 33 ns a byte on a 3 core worker node, and the index may hold
-// 64 MiB of paths, so 64 globs over it took 167 s. The product is known
-// once the index is read, so a spec over the bound is refused before any
-// glob is matched. A dozen globs fit about 22 MB of paths: some 450000
-// files of 50 bytes, or 320000 of 70.
-const maxMatchBytes = 256 << 20
-
-// maxFiles is the most files one extractor reads. Each costs an open, a
-// stat and the head's read before its reader runs, even for an empty file,
-// which max_bytes does not count, so a glob over the index's million files
-// would run for minutes: 10000 empty files take 1.4 s on the 6 core build
-// node and 3.7 s on a 3 core worker node.
-const maxFiles = 10_000
+// The bounds on files: are core's, which every files: key shares.
+const (
+	maxEntries    = core.MaxEntries
+	maxMatchBytes = core.MaxMatchBytes
+	maxFiles      = core.MaxFiles
+)
 
 // variableName is a name every reader env asks can read: a letter or _,
 // then letters, digits and _, as a shell, GitHub and Jenkins name a
@@ -109,16 +96,6 @@ func Choose(file string) string {
 	return ""
 }
 
-// isGlob reports whether a files entry is a glob.
-func isGlob(entry string) bool { return strings.ContainsAny(entry, "*?[") }
-
-// entry is one files entry: its pattern or file with slashes, cleaned, and
-// the reader its readers: entry gives, "" for none.
-type entry struct {
-	clean, reader string
-	glob          bool
-}
-
 // Build checks s and returns its extractor.
 func Build(s Spec, r Readers) (check.Extractor, error) {
 	if s.Name == "" {
@@ -130,51 +107,37 @@ func Build(s Spec, r Readers) (check.Extractor, error) {
 	if len(s.Files) == 0 {
 		return nil, errors.New("env: files is required: list the files that set the variable, such as .env, deploy.sh or .github/workflows/*.yml")
 	}
-	if len(s.Files) > maxEntries {
-		return nil, fmt.Errorf("env: files lists %d entries, over the limit of %d; a glob such as config/*.env names many files in one", len(s.Files), maxEntries)
-	}
 	src, err := core.CheckSource("env", ".", s.MaxBytes)
 	if err != nil {
 		return nil, err
 	}
-	x := extractor{name: s.Name, limit: src.Limit, readers: r, fileLimit: maxFiles, matchLimit: maxMatchBytes}
-	listed := map[string]bool{}
-	for _, f := range s.Files {
-		if _, err := core.CheckSource("env", f, s.MaxBytes); err != nil {
-			return nil, err
-		}
-		e := entry{clean: path.Clean(filepath.ToSlash(f)), glob: isGlob(f)}
-		if listed[e.clean] {
-			return nil, fmt.Errorf("env: files names %s twice", core.Quote(f))
-		}
-		listed[e.clean] = true
-		if _, err := path.Match(e.clean, ""); err != nil {
-			return nil, fmt.Errorf("env: files entry %s is no glob: %w", core.Quote(f), err)
-		}
-		x.entries = append(x.entries, e)
+	files, err := core.CheckFiles("env", s.Files, s.MaxBytes)
+	if err != nil {
+		return nil, err
 	}
+	x := extractor{name: s.Name, limit: src.Limit, readers: r, files: files, by: make([]string, len(files.Entries))}
 	for f, reader := range s.Readers {
-		i := slices.IndexFunc(x.entries, func(e entry) bool { return e.clean == path.Clean(filepath.ToSlash(f)) })
+		i := slices.IndexFunc(files.Entries, func(e core.FileEntry) bool { return e.Clean == path.Clean(filepath.ToSlash(f)) })
 		if i < 0 {
 			return nil, fmt.Errorf("env: readers names %s, which files does not list", core.Quote(f))
 		}
 		if !slices.Contains(readerNames, reader) {
 			return nil, fmt.Errorf("env: readers gives %s the reader %s; write one of %s", core.Quote(f), core.Quote(reader), strings.Join(readerNames, ", "))
 		}
-		x.entries[i].reader = reader
+		x.by[i] = reader
 	}
 	// Each reader an entry chooses checks the name now, so a name it
 	// refuses, such as GITHUB_TOKEN, fails the load and not each run. A
 	// glob's own name chooses as its files' do: .github/workflows/*.yml.
-	for _, e := range x.entries {
-		reader := e.reader
+	for i, e := range files.Entries {
+		reader := x.by[i]
 		if reader == "" {
-			reader = Choose(e.clean)
+			reader = Choose(e.Clean)
 		}
 		if reader == "" {
 			continue
 		}
-		if _, err := r.ByName[reader](e.clean, s.Name, s.MaxBytes); err != nil {
+		if _, err := r.ByName[reader](e.Clean, s.Name, s.MaxBytes); err != nil {
 			return nil, fmt.Errorf("env: %w", err)
 		}
 	}
@@ -217,14 +180,13 @@ func Resolve(s Spec) Spec {
 
 // extractor is a built env extractor.
 type extractor struct {
-	// fileLimit is the most files Extract reads, maxFiles, and matchLimit
-	// the bytes of path its globs match, maxMatchBytes: a test lowers them
-	// to witness the bounds with a few files.
-	fileLimit, matchLimit int
-	name                  string
-	limit                 int64
-	entries               []entry
-	readers               Readers
+	name  string
+	limit int64
+	// files are the entries of files:, and by the reader readers: gives
+	// each, by its index, "" for none.
+	files   core.Files
+	by      []string
+	readers Readers
 }
 
 // MayReturnNotLiteral reports true: every reader env asks returns a value
@@ -313,25 +275,6 @@ func (x extractor) read(root, file, reader string, maxBytes int64) ([]check.Valu
 	return vs, read, err
 }
 
-// checkMatch refuses a spec whose globs, each matched against every tracked
-// path, would match more than matchLimit bytes of path, before the first
-// is matched: the bytes are the globs' count times the paths' bytes.
-func (x extractor) checkMatch(tracked []string) error {
-	globs, paths := 0, 0
-	for _, e := range x.entries {
-		if e.glob {
-			globs++
-		}
-	}
-	for _, f := range tracked {
-		paths += len(f)
-	}
-	if globs*paths > x.matchLimit {
-		return fmt.Errorf("env: files lists %d globs, and matching each against the %d bytes of path git tracks takes more than %d bytes, the limit; list fewer globs", globs, paths, maxMatchBytes)
-	}
-	return nil
-}
-
 // BytesReader is an extractor that reads more files than the one it is
 // built for and says how many bytes they hold, which env charges to its
 // max_bytes: gitlab-ci, with its includes.
@@ -341,52 +284,26 @@ type BytesReader interface {
 
 // targets lists the files the entries name, each once, in the entries'
 // order: a file, or the files git tracks that a glob matches, in git's
-// order. The index is read once, and only when an entry is a glob.
+// order (core.Files). A file takes the reader one entry that names it
+// gives, whichever entry comes first, and two readers refuse it.
 func (x extractor) targets(root string) ([]target, error) {
-	var tracked []string      // nil until read; TrackedFiles never returns nil
-	seen := map[string]int{}  // each file's index in out
-	by := map[string]string{} // the entry that named each file, or gave it its reader
-	var out []target
-	for _, e := range x.entries {
-		files := []string{e.clean}
-		if e.glob {
-			if tracked == nil {
-				var err error
-				if tracked, err = core.TrackedFiles(root); err != nil {
-					return nil, fmt.Errorf("env: files lists the glob %s: %w", core.Quote(e.clean), err)
+	named, err := x.files.List(root)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]target, 0, len(named))
+	for _, n := range named {
+		t := target{file: n.File}
+		first := n.By[0] // the entry that gave the reader, or named the file
+		for _, i := range n.By {
+			if r := x.by[i]; r != "" && r != t.reader {
+				if t.reader != "" {
+					return nil, fmt.Errorf("env: files entries %s and %s both name %s, and readers: gives them %s and %s; give the file one reader", core.Quote(x.files.Entries[first].Clean), core.Quote(x.files.Entries[i].Clean), core.Quote(n.File), t.reader, r)
 				}
-				if err := x.checkMatch(tracked); err != nil {
-					return nil, err
-				}
-			}
-			files = nil
-			for _, f := range tracked {
-				// The pattern was checked when it was built, so Match
-				// returns no error here.
-				if ok, _ := path.Match(e.clean, f); ok {
-					files = append(files, f)
-				}
+				t.reader, first = r, i
 			}
 		}
-		for _, f := range files {
-			i, ok := seen[f]
-			if !ok {
-				if len(out) == x.fileLimit {
-					return nil, fmt.Errorf("env: files names more than %d files, the limit, at %s; narrow the glob", maxFiles, core.Quote(e.clean))
-				}
-				seen[f], by[f] = len(out), e.clean
-				out = append(out, target{file: f, reader: e.reader})
-				continue
-			}
-			// A reader one entry gives a file wins over none, whichever
-			// entry comes first, and two readers for one file refuse it.
-			if prev := out[i].reader; e.reader != "" && e.reader != prev {
-				if prev != "" {
-					return nil, fmt.Errorf("env: files entries %s and %s both name %s, and readers: gives them %s and %s; give the file one reader", core.Quote(by[f]), core.Quote(e.clean), core.Quote(f), prev, e.reader)
-				}
-				out[i].reader, by[f] = e.reader, e.clean
-			}
-		}
+		out = append(out, t)
 	}
 	return out, nil
 }
