@@ -56,7 +56,7 @@ func compiledRule(t *testing.T, expr string, extractors ...check.NamedExtractor)
 		t.Fatal(err)
 	}
 	return check.Check{ID: "r", Reason: "r", Scope: check.ScopeRepo,
-		Rule: &check.Rule{Extractors: extractors, Assert: expr, Compiled: a}}
+		Kind: &check.Rule{Extractors: extractors, Assert: expr, Compiled: a}}
 }
 
 // An extractor that reads another's values runs after it, though its name
@@ -74,7 +74,7 @@ func TestDependentRunsAfterWhatItReads(t *testing.T) {
 		}},
 		check.NamedExtractor{Name: "z", Extractor: ranFake{fake{values: []check.Value{names, computed}}, &ran, "z"}},
 	)
-	c.Rule.SkipNotLiteral = []string{"z"}
+	c.Rule().SkipNotLiteral = []string{"z"}
 	res := Run(context.Background(), "/repo", c)
 	if res.Verdict != check.VerdictTrue {
 		t.Fatalf("verdict %s: %s", res.Verdict, res.Message)

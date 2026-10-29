@@ -57,7 +57,7 @@ func TestByFileKeepsOrderAndLeavesOutFilesWithoutValues(t *testing.T) {
 	}
 	empty := named("e", fake{})
 	c := assertRule(t, "size(by_file(e)) == 0", empty)
-	c.Rule.AllowEmpty = []string{"e"}
+	c.Rule().AllowEmpty = []string{"e"}
 	if res := Run(context.Background(), ".", c); res.Verdict != check.VerdictTrue {
 		t.Errorf("an empty extractor's by_file: %v %s", res.Verdict, res.Message)
 	}

@@ -8,6 +8,7 @@ import (
 	"github.com/f-klement/errata/internal/extract"
 	"github.com/f-klement/errata/internal/extract/core"
 	"github.com/f-klement/errata/internal/extract/extracttest"
+	"github.com/f-klement/errata/internal/extract/regex"
 )
 
 // The clocked search reads UTF-8 as Go's regexp does: a multibyte character
@@ -30,7 +31,7 @@ func TestRegexReadsRunesAsRegexpDoes(t *testing.T) {
 }
 
 func regexSpec(pattern string) extract.Spec {
-	return extract.Spec{Regex: &extract.Regex{File: "Dockerfile", Pattern: pattern}}
+	return extract.Of(regex.Kind, regex.Spec{File: "Dockerfile", Pattern: pattern})
 }
 
 func TestRegexReturnsGroupOneOfEveryMatch(t *testing.T) {

@@ -29,6 +29,23 @@ type Spec struct {
 	MaxBytes int64    `json:"max_bytes,omitempty"`
 }
 
+// Kind is the tool_version kind, which a rule writes under the key tool_version.
+var Kind = core.Kind[Spec]{Key: "tool_version", Place: Place, Resolve: Resolve, Describe: Describe}
+
+// Resolve is s with its max_bytes written out and its files copied, for
+// errata list.
+func Resolve(s Spec) Spec {
+	s.Files = slices.Clone(s.Files)
+	s.MaxBytes = core.MaxBytes(s.MaxBytes)
+	return s
+}
+
+// Describe is what the kind's extractor returns: flat values, some not
+// literal, as MayReturnNotLiteral says.
+func Describe(Spec) check.Description {
+	return check.Description{Label: "tool_version", NotLiteral: true}
+}
+
 // Parsers are the JSON and TOML readers the extractor reads package.json,
 // pyproject.toml, Cargo.toml and rust-toolchain.toml with, as core.Parsers
 // says.

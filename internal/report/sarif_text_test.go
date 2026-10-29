@@ -25,7 +25,7 @@ import (
 // loadableID draws ids that check.Check.Validate accepts, the ids the loader
 // can load. It may draw one id twice; the writer then keeps one rule.
 var loadableID = rapid.StringMatching(`[a-z0-9]{1,6}(-[a-z0-9]{1,6}){0,2}`).Filter(func(id string) bool {
-	return check.Check{ID: id, Reason: "r", Scope: check.ScopeRepo, Run: []string{"x"}}.Validate() == nil
+	return check.Check{ID: id, Reason: "r", Scope: check.ScopeRepo, Kind: &check.Program{Run: []string{"x"}}}.Validate() == nil
 })
 
 // anyPath draws arbitrary bytes, often behind a prefix that leaves the
@@ -260,7 +260,7 @@ func TestSARIFKeepsDataAsText(t *testing.T) {
 	planted := "see [the fix](https://evil.example/login) and {0} {{x}} in C:\\dir"
 	written := "see [the fix]\u2060(https://evil.example/login) and {{0}} {{{{x}}}} in C:\\dir"
 	rep := check.Report{Results: []check.Result{
-		{Check: check.Check{ID: "p", Reason: "[r](1) {y}", Run: []string{"x"}}, Verdict: check.VerdictFalse, Message: planted},
+		{Check: check.Check{ID: "p", Reason: "[r](1) {y}", Kind: &check.Program{Run: []string{"x"}}}, Verdict: check.VerdictFalse, Message: planted},
 		{Check: check.Check{ID: "u", Reason: "[r](1) {y}"}, Verdict: check.VerdictUnknown, Message: planted},
 		{Check: check.Check{ID: "s", Reason: "r", Scope: check.ScopeLive}, Gap: "no {0} [x](1)"},
 	}}
@@ -288,8 +288,9 @@ func TestSARIFKeepsDataAsText(t *testing.T) {
 // messages, and both readers find errata's links and no other.
 func TestSARIFDataLinkStaysText(t *testing.T) {
 	values := texts("f.yaml", "a", "b", "a", "[x](1) {0}", "y](z)", "[open")
-	rep := check.Report{Results: []check.Result{agreeRule("c", nil, values...)}}
+	rep := check.Report{Results: []check.Result{agreeRule("c", values...)}}
 	rep.Results[0].Message = "agree: the values differ [unclosed"
+	rep.Results[0].Blamed = &check.Blame{Extractor: 1}
 	out := decodeSARIF(t, writeSARIF(t, rep))
 	res := out.Runs[0].Results[0]
 	want := "agree: the values differ [unclosed\nThe other values, as [related locations]: [value 1](1), [value 2](2), [value 3](3), [value 4](4), [value 5](5)."
@@ -333,7 +334,7 @@ func TestSARIFPathsOutsideTheRepository(t *testing.T) {
 		`a\..\c:x`: `a\..\c:x`,
 	}
 	for file, shown := range cases {
-		r := check.Result{Check: check.Check{ID: "c", Reason: "r"}, Verdict: check.VerdictFalse, Message: "m",
+		r := check.Result{Check: check.Check{ID: "c", Reason: "r"}, Verdict: check.VerdictFalse, Message: "m", Blamed: &check.Blame{},
 			Extracted: []check.Extracted{{Extractor: "e", Values: []check.Value{val("v", file, 3)}}}}
 		out := decodeSARIF(t, writeSARIF(t, check.Report{Results: []check.Result{r}}))
 		res := out.Runs[0].Results[0]
@@ -364,7 +365,7 @@ func TestSARIFPathsOutsideTheRepository(t *testing.T) {
 		"%5C..%5Cx":   "%255C..%255Cx:3",
 	}
 	for file, want := range kept {
-		r := check.Result{Check: check.Check{ID: "c", Reason: "r"}, Verdict: check.VerdictFalse,
+		r := check.Result{Check: check.Check{ID: "c", Reason: "r"}, Verdict: check.VerdictFalse, Blamed: &check.Blame{},
 			Extracted: []check.Extracted{{Extractor: "e", Values: []check.Value{val("v", file, 3)}}}}
 		out := decodeSARIF(t, writeSARIF(t, check.Report{Results: []check.Result{r}}))
 		if got := out.Runs[0].Results[0].Locations[0].where(); got != want {
@@ -376,7 +377,7 @@ func TestSARIFPathsOutsideTheRepository(t *testing.T) {
 	}
 
 	// A related location outside keeps its id, link and message.
-	rep := check.Report{Results: []check.Result{agreeRule("c", nil,
+	rep := check.Report{Results: []check.Result{agreeRule("c",
 		check.Extracted{Extractor: "in", Values: []check.Value{val("b", "ok.yaml", 1)}},
 		check.Extracted{Extractor: "out", Values: []check.Value{val("a", "../x", 2), val("a", "/y", 3)}},
 	)}}
@@ -434,9 +435,10 @@ func manyErrata(rng *rand.Rand, n, msg int) check.Report {
 	var rep check.Report
 	for i := range n {
 		rep.Results = append(rep.Results, check.Result{
-			Check:   check.Check{ID: fmt.Sprintf("c%d", i%50), Reason: "r", Rule: &check.Rule{Agree: []string{"a", "b"}}},
+			Check:   check.Check{ID: fmt.Sprintf("c%d", i%50), Reason: "r", Kind: &check.Rule{Agree: []string{"a", "b"}}},
 			Verdict: check.VerdictFalse,
 			Message: cjk(rng, msg),
+			Blamed:  &check.Blame{Extractor: 1},
 			Extracted: []check.Extracted{
 				{Extractor: "a", Values: []check.Value{val("x", fmt.Sprintf("d/f%d.yaml", i%300), i%500+1)}},
 				{Extractor: "b", Values: []check.Value{val("y", fmt.Sprintf("d/g%d.yaml", i%300), i%500+1)}},
@@ -583,7 +585,7 @@ func TestSARIFBoundsTheWholeFile(t *testing.T) {
 				Verdict: check.VerdictUnknown, Message: cjk(rng, 300),
 			})
 		}
-		rep.Results = append(rep.Results, check.Result{Check: check.Check{ID: "e", Reason: "r", Run: []string{"x"}}, Verdict: check.VerdictFalse})
+		rep.Results = append(rep.Results, check.Result{Check: check.Check{ID: "e", Reason: "r", Kind: &check.Program{Run: []string{"x"}}}, Verdict: check.VerdictFalse})
 		return rep
 	}
 	cases := []struct {
@@ -670,7 +672,7 @@ func gzipped(b []byte) int {
 func TestSARIFCutsLongData(t *testing.T) {
 	at, over := strings.Repeat("é", valueLimit), strings.Repeat("é", valueLimit+1)
 	labels := func(long string) []string {
-		rep := check.Report{Results: []check.Result{agreeRule("c", nil, texts("f.yaml", "x", long, long)...)}}
+		rep := check.Report{Results: []check.Result{agreeRule("c", texts("f.yaml", "x", long, long)...)}}
 		var out []string
 		for _, r := range decodeSARIF(t, writeSARIF(t, rep)).Runs[0].Results[0].Related {
 			out = append(out, r.Message.Text)
@@ -685,7 +687,7 @@ func TestSARIFCutsLongData(t *testing.T) {
 	}
 
 	message := func(m string) string {
-		rep := check.Report{Results: []check.Result{{Check: check.Check{ID: "p", Run: []string{"x"}}, Verdict: check.VerdictFalse, Message: m}}}
+		rep := check.Report{Results: []check.Result{{Check: check.Check{ID: "p", Kind: &check.Program{Run: []string{"x"}}}, Verdict: check.VerdictFalse, Message: m}}}
 		return decodeSARIF(t, writeSARIF(t, rep)).Runs[0].Results[0].Message.Text
 	}
 	if m := strings.Repeat("m", messageLimit); message(m) != m {
@@ -707,7 +709,7 @@ func TestSARIFCapsRelatedLocations(t *testing.T) {
 		for i := range others {
 			values = append(values, val("a", "f.yaml", i+2))
 		}
-		rep := check.Report{Results: []check.Result{agreeRule("c", nil, check.Extracted{Extractor: "e", Values: values})}}
+		rep := check.Report{Results: []check.Result{agreeRule("c", check.Extracted{Extractor: "e", Values: values})}}
 		out := decodeSARIF(t, writeSARIF(t, rep))
 		res := out.Runs[0].Results[0]
 		if len(res.Related) != min(others, maxRelated) {
@@ -726,7 +728,7 @@ func TestSARIFCapsRelatedLocations(t *testing.T) {
 // written and read back, which takes half a minute under -race; the
 // warning's way into the file is TestSARIFBoundsTheUpload's.
 func TestSARIFCapsResults(t *testing.T) {
-	erratum := check.Result{Check: check.Check{ID: "p", Run: []string{"x"}}, Verdict: check.VerdictFalse}
+	erratum := check.Result{Check: check.Check{ID: "p", Kind: &check.Program{Run: []string{"x"}}}, Verdict: check.VerdictFalse}
 	for n, want := range map[int]string{
 		maxResults:     "",
 		maxResults + 1: "1 erratum left out of this file: code scanning rejects a run with more than 25000 results",

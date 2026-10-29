@@ -17,27 +17,29 @@ func val(text, file string, line int) check.Value {
 	return check.Value{Text: text, At: check.Location{File: file, Line: line}}
 }
 
-// agreeRule is a false agree rule over the extractors in ex, in that order.
-func agreeRule(id string, normalize []check.Normalization, ex ...check.Extracted) check.Result {
+// agreeRule is a false agree rule over the extractors in ex, in that order,
+// that blames the first value of ex. A test of another blame sets Blamed.
+func agreeRule(id string, ex ...check.Extracted) check.Result {
 	names := make([]string, len(ex))
 	for i, e := range ex {
 		names[i] = e.Extractor
 	}
 	return check.Result{
-		Check:     check.Check{ID: id, Reason: "r", Scope: check.ScopeRepo, Rule: &check.Rule{Agree: names, Normalize: normalize}},
+		Check:     check.Check{ID: id, Reason: "r", Scope: check.ScopeRepo, Kind: &check.Rule{Agree: names}},
 		Verdict:   check.VerdictFalse,
 		Message:   "agree: the values differ",
 		Extracted: ex,
+		Blamed:    &check.Blame{},
 	}
 }
 
 var sarifSample = check.Report{Results: []check.Result{
 	{Check: check.Check{ID: "ok", Scope: check.ScopeRepo, Reason: "holds"}, Verdict: check.VerdictTrue},
-	agreeRule("ci-node", nil,
+	agreeRule("ci-node",
 		check.Extracted{Extractor: "readme", Values: []check.Value{val("atlas", "README.md", 12)}},
 		check.Extracted{Extractor: "ci", Values: []check.Value{val("builder", ".gitlab-ci.yml", 4), val("builder", ".gitlab-ci.yml", 9)}},
 	),
-	{Check: check.Check{ID: "program", Scope: check.ScopeRepo, Reason: "CI moved.\nDocs must follow.", Run: []string{"false"}}, Verdict: check.VerdictFalse, Message: "says atlas, runs on builder"},
+	{Check: check.Check{ID: "program", Scope: check.ScopeRepo, Reason: "CI moved.\nDocs must follow.", Kind: &check.Program{Run: []string{"false"}}}, Verdict: check.VerdictFalse, Message: "says atlas, runs on builder"},
 	{Check: check.Check{ID: "broken", Scope: check.ScopeRepo, Reason: "why broken"}, Verdict: check.VerdictUnknown, Message: "program not found"},
 	{Check: check.Check{ID: "owner", Scope: check.ScopeApplied, Reason: "r"}, Gap: "no provider can read and predict a live system"},
 }}
@@ -324,7 +326,7 @@ func TestSARIFProgramCheckPointsAtTheConfig(t *testing.T) {
 	}
 	for _, c := range cases {
 		msg, want := c.msg, c.want
-		rep := check.Report{Results: []check.Result{{Check: check.Check{ID: "p", Reason: "r", Run: []string{"x"}}, Verdict: check.VerdictFalse, Message: msg}}}
+		rep := check.Report{Results: []check.Result{{Check: check.Check{ID: "p", Reason: "r", Kind: &check.Program{Run: []string{"x"}}}, Verdict: check.VerdictFalse, Message: msg}}}
 		res := decodeSARIF(t, writeSARIF(t, rep)).Runs[0].Results[0]
 		if len(res.Locations) != 1 || res.Locations[0].where() != "errata.yaml:1" || len(res.Related) != 0 {
 			t.Fatalf("locations %+v related %+v, want errata.yaml line 1 only", res.Locations, res.Related)
@@ -340,10 +342,10 @@ func TestSARIFProgramCheckPointsAtTheConfig(t *testing.T) {
 // the root, or a message naming it when the file is outside the repository.
 func TestSARIFResultPointsAtTheCheck(t *testing.T) {
 	program := func(at check.Location) check.Result {
-		return check.Result{Check: check.Check{ID: "p", Reason: "r", Run: []string{"x"}, At: at}, Verdict: check.VerdictFalse, Message: "said"}
+		return check.Result{Check: check.Check{ID: "p", Reason: "r", Kind: &check.Program{Run: []string{"x"}}, At: at}, Verdict: check.VerdictFalse, Message: "said"}
 	}
 	noValue := program(check.Location{File: "ci/errata.yaml", Line: 9})
-	noValue.Check.Run, noValue.Check.Rule = nil, &check.Rule{Assert: "size(v) > 0"}
+	noValue.Check.Kind = &check.Rule{Assert: "size(v) > 0"}
 	noValue.Extracted = []check.Extracted{{Extractor: "v"}}
 	cases := []struct {
 		name  string
@@ -405,31 +407,45 @@ func texts(file string, vs ...string) []check.Extracted {
 	return out
 }
 
-func TestSARIFAgreePointsOutsideTheMajority(t *testing.T) {
-	cases := []struct {
-		name      string
-		values    []string
-		normalize []check.Normalization
-		want      int // line of the primary location: value index + 1
-	}{
-		{"minority last", []string{"a", "a", "b"}, nil, 3},
-		{"minority first", []string{"b", "a", "a"}, nil, 1},
-		{"tie goes to the first group", []string{"a", "b"}, nil, 2},
-		{"tie goes to the group seen first, not the last one counted", []string{"x", "y", "x", "y", "z"}, nil, 2},
-		{"a later larger group wins", []string{"a", "b", "b"}, nil, 1},
-		{"normalized before grouping", []string{"b", "A", " a "}, []check.Normalization{check.NormalizeTrim, check.NormalizeLower}, 1},
-		{"raw text when no normalize", []string{"A", "b", "b", " a "}, nil, 1},
-		{"all agree still has a place", []string{"x", "x"}, nil, 1},
+// The result points at the value the rule blames, counted across its
+// extractors, and every other value is a related location. A rule that
+// blames none, or a blame outside the values, puts the result at the check
+// in the config with every value related. Planted break: the values of
+// the extractors before the blamed one left uncounted, which pointed at
+// e0.yaml:1 for e1.yaml:1.
+func TestSARIFPointsAtTheBlamedValue(t *testing.T) {
+	ex := []check.Extracted{
+		{Extractor: "e0", Values: []check.Value{val("a", "e0.yaml", 1), val("a", "e0.yaml", 2)}},
+		{Extractor: "empty"},
+		{Extractor: "e1", Values: []check.Value{val("b", "e1.yaml", 1), val("c", "e1.yaml", 2)}},
 	}
-	for _, c := range cases {
+	for _, c := range []struct {
+		name    string
+		blamed  *check.Blame
+		want    string
+		related int
+	}{
+		{"the first value", &check.Blame{}, "e0.yaml:1", 3},
+		{"within the first extractor", &check.Blame{Value: 1}, "e0.yaml:2", 3},
+		{"after an empty extractor", &check.Blame{Extractor: 2}, "e1.yaml:1", 3},
+		{"the last value", &check.Blame{Extractor: 2, Value: 1}, "e1.yaml:2", 3},
+		{"none", nil, "errata.yaml:7", 4},
+		{"an extractor with no value", &check.Blame{Extractor: 1}, "errata.yaml:7", 4},
+		{"past the values", &check.Blame{Extractor: 2, Value: 2}, "errata.yaml:7", 4},
+		{"past the extractors", &check.Blame{Extractor: 3}, "errata.yaml:7", 4},
+		{"below zero", &check.Blame{Extractor: -1}, "errata.yaml:7", 4},
+		{"a value below zero", &check.Blame{Value: -1}, "errata.yaml:7", 4},
+	} {
 		t.Run(c.name, func(t *testing.T) {
-			rep := check.Report{Results: []check.Result{agreeRule("c", c.normalize, texts("f.yaml", c.values...)...)}}
-			res := decodeSARIF(t, writeSARIF(t, rep)).Runs[0].Results[0]
-			if got := res.Locations[0].where(); got != "f.yaml:"+strconv.Itoa(c.want) {
-				t.Fatalf("primary location %s, want f.yaml:%d", got, c.want)
+			r := agreeRule("c", ex...)
+			r.Check.At = check.Location{File: "errata.yaml", Line: 7}
+			r.Blamed = c.blamed
+			res := decodeSARIF(t, writeSARIF(t, check.Report{Results: []check.Result{r}})).Runs[0].Results[0]
+			if got := res.Locations[0].where(); got != c.want {
+				t.Fatalf("primary location %s, want %s", got, c.want)
 			}
-			if len(res.Related) != len(c.values)-1 {
-				t.Fatalf("%d related locations, want every other value (%d)", len(res.Related), len(c.values)-1)
+			if len(res.Related) != c.related {
+				t.Fatalf("%d related locations, want %d", len(res.Related), c.related)
 			}
 			for i, r := range res.Related {
 				if r.ID != i+1 || r.Physical.Artifact.URIBaseID != "%SRCROOT%" {
@@ -443,7 +459,7 @@ func TestSARIFAgreePointsOutsideTheMajority(t *testing.T) {
 func TestSARIFRelatedLocationsListTheRest(t *testing.T) {
 	res := decodeSARIF(t, writeSARIF(t, sarifSample)).Runs[0].Results[0]
 	if got := res.Locations[0].where(); got != "README.md:12" {
-		t.Fatalf("primary = %s, want README.md:12, the value outside the majority", got)
+		t.Fatalf("primary = %s, want README.md:12, the value the rule blames", got)
 	}
 	var got []string
 	for _, r := range res.Related {
@@ -460,12 +476,13 @@ func TestSARIFRelatedLocationsListTheRest(t *testing.T) {
 	}
 }
 
-// An assert rule has values but no majority, so the result points at the
-// first value of the first extractor that returned one.
+// An assert rule's result points at the value the rule blames, its first
+// (rule.TestAssertBlamesTheFirstValue), and the others are related.
 func TestSARIFAssertPointsAtTheFirstValue(t *testing.T) {
 	r := check.Result{
-		Check:   check.Check{ID: "a", Reason: "r", Rule: &check.Rule{Assert: "x == y"}},
+		Check:   check.Check{ID: "a", Reason: "r", Kind: &check.Rule{Assert: "x == y"}},
 		Verdict: check.VerdictFalse,
+		Blamed:  &check.Blame{Extractor: 1},
 		Extracted: []check.Extracted{
 			{Extractor: "empty"},
 			{Extractor: "x", Values: []check.Value{val("1", "x.yaml", 3), val("1", "x.yaml", 5)}},
@@ -497,7 +514,7 @@ func TestSARIFLocation(t *testing.T) {
 		{"", 4, "errata.yaml:4"},
 	}
 	for _, c := range cases {
-		r := check.Result{Check: check.Check{ID: "c", Reason: "r"}, Verdict: check.VerdictFalse,
+		r := check.Result{Check: check.Check{ID: "c", Reason: "r"}, Verdict: check.VerdictFalse, Blamed: &check.Blame{},
 			Extracted: []check.Extracted{{Extractor: "e", Values: []check.Value{val("v", c.file, c.line)}}}}
 		res := decodeSARIF(t, writeSARIF(t, check.Report{Results: []check.Result{r}})).Runs[0].Results[0]
 		if got := res.Locations[0].where(); got != c.want {
@@ -571,11 +588,11 @@ func genSARIFReport(t *rapid.T) check.Report {
 		if !rapid.Bool().Draw(t, "rule") {
 			continue
 		}
-		r.Check.Rule = &check.Rule{Normalize: []check.Normalization{check.NormalizeTrim, check.NormalizeLower}}
+		r.Check.Kind = &check.Rule{Normalize: []check.Normalization{check.NormalizeTrim, check.NormalizeLower}}
 		if rapid.Bool().Draw(t, "agree") {
-			r.Check.Rule.Agree = []string{"x"}
+			r.Check.Rule().Agree = []string{"x"}
 		} else {
-			r.Check.Rule.Assert = "x"
+			r.Check.Rule().Assert = "x"
 		}
 		for range rapid.IntRange(0, 3).Draw(t, "extractors") {
 			e := check.Extracted{Extractor: anyText.Draw(t, "ename")}
@@ -671,11 +688,11 @@ func FuzzSARIF(f *testing.F) {
 		}
 		switch shape % 4 {
 		case 0:
-			erratum.Check.Rule = &check.Rule{Agree: []string{id}}
+			erratum.Check.Kind = &check.Rule{Agree: []string{id}}
 		case 1:
-			erratum.Check.Rule = &check.Rule{Assert: id}
+			erratum.Check.Kind = &check.Rule{Assert: id}
 		case 3:
-			erratum.Check.Run, erratum.Extracted = []string{id}, nil
+			erratum.Check.Kind, erratum.Extracted = &check.Program{Run: []string{id}}, nil
 		}
 		rep := check.Report{Results: []check.Result{
 			erratum,
@@ -699,16 +716,17 @@ func FuzzSARIF(f *testing.F) {
 }
 
 // A value an extractor handed over whole (as: map) is named in a related
-// location as the rule's message shows it: its mapping after the rule's
-// normalize, not its text quoted a second time. A flat value beside it is
-// still quoted. SARIF's plain text doubles each brace. Planted breaks:
-// label quoting the text whatever the value, which wrote "{{\"a\": ...;
-// the mapping shown before normalize, which kept " X ".
+// location by its Shown form, which the rule gives it after its normalize
+// (rule.TestAResultShowsAWholeValueAfterNormalize), not its text quoted a
+// second time. A flat value beside it is still quoted. SARIF's plain text
+// doubles each brace. Planted break: label quoting the text whatever the
+// value, which wrote "{{\"a\": ...
 func TestSARIFNamesAWholeValueAsTheMessageShowsIt(t *testing.T) {
 	d := &check.Data{Kind: check.DataMap, Keys: []string{"a"}, Items: []*check.Data{{Kind: check.DataScalar, Text: " X "}}, At: check.Location{File: "r.json", Line: 3}}
-	whole := check.Value{Text: d.Show(check.ShownBytes), At: d.At, Data: d}
+	whole := check.Value{Text: d.Show(check.ShownBytes), At: d.At, Data: d, Shown: `{"a": "x"}`}
 	res := check.Result{
-		Check: check.Check{ID: "c", Reason: "r", Scope: check.ScopeRepo, Rule: &check.Rule{
+		Blamed: &check.Blame{},
+		Check: check.Check{ID: "c", Reason: "r", Scope: check.ScopeRepo, Kind: &check.Rule{
 			Assert: "true", Normalize: []check.Normalization{check.NormalizeTrim, check.NormalizeLower}}},
 		Verdict: check.VerdictFalse, Message: "assert: the expression is false",
 		Extracted: []check.Extracted{{Extractor: "flat", Values: []check.Value{val("v", "f.yaml", 1)}}, {Extractor: "m", Values: []check.Value{whole}}},

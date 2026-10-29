@@ -4,7 +4,7 @@ exec sh -c 'errata check -c both.yaml 2>/dev/null; echo code=$?'
 stdout code=2
 
 ! exec errata check -c both.yaml
-stderr 'check "both": .*a check is a program check \(run\) or a rule \(extract\), never both'
+stderr 'check "both": keys of two kinds of check: run makes a program check, and extract and agree make a rule; a check is one kind: remove the keys of the kinds it is not, or write a check for each'
 ! stdout .
 
 ! exec errata check -c neither.yaml
@@ -29,7 +29,7 @@ stderr 'check "unused": .*extractor "secret" is declared but agree does not name
 stderr 'check "normalize": .*normalize "upper" must be one of trim, lower'
 
 ! exec errata check -c timeout.yaml
-stderr 'check "timeout": .*timeout applies to a program check only'
+stderr 'check "timeout": .*timeout applies to a program check and a generated check'
 
 ! exec errata check -c no-kind.yaml
 stderr 'check "no-kind": extractor "service": an extractor sets exactly one of yaml, json, toml, regex'
@@ -56,7 +56,7 @@ stderr 'check "allow-empty-none": allow_empty lists no extractor'
 stderr 'check "allow-empty-undeclared": .*allow_empty names "secret", which extract does not declare'
 
 ! exec errata check -c allow-empty-program.yaml
-stderr 'check "allow-empty-program": .*never both'
+stderr 'check "allow-empty-program": keys of two kinds of check: run makes a program check, and allow_empty makes a rule'
 
 ! exec errata check -c blank-assert.yaml
 stderr 'check "blank-assert": assert is blank: write the expression or remove the key'
@@ -89,7 +89,7 @@ stderr 'check "no-scope": scope "" must be one of repo, live, applied'
 
 # Every bad check is reported in one pass.
 ! exec errata check -c several.yaml
-stderr 'checks\[0\]: check "first": .*never both'
+stderr 'checks\[0\]: check "first": keys of two kinds of check: run makes a program check, and agree makes a rule'
 stderr 'checks\[1\]: check "second": .*a rule needs agree or assert'
 
 -- both.yaml --

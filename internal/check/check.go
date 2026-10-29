@@ -32,28 +32,22 @@ func (s Scope) known() bool {
 	}
 }
 
-// Check is one test of one claim. It is a program check when Run is set, a
-// rule when Rule is set and a generated check when Generated is set;
-// Validate refuses more than one and none.
+// Check is one test of one claim. Its Kind makes it a program check, a rule
+// or a generated check; Validate refuses a check with none, so every check
+// the loader returns holds one, and errata list and the engine read Kind
+// without asking whether it is nil.
 type Check struct {
 	ID     string
 	Reason string
 	Scope  Scope
-	// Run is the command of a check-protocol check: argv, not a shell string,
-	// so a path with spaces needs no quoting.
-	Run     []string
+	// Timeout bounds a program check's program and a generated check's
+	// generator. A rule takes none.
 	Timeout time.Duration
-	Rule    *Rule
-	// Generated is set on a generated check: the committed file and the
-	// generator whose stdout must equal it.
-	Generated *Generated
+	Kind    Kind
 	// At is where the check is written: the config file and the line its
 	// entry starts on. The loader sets it; a line of 0 is not known.
 	At Location
 }
-
-// IsRule reports whether c is a rule rather than a program check.
-func (c Check) IsRule() bool { return c.Rule != nil }
 
 var idPattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 
@@ -75,16 +69,16 @@ func (c Check) Validate() error {
 	if !c.Scope.known() {
 		errs = append(errs, fmt.Errorf("scope %q must be one of repo, live, applied", c.Scope))
 	}
-	// Ifs rather than a switch: Go's coverage profile leaves case
-	// expressions outside every block (Rule.validate says more).
-	if c.Rule != nil {
-		errs = append(errs, c.Rule.validate(c)...)
-	}
-	if c.Generated != nil {
-		errs = append(errs, c.Generated.validate(c)...)
-	}
-	if c.Rule == nil && c.Generated == nil && len(c.Run) == 0 {
-		errs = append(errs, errors.New("run or extract is required: a program check has run, a rule has extract, and a generated check has generated"))
+	if c.Kind == nil {
+		errs = append(errs, errNoKind)
+	} else {
+		if c.Scope.known() {
+			// An unknown scope is refused once, above.
+			if why := c.Kind.ScopeRefusal(c.Scope); why != "" {
+				errs = append(errs, fmt.Errorf("scope %q: %s", c.Scope, why))
+			}
+		}
+		errs = append(errs, c.Kind.Validate(c)...)
 	}
 	if c.Timeout < 0 {
 		errs = append(errs, errors.New("timeout must not be negative"))
@@ -132,6 +126,9 @@ type Result struct {
 	// Rule.Normalized gives the form they were compared in. A program check
 	// leaves it empty.
 	Extracted []Extracted
+	// Blamed is the value of Extracted that a false rule blames, where a
+	// report points the erratum; nil when the rule blames none.
+	Blamed *Blame
 }
 
 // Skipped reports whether the check did not run.

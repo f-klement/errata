@@ -30,6 +30,21 @@ type Spec struct {
 	MaxBytes int64  `json:"max_bytes,omitempty"`
 }
 
+// Kind is the shell kind, which a rule writes under the key shell.
+var Kind = core.Kind[Spec]{Key: "shell", Place: Place, Resolve: Resolve, Describe: Describe}
+
+// Resolve is s with its max_bytes written out, for errata list.
+func Resolve(s Spec) Spec {
+	s.MaxBytes = core.MaxBytes(s.MaxBytes)
+	return s
+}
+
+// Describe is what the kind's extractor returns: flat values, some not
+// literal, as the reader marks a value the script computes.
+func Describe(Spec) check.Description {
+	return check.Description{Label: "shell", NotLiteral: true}
+}
+
 // languages are the dialects a spec may name.
 var languages = map[string]syntax.LangVariant{
 	"bash":  syntax.LangBash,

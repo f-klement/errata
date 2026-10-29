@@ -51,8 +51,8 @@ func TestDefaultRunAppliesToAProgramCheckWithNone(t *testing.T) {
 		"a-rule":         nil,
 	}
 	for _, c := range cfg.Checks {
-		if !slices.Equal(c.Run, want[c.ID]) {
-			t.Errorf("%s: run = %q, want %q", c.ID, c.Run, want[c.ID])
+		if !slices.Equal(runOf(c), want[c.ID]) {
+			t.Errorf("%s: run = %q, want %q", c.ID, runOf(c), want[c.ID])
 		}
 	}
 	if len(cfg.Checks) != len(want) {
@@ -67,7 +67,7 @@ func TestDefaultRunIsCopiedForEachCheck(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := cfg.Checks[0].Run[1] + " " + cfg.Checks[1].Run[1]; got != "a b" {
+	if got := runOf(cfg.Checks[0])[1] + " " + runOf(cfg.Checks[1])[1]; got != "a b" {
 		t.Errorf("runs end in %q, want a b", got)
 	}
 }
@@ -147,7 +147,7 @@ func TestDefaultsRefusals(t *testing.T) {
 		},
 		"a rule with a run beside a default": {
 			"defaults: {run: [x]}\nchecks:\n- {id: a, reason: r, scope: repo, run: [z], extract: {p: {yaml: {file: a, path: a}}, q: {yaml: {file: b, path: b}}}, agree: [p, q]}\n",
-			"never both",
+			"keys of two kinds of check: run makes a program check, and extract and agree make a rule",
 		},
 	}
 	for name, tc := range cases {
@@ -231,8 +231,8 @@ func TestDefaultRunTakesNumbersAndBoolsAsWritten(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"head", "-n", "5", "20.04", "true"}; !slices.Equal(cfg.Checks[0].Run, want) {
-		t.Errorf("run = %q, want %q", cfg.Checks[0].Run, want)
+	if want := []string{"head", "-n", "5", "20.04", "true"}; !slices.Equal(runOf(cfg.Checks[0]), want) {
+		t.Errorf("run = %q, want %q", runOf(cfg.Checks[0]), want)
 	}
 }
 
@@ -246,20 +246,19 @@ func TestARulesRunIsRefusedWhateverItsValue(t *testing.T) {
 	const rule = "extract: {p: {yaml: {file: a, path: a}}, q: {yaml: {file: b, path: b}}}, agree: [p, q]"
 	for _, run := range []string{"[]", "null", "[z]"} {
 		_, err := parseRaw([]byte("defaults: {run: [x]}\nchecks:\n- {id: a, reason: r, scope: repo, run: " + run + ", " + rule + "}\n"))
-		want := `checks[0]: check "a": run is set on a rule, whatever its value: a check is a program check (run) or a rule (extract), never both`
+		want := `checks[0]: check "a": keys of two kinds of check: run makes a program check, and extract and agree make a rule; a check is one kind: remove the keys of the kinds it is not, or write a check for each`
 		if err == nil || err.Error() != want {
 			t.Errorf("a rule with run: %s: error = %v, want %q alone", run, err, want)
 		}
 	}
-	// An entry is a rule through any rule key, not extract alone, so its
-	// run is refused first; the rest of what the rule lacks follows.
+	// An entry is a rule through any rule key, not extract alone.
 	_, err := parseRaw([]byte("defaults: {run: [x]}\nchecks:\n- {id: a, reason: r, scope: repo, run: [], allow_empty: [p]}\n"))
-	want := `checks[0]: check "a": run is set on a rule, whatever its value: a check is a program check (run) or a rule (extract), never both`
-	if err == nil || strings.SplitN(err.Error(), "\n", 2)[0] != want {
-		t.Errorf("a rule through allow_empty alone with run: []: error = %v, want it to start %q", err, want)
+	want := `checks[0]: check "a": keys of two kinds of check: run makes a program check, and allow_empty makes a rule; a check is one kind: remove the keys of the kinds it is not, or write a check for each`
+	if err == nil || err.Error() != want {
+		t.Errorf("a rule through allow_empty alone with run: []: error = %v, want %q alone", err, want)
 	}
 	cfg, err := parseRaw([]byte("defaults: {run: [x, <errata.id>]}\nchecks:\n- {id: a, reason: r, scope: repo}\n- {id: b, reason: r, scope: repo, " + rule + "}\n"))
-	if err != nil || !slices.Equal(cfg.Checks[0].Run, []string{"x", "a"}) || cfg.Checks[1].Run != nil {
+	if err != nil || !slices.Equal(runOf(cfg.Checks[0]), []string{"x", "a"}) || runOf(cfg.Checks[1]) != nil {
 		t.Errorf("a program check and a rule beside a default: %v; want the program check to run [x a] and the rule no run", err)
 	}
 }
@@ -268,24 +267,29 @@ func TestARulesRunIsRefusedWhateverItsValue(t *testing.T) {
 // tells a run left out, which takes the default, from a run written empty,
 // which does not: both are an empty Run once built. A later default, such
 // as a timeout that build fills in when the key is left out, needs the same
-// distinction. The planted breaks: apply reading an empty Run as no key,
-// and apply deciding rule from the built check.
+// distinction. The planted break: apply reading an empty Run as no key.
+// Only the program check's row calls apply, so a rule and a generated check
+// take no default (TestDefaultRunAppliesToAProgramCheckWithNone and
+// TestGeneratedTakesNoDefaultRun).
 func TestDefaultsApplyByTheKeysTheEntryWrites(t *testing.T) {
 	d := defaults{Run: []string{"x", "<errata.id>"}}
-	unset := check.Check{ID: "a"}
-	if err := d.apply(&unset, map[string]json.RawMessage{"id": json.RawMessage(`"a"`)}, false); err != nil || !slices.Equal(unset.Run, []string{"x", "a"}) {
+	var unset check.Program
+	if err := d.apply(&unset, map[string]json.RawMessage{"id": json.RawMessage(`"a"`)}, "a"); err != nil || !slices.Equal(unset.Run, []string{"x", "a"}) {
 		t.Errorf("run left out: run %q, %v; want [x a]", unset.Run, err)
 	}
 	for _, written := range []string{"[]", "null"} {
-		empty := check.Check{ID: "a"}
-		if err := d.apply(&empty, map[string]json.RawMessage{"run": json.RawMessage(written)}, false); err != nil || empty.Run != nil {
+		var empty check.Program
+		if err := d.apply(&empty, map[string]json.RawMessage{"run": json.RawMessage(written)}, "a"); err != nil || empty.Run != nil {
 			t.Errorf("run: %s: run %q, %v; want no run, for build to refuse", written, empty.Run, err)
 		}
 	}
-	// A rule is told by isRule, build's reading of the keys, not by the
-	// built check: here the check has no Rule, and still takes no default.
-	rule := check.Check{ID: "a"}
-	if err := d.apply(&rule, map[string]json.RawMessage{"agree": json.RawMessage(`["p"]`)}, true); err != nil || rule.Run != nil {
-		t.Errorf("a rule: run %q, %v; want no run", rule.Run, err)
+}
+
+// runOf is the run of c when it is a program check, and nil for a check of
+// another kind.
+func runOf(c check.Check) []string {
+	if p := c.Program(); p != nil {
+		return p.Run
 	}
+	return nil
 }

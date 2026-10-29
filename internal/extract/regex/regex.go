@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"regexp"
 	"regexp/syntax"
+	"slices"
 	"strings"
 
 	"github.com/f-klement/errata/internal/check"
@@ -290,21 +291,48 @@ func distinct(values []check.Value) []check.Value {
 	return out
 }
 
-// Place is r with only what decides what it reads, for extract's Place:
-// values_as written out as literal is the default, so it reads as left
-// out. The files are extract's to clean.
+// Kind is the regex kind, which a rule writes under the key regex.
+var Kind = core.Kind[Spec]{Key: "regex", Place: Place, Resolve: Resolve, Describe: Describe}
+
+// Place is r with only what decides what it reads: its file or files as
+// core.PlaceFiles writes them, no max_bytes, and values_as written out as
+// literal, the default, read as left out.
 func Place(r Spec) Spec {
 	if r.ValuesAs == Literal {
 		r.ValuesAs = ""
 	}
+	r.File, r.Files = core.PlaceFiles(r.File, r.Files)
+	r.MaxBytes = 0
 	return r
 }
 
-// Resolve is r with values_as written out for a pattern that references
-// values and leaves it out, for errata list.
+// Resolve is r with its max_bytes written out, its files and context
+// copied, and values_as written out for a pattern that references values
+// and leaves it out, for errata list.
 func Resolve(r Spec) Spec {
 	if r.ValuesAs == "" && strings.Contains(r.Pattern, "(?{") {
 		r.ValuesAs = Literal
 	}
+	r.Files = slices.Clone(r.Files)
+	if r.Context != nil {
+		c := *r.Context
+		r.Context = &c
+	}
+	r.MaxBytes = core.MaxBytes(r.MaxBytes)
 	return r
+}
+
+// Describe is what r's extractor returns: literal values, flat, or with
+// as: record a record of the pattern's named groups, and for a pattern
+// that references an extractor's values, that extractor's name in Reads.
+// A pattern Build refuses reads no extractor.
+func Describe(r Spec) check.Description {
+	d := check.Description{Label: "regex"}
+	if r.As == "record" {
+		d.Shape, d.Fields = check.ShapeRecord, core.RegexFields(r.Pattern)
+	}
+	if ref, err := parseReference(r.Pattern); err == nil && ref != nil {
+		d.Reads = []string{ref.name}
+	}
+	return d
 }

@@ -54,23 +54,13 @@ FUZZTIME     ?= 15s
 # pass at one worker (measured 2026-10-22: 3 to 34 thousand execs, against 42 to 49 thousand
 # at 100x). The nightly campaigns pass 60s, where the time for a smaller corpus is there.
 FUZZMINIMIZETIME ?= 100x
-# Each fuzz target as package:Name. `go test -fuzz` takes one target per run.
-FUZZ_TARGETS := ./internal/config:FuzzParse ./internal/protocol:FuzzMessage \
-                ./internal/report:FuzzJUnit ./internal/rule:FuzzAssert ./internal/report:FuzzSARIF \
-                ./internal/extract/core:FuzzPath ./internal/extract/yaml:FuzzYAML \
-                ./internal/extract/json:FuzzJSON ./internal/extract/toml:FuzzTOML \
-                ./internal/extract/core:FuzzRegex ./internal/extract/core:FuzzExtract \
-                ./internal/extract/core:FuzzParseIndex \
-                ./internal/extract/text:FuzzText ./internal/extract/core:FuzzNumber \
-                ./internal/extract/xml:FuzzXPath ./internal/extract/xml:FuzzXML \
-                ./internal/extract/ini:FuzzINI ./internal/extract/properties:FuzzProperties \
-                ./internal/extract/toolversion:FuzzToolVersion ./internal/semver:FuzzParse \
-                ./internal/extract/packageversion:FuzzPackageVersion \
-                ./internal/extract/envfile:FuzzEnvfile \
-                ./internal/extract/gitlabci:FuzzGitLabCI \
-                ./internal/extract/shell:FuzzShell \
-                ./internal/extract/githubactions:FuzzGitHubActions \
-                ./internal/extract/jenkins:FuzzJenkins
+# Each fuzz target as package:Name, found in the tree: every func whose name starts with Fuzz and
+# that takes a *testing.F, at the start of a line of a _test.go file under internal/, outside
+# testdata, which go test does not build. A new target needs no edit here. `go test -fuzz` takes
+# one target per run. The patterns hold no lone parenthesis, which would end make's $(shell).
+FUZZ_TARGETS = $(shell find internal -name testdata -prune -o -name '*_test.go' -type f -print \
+	| xargs grep -HE '^func Fuzz[A-Za-z0-9_]*[(][A-Za-z_][A-Za-z0-9_]* \*testing\.F[)]' \
+	| sed 's|^\(.*\)/[^/]*_test\.go:func \(Fuzz[A-Za-z0-9_]*\).*|./\1:\2|' | LC_ALL=C sort -u)
 
 .PHONY: check gate precheck build tools lint fmt test cover slow fuzz mutation vuln dogfood public-dry release-dry image-dry ci-local ci-test tool-sums hooks clean
 
@@ -257,7 +247,10 @@ FUZZ_FLAGS        ?=
 MUTATION_DIFF     ?=
 MUTATION_DEADLINE ?=
 
+# An empty FUZZ_TARGETS, from a derivation that broke or set on the command line, is refused: it
+# would pass with no target run.
 fuzz:
+	@[ -n "$(strip $(FUZZ_TARGETS))" ] || { echo "make fuzz: REFUSED: FUZZ_TARGETS is empty, so no fuzz target would run" >&2; exit 2; }
 	@ran=0; for t in $(FUZZ_TARGETS); do \
 		pkg=$${t%%:*}; name=$${t##*:}; \
 		case " $(MUTATION_SCOPE) " in *" all "*|*" $${pkg#./} "*) ;; *) continue ;; esac; \

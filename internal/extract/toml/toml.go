@@ -5,6 +5,8 @@ package toml
 import (
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -32,6 +34,33 @@ type Spec struct {
 	// Fields names each path read from a selected node into its record,
 	// for as: record, as core.CheckFields says.
 	Fields map[string]string `json:"fields,omitempty"`
+}
+
+// Kind is the toml kind, which a rule writes under the key toml.
+var Kind = core.Kind[Spec]{Key: "toml", Place: Place, Resolve: Resolve, Describe: Describe}
+
+// Place is s with only what decides where it reads: its file or files as
+// core.PlaceFiles writes them, and no max_bytes, since a limit does not
+// change what is read.
+func Place(s Spec) Spec {
+	s.File, s.Files = core.PlaceFiles(s.File, s.Files)
+	s.MaxBytes = 0
+	return s
+}
+
+// Resolve is s with its max_bytes written out, and its files, embedded
+// steps and fields copied, for errata list.
+func Resolve(s Spec) Spec {
+	s.Files, s.Embedded, s.Fields = slices.Clone(s.Files), slices.Clone(s.Embedded), maps.Clone(s.Fields)
+	s.MaxBytes = core.MaxBytes(s.MaxBytes)
+	return s
+}
+
+// Describe is what s's extractor returns: literal values, each flat, a
+// mapping or a record as its as key says.
+func Describe(s Spec) check.Description {
+	shape, fields := core.TreeShape(s.As, s.Fields)
+	return check.Description{Label: "toml", Shape: shape, Fields: fields}
 }
 
 // Build checks s and returns its extractor, which reads the documents

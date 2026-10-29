@@ -298,3 +298,20 @@ func TestBuildRefusesPropertiesFields(t *testing.T) {
 		}
 	}
 }
+
+// A properties file is described as not literal only when it is a
+// template, as Build marks its values, and each spec as its built
+// extractor says. Planted break: the template's test negated.
+func TestDescribe(t *testing.T) {
+	for file, want := range map[string]bool{"a.properties": false, "a.properties.j2": true} {
+		s := Spec{File: file, Key: "k"}
+		x, err := Build(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		d := Describe(s)
+		if d.Label != "properties" || d.NotLiteral != want || check.MayReturnNotLiteral(x) != want {
+			t.Errorf("%s: %+v, and the extractor not literal %t; want %t", file, d, check.MayReturnNotLiteral(x), want)
+		}
+	}
+}

@@ -1,6 +1,7 @@
 package core_test
 
 import (
+	encjson "encoding/json"
 	"fmt"
 	"math"
 	"os"
@@ -12,16 +13,21 @@ import (
 	"github.com/f-klement/errata/internal/extract"
 	"github.com/f-klement/errata/internal/extract/core"
 	"github.com/f-klement/errata/internal/extract/extracttest"
+	"github.com/f-klement/errata/internal/extract/json"
+	"github.com/f-klement/errata/internal/extract/regex"
+	"github.com/f-klement/errata/internal/extract/text"
+	"github.com/f-klement/errata/internal/extract/toml"
+	"github.com/f-klement/errata/internal/extract/yaml"
 )
 
 // each kind with its file set to f and a valid path or pattern.
 func eachKind(f string) map[string]extract.Spec {
 	return map[string]extract.Spec{
-		"yaml":  {YAML: &extract.YAML{File: f, Path: "a"}},
-		"json":  {JSON: &extract.JSON{File: f, Path: "a"}},
-		"toml":  {TOML: &extract.TOML{File: f, Path: "a"}},
-		"regex": {Regex: &extract.Regex{File: f, Pattern: "(a)"}},
-		"text":  {Text: &extract.Text{File: f, Pattern: "(a)"}},
+		"yaml":  extract.Of(yaml.Kind, yaml.Spec{File: f, Path: "a"}),
+		"json":  extract.Of(json.Kind, json.Spec{File: f, Path: "a"}),
+		"toml":  extract.Of(toml.Kind, toml.Spec{File: f, Path: "a"}),
+		"regex": extract.Of(regex.Kind, regex.Spec{File: f, Pattern: "(a)"}),
+		"text":  extract.Of(text.Kind, text.Spec{File: f, Pattern: "(a)"}),
 	}
 }
 
@@ -44,14 +50,14 @@ func TestBuildRefusesFileOutsideRepository(t *testing.T) {
 // and then each required field empty on its own. Build names the field.
 func TestBuildRefusesEmptyField(t *testing.T) {
 	for want, s := range map[string]extract.Spec{
-		"yaml: file is required":                                 {YAML: &extract.YAML{}},
-		"json: file is required":                                 {JSON: &extract.JSON{}},
-		"toml: file is required":                                 {TOML: &extract.TOML{}},
-		"regex: file is required":                                {Regex: &extract.Regex{}},
-		"yaml: path is required; write $ for the whole document": {YAML: &extract.YAML{File: "f"}},
-		"json: path is required; write $ for the whole document": {JSON: &extract.JSON{File: "f"}},
-		"toml: path is required; write $ for the whole document": {TOML: &extract.TOML{File: "f"}},
-		"regex: pattern is required":                             {Regex: &extract.Regex{File: "f"}},
+		"yaml: file is required":                                 extract.Of(yaml.Kind, yaml.Spec{}),
+		"json: file is required":                                 extract.Of(json.Kind, json.Spec{}),
+		"toml: file is required":                                 extract.Of(toml.Kind, toml.Spec{}),
+		"regex: file is required":                                extract.Of(regex.Kind, regex.Spec{}),
+		"yaml: path is required; write $ for the whole document": extract.Of(yaml.Kind, yaml.Spec{File: "f"}),
+		"json: path is required; write $ for the whole document": extract.Of(json.Kind, json.Spec{File: "f"}),
+		"toml: path is required; write $ for the whole document": extract.Of(toml.Kind, toml.Spec{File: "f"}),
+		"regex: pattern is required":                             extract.Of(regex.Kind, regex.Spec{File: "f"}),
 	} {
 		_, err := extract.Build(s)
 		if err == nil || err.Error() != want {
@@ -124,7 +130,7 @@ func TestExtractReadsSymlinkThatStaysInside(t *testing.T) {
 	extracttest.Symlink(t, "../real", filepath.Join(root, "dir", "link"))
 	extracttest.Symlink(t, "relative.yaml", filepath.Join(root, "chain.yaml"))
 	for _, f := range []string{"relative.yaml", "absolute.yaml", "back.yaml", "dir/link/f.yaml", "chain.yaml"} {
-		got, err := run(t, extract.Spec{YAML: &extract.YAML{File: f, Path: "a"}}, root)
+		got, err := run(t, extract.Of(yaml.Kind, yaml.Spec{File: f, Path: "a"}), root)
 		if err != nil {
 			t.Errorf("%s: %v", f, err)
 			continue
@@ -148,7 +154,7 @@ func TestExtractResolvesDotDotAsTheKernelDoes(t *testing.T) {
 		t.Fatalf("the kernel reads %q, %v", kernel, err)
 	}
 	for f, want := range map[string]string{"link.yaml": "deep@1", "sub/../real/f.yaml": "top@1"} {
-		if got := extracttest.Texts(mustRun(t, extract.Spec{YAML: &extract.YAML{File: f, Path: "a"}}, root)); got != want {
+		if got := extracttest.Texts(mustRun(t, extract.Of(yaml.Kind, yaml.Spec{File: f, Path: "a"}), root)); got != want {
 			t.Errorf("%s: got %q, want %q", f, got, want)
 		}
 	}
@@ -198,39 +204,37 @@ func TestExtractFollowsAtMostMaxLinks(t *testing.T) {
 		extracttest.Symlink(t, prev, filepath.Join(root, name))
 		prev = name
 	}
-	if got := extracttest.Texts(mustRun(t, extract.Spec{Regex: &extract.Regex{File: fmt.Sprintf("l%d", core.MaxLinks-1), Pattern: `v=(\d)`}}, root)); got != "1@1" {
+	if got := extracttest.Texts(mustRun(t, extract.Of(regex.Kind, regex.Spec{File: fmt.Sprintf("l%d", core.MaxLinks-1), Pattern: `v=(\d)`}), root)); got != "1@1" {
 		t.Fatalf("a chain of %d links: got %q", core.MaxLinks, got)
 	}
-	_, err := run(t, extract.Spec{Regex: &extract.Regex{File: fmt.Sprintf("l%d", core.MaxLinks), Pattern: `v=(\d)`}}, root)
+	_, err := run(t, extract.Of(regex.Kind, regex.Spec{File: fmt.Sprintf("l%d", core.MaxLinks), Pattern: `v=(\d)`}), root)
 	if want := fmt.Sprintf("read l%d: too many levels of symbolic links", core.MaxLinks); err == nil || err.Error() != want {
 		t.Fatalf("a chain of %d links: error %v, want %q", core.MaxLinks+1, err, want)
 	}
 }
 
-// withMaxBytes is s with max_bytes set to n.
+// withMaxBytes is s with max_bytes set to n, written into the entry as
+// errata.yaml writes it, so it reads the same for every kind.
 func withMaxBytes(s extract.Spec, n int64) extract.Spec {
-	switch {
-	case s.YAML != nil:
-		y := *s.YAML
-		y.MaxBytes = n
-		return extract.Spec{YAML: &y}
-	case s.JSON != nil:
-		j := *s.JSON
-		j.MaxBytes = n
-		return extract.Spec{JSON: &j}
-	case s.TOML != nil:
-		x := *s.TOML
-		x.MaxBytes = n
-		return extract.Spec{TOML: &x}
-	case s.Text != nil:
-		x := *s.Text
-		x.MaxBytes = n
-		return extract.Spec{Text: &x}
-	default:
-		r := *s.Regex
-		r.MaxBytes = n
-		return extract.Spec{Regex: &r}
+	raw, err := encjson.Marshal(s)
+	if err != nil {
+		panic(err)
 	}
+	var entry map[string]map[string]any
+	if err := encjson.Unmarshal(raw, &entry); err != nil {
+		panic(err)
+	}
+	for _, spec := range entry {
+		spec["max_bytes"] = n
+	}
+	if raw, err = encjson.Marshal(entry); err != nil {
+		panic(err)
+	}
+	var out extract.Spec
+	if err := encjson.Unmarshal(raw, &out); err != nil {
+		panic(err)
+	}
+	return out
 }
 
 // Each extractor reads a file of exactly max_bytes, and refuses a file one
@@ -243,11 +247,11 @@ func TestExtractFileSizeLimit(t *testing.T) {
 		tail string
 		spec extract.Spec
 	}{
-		{"f.yaml", "\na: 1", extract.Spec{YAML: &extract.YAML{File: "f.yaml", Path: "a"}}},
-		{"f.toml", "\na = 1", extract.Spec{TOML: &extract.TOML{File: "f.toml", Path: "a"}}},
-		{"f.json", "\n[1]", extract.Spec{JSON: &extract.JSON{File: "f.json", Path: "[0]"}}},
-		{"f.txt", "\na: 1", extract.Spec{Regex: &extract.Regex{File: "f.txt", Pattern: "a: (1)"}}},
-		{"f.md", "\na: 1", extract.Spec{Text: &extract.Text{File: "f.md", Pattern: "a: (1)"}}},
+		{"f.yaml", "\na: 1", extract.Of(yaml.Kind, yaml.Spec{File: "f.yaml", Path: "a"})},
+		{"f.toml", "\na = 1", extract.Of(toml.Kind, toml.Spec{File: "f.toml", Path: "a"})},
+		{"f.json", "\n[1]", extract.Of(json.Kind, json.Spec{File: "f.json", Path: "[0]"})},
+		{"f.txt", "\na: 1", extract.Of(regex.Kind, regex.Spec{File: "f.txt", Pattern: "a: (1)"})},
+		{"f.md", "\na: 1", extract.Of(text.Kind, text.Spec{File: "f.md", Pattern: "a: (1)"})},
 	} {
 		pad := "#"
 		if c.file == "f.json" {
@@ -287,7 +291,7 @@ func TestExtractDefaultFileSizeLimit(t *testing.T) {
 		}
 	}
 	// A max_bytes over the default is the limit, not capped at the default.
-	e, err := extract.Build(withMaxBytes(extract.Spec{JSON: &extract.JSON{File: "huge", Path: "a"}}, core.DefaultMaxBytes+1))
+	e, err := extract.Build(withMaxBytes(extract.Of(json.Kind, json.Spec{File: "huge", Path: "a"}), core.DefaultMaxBytes+1))
 	if err != nil || e.(core.TreeExtractor).Limit != core.DefaultMaxBytes+1 {
 		t.Errorf("max_bytes over the default: %v, %+v", err, e)
 	}

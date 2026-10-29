@@ -190,7 +190,7 @@ func TestMapsGroupByFile(t *testing.T) {
 // which lost Name.
 func TestMapsAreNormalized(t *testing.T) {
 	c := assertRule(t, "m[0].Name == 'x' && m[0].L[0] == 'y' && m[0].Name == 'q'", mapsOf("m", obj(3, "Name", str(" X ", 3), "L", seq(4, str("Y", 4)))))
-	c.Rule.Normalize = []check.Normalization{check.NormalizeTrim, check.NormalizeLower}
+	c.Rule().Normalize = []check.Normalization{check.NormalizeTrim, check.NormalizeLower}
 	res := Run(context.Background(), ".", c)
 	if res.Verdict != check.VerdictFalse || !strings.Contains(res.Message, `m[0] = {"Name": "x", "L": ["y"]} at renovate.json:3`) {
 		t.Errorf("%v %s", res.Verdict, res.Message)

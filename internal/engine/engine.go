@@ -1,11 +1,13 @@
 // Package engine runs a set of checks and produces a report. It decides
-// whether each check can run; the protocol package decides what a program
-// check and a generated check return, and the rule package what a rule
-// returns.
+// whether each check can run, and runs it by the row of its kind in a
+// dispatch table: the protocol package decides what a program check and a
+// generated check return, and the rule package what a rule returns.
 package engine
 
 import (
 	"context"
+	"fmt"
+	"reflect"
 
 	"github.com/f-klement/errata/internal/check"
 	"github.com/f-klement/errata/internal/protocol"
@@ -28,23 +30,35 @@ type Engine struct {
 	SkipsFail bool
 }
 
-// New returns an engine that runs a program check through the check protocol
-// and a rule through the rule runner.
+// New returns an engine that runs each check by the runner of its kind.
 func New(root string, providers []provider.Provider) *Engine {
 	return &Engine{Root: root, Providers: providers, Run: Dispatch}
 }
 
-// Dispatch is the production Runner: it sends a rule to rule.Run, a
-// generated check to protocol.RunGenerated and a program check to
-// protocol.Run.
+// Table is a dispatch table: the runner of each kind of check, by the type
+// of the kind, as check.Check.Kind holds it.
+type Table map[reflect.Type]Runner
+
+// kinds is the dispatch table errata runs with, a row for each kind.
+var kinds = Table{
+	reflect.TypeFor[*check.Program]():   protocol.Run,
+	reflect.TypeFor[*check.Rule]():      rule.Run,
+	reflect.TypeFor[*check.Generated](): protocol.RunGenerated,
+}
+
+// Dispatch is the production Runner: it runs c by the row of its kind.
 func Dispatch(ctx context.Context, root string, c check.Check) check.Result {
-	if c.IsRule() {
-		return rule.Run(ctx, root, c)
+	return kinds.Dispatch(ctx, root, c)
+}
+
+// Dispatch runs c by the runner of its kind. A kind with no row is unknown:
+// errata did not run the check, so it cannot say the claim holds.
+func (t Table) Dispatch(ctx context.Context, root string, c check.Check) check.Result {
+	run, ok := t[reflect.TypeOf(c.Kind)]
+	if !ok {
+		return check.Result{Check: c, Verdict: check.VerdictUnknown, Message: fmt.Sprintf("errata has no runner for a check of kind %T", c.Kind)}
 	}
-	if c.IsGenerated() {
-		return protocol.RunGenerated(ctx, root, c)
-	}
-	return protocol.Run(ctx, root, c)
+	return run(ctx, root, c)
 }
 
 // Execute runs every check that the available providers can reach and skips

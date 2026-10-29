@@ -1,6 +1,7 @@
 package gitlabci
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -84,7 +85,7 @@ func (t *target) set(dst *core.Node, k string, v *core.Node) {
 func (l *loader) load(file string, included bool) (*core.Node, error) {
 	src := core.Source{File: file, Limit: l.left}
 	data, err := l.read(src)
-	if err != nil && l.left < l.limit && strings.Contains(err.Error(), "bytes, over the limit of") {
+	if err != nil && l.left < l.limit && errors.Is(err, core.ErrTooLarge) {
 		// Only a file over the bytes left is refused for them, and the
 		// limit the message gives is what the files before left of
 		// max_bytes, so the message says so.

@@ -32,6 +32,21 @@ type Spec struct {
 	MaxBytes int64  `json:"max_bytes,omitempty"`
 }
 
+// Kind is the gitlab-ci kind, which a rule writes under the key gitlab-ci.
+var Kind = core.Kind[Spec]{Key: "gitlab-ci", Place: Place, Resolve: Resolve, Describe: Describe}
+
+// Resolve is s with its max_bytes written out, for errata list.
+func Resolve(s Spec) Spec {
+	s.MaxBytes = core.MaxBytes(s.MaxBytes)
+	return s
+}
+
+// Describe is what the kind's extractor returns: flat values, some not
+// literal, as MayReturnNotLiteral says.
+func Describe(Spec) check.Description {
+	return check.Description{Label: "gitlab-ci", NotLiteral: true}
+}
+
 // Parser parses every YAML document of a file into core's tree, and calls
 // note for each node with the tag the file wrote on it, such as !reference
 // or !!float, and whether it is a plain scalar with no tag. It counts the

@@ -10,6 +10,9 @@ import (
 	"github.com/f-klement/errata/internal/extract/core"
 	"github.com/f-klement/errata/internal/extract/extracttest"
 	"github.com/f-klement/errata/internal/extract/json"
+	"github.com/f-klement/errata/internal/extract/regex"
+	"github.com/f-klement/errata/internal/extract/toml"
+	"github.com/f-klement/errata/internal/extract/yaml"
 )
 
 // An extractor returns maxValues values, and refuses one more, as the
@@ -24,9 +27,9 @@ func TestExtractValueLimit(t *testing.T) {
 		body func(n int) string
 		spec extract.Spec
 	}{
-		{"f.json", list, extract.Spec{JSON: &extract.JSON{File: "f.json", Path: "[*]"}}},
+		{"f.json", list, extract.Of(json.Kind, json.Spec{File: "f.json", Path: "[*]"})},
 		// (\d*) matches, empty, at each of the n positions of n-1 bytes.
-		{"f.txt", func(n int) string { return strings.Repeat("a", n-1) }, extract.Spec{Regex: &extract.Regex{File: "f.txt", Pattern: `(\d*)`}}},
+		{"f.txt", func(n int) string { return strings.Repeat("a", n-1) }, extract.Of(regex.Kind, regex.Spec{File: "f.txt", Pattern: `(\d*)`})},
 	} {
 		if got := mustRun(t, c.spec, extracttest.Repo(t, map[string]string{c.file: c.body(core.MaxValues)})); len(got) != core.MaxValues {
 			t.Errorf("%s: %d values, want %d", c.file, len(got), core.MaxValues)
@@ -51,9 +54,9 @@ func TestNodeLimit(t *testing.T) {
 		n    int // the items that fill the limit
 		spec extract.Spec
 	}{
-		{"f.json", core.JSONFormat, "[", 498, extract.Spec{JSON: &extract.JSON{File: "f.json", Path: "[0]"}}},
-		{"f.yaml", core.YAMLFormat, "a: [", 496, extract.Spec{YAML: &extract.YAML{File: "f.yaml", Path: "a[0]"}}},
-		{"f.toml", core.TOMLFormat, "a = [", 496, extract.Spec{TOML: &extract.TOML{File: "f.toml", Path: "a[0]"}}},
+		{"f.json", core.JSONFormat, "[", 498, extract.Of(json.Kind, json.Spec{File: "f.json", Path: "[0]"})},
+		{"f.yaml", core.YAMLFormat, "a: [", 496, extract.Of(yaml.Kind, yaml.Spec{File: "f.yaml", Path: "a[0]"})},
+		{"f.toml", core.TOMLFormat, "a = [", 496, extract.Of(toml.Kind, toml.Spec{File: "f.toml", Path: "a[0]"})},
 	} {
 		spec := withMaxBytes(c.spec, 1000*c.f.BytesPerNode)
 		if got := mustRun(t, spec, extracttest.Repo(t, map[string]string{c.file: items(c.head, c.n)})); extracttest.Texts(got) != "1@1" {
@@ -107,9 +110,9 @@ func messagesQuoteAShortPart(t *testing.T, n int) {
 		{"f.toml", "[" + long + "]\n[" + long + "]\n", "f.toml: line 2: " + short + "... is already defined, as a table"},
 	} {
 		spec := map[string]extract.Spec{
-			"f.yaml": {YAML: &extract.YAML{File: c.file, Path: "a"}},
-			"f.json": {JSON: &extract.JSON{File: c.file, Path: "a"}},
-			"f.toml": {TOML: &extract.TOML{File: c.file, Path: "a"}},
+			"f.yaml": extract.Of(yaml.Kind, yaml.Spec{File: c.file, Path: "a"}),
+			"f.json": extract.Of(json.Kind, json.Spec{File: c.file, Path: "a"}),
+			"f.toml": extract.Of(toml.Kind, toml.Spec{File: c.file, Path: "a"}),
 		}[c.file]
 		_, err := run(t, spec, extracttest.Repo(t, map[string]string{c.file: c.body}))
 		if err == nil || err.Error() != c.want {
@@ -132,27 +135,27 @@ func TestMessagesQuoteAShortPartOfTheConfiguration(t *testing.T) {
 		file, body string // read when Build accepts the spec
 		want       string
 	}{
-		{extract.Spec{JSON: &extract.JSON{File: "f.json", Path: "['" + long + "']"}}, "f.json", `{"` + long + `": {}}`,
+		{extract.Of(json.Kind, json.Spec{File: "f.json", Path: "['" + long + "']"}), "f.json", `{"` + long + `": {}}`,
 			`f.json: path "['` + short[:core.MaxQuote-2] + `"... selects a mapping at line 1, not a scalar; add [*] to take its members`},
-		{extract.Spec{JSON: &extract.JSON{File: "f.json", Path: long + "["}}, "", "",
+		{extract.Of(json.Kind, json.Spec{File: "f.json", Path: long + "["}), "", "",
 			`json: path "` + short + `"...: column 4098: expected a quoted key, an index or * after [ but the path ends`},
-		{extract.Spec{JSON: &extract.JSON{File: "f.json", Path: "a.1" + long}}, "", "",
+		{extract.Of(json.Kind, json.Spec{File: "f.json", Path: "a.1" + long}), "", "",
 			`json: path "a.1` + short[:core.MaxQuote-3] + `"...: column 3: a key after . cannot start with a digit; write [n] for an index, or ['1` + short[:core.MaxQuote-1] + `...'] for a key`},
-		{extract.Spec{JSON: &extract.JSON{File: "f.json", Path: "a.-" + long}}, "", "",
+		{extract.Of(json.Kind, json.Spec{File: "f.json", Path: "a.-" + long}), "", "",
 			`json: path "a.-` + short[:core.MaxQuote-3] + `"...: column 3: a key after . cannot start with -; write ['-` + short[:core.MaxQuote-1] + `...']`},
-		{extract.Spec{JSON: &extract.JSON{File: "f.json", Path: "a[" + strings.Repeat("9", 1<<12) + "]"}}, "", "",
+		{extract.Of(json.Kind, json.Spec{File: "f.json", Path: "a[" + strings.Repeat("9", 1<<12) + "]"}), "", "",
 			`json: path "a[` + strings.Repeat("9", core.MaxQuote-2) + `"...: column 3: index ` + strings.Repeat("9", core.MaxQuote) + `... is out of range`},
-		{extract.Spec{JSON: &extract.JSON{File: "f.json", Path: "a[?@ == " + long + "]"}}, "", "",
+		{extract.Of(json.Kind, json.Spec{File: "f.json", Path: "a[?@ == " + long + "]"}), "", "",
 			`json: path "a[?@ == ` + short[:core.MaxQuote-8] + `"...: column 9: expected @ or a literal in the filter but found ` + short + `...; quote a string`},
-		{extract.Spec{JSON: &extract.JSON{File: "f.json", Path: "a[?@ == " + long + "()]"}}, "", "",
+		{extract.Of(json.Kind, json.Spec{File: "f.json", Path: "a[?@ == " + long + "()]"}), "", "",
 			`json: path "a[?@ == ` + short[:core.MaxQuote-8] + `"...: column 9: function ` + short + `...() is not supported in a filter`},
-		{extract.Spec{Regex: &extract.Regex{File: "f.txt", Pattern: "(" + long}}, "", "",
+		{extract.Of(regex.Kind, regex.Spec{File: "f.txt", Pattern: "(" + long}), "", "",
 			`regex: pattern "(` + short[:core.MaxQuote-1] + `"...: error parsing regexp: missing closing ): ` + "`(aaa"},
-		{extract.Spec{Regex: &extract.Regex{File: "f.txt", Pattern: "x" + long}}, "", "",
+		{extract.Of(regex.Kind, regex.Spec{File: "f.txt", Pattern: "x" + long}), "", "",
 			`regex: pattern "x` + short[:core.MaxQuote-1] + `"... has no capture group; the extractor returns group 1`},
-		{extract.Spec{Regex: &extract.Regex{File: "../" + long[:core.MaxFileName-3], Pattern: "(x)"}}, "", "",
+		{extract.Of(regex.Kind, regex.Spec{File: "../" + long[:core.MaxFileName-3], Pattern: "(x)"}), "", "",
 			`regex: file "../` + short[:core.MaxQuote-3] + `"... is outside the repository`},
-		{extract.Spec{YAML: &extract.YAML{File: "f.yaml", Path: "a", Kind: long}}, "f.yaml", "a: 1\n",
+		{extract.Of(yaml.Kind, yaml.Spec{File: "f.yaml", Path: "a", Kind: long}), "f.yaml", "a: 1\n",
 			`f.yaml: no document has kind "` + short + `"... and name ""`},
 	} {
 		e, err := extract.Build(c.spec)
@@ -176,13 +179,13 @@ func TestValuesHoldNoMoreThanMaxBytes(t *testing.T) {
 		return "s: &s " + value + "\nrefs: [" + strings.Repeat("*s, ", aliases-1) + "*s]\n"
 	}
 	root := extracttest.Repo(t, map[string]string{"four.yaml": file(4), "five.yaml": file(5)})
-	got := mustRun(t, extract.Spec{YAML: &extract.YAML{File: "four.yaml", Path: "refs[*]", MaxBytes: 4000}}, root)
+	got := mustRun(t, extract.Of(yaml.Kind, yaml.Spec{File: "four.yaml", Path: "refs[*]", MaxBytes: 4000}), root)
 	if len(got) != 4 {
 		t.Fatalf("4000 bytes of values at a limit of 4000: %d values", len(got))
 	}
-	_, err := run(t, extract.Spec{YAML: &extract.YAML{File: "five.yaml", Path: "refs[*]", MaxBytes: 4000}}, root)
+	_, err := run(t, extract.Of(yaml.Kind, yaml.Spec{File: "five.yaml", Path: "refs[*]", MaxBytes: 4000}), root)
 	extracttest.WantError(t, err, "five.yaml: the values the path selects hold more than 4000 bytes in all, the extractor's max_bytes; aliases can repeat a value and decoding can lengthen one, so narrow the path, or set max_bytes: higher")
 	root = extracttest.Repo(t, map[string]string{"ff.json": `{"a": "` + strings.Repeat("\xff", 2000) + `"}`})
-	_, err = run(t, extract.Spec{JSON: &json.Spec{File: "ff.json", Path: "a", MaxBytes: 4000}}, root)
+	_, err = run(t, extract.Of(json.Kind, json.Spec{File: "ff.json", Path: "a", MaxBytes: 4000}), root)
 	extracttest.WantError(t, err, "ff.json: the values the path selects hold more than 4000 bytes in all, the extractor's max_bytes; aliases can repeat a value and decoding can lengthen one")
 }

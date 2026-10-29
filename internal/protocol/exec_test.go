@@ -12,7 +12,7 @@ import (
 )
 
 func sh(script string) check.Check {
-	return check.Check{ID: "c", Reason: "r", Scope: check.ScopeRepo, Run: []string{"sh", "-c", script}, Timeout: 5 * time.Second}
+	return check.Check{ID: "c", Reason: "r", Scope: check.ScopeRepo, Kind: &check.Program{Run: []string{"sh", "-c", script}}, Timeout: 5 * time.Second}
 }
 
 func TestRunVerdicts(t *testing.T) {
@@ -76,7 +76,7 @@ func TestRunZeroTimeoutMeansNoLimit(t *testing.T) {
 
 func TestRunMissingProgram(t *testing.T) {
 	c := sh("")
-	c.Run = []string{"errata-no-such-program"}
+	c.Kind = &check.Program{Run: []string{"errata-no-such-program"}}
 	if res := Run(context.Background(), t.TempDir(), c); res.Verdict != check.VerdictUnknown {
 		t.Fatalf("verdict = %s, want error", res.Verdict)
 	}
@@ -119,4 +119,14 @@ func FuzzMessage(f *testing.F) {
 			t.Fatalf("message not trimmed: %q", got)
 		}
 	})
+}
+
+// A program check's output has no bound: errata holds all of it until #191
+// decides one. Planted break: the program check run with a bound of 65536,
+// which stopped it.
+func TestRunHoldsAProgramChecksWholeOutput(t *testing.T) {
+	res := Run(context.Background(), t.TempDir(), sh("head -c 200000 /dev/zero | tr '\\0' x; exit 1"))
+	if res.Verdict != check.VerdictFalse || len(res.Message) != 200000 {
+		t.Fatalf("verdict %s, %d bytes of message, want false and all 200000", res.Verdict, len(res.Message))
+	}
 }

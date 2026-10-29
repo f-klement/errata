@@ -11,9 +11,10 @@
 #                                                   package that would not (left_out below)
 #
 # Each package is one pass, `gremlins unleash <package directory>`, judged alone against its
-# floors below. A package directory is one under internal/ that holds Go files, nested or not:
-# internal/config, internal/extract, internal/extract/ini. The path scopes gremlins' coverage
-# pass, its mutants and so its timeout per mutant to that package. `all` is every package
+# floors (scripts/mutation-floors.txt, read below). A package directory is one under internal/
+# that holds Go files, nested or not: internal/config, internal/extract, internal/extract/ini.
+# The path scopes gremlins' coverage pass, its mutants and so its timeout per mutant to that
+# package. `all` is every package
 # `go list` finds under internal/, so the weekly pass judges each package exactly as a run by
 # hand does. `none` mutates nothing and passes. CI's mutation job passes the scope
 # ci/mutation-scope.sh computes, with --diff (ci/push-mutation.sh); that script says which
@@ -207,8 +208,11 @@ export GOFLAGS
 #   mutant coverage  (killed + lived + timed out) / (those + not covered)
 #   efficacy         (killed + timed out) / (killed + lived + timed out)
 # The timeout cap below keeps a limit that is too short from passing on timeouts, judged on a
-# second pass when the first is over it (unleash). A figure at
-# or below its floor fails. A floor may only rise: ci/test-ci.sh refuses one lowered.
+# second pass when the first is over it (unleash). A figure at or below its floor fails. A floor
+# may only rise: ci/test-ci.sh refuses one lower than at the release tag before HEAD, from the
+# first release tag that holds the table, unless the line above the row records the owner's
+# approval. Before that tag the comparison is skipped; in CI a clone with no release tag fails
+# it, and outside CI it is skipped. scripts/mutation-floors.txt's header gives the line's form.
 #
 # On a diff run (--diff) the same floors judge only the mutants on the changed lines, so the
 # figures are those of the new code alone, over a denominator that may be a handful: one lived
@@ -222,48 +226,23 @@ export GOFLAGS
 # reaches any of them, new code with no test, fails, naming those lines: gremlins prints each
 # mutant not covered on a diff run (-S ltc).
 MCOVER_MIN_DIFF=10
-#
-# Efficacy is 85 for every package.
-EFFICACY_FLOOR=85
-# Mutant coverage, mutants some test reaches, is 85 but where Go's coverage profile cannot
-# see a test reach them. It leaves case expressions, package-level declarations and code
-# after a statement's first func literal outside every block, so their mutants always read
-# as not covered, however the tests run them. Such a package's floor is its measured figure
-# rounded down, and one under it when the figure is whole, since a figure at its floor
-# fails. check and protocol were counted at e43c2ef, the other extract packages at the split
-# into one package per reader (#105), on 2026-10-22, and ini and jenkins again on 2026-10-25,
-# with env's reader in (#38, #107), each scoped alone:
-#   check               72  9 of its 33 mutants, case expressions in Validate and LeftOutCount
-#   protocol            78  3 of its 14 mutants
-#   extract/ini         82  253 of its 1500 (178 case expressions, 75 package level), and 4
-#                           in dead code (php.go 544, 548, 550, 624): 82.87%
-#   extract/jenkins     79  86 of its 416 (84 case expressions, 2 package level): 79.33%
-#   extract/packageversion  84  11 of its 70, case expressions in describe and readPyproject,
-#                           every arm tested: 84.29% on 2026-10-27, counted on the new package
-#   extract/properties  79  34 of its 167, case expressions: 79.64%
-#   extract/xml         82  94 of its 527, case expressions: 82.16%
-# core had 82 (111 of 637, 82.57%) until env's reader added code its tests reach: 111 of 744,
-# 110 case expressions and 1 package level, 85.08% on 2026-10-25, so it has 85, one mutant
-# over. githubactions (52 case expressions of 408, 87.25%) and gitlabci (38 of 380, 90.00%)
-# clear 85 on 2026-10-25, and env, every one of its 46 mutants covered, has none;
-# text (5 such mutants of 238, 97.90%, after goldmark v2), toml (10 of 78, 87.18%) and
-# toolversion (9 of 117, 92.31%, on 2026-10-23) clear 85, and json, regex and yaml have none.
-# The facade had 64, 7 of its 20 after the first func literal of kinds' return statement
-# (65.00%), until tool_version (#46) worked out which kinds are set before that statement: 22
-# of 22 since, so it has 85 too. Before the split, extract as one package had 83 (520
-# of its 2671).
-mcover_floor() {
-    case "$1" in
-        internal/check)              echo 72 ;;
-        internal/protocol)           echo 78 ;;
-        internal/extract/ini)        echo 82 ;;
-        internal/extract/jenkins)    echo 79 ;;
-        internal/extract/packageversion) echo 84 ;;
-        internal/extract/properties) echo 79 ;;
-        internal/extract/xml)        echo 82 ;;
-        *)                           echo 85 ;;
-    esac
+
+# The floors themselves sit in one table, scripts/mutation-floors.txt: one row a package, its
+# efficacy floor, its mutant coverage floor and its least timeout coefficient, each with its
+# reason. floors_for reads a package's row; a package with no row is refused before any pass
+# runs.
+FLOORS_FILE=scripts/mutation-floors.txt
+[ -f "$FLOORS_FILE" ] || refuse "$FLOORS_FILE is missing; it holds every package's floors"
+floors_table=$(sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "$FLOORS_FILE")
+
+# floors_for <package>: efficacy, mcover and base_coef from the package's row; false when the
+# table has no row for it, or more than one, or a row whose figures are not whole numbers.
+floors_for() {
+    row=$(printf '%s\n' "$floors_table" | awk -v p="$1" '$1 == p { n++; r = $2 " " $3 " " $4; ok = (NF == 4 && $2 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/ && $4 ~ /^[0-9]+$/) } END { if (n != 1 || !ok) exit 1; print r }') || return 1
+    set -- $row
+    efficacy=$1 mcover=$2 base_coef=$3
 }
+
 # A package fails when more than TIMEOUT_CAP percent of its mutants that ran timed out, and
 # more than TIMEOUT_MIN of them. A timed out mutant counts as killed, so without a cap a run
 # whose limit is too short would pass on mutants no test failed. The minimum count is for small
@@ -315,30 +294,6 @@ MUTANT_FLOOR=2
 # MUTATION_MEASURE_LEAST sets it otherwise; ci/test-ci.sh lowers it for its deadline tests.
 MEASURE_LEAST=${MUTATION_MEASURE_LEAST:-60}
 case "$MEASURE_LEAST" in ''|*[!0-9]*) refuse "MUTATION_MEASURE_LEAST is '$MEASURE_LEAST', not a number of seconds" ;; esac
-
-# base_coefficient_for <package>: the least coefficient for a package whose tests wait on more
-# than the floor gives, measured; .gremlins.yaml's 5 otherwise. The floor made the others
-# redundant on 2026-10-24: the extract readers' 10 (mutants killed in a second or two, under
-# limits of 1 to 9 s on a busy node) and semver's 20 (mutants of 1.2 to 2.7 s against 1.2 s).
-#
-# internal/protocol: TestRunTimeout runs `sleep 5` under a 50 ms check timeout. The mutants
-# that break the timeout (exec.go:38, proc_unix.go:16) are killed only when the sleep ends,
-# 5 to 6 s after they start, against a coverage pass of 0.7 s. Measured on the build node
-# on 2026-10-18, pinned to two cores: all three timed out at coefficients 2, 3 and 5, and
-# were killed at 10, with 1.5 s to spare. 20 gives about 14 s, room the floor's 10 s does not
-# leave on a node under load. It costs nothing, because a killed mutant ends when its test
-# fails, not at the timeout.
-#
-# internal/extract/ini: applied by hand one at a time on the fallback node on 2026-10-22, two
-# mutants were killed only after 11 s (ansible_values.go:1046), past the floor. Its pass takes
-# 1.0 to 1.4 s, so 10 gives 10 to 14 s.
-base_coefficient_for() {
-    case "$1" in
-        internal/protocol) echo 20 ;;
-        internal/extract/ini) echo 10 ;;
-        *) sed -n 's/^  timeout-coefficient: \([0-9]*\).*/\1/p' .gremlins.yaml ;;
-    esac
-}
 
 # measure_pass <package>: pass_s, the seconds of the package's coverage pass as gremlins runs
 # it, the shorter of two runs after one that builds it; empty when the tests fail, which
@@ -409,11 +364,12 @@ limit_floor() {
     awk -v f="$LIMIT_FLOOR" -v k="$MUTANT_FLOOR" -v m="${mutant_s:-0}" 'BEGIN { l = k * m; if (l < f) l = f; s = sprintf("%.1f", l); sub(/\.0$/, "", s); print s }'
 }
 
-# coefficient_for <package> <pass seconds>: the larger of the package's base coefficient and
-# the one that makes a pass that long half again the least limit (LIMIT_AIM, unless the
-# measured mutant asks for more). A pass under 10 ms counts as 10 ms.
+# coefficient_for <package> <pass seconds>: the larger of the least coefficient in the package's
+# floors row (base_coef, from floors_for) and the one that makes a pass that long half again the
+# least limit (LIMIT_AIM, unless the measured mutant asks for more). A pass under 10 ms counts
+# as 10 ms.
 coefficient_for() {
-    base=$(base_coefficient_for "$1")
+    base=$base_coef
     if [ -z "$2" ]; then
         echo "$base"
         return
@@ -632,8 +588,8 @@ judge_pass() {
     elif [ "$all" -gt 0 ] && { [ -z "$diff" ] || [ "$all" -ge "$MCOVER_MIN_DIFF" ]; } && [ $((ran * 100)) -le $((all * mcover)) ]; then
         verdict="FAILED, mutant coverage at or below $mcover"
         rc=1
-    elif [ "$ran" -gt 0 ] && [ $(((killed + timedout) * 100)) -le $((ran * EFFICACY_FLOOR)) ]; then
-        verdict="FAILED, efficacy at or below $EFFICACY_FLOOR"
+    elif [ "$ran" -gt 0 ] && [ $(((killed + timedout) * 100)) -le $((ran * efficacy)) ]; then
+        verdict="FAILED, efficacy at or below $efficacy"
         rc=1
     elif [ "${2:-}" != no-cap ] && over_cap; then
         verdict="FAILED, $timedout of $ran mutants timed out, over $TIMEOUT_CAP% and over $TIMEOUT_MIN$again"
@@ -657,7 +613,7 @@ unleash() {
         left_out "$p" "$(left_s) s were left before the deadline, under the $MEASURE_LEAST s its pass and a mutant take to time"
         return 0
     fi
-    mcover=$(mcover_floor "$p")
+    floors_for "$p"
     measure_pass "$p"
     measure_mutant "$p"
     if ! fits 1; then
@@ -670,7 +626,7 @@ unleash() {
     else
         limit="limit per mutant unknown: the tests failed when measured; coefficient $coef"
     fi
-    name="$p (floors: efficacy $EFFICACY_FLOOR, mutant coverage $mcover; $limit)"
+    name="$p (floors: efficacy $efficacy, mutant coverage $mcover; $limit)"
     diff=""
     if [ -n "$diff_base" ]; then
         diff=$(diff_file "$p")
@@ -764,6 +720,12 @@ if [ "$1" = all ]; then
     [ "$#" -gt 0 ] || refuse "go list found no package under internal/"
     echo "==> mutation: every package: $*"
 fi
+
+# A package with no row is refused before the first pass, not an hour into a run.
+for p in "$@"; do
+    excluded_whole "$p" || floors_for "$p" \
+        || refuse "$p has no row in $FLOORS_FILE, or more than one, or one that is not four fields of a package and three whole numbers: add one, with its efficacy floor, mutant coverage floor and least coefficient"
+done
 
 failed=0 left=""
 for p in "$@"; do

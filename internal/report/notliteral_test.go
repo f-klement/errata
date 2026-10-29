@@ -22,7 +22,7 @@ func notLiteral(text, file string, line int) check.Value {
 // value skip_not_literal left out, and a rule that holds with none.
 var leftOutSample = check.Report{Results: []check.Result{
 	{
-		Check:   check.Check{ID: "held", Scope: check.ScopeRepo, Reason: "r", Rule: &check.Rule{Agree: []string{"chart", "shell"}}},
+		Check:   check.Check{ID: "held", Scope: check.ScopeRepo, Reason: "r", Kind: &check.Rule{Agree: []string{"chart", "shell"}}},
 		Verdict: check.VerdictTrue,
 		Message: `skip_not_literal left out 1 not literal value of extractor "shell"`,
 		Extracted: []check.Extracted{
@@ -31,9 +31,10 @@ var leftOutSample = check.Report{Results: []check.Result{
 		},
 	},
 	{
-		Check:   check.Check{ID: "differs", Scope: check.ScopeRepo, Reason: "r", Rule: &check.Rule{Agree: []string{"chart", "ci"}}},
+		Check:   check.Check{ID: "differs", Scope: check.ScopeRepo, Reason: "r", Kind: &check.Rule{Agree: []string{"chart", "ci"}}},
 		Verdict: check.VerdictFalse,
 		Message: "agree: the values differ\n" + `skip_not_literal left out 2 not literal values of extractor "ci"`,
+		Blamed:  &check.Blame{Extractor: 1},
 		Extracted: []check.Extracted{
 			{Extractor: "chart", Values: []check.Value{val("1.5.0", "Chart.yaml", 3)}},
 			{Extractor: "ci", Values: []check.Value{val("1.4.2", "ci.yml", 20)}, LeftOut: []check.Value{notLiteral("${{ env.TAG }}", "ci.yml", 12), notLiteral("${{ inputs.tag }}", "ci.yml", 31)}},
@@ -189,7 +190,7 @@ func TestSARIFNotesARuleThatHeldWithValuesLeftOut(t *testing.T) {
 // values.
 func TestSARIFLinksLeftOutValuesOfAResultAtTheCheck(t *testing.T) {
 	rep := check.Report{Results: []check.Result{{
-		Check:     check.Check{ID: "a", Scope: check.ScopeRepo, Reason: "r", Rule: &check.Rule{Assert: "size(shell) > 0"}, At: check.Location{File: "errata.yaml", Line: 4}},
+		Check:     check.Check{ID: "a", Scope: check.ScopeRepo, Reason: "r", Kind: &check.Rule{Assert: "size(shell) > 0"}, At: check.Location{File: "errata.yaml", Line: 4}},
 		Verdict:   check.VerdictFalse,
 		Message:   "assert: the expression is false",
 		Extracted: []check.Extracted{{Extractor: "shell", LeftOut: []check.Value{notLiteral("$(date)", "../out.sh", 1)}}},
@@ -222,7 +223,7 @@ func TestSARIFCapKeepsLeftOutValues(t *testing.T) {
 		values = append(values, val("a", "f.yaml", i+2))
 	}
 	left := []check.Value{notLiteral("$(x)", "f.sh", 1), notLiteral("$(y)", "f.sh", 2)}
-	res := agreeRule("c", nil, check.Extracted{Extractor: "e", Values: values, LeftOut: left})
+	res := agreeRule("c", check.Extracted{Extractor: "e", Values: values, LeftOut: left})
 	out := decodeSARIF(t, writeSARIF(t, check.Report{Results: []check.Result{res}}))
 	if problems := messageProblems(out); len(problems) > 0 {
 		t.Fatalf("%s", strings.Join(problems, "\n"))
@@ -255,7 +256,8 @@ func TestSARIFCapCountsLeftOutValuesItCannotLink(t *testing.T) {
 	for i := range maxRelated + 3 {
 		left = append(left, notLiteral("$(x)", "f.sh", i+1))
 	}
-	res := agreeRule("c", nil, check.Extracted{Extractor: "e", Values: []check.Value{val("a", "f.yaml", 1), val("b", "f.yaml", 2)}, LeftOut: left})
+	res := agreeRule("c", check.Extracted{Extractor: "e", Values: []check.Value{val("a", "f.yaml", 1), val("b", "f.yaml", 2)}, LeftOut: left})
+	res.Blamed = &check.Blame{Value: 1}
 	r := decodeSARIF(t, writeSARIF(t, check.Report{Results: []check.Result{res}})).Runs[0].Results[0]
 	want := "\n4 more values are not linked, 0 compared and 4 left out as not literal: code scanning rejects a result with more than 1000 locations."
 	if len(r.Related) != maxRelated || !strings.HasSuffix(r.Message.Text, want) {
@@ -275,7 +277,7 @@ func TestSARIFCapSharesTheSlots(t *testing.T) {
 		values = append(values, val("a", "f.yaml", i+2))
 		left = append(left, notLiteral("$(x)", "f.sh", i+1))
 	}
-	res := agreeRule("c", nil, check.Extracted{Extractor: "e", Values: values, LeftOut: left})
+	res := agreeRule("c", check.Extracted{Extractor: "e", Values: values, LeftOut: left})
 	out := decodeSARIF(t, writeSARIF(t, check.Report{Results: []check.Result{res}}))
 	if problems := messageProblems(out); len(problems) > 0 {
 		t.Fatalf("%s", strings.Join(problems, "\n"))
@@ -303,7 +305,7 @@ func TestSARIFCapSharesTheSlots(t *testing.T) {
 func TestSARIFKeepsTheCountInACutMessage(t *testing.T) {
 	counted := `skip_not_literal left out 1 not literal value of extractor "shell"`
 	long := strings.Repeat("d", messageLimit+500)
-	res := agreeRule("c", nil,
+	res := agreeRule("c",
 		check.Extracted{Extractor: "chart", Values: []check.Value{val("1.5.0", "Chart.yaml", 3)}},
 		check.Extracted{Extractor: "shell", Values: []check.Value{val("1.4.2", "build.sh", 2)}, LeftOut: []check.Value{notLiteral("$(git describe)", "build.sh", 7)}},
 	)
@@ -330,7 +332,7 @@ func TestSARIFKeepsTheCountInACutMessage(t *testing.T) {
 // only counted them.
 func TestSARIFUnknownNamesLeftOutValues(t *testing.T) {
 	rep := check.Report{Results: []check.Result{{
-		Check:   check.Check{ID: "u", Scope: check.ScopeRepo, Reason: "r", Rule: &check.Rule{Agree: []string{"chart", "shell"}}},
+		Check:   check.Check{ID: "u", Scope: check.ScopeRepo, Reason: "r", Kind: &check.Rule{Agree: []string{"chart", "shell"}}},
 		Verdict: check.VerdictUnknown,
 		Message: "extractor \"chart\": boom\n" + `skip_not_literal left out 1 not literal value of extractor "shell"`,
 		Extracted: []check.Extracted{
@@ -427,7 +429,7 @@ func TestTextNotesWhatAHeldRuleSays(t *testing.T) {
 		Message:   `skip_not_literal left out 1 not literal value of extractor "ci"`,
 		Extracted: []check.Extracted{{Extractor: "ci", Values: []check.Value{val(">=20", "ci.yml", 3)}, LeftOut: []check.Value{notLiteral("${{ env.NODE }}", "ci.yml", 4)}}},
 	}
-	program := check.Result{Check: check.Check{ID: "lint", Scope: check.ScopeRepo, Reason: "r", Run: []string{"make", "lint"}}, Verdict: check.VerdictTrue, Message: "all 412 files checked"}
+	program := check.Result{Check: check.Check{ID: "lint", Scope: check.ScopeRepo, Reason: "r", Kind: &check.Program{Run: []string{"make", "lint"}}}, Verdict: check.VerdictTrue, Message: "all 412 files checked"}
 	unknown := check.Result{Check: check.Check{ID: "u", Scope: check.ScopeRepo, Reason: "r"}, Verdict: check.VerdictUnknown, Message: "could not read", Note: "a note"}
 	var buf bytes.Buffer
 	if err := (Text{}).Write(&buf, check.Report{Results: []check.Result{ranges, program, unknown, leftOutSample.Results[0]}}); err != nil {

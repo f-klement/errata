@@ -6,6 +6,8 @@ import (
 	"github.com/f-klement/errata/internal/check"
 	"github.com/f-klement/errata/internal/extract"
 	"github.com/f-klement/errata/internal/extract/extracttest"
+	"github.com/f-klement/errata/internal/extract/ini"
+	"github.com/f-klement/errata/internal/extract/yaml"
 )
 
 // The tests of package core_test read files through the extractors Build
@@ -33,7 +35,7 @@ func slowOnly(t *testing.T) {
 }
 
 func yamlSpec(path string) extract.Spec {
-	return extract.Spec{YAML: &extract.YAML{File: "f.yaml", Path: path}}
+	return extract.Of(yaml.Kind, yaml.Spec{File: "f.yaml", Path: path})
 }
 
 // fromData is what every extractor runs on the bytes of its file.
@@ -41,14 +43,6 @@ type fromData interface {
 	FromData(data []byte) ([]check.Value, error)
 }
 
-func ini(file, section, key string) extract.Spec {
-	return extract.Spec{INI: &extract.INI{File: file, Section: section, Key: key}}
-}
-
-func gitSpec(file, section string, subsection *string, key string) extract.Spec {
-	return extract.Spec{INI: &extract.INI{File: file, Section: section, Subsection: subsection, Key: key}}
-}
-
-func props(key string) extract.Spec {
-	return extract.Spec{Properties: &extract.Properties{File: "a.properties", Key: key}}
+func iniSpec(file, section, key string) extract.Spec {
+	return extract.Of(ini.Kind, ini.Spec{File: file, Section: section, Key: key})
 }

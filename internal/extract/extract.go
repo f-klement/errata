@@ -1,24 +1,28 @@
 // Package extract builds the extractors a rule names in errata.yaml. Each one
 // reads one file and returns every value it finds there, with its location.
-// Each kind is a reader in a package of its own below this one (yaml, json,
-// toml, regex, text, xml, ini, properties, toolversion, packageversion,
-// envfile, gitlabci, shell, githubactions, jenkins, and filestat for exists
-// and size), and the readers share internal/extract/core;
-// no reader imports another. The env kind asks five of them for one variable
-// across several files, through the functions this package hands it. This
-// package holds what sees every kind: the Spec a rule decodes into, the kinds
-// table, Build, Place and Kind.
+// Each extractor kind, the key an extract: entry names, is a reader in a
+// package of its own below this one (yaml, json, toml, regex, text, xml,
+// ini, properties, toolversion, packageversion, envfile, gitlabci, shell,
+// githubactions, jenkins, and filestat for exists and size), and the
+// readers share internal/extract/core; no reader imports another. The env
+// kind asks five of them for one variable across several files, through
+// the functions this package hands it. Below, a kind is always an
+// extractor kind, never a check's.
 //
-// The types below are the seam between the config package, which decodes a
-// rule, and this package, which runs its extractors. Their JSON names are the
-// keys a user writes under a rule's extract:.
+// Each reader declares its extractor kind beside its Spec, as a core.Kind:
+// its key and its Place, Resolve and Describe. This package lists every
+// kind once, in kinds, each with its Build and the parsers and readers it
+// wires, as a check.ExtractorKind, and holds the Spec a rule's extract:
+// entry decodes into, which finds its kind by key.
 package extract
 
 import (
+	"bytes"
+	"encoding/json"
+	"errors"
 	"fmt"
-	"maps"
-	"path/filepath"
-	"slices"
+	"reflect"
+	"strconv"
 	"strings"
 
 	"github.com/f-klement/errata/internal/check"
@@ -30,7 +34,7 @@ import (
 	"github.com/f-klement/errata/internal/extract/gitlabci"
 	"github.com/f-klement/errata/internal/extract/ini"
 	"github.com/f-klement/errata/internal/extract/jenkins"
-	"github.com/f-klement/errata/internal/extract/json"
+	ejson "github.com/f-klement/errata/internal/extract/json"
 	"github.com/f-klement/errata/internal/extract/packageversion"
 	"github.com/f-klement/errata/internal/extract/properties"
 	"github.com/f-klement/errata/internal/extract/regex"
@@ -42,110 +46,33 @@ import (
 	"github.com/f-klement/errata/internal/extract/yaml"
 )
 
-// Spec is one named entry under a rule's extract:. Exactly one field is set.
-type Spec struct {
-	YAML  *YAML  `json:"yaml,omitempty"`
-	JSON  *JSON  `json:"json,omitempty"`
-	TOML  *TOML  `json:"toml,omitempty"`
-	Regex *Regex `json:"regex,omitempty"`
-	Text  *Text  `json:"text,omitempty"`
-	XML   *XML   `json:"xml,omitempty"`
-
-	INI        *INI        `json:"ini,omitempty"`
-	Properties *Properties `json:"properties,omitempty"`
-
-	ToolVersion *ToolVersion `json:"tool_version,omitempty"`
-
-	PackageVersion *PackageVersion `json:"package_version,omitempty"`
-
-	EnvFile *EnvFile `json:"envfile,omitempty"`
-
-	GitLabCI *GitLabCI `json:"gitlab-ci,omitempty"`
-
-	Shell *Shell `json:"shell,omitempty"`
-
-	GitHubActions *GitHubActions `json:"github-actions,omitempty"`
-
-	Jenkins *Jenkins `json:"jenkins,omitempty"`
-
-	Env *Env `json:"env,omitempty"`
-
-	Exists *Exists `json:"exists,omitempty"`
-	Size   *Size   `json:"size,omitempty"`
-}
-
-// Each kind but exists and size, which read no byte of their file, takes
-// MaxBytes, the largest file it reads. Zero, or the key left out, is the
-// default of 32 MiB.
-
-// YAML reads a path in a YAML file, as yaml.Spec says.
-type YAML = yaml.Spec
-
-// JSON reads a path in a JSON file, as json.Spec says.
-type JSON = json.Spec
-
-// TOML reads a path in a TOML file, as toml.Spec says.
-type TOML = toml.Spec
-
-// Regex returns capture group 1 of every match of a pattern in a file, as
-// regex.Spec says.
-type Regex = regex.Spec
-
-// Text returns capture group 1 of every match of a pattern in the prose of
-// a Markdown file, as text.Spec says.
-type Text = text.Spec
-
-// XML returns the values an XPath selects in an XML file, as xml.Spec says.
-type XML = xml.Spec
-
-// INI returns every value of a key in a section of an INI file, as ini.Spec
-// says.
-type INI = ini.Spec
-
-// Properties returns every value of a key in a Java .properties file, as
-// properties.Spec says.
-type Properties = properties.Spec
-
-// ToolVersion returns every version of a tool in the files that pin it, as
-// toolversion.Spec says.
-type ToolVersion = toolversion.Spec
-
-// PackageVersion returns the version a package gives itself in each of its
-// manifests, as packageversion.Spec says.
-type PackageVersion = packageversion.Spec
-
-// EnvFile returns every value of a key in a dotenv file, or of every key,
-// as envfile.Spec says.
-type EnvFile = envfile.Spec
-
-// GitLabCI returns the value one job of a GitLab CI file sees, for a
-// variable or a keyword, as gitlabci.Spec says.
-type GitLabCI = gitlabci.Spec
-
-// Shell returns every value a shell script gives a variable, as shell.Spec
-// says.
-type Shell = shell.Spec
-
-// GitHubActions returns the value one step or job of a GitHub Actions
-// workflow sees, for an environment variable or a key, as
-// githubactions.Spec says.
-type GitHubActions = githubactions.Spec
-
-// Jenkins returns the value of an environment variable that a stage of a
-// Jenkinsfile sees, as jenkins.Spec says.
-type Jenkins = jenkins.Spec
-
-// Env returns every value of one variable in the files a rule lists, each
-// read by the reader its name chooses, as env.Spec says.
-type Env = env.Spec
-
-// Exists returns whether a regular file is at a name, true or false, as
-// filestat.BuildExists says.
-type Exists = filestat.Spec
-
-// Size returns the size in bytes of the regular file at a name, as
-// filestat.BuildSize says.
-type Size = filestat.Spec
+// kinds are the kinds a rule's extract: entry may set, in the order a
+// message lists their keys. A kind is one line here: the reader's Kind and
+// its Build, given the parsers or readers it needs.
+var kinds = registry(
+	register(yaml.Kind, with(yaml.Build, parsers)),
+	register(ejson.Kind, with(ejson.Build, parsers)),
+	register(toml.Kind, with(toml.Build, parsers)),
+	register(regex.Kind, regex.Build),
+	register(text.Kind, text.Build),
+	register(xml.Kind, xml.Build),
+	register(ini.Kind, ini.Build),
+	register(properties.Kind, properties.Build),
+	// tool_version and package_version read their JSON and TOML files with
+	// the json and toml readers' parsers, since a reader imports no other.
+	register(toolversion.Kind, with(toolversion.Build, parsers)),
+	register(packageversion.Kind, with(packageversion.Build, parsers)),
+	register(envfile.Kind, envfile.Build),
+	// gitlab-ci and github-actions read their YAML with the yaml reader's
+	// parser.
+	register(gitlabci.Kind, with(gitlabci.Build, yaml.ParseNoted)),
+	register(shell.Kind, shell.Build),
+	register(githubactions.Kind, with(githubactions.Build, yaml.ParseNoted)),
+	register(jenkins.Kind, jenkins.Build),
+	register(env.Kind, with(env.Build, envReaders)),
+	register(filestat.ExistsKind, filestat.BuildExists),
+	register(filestat.SizeKind, filestat.BuildSize),
+)
 
 // envReaders are the readers the env kind asks, each for one variable in
 // one file: envfile and shell as their own Build reads it, and the CI
@@ -177,225 +104,264 @@ var parsers = core.Parsers{
 	YAML: func(data []byte, expanded int) ([]*core.Node, int, error) {
 		return yaml.ParseNoted(data, expanded, nil)
 	},
-	JSON: json.Parse,
+	JSON: ejson.Parse,
 	TOML: toml.Parse,
+}
+
+// with is build given w, the parsers or readers it takes beside its spec.
+func with[S, W any](build func(S, W) (check.Extractor, error), w W) func(S) (check.Extractor, error) {
+	return func(s S) (check.Extractor, error) { return build(s, w) }
+}
+
+// kind is one extractor kind of the registry, as check names it.
+type kind = check.ExtractorKind
+
+// register is the extractor kind k declares, with build, over a spec held
+// as any, which is always an S. A function k leaves out stays nil, which
+// TestEveryKindRoundTrips reports.
+func register[S any](k core.Kind[S], build func(S) (check.Extractor, error)) *kind {
+	r := &kind{Key: k.Key, Spec: reflect.TypeFor[S](), Decode: func(raw json.RawMessage) (any, error) { return decodeSpec[S](k.Key, raw) }}
+	if build != nil {
+		r.Build = func(s any) (check.Extractor, error) { return build(s.(S)) }
+	}
+	if k.Place != nil {
+		r.Place = func(s any) any { return k.Place(s.(S)) }
+	}
+	if k.Resolve != nil {
+		r.Resolve = func(s any) any { return k.Resolve(s.(S)) }
+	}
+	if k.Describe != nil {
+		r.Describe = func(s any) check.Description { return k.Describe(s.(S)) }
+	}
+	return r
+}
+
+// missing names each function of k that is nil.
+func missing(k *kind) []string {
+	var out []string
+	for _, f := range []struct {
+		name   string
+		absent bool
+	}{{"Decode", k.Decode == nil}, {"Build", k.Build == nil}, {"Place", k.Place == nil}, {"Resolve", k.Resolve == nil}, {"Describe", k.Describe == nil}} {
+		if f.absent {
+			out = append(out, f.name)
+		}
+	}
+	return out
+}
+
+// decodeSpec reads raw strictly as an S, the spec of the kind under key: a key
+// the spec does not have is an error, as it is anywhere in a config. A
+// type error names the field under the kind's key, so the decode of the
+// whole entry names it from the rule down.
+func decodeSpec[S any](key string, raw json.RawMessage) (any, error) {
+	var v S
+	d := json.NewDecoder(bytes.NewReader(raw))
+	d.DisallowUnknownFields()
+	if err := d.Decode(&v); err != nil {
+		if te, ok := errors.AsType[*json.UnmarshalTypeError](err); ok {
+			te.Field = join(key, te.Field)
+			if te.Struct == "" {
+				te.Struct = "Spec" // as the entry's own decode names it
+			}
+		}
+		return nil, err
+	}
+	return v, nil
+}
+
+func join(key, field string) string {
+	if field == "" {
+		return key
+	}
+	return key + "." + field
+}
+
+// table is the registry: the kinds in order, and each by its key.
+type table struct {
+	order []*kind
+	byKey map[string]*kind
+	keys  []string
+	// schema is the struct a Spec is written as, for Schema.
+	schema reflect.Type
+}
+
+// registry is the table of ks. Two kinds under one key, or one key under
+// two spec types, is a bug in the list above, so it panics when the
+// program starts and every test fails.
+func registry(ks ...*kind) table {
+	t := table{byKey: map[string]*kind{}}
+	var fields []reflect.StructField
+	for i, k := range ks {
+		if _, dup := t.byKey[k.Key]; dup || k.Key == "" {
+			panic(fmt.Sprintf("extract: the kind %q is registered twice, or has no key", k.Key))
+		}
+		t.order = append(t.order, k)
+		t.byKey[k.Key] = k
+		t.keys = append(t.keys, k.Key)
+		fields = append(fields, reflect.StructField{
+			Name: "Kind" + strconv.Itoa(i),
+			Type: reflect.PointerTo(k.Spec),
+			Tag:  reflect.StructTag(`json:"` + k.Key + `,omitempty"`),
+		})
+	}
+	t.schema = reflect.StructOf(fields)
+	return t
+}
+
+// Keys are the keys a rule's extract: entry chooses its kind by, in the
+// order a message lists them.
+func Keys() []string { return append([]string(nil), kinds.keys...) }
+
+// Schema is the struct type an extract: entry is written as: one optional
+// field for each kind, under its key, of the kind's spec type. config
+// reads a rule's YAML against it, so a string field of a kind is held as
+// written, and checks each key's case and each string's YAML 1.1 reading
+// against it, as it does for every other key of a check.
+func Schema() reflect.Type { return kinds.schema }
+
+// Spec is one named entry under a rule's extract:: the kind its key
+// chooses, and the kind's spec. Exactly one kind is set for Build to
+// build it; an entry that sets none, or more than one, decodes, so the
+// load error names the extractor (Build). The zero Spec sets none.
+type Spec struct {
+	set []entry
+}
+
+// entry is one key of a Spec and the kind's spec under it.
+type entry struct {
+	kind *kind
+	spec any
+}
+
+// Of is the Spec that sets the kind k with the spec s, as an extract:
+// entry that writes s under k's key decodes. k must be a kind kinds
+// lists.
+func Of[S any](k core.Kind[S], s S) Spec {
+	r, ok := kinds.byKey[k.Key]
+	if !ok || r.Spec != reflect.TypeFor[S]() {
+		panic(fmt.Sprintf("extract: no kind %q of %v is registered", k.Key, reflect.TypeFor[S]()))
+	}
+	return Spec{set: []entry{{r, s}}}
+}
+
+// UnmarshalJSON reads an extract: entry: an object whose every key is a
+// kind's, each decoded strictly into that kind's spec. A key written null
+// sets no kind, as an entry that leaves it out. A key no kind has is
+// refused, as a check's unknown key is; a key in the wrong case is
+// config's to refuse first, with the key it should be.
+func (s *Spec) UnmarshalJSON(raw []byte) error {
+	*s = Spec{}
+	d := json.NewDecoder(bytes.NewReader(raw))
+	tok, err := d.Token()
+	if err != nil {
+		return err
+	}
+	if tok == nil {
+		return nil // null sets no kind
+	}
+	if tok != json.Delim('{') {
+		return &json.UnmarshalTypeError{Value: jsonKind(tok), Type: reflect.TypeFor[Spec](), Offset: d.InputOffset()}
+	}
+	got := map[*kind]any{}
+	for d.More() {
+		key, err := d.Token()
+		if err != nil {
+			return err
+		}
+		var value json.RawMessage
+		if err := d.Decode(&value); err != nil {
+			return err
+		}
+		name, _ := key.(string)
+		k, ok := kinds.byKey[name]
+		if !ok {
+			return fmt.Errorf("json: unknown field %q", name)
+		}
+		if bytes.Equal(value, []byte("null")) {
+			delete(got, k)
+			continue
+		}
+		spec, err := k.Decode(value)
+		if err != nil {
+			return err
+		}
+		got[k] = spec
+	}
+	for _, k := range kinds.order {
+		if spec, ok := got[k]; ok {
+			s.set = append(s.set, entry{k, spec})
+		}
+	}
+	return nil
+}
+
+// jsonKind names the JSON value tok opens, as encoding/json's type error
+// does.
+func jsonKind(tok json.Token) string {
+	switch tok.(type) {
+	case string:
+		return "string"
+	case bool:
+		return "bool"
+	case json.Number, float64:
+		return "number"
+	default:
+		return "array"
+	}
+}
+
+// MarshalJSON writes s as errata.yaml spells it: each kind it sets under its
+// key, such as {"yaml": {"file": ...}}, in the order of kinds. It escapes
+// no <, > or &, so the encoder that asked escapes them only when it is set
+// to, as it does a struct's fields.
+func (s Spec) MarshalJSON() ([]byte, error) {
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	b.WriteByte('{')
+	for i, e := range s.set {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		if err := enc.Encode(e.kind.Key); err != nil {
+			return nil, err
+		}
+		b.WriteByte(':')
+		if err := enc.Encode(e.spec); err != nil {
+			return nil, err
+		}
+	}
+	b.WriteByte('}')
+	return b.Bytes(), nil
+}
+
+// each is s with f applied to the spec of each kind it sets.
+func (s Spec) each(f func(*kind, any) any) Spec {
+	var out Spec
+	for _, e := range s.set {
+		out.set = append(out.set, entry{e.kind, f(e.kind, e.spec)})
+	}
+	return out
 }
 
 // Place returns s with only what decides where it reads: each file cleaned,
 // so f, ./f and a/../f are one file, and max_bytes left out, since a limit
 // does not change what is read. Two specs with one place read the same
 // files, and return the same values at the same locations wherever both
-// return values.
+// return values. Each kind's Place says what else it keeps or writes out.
 func (s Spec) Place() Spec {
-	var p Spec
-	if s.YAML != nil {
-		y := *s.YAML
-		y.File, y.Files = placeFiles(y.File, y.Files)
-		y.MaxBytes = 0
-		p.YAML = &y
-	}
-	if s.JSON != nil {
-		j := *s.JSON
-		j.File, j.Files = placeFiles(j.File, j.Files)
-		j.MaxBytes = 0
-		p.JSON = &j
-	}
-	if s.TOML != nil {
-		t := *s.TOML
-		t.File, t.Files = placeFiles(t.File, t.Files)
-		t.MaxBytes = 0
-		p.TOML = &t
-	}
-	if s.Regex != nil {
-		r := regex.Place(*s.Regex)
-		r.File, r.Files = placeFiles(r.File, r.Files)
-		r.MaxBytes = 0
-		p.Regex = &r
-	}
-	if s.Text != nil {
-		x := *s.Text
-		x.File, x.MaxBytes = filepath.Clean(x.File), 0
-		p.Text = &x
-	}
-	if s.XML != nil {
-		x := *s.XML
-		x.File, x.MaxBytes = filepath.Clean(x.File), 0
-		p.XML = &x
-	}
-	if s.INI != nil {
-		i := ini.Place(*s.INI)
-		p.INI = &i
-	}
-	if s.Properties != nil {
-		x := *s.Properties
-		x.File, x.MaxBytes = filepath.Clean(x.File), 0
-		p.Properties = &x
-	}
-	if s.ToolVersion != nil {
-		t := toolversion.Place(*s.ToolVersion)
-		p.ToolVersion = &t
-	}
-	if s.PackageVersion != nil {
-		x := packageversion.Place(*s.PackageVersion)
-		p.PackageVersion = &x
-	}
-	if s.EnvFile != nil {
-		x := *s.EnvFile
-		x.File, x.MaxBytes = filepath.Clean(x.File), 0
-		p.EnvFile = &x
-	}
-	if s.GitLabCI != nil {
-		g := gitlabci.Place(*s.GitLabCI)
-		p.GitLabCI = &g
-	}
-	if s.Shell != nil {
-		x := shell.Place(*s.Shell)
-		p.Shell = &x
-	}
-	if s.GitHubActions != nil {
-		x := githubactions.Place(*s.GitHubActions)
-		p.GitHubActions = &x
-	}
-	if s.Jenkins != nil {
-		x := jenkins.Place(*s.Jenkins)
-		p.Jenkins = &x
-	}
-	if s.Env != nil {
-		x := env.Place(*s.Env)
-		p.Env = &x
-	}
-	if s.Exists != nil {
-		x := filestat.Spec{File: filepath.Clean(s.Exists.File)}
-		p.Exists = &x
-	}
-	if s.Size != nil {
-		x := filestat.Spec{File: filepath.Clean(s.Size.File)}
-		p.Size = &x
-	}
-	return p
-}
-
-// placeFiles is the file or the files of a spec that takes either, as Place
-// writes them: the file cleaned, or the files cleaned, with slashes, and in
-// order, since the same files in another order read the same values, and
-// a list of one file that is no glob as that file. The two read one file
-// and return the same values where both read it, though a yaml kind that
-// selects no document is refused for file: and gives no value in a set, so
-// samePlaces refuses the pair as two names for one place.
-func placeFiles(file string, files []string) (string, []string) {
-	if files == nil {
-		return filepath.Clean(file), nil
-	}
-	clean := core.Clean(files)
-	slices.Sort(clean)
-	if len(clean) == 1 && !core.HasGlob(clean[0]) {
-		return filepath.Clean(clean[0]), nil
-	}
-	return "", clean
+	return s.each(func(k *kind, v any) any { return k.Place(v) })
 }
 
 // Resolved returns s with the defaults Build fills in written out: the
 // max_bytes of the kind it sets, core.DefaultMaxBytes when s leaves it out,
 // and for ini the dialect Build chooses by the file's name when s names none.
 // errata list prints it, so a consumer reads the limit and the dialect a
-// check runs with, not only what its author wrote. s is not changed.
+// check runs with, not only what its author wrote. s is not changed, and
+// what Resolved returns shares no slice, map or pointer with it.
 func (s Spec) Resolved() Spec {
-	var r Spec
-	if s.YAML != nil {
-		y := *s.YAML
-		y.Files = slices.Clone(y.Files)
-		y.MaxBytes = core.MaxBytes(y.MaxBytes)
-		r.YAML = &y
-	}
-	if s.JSON != nil {
-		j := *s.JSON
-		j.Files = slices.Clone(j.Files)
-		j.MaxBytes = core.MaxBytes(j.MaxBytes)
-		r.JSON = &j
-	}
-	if s.TOML != nil {
-		t := *s.TOML
-		t.Files = slices.Clone(t.Files)
-		t.MaxBytes = core.MaxBytes(t.MaxBytes)
-		r.TOML = &t
-	}
-	if s.Regex != nil {
-		x := regex.Resolve(*s.Regex)
-		x.Files = slices.Clone(x.Files)
-		x.MaxBytes = core.MaxBytes(x.MaxBytes)
-		r.Regex = &x
-	}
-	if s.Text != nil {
-		x := *s.Text
-		x.MaxBytes = core.MaxBytes(x.MaxBytes)
-		r.Text = &x
-	}
-	if s.XML != nil {
-		x := *s.XML
-		x.MaxBytes = core.MaxBytes(x.MaxBytes)
-		r.XML = &x
-	}
-	if s.INI != nil {
-		i := ini.Resolve(*s.INI)
-		i.MaxBytes = core.MaxBytes(i.MaxBytes)
-		r.INI = &i
-	}
-	if s.Properties != nil {
-		x := *s.Properties
-		x.MaxBytes = core.MaxBytes(x.MaxBytes)
-		r.Properties = &x
-	}
-	if s.ToolVersion != nil {
-		x := *s.ToolVersion
-		x.Files = slices.Clone(x.Files)
-		x.MaxBytes = core.MaxBytes(x.MaxBytes)
-		r.ToolVersion = &x
-	}
-	if s.PackageVersion != nil {
-		x := *s.PackageVersion
-		x.Files = slices.Clone(x.Files)
-		x.MaxBytes = core.MaxBytes(x.MaxBytes)
-		r.PackageVersion = &x
-	}
-	if s.EnvFile != nil {
-		x := *s.EnvFile
-		x.MaxBytes = core.MaxBytes(x.MaxBytes)
-		r.EnvFile = &x
-	}
-	if s.GitLabCI != nil {
-		x := *s.GitLabCI
-		x.MaxBytes = core.MaxBytes(x.MaxBytes)
-		r.GitLabCI = &x
-	}
-	if s.Shell != nil {
-		x := *s.Shell
-		x.MaxBytes = core.MaxBytes(x.MaxBytes)
-		r.Shell = &x
-	}
-	if s.GitHubActions != nil {
-		x := *s.GitHubActions
-		x.MaxBytes = core.MaxBytes(x.MaxBytes)
-		r.GitHubActions = &x
-	}
-	if s.Jenkins != nil {
-		x := *s.Jenkins
-		x.MaxBytes = core.MaxBytes(x.MaxBytes)
-		r.Jenkins = &x
-	}
-	if s.Env != nil {
-		x := env.Resolve(*s.Env)
-		r.Env = &x
-	}
-	// exists and size have no default to write out: they read no byte.
-	if s.Exists != nil {
-		x := *s.Exists
-		r.Exists = &x
-	}
-	if s.Size != nil {
-		x := *s.Size
-		r.Size = &x
-	}
-	return r
+	return s.each(func(k *kind, v any) any { return k.Resolve(v) })
 }
 
 // Build checks s and returns its extractor. A Spec that sets no kind, or more
@@ -403,137 +369,37 @@ func (s Spec) Resolved() Spec {
 // max_bytes below zero or over its ceiling, a path that does not parse, or a
 // pattern that does not compile.
 func Build(s Spec) (check.Extractor, error) {
-	var names []string
-	var set []extractorKind
-	for _, k := range s.kinds() {
-		names = append(names, k.name)
-		if k.set {
-			set = append(set, k)
-		}
+	if len(s.set) != 1 {
+		return nil, fmt.Errorf("an extractor sets exactly one of %s", strings.Join(kinds.keys, ", "))
 	}
-	if len(set) != 1 {
-		return nil, fmt.Errorf("an extractor sets exactly one of %s", strings.Join(names, ", "))
-	}
-	return set[0].build()
+	return s.set[0].kind.Build(s.set[0].spec)
 }
 
-// extractorKind is one key of Spec: whether it is set, and how to build it.
-// The count of set kinds and the dispatch both come from kinds, so a kind
-// cannot be counted without being built. TestKindsCoverSpec fails when Spec
-// gains a field that kinds does not list.
-type extractorKind struct {
-	name  string
-	set   bool
-	build func() (check.Extractor, error)
-}
-
-func (s Spec) kinds() []extractorKind {
-	// Which kinds are set is worked out before the rows: Go's coverage
-	// profile leaves code after a statement's first func literal outside
-	// every block, so a comparison written in a row after the first would
-	// read as not covered to Gremlins however the tests run it.
-	set := [...]bool{s.YAML != nil, s.JSON != nil, s.TOML != nil, s.Regex != nil, s.Text != nil,
-		s.XML != nil, s.INI != nil, s.Properties != nil, s.ToolVersion != nil,
-		s.PackageVersion != nil, s.EnvFile != nil, s.GitLabCI != nil, s.Shell != nil,
-		s.GitHubActions != nil, s.Jenkins != nil, s.Env != nil, s.Exists != nil, s.Size != nil}
-	return []extractorKind{
-		{"yaml", set[0], func() (check.Extractor, error) { return yaml.Build(*s.YAML, parsers) }},
-		{"json", set[1], func() (check.Extractor, error) { return json.Build(*s.JSON, parsers) }},
-		{"toml", set[2], func() (check.Extractor, error) { return toml.Build(*s.TOML, parsers) }},
-		{"regex", set[3], func() (check.Extractor, error) { return regex.Build(*s.Regex) }},
-		{"text", set[4], func() (check.Extractor, error) { return text.Build(*s.Text) }},
-		{"xml", set[5], func() (check.Extractor, error) { return xml.Build(*s.XML) }},
-		{"ini", set[6], func() (check.Extractor, error) { return ini.Build(*s.INI) }},
-		{"properties", set[7], func() (check.Extractor, error) { return properties.Build(*s.Properties) }},
-		{"tool_version", set[8], func() (check.Extractor, error) {
-			// The reader reads its JSON and TOML files with the json and
-			// toml readers' parsers, since it imports no other reader.
-			return toolversion.Build(*s.ToolVersion, parsers)
-		}},
-		{"package_version", set[9], func() (check.Extractor, error) {
-			// Its manifests are read with the json and toml readers' parsers.
-			return packageversion.Build(*s.PackageVersion, parsers)
-		}},
-		{"envfile", set[10], func() (check.Extractor, error) { return envfile.Build(*s.EnvFile) }},
-		// The reader reads its YAML with the yaml reader's parser.
-		{"gitlab-ci", set[11], func() (check.Extractor, error) { return gitlabci.Build(*s.GitLabCI, yaml.ParseNoted) }},
-		{"shell", set[12], func() (check.Extractor, error) { return shell.Build(*s.Shell) }},
-		// The reader reads its YAML with the yaml reader's parser.
-		{"github-actions", set[13], func() (check.Extractor, error) {
-			return githubactions.Build(*s.GitHubActions, yaml.ParseNoted)
-		}},
-		{"jenkins", set[14], func() (check.Extractor, error) { return jenkins.Build(*s.Jenkins) }},
-		{"env", set[15], func() (check.Extractor, error) { return env.Build(*s.Env, envReaders) }},
-		{"exists", set[16], func() (check.Extractor, error) { return filestat.BuildExists(*s.Exists) }},
-		{"size", set[17], func() (check.Extractor, error) { return filestat.BuildSize(*s.Size) }},
+// Describe is what the extractor s builds returns, as its kind tells it
+// from the spec (check.Description). It is the zero Description when s
+// sets no kind or more than one.
+func (s Spec) Describe() check.Description {
+	if len(s.set) != 1 {
+		return check.Description{}
 	}
+	return s.set[0].kind.Describe(s.set[0].spec)
 }
 
 // Maps reports whether s hands assert each value whole, as a mapping: a
 // yaml, json or toml extractor with as: map or as: record, or a regex
 // extractor with as: record. Any other spec, and one with an as errata does
 // not read, which Build refuses, returns flat values.
-func (s Spec) Maps() bool {
-	if s.Regex != nil {
-		return s.Regex.As == "record"
-	}
-	as, _ := s.as()
-	return as == "map" || as == "record"
-}
-
-// as is the as key of s and the fields under it, for the kinds that take
-// them. It asks each kind with if rather than switch: Go's coverage profile
-// leaves a case expression outside every block, so its mutants read as not
-// covered however the tests run them (ci/README.md, Floors per package).
-func (s Spec) as() (string, map[string]string) {
-	if s.YAML != nil {
-		return s.YAML.As, s.YAML.Fields
-	}
-	if s.JSON != nil {
-		return s.JSON.As, s.JSON.Fields
-	}
-	if s.TOML != nil {
-		return s.TOML.As, s.TOML.Fields
-	}
-	return "", nil
-}
+func (s Spec) Maps() bool { return s.Describe().Shape != check.ShapeFlat }
 
 // Fields returns the field names of the records s returns, in the order of
 // a record's keys: a yaml, json or toml extractor's fields sorted by name,
 // or a regex pattern's named groups in the order it opens them. It is nil
 // for a spec that returns no record.
-func (s Spec) Fields() []string {
-	if s.Regex != nil && s.Regex.As == "record" {
-		return core.RegexFields(s.Regex.Pattern)
-	}
-	as, fields := s.as()
-	if as != "record" || len(fields) == 0 {
-		return nil
-	}
-	return slices.Sorted(maps.Keys(fields))
-}
+func (s Spec) Fields() []string { return s.Describe().Fields }
 
 // Kind names the kind of extractor s sets, for a message: its key, and for
 // ini the dialect it reads in and the file's name, since what a dialect's
 // tool computes can hang on the file: "ini, plain dialect on pytest.ini".
 // It is "" when s sets no kind or more than one, or names no dialect errata
 // reads.
-func (s Spec) Kind() string {
-	kind := ""
-	for _, k := range s.kinds() {
-		if k.set {
-			if kind != "" {
-				return ""
-			}
-			kind = k.name
-		}
-	}
-	if kind == "ini" {
-		dialect, ok := ini.Describe(*s.INI)
-		if !ok {
-			return ""
-		}
-		kind += ", " + dialect
-	}
-	return kind
-}
+func (s Spec) Kind() string { return s.Describe().Label }

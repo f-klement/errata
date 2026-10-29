@@ -17,9 +17,9 @@ import (
 
 func TestBuildRefusesPathThatDoesNotParse(t *testing.T) {
 	for kind, s := range map[string]extract.Spec{
-		"yaml": {YAML: &extract.YAML{File: "f", Path: "a..b"}},
-		"json": {JSON: &extract.JSON{File: "f", Path: "a..b"}},
-		"toml": {TOML: &extract.TOML{File: "f", Path: "a..b"}},
+		"yaml": extract.Of(yamlreader.Kind, yamlreader.Spec{File: "f", Path: "a..b"}),
+		"json": extract.Of(jsonreader.Kind, jsonreader.Spec{File: "f", Path: "a..b"}),
+		"toml": extract.Of(tomlreader.Kind, tomlreader.Spec{File: "f", Path: "a..b"}),
 	} {
 		_, err := extract.Build(s)
 		extracttest.WantError(t, err, kind+`: path "a..b": column 3: recursive descent`)
@@ -63,7 +63,7 @@ func TestFilterRFC9535Examples(t *testing.T) {
 		{"t11.json", "$[?@.absent == 'g']", ""}, // $.absent == 'g' is false
 		{"t11.json", "$[?@.x == 'y'].x", "y@1"},
 	} {
-		got := extracttest.Texts(mustRun(t, extract.Spec{JSON: &extract.JSON{File: c.file, Path: c.path}}, root))
+		got := extracttest.Texts(mustRun(t, extract.Of(jsonreader.Kind, jsonreader.Spec{File: c.file, Path: c.path}), root))
 		if got != c.want {
 			t.Errorf("%s %s: got %q, want %q", c.file, c.path, got, c.want)
 		}
@@ -179,11 +179,11 @@ enabled = true
 		var spec extract.Spec
 		switch filepath.Ext(c.file) {
 		case ".yaml":
-			spec.YAML = &extract.YAML{File: c.file, Path: c.path}
+			spec = extract.Of(yamlreader.Kind, yamlreader.Spec{File: c.file, Path: c.path})
 		case ".json":
-			spec.JSON = &extract.JSON{File: c.file, Path: c.path}
+			spec = extract.Of(jsonreader.Kind, jsonreader.Spec{File: c.file, Path: c.path})
 		default:
-			spec.TOML = &extract.TOML{File: c.file, Path: c.path}
+			spec = extract.Of(tomlreader.Kind, tomlreader.Spec{File: c.file, Path: c.path})
 		}
 		if got := extracttest.Texts(mustRun(t, spec, root)); got != c.want {
 			t.Errorf("%s %s: got %q, want %q", c.file, c.path, got, c.want)
@@ -255,9 +255,9 @@ list:
 
 func TestBuildRefusesFilterThatDoesNotParse(t *testing.T) {
 	for kind, s := range map[string]extract.Spec{
-		"yaml": {YAML: &extract.YAML{File: "f", Path: "a[?@.b != 1]"}},
-		"json": {JSON: &extract.JSON{File: "f", Path: "a[?@.b != 1]"}},
-		"toml": {TOML: &extract.TOML{File: "f", Path: "a[?@.b != 1]"}},
+		"yaml": extract.Of(yamlreader.Kind, yamlreader.Spec{File: "f", Path: "a[?@.b != 1]"}),
+		"json": extract.Of(jsonreader.Kind, jsonreader.Spec{File: "f", Path: "a[?@.b != 1]"}),
+		"toml": extract.Of(tomlreader.Kind, tomlreader.Spec{File: "f", Path: "a[?@.b != 1]"}),
 	} {
 		_, err := extract.Build(s)
 		extracttest.WantError(t, err, kind+`: path "a[?@.b != 1]": column 8: operator != is not supported in a filter; only == is`)
@@ -415,11 +415,11 @@ egress = [
 			var spec extract.Spec
 			switch filepath.Ext(file) {
 			case ".yaml":
-				spec.YAML = &extract.YAML{File: file, Path: c.path}
+				spec = extract.Of(yamlreader.Kind, yamlreader.Spec{File: file, Path: c.path})
 			case ".json":
-				spec.JSON = &extract.JSON{File: file, Path: c.path}
+				spec = extract.Of(jsonreader.Kind, jsonreader.Spec{File: file, Path: c.path})
 			default:
-				spec.TOML = &extract.TOML{File: file, Path: c.path}
+				spec = extract.Of(tomlreader.Kind, tomlreader.Spec{File: file, Path: c.path})
 			}
 			e, err := extract.Build(spec)
 			if c.want == "unparsed" {

@@ -9,7 +9,7 @@ import (
 )
 
 func valid() Check {
-	return Check{ID: "docs-name-node", Reason: "a reason", Scope: ScopeRepo, Run: []string{"true"}}
+	return Check{ID: "docs-name-node", Reason: "a reason", Scope: ScopeRepo, Kind: &Program{Run: []string{"true"}}}
 }
 
 func TestValidate(t *testing.T) {
@@ -28,7 +28,8 @@ func TestValidate(t *testing.T) {
 		{"trailing hyphen", func(c *Check) { c.ID = "docs-" }, "lower-case words"},
 		{"double hyphen", func(c *Check) { c.ID = "a--b" }, "lower-case words"},
 		{"unknown scope", func(c *Check) { c.Scope = "cluster" }, `scope "cluster"`},
-		{"no run", func(c *Check) { c.Run = nil }, "run or extract is required"},
+		{"no run", func(c *Check) { c.Kind = &Program{} }, "run or extract is required"},
+		{"no kind", func(c *Check) { c.Kind = nil }, "run or extract is required"},
 		{"negative timeout", func(c *Check) { c.Timeout = -time.Second }, "timeout must not be negative"},
 		{"zero timeout", func(c *Check) { c.Timeout = 0 }, ""},
 	}
@@ -90,7 +91,7 @@ func TestPropertyWellFormedCheckValidates(t *testing.T) {
 			ID:      genID().Draw(t, "id"),
 			Reason:  rapid.StringMatching(`[A-Za-z0-9].{0,40}`).Draw(t, "reason"),
 			Scope:   genScope().Draw(t, "scope"),
-			Run:     rapid.SliceOfN(rapid.String(), 1, 4).Draw(t, "run"),
+			Kind:    &Program{Run: rapid.SliceOfN(rapid.String(), 1, 4).Draw(t, "run")},
 			Timeout: time.Duration(rapid.Int64Min(0).Draw(t, "timeout")),
 		}
 		if err := c.Validate(); err != nil {

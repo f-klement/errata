@@ -31,6 +31,21 @@ type Spec struct {
 	MaxBytes int64  `json:"max_bytes,omitempty"`
 }
 
+// Kind is the jenkins kind, which a rule writes under the key jenkins.
+var Kind = core.Kind[Spec]{Key: "jenkins", Place: Place, Resolve: Resolve, Describe: Describe}
+
+// Resolve is s with its max_bytes written out, for errata list.
+func Resolve(s Spec) Spec {
+	s.MaxBytes = core.MaxBytes(s.MaxBytes)
+	return s
+}
+
+// Describe is what the kind's extractor returns: flat values, some not
+// literal, as the reader marks a value the Jenkinsfile computes.
+func Describe(Spec) check.Description {
+	return check.Description{Label: "jenkins", NotLiteral: true}
+}
+
 // maxName is the longest variable or stage name that loads, in bytes,
 // which keeps a message's quote of it and each comparison short.
 const maxName = 1024

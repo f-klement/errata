@@ -5,6 +5,7 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -50,8 +51,21 @@ func TestReadersImportNoOtherReader(t *testing.T) {
 			}
 		}
 	}
-	if len(imports) < 17 {
-		t.Fatalf("found the packages %v, want core, the fifteen readers and env", imports)
+	// The readers are the packages of the kinds' specs, so a reader that
+	// kinds does not list, and a kind whose package is not here, fail.
+	readers := map[string]bool{}
+	for _, k := range kinds.order {
+		readers[path.Base(k.Spec.PkgPath())] = true
+	}
+	for pkg := range imports {
+		if !readers[pkg] && !slices.Contains(shared, pkg) {
+			t.Errorf("the package %s is no reader of a kind kinds lists, and not one the readers share", pkg)
+		}
+	}
+	for pkg := range readers {
+		if _, ok := imports[pkg]; !ok {
+			t.Errorf("kinds lists a kind of the reader %s, which is no package here", pkg)
+		}
 	}
 	for _, p := range readerImports(imports) {
 		t.Error(p)

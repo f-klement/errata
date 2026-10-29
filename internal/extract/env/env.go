@@ -144,6 +144,15 @@ func Build(s Spec, r Readers) (check.Extractor, error) {
 	return x, nil
 }
 
+// Kind is the env kind, which a rule writes under the key env.
+var Kind = core.Kind[Spec]{Key: "env", Place: Place, Resolve: Resolve, Describe: Describe}
+
+// Describe is what the kind's extractor returns: flat values, some not
+// literal, since every reader env asks marks a value its file computes.
+func Describe(Spec) check.Description {
+	return check.Description{Label: "env", NotLiteral: true}
+}
+
 // Place is s with only what decides where it reads: each file cleaned, the
 // files in order, since the same files in another order read the same
 // values, each readers: entry under its cleaned file, and max_bytes left
@@ -212,7 +221,7 @@ func (x extractor) Extract(root string) ([]check.Value, error) {
 	var held int64  // the bytes of the values so far
 	for _, t := range targets {
 		head, size, err := core.Source{File: t.file, Limit: left}.Head(root, x.readers.ScriptBytes)
-		if err != nil && strings.Contains(err.Error(), "bytes, over the limit of") {
+		if err != nil && errors.Is(err, core.ErrTooLarge) {
 			// The limit the message names is what the files before left,
 			// or max_bytes for the first.
 			return nil, fmt.Errorf("env: %w; the files env reads, and a GitLab CI file's includes, hold at most max_bytes, %d, in all", err, x.limit)

@@ -35,7 +35,7 @@ func rawActedOn(out []byte) rune {
 func TestJUnitAndSARIFEscapeWhatATerminalActsOn(t *testing.T) {
 	payload := "a" + actedOnRunes + "z"
 	rep := check.Report{Results: []check.Result{
-		{Check: check.Check{ID: "p", Scope: check.ScopeRepo, Reason: "why " + payload, Run: []string{"x"}}, Verdict: check.VerdictFalse, Message: payload},
+		{Check: check.Check{ID: "p", Scope: check.ScopeRepo, Reason: "why " + payload, Kind: &check.Program{Run: []string{"x"}}}, Verdict: check.VerdictFalse, Message: payload},
 		{Check: check.Check{ID: "s", Scope: check.ScopeLive, Reason: "r"}, Gap: payload},
 	}}
 
@@ -78,8 +78,8 @@ func TestJUnitAndSARIFEscapeWhatATerminalActsOn(t *testing.T) {
 func TestListEscapesWhatATerminalActsOn(t *testing.T) {
 	payload := "a" + actedOnRunes + "z"
 	checks := []check.Check{
-		{ID: "p", Scope: check.ScopeRepo, Reason: payload, Run: []string{"sh", payload}},
-		{ID: "r", Scope: check.ScopeRepo, Reason: "r", Rule: &check.Rule{
+		{ID: "p", Scope: check.ScopeRepo, Reason: payload, Kind: &check.Program{Run: []string{"sh", payload}}},
+		{ID: "r", Scope: check.ScopeRepo, Reason: "r", Kind: &check.Rule{
 			Extractors: []check.NamedExtractor{{Name: "x", Spec: map[string]any{"regex": map[string]any{"pattern": payload}}}},
 			Assert:     payload,
 		}},

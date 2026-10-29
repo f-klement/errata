@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"unicode"
 	"unicode/utf8"
@@ -21,6 +22,28 @@ type Spec struct {
 	File     string `json:"file"`
 	Name     string `json:"name,omitempty"`
 	MaxBytes int64  `json:"max_bytes,omitempty"`
+}
+
+// Kind is the envfile kind, which a rule writes under the key envfile.
+var Kind = core.Kind[Spec]{Key: "envfile", Place: Place, Resolve: Resolve, Describe: Describe}
+
+// Place is s with only what decides where it reads: the file cleaned, and
+// no max_bytes, since a limit does not change what is read.
+func Place(s Spec) Spec {
+	s.File, s.MaxBytes = filepath.Clean(s.File), 0
+	return s
+}
+
+// Resolve is s with its max_bytes written out, for errata list.
+func Resolve(s Spec) Spec {
+	s.MaxBytes = core.MaxBytes(s.MaxBytes)
+	return s
+}
+
+// Describe is what the kind's extractor returns: flat values, some not
+// literal, since compose computes a value from a key the file does not set.
+func Describe(Spec) check.Description {
+	return check.Description{Label: "envfile", NotLiteral: true}
 }
 
 // Build checks s and returns its extractor.

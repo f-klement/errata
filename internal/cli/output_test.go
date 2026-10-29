@@ -17,7 +17,7 @@ import (
 
 // programCheck is a repo check that runs run from the root.
 func programCheck(id string, run ...string) check.Check {
-	return check.Check{ID: id, Reason: "r", Scope: check.ScopeRepo, Run: run, Timeout: 10 * time.Second}
+	return check.Check{ID: id, Reason: "r", Scope: check.ScopeRepo, Kind: &check.Program{Run: run}, Timeout: 10 * time.Second}
 }
 
 // checkRun is what one errata check printed and exited with, and how many

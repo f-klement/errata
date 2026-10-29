@@ -23,7 +23,7 @@ func generated(t *testing.T, committed []byte, script string) (string, check.Che
 		}
 	}
 	return root, check.Check{ID: "gen", Reason: "r", Scope: check.ScopeRepo, Timeout: 5 * time.Second,
-		Generated: &check.Generated{File: "out.md", Run: []string{"sh", "-c", script}, MaxBytes: 1 << 16}}
+		Kind: &check.Generated{File: "out.md", Run: []string{"sh", "-c", script}, MaxBytes: 1 << 16}}
 }
 
 // A file equal to what its generator prints holds; any byte that differs is
@@ -109,7 +109,7 @@ func TestRunGeneratedMissingFileIsAnErratum(t *testing.T) {
 	}
 
 	root, c = generated(t, []byte("a file"), `printf 'abc'`)
-	c.Generated.File = "out.md/below"
+	c.Generated().File = "out.md/below"
 	if res := RunGenerated(context.Background(), root, c); res.Verdict != check.VerdictFalse {
 		t.Fatalf("a name below a file: got %s %q, want false", res.Verdict, res.Message)
 	}
@@ -128,7 +128,7 @@ func TestRunGeneratedUnreadableFileIsUnknown(t *testing.T) {
 	}
 
 	root, c = generated(t, []byte("abcdef"), `printf 'abc'`)
-	c.Generated.MaxBytes = 4
+	c.Generated().MaxBytes = 4
 	if res := RunGenerated(context.Background(), root, c); res.Verdict != check.VerdictUnknown || !strings.Contains(res.Message, "over the limit of 4 bytes") {
 		t.Fatalf("over max_bytes: got %s %q, want unknown naming the limit", res.Verdict, res.Message)
 	}
@@ -155,7 +155,7 @@ func TestRunGeneratedFailingGeneratorIsUnknown(t *testing.T) {
 	}
 
 	root, c := generated(t, []byte("same"), "")
-	c.Generated.Run = []string{"errata-no-such-generator"}
+	c.Generated().Run = []string{"errata-no-such-generator"}
 	if res := RunGenerated(context.Background(), root, c); res.Verdict != check.VerdictUnknown || !strings.HasPrefix(res.Message, "the generator failed: ") {
 		t.Fatalf("missing program: got %s %q, want unknown", res.Verdict, res.Message)
 	}
@@ -191,13 +191,13 @@ func TestRunGeneratedTimeoutIsUnknown(t *testing.T) {
 // after the output running until it ended; and stderr made with no limit.
 func TestRunGeneratedBoundsTheOutput(t *testing.T) {
 	root, c := generated(t, []byte("abcd"), `printf 'abcd'`)
-	c.Generated.MaxBytes = 4
+	c.Generated().MaxBytes = 4
 	if res := RunGenerated(context.Background(), root, c); res.Verdict != check.VerdictTrue {
 		t.Fatalf("output of max_bytes: got %s %q, want true", res.Verdict, res.Message)
 	}
 
 	root, c = generated(t, []byte("abcd"), `printf 'abcde'`)
-	c.Generated.MaxBytes = 4
+	c.Generated().MaxBytes = 4
 	want := "the generator wrote more than 4 bytes to stdout, generated.max_bytes, so errata stopped it; raise max_bytes if the file is that large"
 	if res := RunGenerated(context.Background(), root, c); res.Verdict != check.VerdictUnknown || res.Message != want {
 		t.Fatalf("a byte over: got %s %q, want unknown %q", res.Verdict, res.Message, want)
@@ -229,7 +229,7 @@ func TestRunGeneratedBoundsTheOutput(t *testing.T) {
 // reader of one byte, which cat printed.
 func TestRunGeneratedGivesNoStdinAndTheProgramEnvironment(t *testing.T) {
 	root, c := generated(t, []byte(""), "")
-	c.Generated.Run = []string{"cat"}
+	c.Generated().Run = []string{"cat"}
 	c.Timeout = 2 * time.Second
 	if res := RunGenerated(context.Background(), root, c); res.Verdict != check.VerdictTrue {
 		t.Fatalf("cat: got %s %q, want true on an empty stdin", res.Verdict, res.Message)
@@ -241,19 +241,6 @@ func TestRunGeneratedGivesNoStdinAndTheProgramEnvironment(t *testing.T) {
 	}
 	if res := RunGenerated(context.Background(), root, c); res.Verdict != check.VerdictTrue {
 		t.Fatalf("environment: got %s %q", res.Verdict, res.Message)
-	}
-}
-
-// A bound of 0 holds every byte, as a program check's run needs.
-func TestBoundedZeroHoldsEverything(t *testing.T) {
-	b := &bounded{stop: func() { t.Fatal("stopped without a bound") }}
-	for range 3 {
-		if n, err := b.Write(make([]byte, 1000)); n != 1000 || err != nil {
-			t.Fatalf("write = %d, %v", n, err)
-		}
-	}
-	if b.buf.Len() != 3000 || b.over {
-		t.Fatalf("held %d bytes, over %v", b.buf.Len(), b.over)
 	}
 }
 

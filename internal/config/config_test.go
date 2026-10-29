@@ -49,7 +49,7 @@ func TestParse(t *testing.T) {
 	if cfg.Checks[1].Timeout != 5*time.Second {
 		t.Errorf("timeout = %s, want 5s", cfg.Checks[1].Timeout)
 	}
-	if got := strings.Join(cfg.Checks[0].Run, " "); got != "sh one.sh" {
+	if got := strings.Join(runOf(cfg.Checks[0]), " "); got != "sh one.sh" {
 		t.Errorf("run = %q", got)
 	}
 }

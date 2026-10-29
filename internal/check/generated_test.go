@@ -7,15 +7,13 @@ import (
 
 func validGenerated() Check {
 	return Check{ID: "architecture-is-current", Reason: "a reason", Scope: ScopeRepo,
-		Generated: &Generated{File: "architecture.md", Run: []string{"python3", "build.py", "--stdout"}, MaxBytes: 1 << 20}}
+		Kind: &Generated{File: "architecture.md", Run: []string{"python3", "build.py", "--stdout"}, MaxBytes: 1 << 20}}
 }
 
 // A generated check validates with a file, a generator and a positive
-// bound, at scope repo, and with no run or rule beside it. Each refusal is
-// asserted by its message. The planted breaks: each if of
-// Generated.validate dropped in turn, which loaded the check it refuses,
-// and Validate's last if reading only Rule, which refused every generated
-// check as one with no run.
+// bound, at scope repo. Each refusal is asserted by its message. The
+// planted breaks: each if of Generated.Validate and ScopeRefusal dropped in
+// turn, which loaded the check it refuses.
 func TestValidateGenerated(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -23,12 +21,10 @@ func TestValidateGenerated(t *testing.T) {
 		wantErr string
 	}{
 		{"valid", func(*Check) {}, ""},
-		{"run beside it", func(c *Check) { c.Run = []string{"true"} }, "run is set beside generated"},
-		{"rule beside it", func(c *Check) { c.Rule = &Rule{} }, "a rule (extract) or a generated check (generated), never both"},
 		{"live", func(c *Check) { c.Scope = ScopeLive }, `scope "live": a generated check compares a file of the repository`},
-		{"no file", func(c *Check) { c.Generated.File = "" }, "generated.file is required"},
-		{"no generator", func(c *Check) { c.Generated.Run = nil }, "generated.run lists no argument"},
-		{"no bound", func(c *Check) { c.Generated.MaxBytes = 0 }, "generated.max_bytes is 0"},
+		{"no file", func(c *Check) { c.Generated().File = "" }, "generated.file is required"},
+		{"no generator", func(c *Check) { c.Generated().Run = nil }, "generated.run lists no argument"},
+		{"no bound", func(c *Check) { c.Generated().MaxBytes = 0 }, "generated.max_bytes is 0"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

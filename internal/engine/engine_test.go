@@ -71,7 +71,7 @@ func TestExecutePassesRoot(t *testing.T) {
 
 func TestNewUsesTheCheckProtocol(t *testing.T) {
 	e := New(t.TempDir(), nil)
-	rep := e.Execute(context.Background(), []check.Check{{ID: "a", Scope: check.ScopeRepo, Run: []string{"false"}}})
+	rep := e.Execute(context.Background(), []check.Check{{ID: "a", Scope: check.ScopeRepo, Kind: &check.Program{Run: []string{"false"}}}})
 	if rep.Results[0].Verdict != check.VerdictFalse {
 		t.Fatalf("verdict = %s, want false from exit 1", rep.Results[0].Verdict)
 	}
@@ -84,7 +84,7 @@ func (v value) Extract(string) ([]check.Value, error) {
 }
 
 func agreeing(id string, a, b value) check.Check {
-	return check.Check{ID: id, Scope: check.ScopeRepo, Rule: &check.Rule{
+	return check.Check{ID: id, Scope: check.ScopeRepo, Kind: &check.Rule{
 		Extractors: []check.NamedExtractor{{Name: "a", Extractor: a}, {Name: "b", Extractor: b}},
 		Agree:      []string{"a", "b"},
 	}}
@@ -95,10 +95,10 @@ func agreeing(id string, a, b value) check.Check {
 func TestNewRunsRulesAndProgramChecks(t *testing.T) {
 	e := New(t.TempDir(), nil)
 	rep := e.Execute(context.Background(), []check.Check{
-		{ID: "program", Scope: check.ScopeRepo, Run: []string{"false"}},
+		{ID: "program", Scope: check.ScopeRepo, Kind: &check.Program{Run: []string{"false"}}},
 		agreeing("agrees", "x", "x"),
 		agreeing("differs", "x", "y"),
-		{ID: "live-program", Scope: check.ScopeLive, Run: []string{"true"}},
+		{ID: "live-program", Scope: check.ScopeLive, Kind: &check.Program{Run: []string{"true"}}},
 	})
 	want := []check.Verdict{check.VerdictFalse, check.VerdictTrue, check.VerdictFalse, ""}
 	for i, res := range rep.Results {
@@ -158,7 +158,7 @@ func TestNewRunsAGeneratedCheck(t *testing.T) {
 		t.Fatal(err)
 	}
 	gen := func(id, printed string) check.Check {
-		return check.Check{ID: id, Scope: check.ScopeRepo, Timeout: 5 * time.Second, Generated: &check.Generated{
+		return check.Check{ID: id, Scope: check.ScopeRepo, Timeout: 5 * time.Second, Kind: &check.Generated{
 			File: "out.txt", Run: []string{"printf", printed}, MaxBytes: 1 << 10,
 		}}
 	}

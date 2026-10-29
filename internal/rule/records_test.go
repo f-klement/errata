@@ -31,14 +31,14 @@ func TestAgreeComparesAFieldOfEachRecord(t *testing.T) {
 	gatus := recordsOf(rec(3, "a", "external"), rec(7, "b", "external"), obj(11, "name", str("c", 11)))
 	other := named("other", fake{values: []check.Value{at("external", "g.yaml", 1)}})
 	c := agreeRule(gatus, other)
-	c.Rule.Agree = []string{"gatus.group", "other"}
+	c.Rule().Agree = []string{"gatus.group", "other"}
 	if res := Run(context.Background(), "", c); res.Verdict != check.VerdictTrue {
 		t.Fatalf("verdict %s: %s", res.Verdict, res.Message)
 	}
 
 	gatus = recordsOf(rec(3, "a", "external"), rec(7, "b", "internal"))
 	c = agreeRule(gatus, other)
-	c.Rule.Agree = []string{"gatus.group", "other"}
+	c.Rule().Agree = []string{"gatus.group", "other"}
 	res := Run(context.Background(), "", c)
 	want := "agree: the values differ\n" +
 		`  "external" at renovate.json:4 (gatus.group), g.yaml:1 (other)` + "\n" +
@@ -62,14 +62,14 @@ func TestAgreeOverFieldsIsUnknownWithoutAFlatValue(t *testing.T) {
 	runs := 0
 	counted := countingExtractor{values: []check.Value{whole(rec(3, "x", "x"))}, runs: &runs}
 	c := agreeRule(check.NamedExtractor{Name: "gatus", Extractor: counted, Maps: true, Fields: []string{"name", "group"}})
-	c.Rule.Agree = []string{"gatus.name", "gatus.group"}
+	c.Rule().Agree = []string{"gatus.name", "gatus.group"}
 	if res := Run(context.Background(), "", c); res.Verdict != check.VerdictTrue || runs != 1 {
 		t.Fatalf("verdict %s after %d runs: %s", res.Verdict, runs, res.Message)
 	}
 
 	nested := recordsOf(obj(3, "name", obj(3, "k", str("v", 3)), "group", str("g", 4)), rec(7, "b", "g"))
 	c = agreeRule(nested)
-	c.Rule.Agree = []string{"gatus.name", "gatus.group"}
+	c.Rule().Agree = []string{"gatus.name", "gatus.group"}
 	res := Run(context.Background(), "", c)
 	if res.Verdict != check.VerdictUnknown || !strings.Contains(res.Message, `extractor "gatus": gatus[0] holds {"k": "v"} in field "name" at renovate.json:3, and agree compares flat values; write an assert`) {
 		t.Fatalf("verdict %s message %s", res.Verdict, res.Message)
@@ -78,12 +78,12 @@ func TestAgreeOverFieldsIsUnknownWithoutAFlatValue(t *testing.T) {
 	bare := recordsOf(obj(3, "name", str("a", 3)))
 	other := named("other", fake{values: []check.Value{at("a", "g.yaml", 1)}})
 	c = agreeRule(bare, other)
-	c.Rule.Agree = []string{"gatus.group", "other"}
+	c.Rule().Agree = []string{"gatus.group", "other"}
 	res = Run(context.Background(), "", c)
 	if res.Verdict != check.VerdictUnknown || !strings.Contains(res.Message, `extractor "gatus" found no record with field "group"`) {
 		t.Fatalf("verdict %s message %s", res.Verdict, res.Message)
 	}
-	c.Rule.AllowEmpty = []string{"gatus"}
+	c.Rule().AllowEmpty = []string{"gatus"}
 	if res := Run(context.Background(), "", c); res.Verdict != check.VerdictTrue {
 		t.Fatalf("with allow_empty: verdict %s message %s", res.Verdict, res.Message)
 	}
@@ -119,12 +119,12 @@ func TestAssertReadsAFieldOfEachRecord(t *testing.T) {
 		}
 		return named("pushed", fake{values: values})
 	}
-	c := check.Check{ID: "r", Reason: "r", Scope: check.ScopeRepo, Rule: &check.Rule{
+	c := check.Check{ID: "r", Reason: "r", Scope: check.ScopeRepo, Kind: &check.Rule{
 		Extractors: []check.NamedExtractor{gatus, pushed("external_landingpage-registered", "external_landingpage-queue")}, Assert: expr, Compiled: a}}
 	if res := Run(context.Background(), "", c); res.Verdict != check.VerdictTrue {
 		t.Fatalf("verdict %s: %s", res.Verdict, res.Message)
 	}
-	c.Rule.Extractors[1] = pushed("external_landingpage-registered", "external_page-queue")
+	c.Rule().Extractors[1] = pushed("external_landingpage-registered", "external_page-queue")
 	res := Run(context.Background(), "", c)
 	if res.Verdict != check.VerdictFalse || !strings.Contains(res.Message, `gatus[1] = {"name": "landingpage-queue", "group": "external"} at renovate.json:7`) ||
 		!strings.Contains(res.Message, `pushed[1] = "external_page-queue" at monitoring.py:2`) {
@@ -145,7 +145,7 @@ func TestAssertIsUnknownOnAFieldNoRecordHolds(t *testing.T) {
 		t.Fatal(err)
 	}
 	run := func(allow []string, ds ...*check.Data) check.Result {
-		c := check.Check{ID: "r", Reason: "r", Scope: check.ScopeRepo, Rule: &check.Rule{
+		c := check.Check{ID: "r", Reason: "r", Scope: check.ScopeRepo, Kind: &check.Rule{
 			Extractors: []check.NamedExtractor{recordsOf(ds...)}, Assert: expr, Compiled: a, AllowEmpty: allow}}
 		return Run(context.Background(), "", c)
 	}
@@ -176,7 +176,7 @@ func TestAssertBindsAFieldOfARecord(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := check.Check{ID: "r", Reason: "r", Scope: check.ScopeRepo, Rule: &check.Rule{
+	c := check.Check{ID: "r", Reason: "r", Scope: check.ScopeRepo, Kind: &check.Rule{
 		Extractors: []check.NamedExtractor{recordsOf(rec(3, "landingpage-registered", "external"), rec(7, "landingpage-queue", "external"))}, Assert: expr, Compiled: a}}
 	if res := Run(context.Background(), "", c); res.Verdict != check.VerdictTrue {
 		t.Fatalf("verdict %s: %s", res.Verdict, res.Message)

@@ -3,7 +3,8 @@
 unleash:
   # make mutation does not use these two: scripts/mutation.sh hands gremlins a
   # copy of this file with both at 0 and judges each package against its own
-  # floors from the counts. They apply to gremlins run by hand.
+  # floors from the counts, as scripts/mutation-floors.txt sets them. They
+  # apply to gremlins run by hand.
   threshold:
     efficacy: 85        # killed / (killed + lived), percent
     # Mutants reached by any test, percent. Not 100: Go's coverage profile
@@ -36,10 +37,12 @@ unleash:
   # It was 10 for internal/protocol, whose tests wait on a real 5 s sleep. Its
   # pass takes 0.7 s, so no coefficient near 5 covers that: three of its
   # mutants timed out at 2, 3 and 5. internal/extract's mutants take twice its
-  # pass and more, and at 5 two that live read as timed out. scripts/mutation.sh
-  # gives protocol and extract/ini their own, with the figures, and raises the
-  # coefficient of any package whose pass is short, so that no mutant gets
-  # under 10 s (its LIMIT_FLOOR): 5 applies only to a pass of 3 s or more.
+  # pass and more, and at 5 two that live read as timed out. make mutation
+  # takes each package's least coefficient from scripts/mutation-floors.txt,
+  # where protocol and extract/ini have their own, with the figures, and
+  # scripts/mutation.sh raises the coefficient of any package whose pass is
+  # short, so that no mutant gets under 10 s (its LIMIT_FLOOR). This 5 applies
+  # to gremlins run by hand.
   timeout-coefficient: 5
   workers: 2
   exclude-files:

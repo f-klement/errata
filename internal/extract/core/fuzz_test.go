@@ -154,17 +154,17 @@ func FuzzExtract(f *testing.F) {
 		var s extract.Spec
 		switch format % 3 {
 		case 0:
-			s.YAML = &extract.YAML{File: "f", Path: path, Kind: kind, Name: name, Embedded: embedded}
+			s = extract.Of(yamlreader.Kind, yamlreader.Spec{File: "f", Path: path, Kind: kind, Name: name, Embedded: embedded})
 		case 1:
-			s.JSON = &extract.JSON{File: "f", Path: path, Embedded: embedded}
+			s = extract.Of(jsonreader.Kind, jsonreader.Spec{File: "f", Path: path, Embedded: embedded})
 		default:
-			s.TOML = &extract.TOML{File: "f", Path: path, Embedded: embedded}
+			s = extract.Of(tomlreader.Kind, tomlreader.Spec{File: "f", Path: path, Embedded: embedded})
 		}
 		e, err := extract.Build(s)
 		if err != nil {
 			return
 		}
-		if p, roots := extractorRoots(s, data); roots != nil {
+		if p, roots := extractorRoots(format%3, path, data); roots != nil {
 			core.CheckFilterSelectsLess(t, p, roots)
 			core.CheckQuerySplits(t, p, roots)
 		}
@@ -187,23 +187,22 @@ func FuzzExtract(f *testing.F) {
 	})
 }
 
-// extractorRoots is the path of a yaml, json or toml spec and the documents
+// extractorRoots is the path of a yaml (format 0), json (1) or toml (2)
+// spec, path, and the documents
 // its extractor evaluates the path on, or nil when the extractor refuses data
 // before it parses. A YAML file of several documents gives every document,
 // where the extractor evaluates the path on the ones its kind and name
 // select: a filter only removes, from any set of roots.
-func extractorRoots(s extract.Spec, data []byte) (core.Path, []*core.Node) {
+func extractorRoots(format uint8, path string, data []byte) (core.Path, []*core.Node) {
 	src := core.Source{File: "f", Limit: core.DefaultMaxBytes}
-	text, f, parse := "", core.YAMLFormat, yamlreader.Parse
-	switch {
-	case s.YAML != nil:
-		text = s.YAML.Path
-	case s.JSON != nil:
-		text, f, parse = s.JSON.Path, core.JSONFormat, oneRoot(jsonreader.Parse)
-	default:
-		text, f, parse = s.TOML.Path, core.TOMLFormat, oneRoot(tomlreader.Parse)
+	f, parse := core.YAMLFormat, yamlreader.Parse
+	switch format {
+	case 1:
+		f, parse = core.JSONFormat, oneRoot(jsonreader.Parse)
+	case 2:
+		f, parse = core.TOMLFormat, oneRoot(tomlreader.Parse)
 	}
-	p, err := core.ParsePath(text)
+	p, err := core.ParsePath(path)
 	if err != nil || src.CheckNodes(data, f) != nil {
 		return p, nil
 	}

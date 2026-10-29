@@ -1,6 +1,7 @@
 package gitlabci
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -151,6 +152,38 @@ func TestPlace(t *testing.T) {
 	p := Place(Spec{File: "./a/../c.yml", Job: "j", Variable: "V", MaxBytes: 9})
 	if p != (Spec{File: "c.yml", Job: "j", Variable: "V"}) {
 		t.Fatalf("Place is %+v", p)
+	}
+}
+
+// An include over the bytes the files before it left is known by
+// core.ErrTooLarge, which the note keeps, and not by the words of core's
+// message, so the note survives a reworded message (#197). Planted break:
+// load's errors.Is replaced by a match of "bytes, past the limit of",
+// which is the old text match after core rewords its message.
+func TestAnIncludeOverTheBytesLeftIsKnownByItsSentinel(t *testing.T) {
+	root := extracttest.Repo(t, map[string]string{
+		".gitlab-ci.yml": "include: [a.yml]\njob:\n  script: [x]\n",
+		"a.yml":          "variables:\n  A: " + strings.Repeat("a", 600) + "\n",
+	})
+	_, err := extracttest.Run(t, build, Spec{File: ".gitlab-ci.yml", Job: "job", Key: "script", MaxBytes: 300}, root)
+	if !errors.Is(err, core.ErrTooLarge) {
+		t.Fatalf("%v: is not core.ErrTooLarge", err)
+	}
+	if !strings.HasSuffix(err.Error(), "; the file and the files it includes hold at most max_bytes, 300, in all") {
+		t.Fatalf("%v: lacks the note on the files' budget", err)
+	}
+}
+
+// The first file over max_bytes, with nothing read before it, is refused
+// with core's message alone: the note on the files' shared budget belongs
+// to a file that the files before it left short. Planted break: load's
+// l.left < l.limit taken as <=, which added the note to the first file.
+func TestAFirstFileOverMaxBytesHasNoNoteOnTheBudget(t *testing.T) {
+	root := extracttest.Repo(t, map[string]string{".gitlab-ci.yml": "job:\n  script: [" + strings.Repeat("x", 600) + "]\n"})
+	_, err := extracttest.Run(t, build, Spec{File: ".gitlab-ci.yml", Job: "job", Key: "script", MaxBytes: 300}, root)
+	want := "read .gitlab-ci.yml: the file is 618 bytes, over the limit of 300 bytes; set max_bytes: on the extractor to read a larger file"
+	if !errors.Is(err, core.ErrTooLarge) || err.Error() != want {
+		t.Fatalf("%v: want core.ErrTooLarge saying %q, with no note on the budget", err, want)
 	}
 }
 

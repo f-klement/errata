@@ -40,13 +40,6 @@ func ListFormatNames() []string {
 	return slices.Sorted(maps.Keys(ListFormats))
 }
 
-// The kinds of check, as the JSON's type names them.
-const (
-	listProgramType   = "program"
-	listRuleType      = "rule"
-	listGeneratedType = "generated"
-)
-
 // ListJSON is the format a program reads: one object with the version of its
 // shape and every check in the order the config holds them, each with the
 // values the loader resolved. The README's "Listing the checks" documents
@@ -62,20 +55,19 @@ type listDoc struct {
 	Required []string    `json:"required"`
 }
 
-type listCheck struct {
-	ID     string `json:"id"`
-	Reason string `json:"reason"`
-	Scope  string `json:"scope"`
-	At     listAt `json:"at"`
-	Type   string `json:"type"`
-	// Exactly one of these is set; encoding/json writes the keys of the one
-	// that is and skips the nil ones.
-	*listProgram
-	Generated *listGenerated `json:"generated,omitempty"`
-	// Timeout is a program check's and a generated check's, after run or
-	// generated; a rule has none, and leaves the key out.
-	Timeout string `json:"timeout,omitempty"`
-	*listRule
+// listCheck is one check of the JSON: its id, reason, scope, place and the
+// name of its kind, then the keys of its kind (check.Kind.ListFields).
+type listCheck check.Check
+
+func (c listCheck) MarshalJSON() ([]byte, error) {
+	fields := check.Fields{
+		{Key: "id", Value: c.ID},
+		{Key: "reason", Value: c.Reason},
+		{Key: "scope", Value: string(c.Scope)},
+		{Key: "at", Value: listAt{File: c.At.File, Line: c.At.Line, Outside: c.At.Outside}},
+		{Key: "type", Value: c.Kind.Name()},
+	}
+	return append(fields, c.Kind.ListFields(check.Check(c))...).MarshalJSON()
 }
 
 type listAt struct {
@@ -84,39 +76,12 @@ type listAt struct {
 	Outside bool   `json:"outside"`
 }
 
-type listProgram struct {
-	Run []string `json:"run"`
-}
-
-// listGenerated is a generated check's committed file, its generator, and
-// the bound on both, the program errata starts written out as run is.
-type listGenerated struct {
-	File     string   `json:"file"`
-	Run      []string `json:"run"`
-	MaxBytes int64    `json:"max_bytes"`
-}
-
-type listRule struct {
-	Extract        map[string]any `json:"extract"`
-	Relation       listRelation   `json:"relation"`
-	Normalize      []string       `json:"normalize"`
-	AllowEmpty     []string       `json:"allow_empty"`
-	SkipNotLiteral []string       `json:"skip_not_literal"`
-}
-
-// listRelation is agree with compare, or assert.
-type listRelation struct {
-	Agree   []string `json:"agree,omitempty"`
-	Compare string   `json:"compare,omitempty"`
-	Assert  string   `json:"assert,omitempty"`
-}
-
 // WriteList writes checks and required as one JSON object of version
 // ListVersion, required as an empty list when the config has none.
 func (ListJSON) WriteList(w io.Writer, checks []check.Check, required []string) error {
-	doc := listDoc{Version: ListVersion, Checks: make([]listCheck, 0, len(checks)), Required: orEmpty(required)}
+	doc := listDoc{Version: ListVersion, Checks: make([]listCheck, 0, len(checks)), Required: check.OrEmpty(required)}
 	for _, c := range checks {
-		doc.Checks = append(doc.Checks, toListCheck(c))
+		doc.Checks = append(doc.Checks, listCheck(c))
 	}
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
@@ -131,56 +96,6 @@ func (ListJSON) WriteList(w io.Writer, checks []check.Check, required []string) 
 	return err
 }
 
-func toListCheck(c check.Check) listCheck {
-	out := listCheck{
-		ID:     c.ID,
-		Reason: c.Reason,
-		Scope:  string(c.Scope),
-		At:     listAt{File: c.At.File, Line: c.At.Line, Outside: c.At.Outside},
-	}
-	if g := c.Generated; g != nil {
-		out.Type = listGeneratedType
-		out.Generated = &listGenerated{File: g.File, Run: orEmpty(g.Run), MaxBytes: g.MaxBytes}
-		out.Timeout = c.Timeout.String()
-		return out
-	}
-	if !c.IsRule() {
-		out.Type = listProgramType
-		out.listProgram = &listProgram{Run: orEmpty(c.Run)}
-		out.Timeout = c.Timeout.String()
-		return out
-	}
-	r := c.Rule
-	out.Type = listRuleType
-	rule := &listRule{
-		Extract:        make(map[string]any, len(r.Extractors)),
-		AllowEmpty:     orEmpty(r.AllowEmpty),
-		SkipNotLiteral: orEmpty(r.SkipNotLiteral),
-		Normalize:      []string{},
-	}
-	for _, x := range r.Extractors {
-		rule.Extract[x.Name] = x.Spec
-	}
-	for _, n := range r.Normalize {
-		rule.Normalize = append(rule.Normalize, string(n))
-	}
-	if len(r.Agree) > 0 {
-		rule.Relation = listRelation{Agree: r.Agree, Compare: string(r.Comparison())}
-	} else {
-		rule.Relation = listRelation{Assert: r.Assert}
-	}
-	out.listRule = rule
-	return out
-}
-
-// orEmpty is s, or an empty list for nil, so the JSON holds [] and not null.
-func orEmpty(s []string) []string {
-	if s == nil {
-		return []string{}
-	}
-	return s
-}
-
 // ListText is the listing a person reads: each check with its scope and
 // type, its reason, and what it runs, in the labels of the text report, then
 // a count. Its layout may change between releases; a program reads ListJSON.
@@ -189,63 +104,40 @@ func orEmpty(s []string) []string {
 // Like Text, it goes to the terminal through QuoteControls.
 type ListText struct{}
 
+// countedFirst are the kinds the count names whether or not a check is of
+// them, as it has since v0.1.0. It names every other kind after them, in
+// the order the checks first hold it, once a check is of it.
+var countedFirst = []check.Kind{&check.Rule{}, &check.Program{}}
+
 // WriteList writes each of checks with its labels, then the count, which
 // says when the config requires every one of them.
 func (ListText) WriteList(w io.Writer, checks []check.Check, required []string) error {
 	var b strings.Builder
-	rules, generated := 0, 0
+	kinds := slices.Clone(countedFirst)
+	count := map[string]int{}
 	for _, c := range checks {
-		lc := toListCheck(c)
-		kind := "program check"
-		if lc.listRule != nil {
-			kind = "rule"
-			rules++
+		one, _ := c.Kind.Nouns()
+		if !slices.ContainsFunc(kinds, func(k check.Kind) bool { return k.Name() == c.Kind.Name() }) {
+			kinds = append(kinds, c.Kind)
 		}
-		if lc.Generated != nil {
-			kind = "generated check"
-			generated++
-		}
-		fmt.Fprintf(&b, "%s (%s) %s\n", c.ID, c.Scope, kind)
+		count[c.Kind.Name()]++
+		fmt.Fprintf(&b, "%s (%s) %s\n", c.ID, c.Scope, one)
 		writeField(&b, "why:", c.Reason)
-		if p := lc.listProgram; p != nil {
-			writeField(&b, "run:", textValues(p.Run, " "))
-			writeField(&b, "timeout:", lc.Timeout)
-		}
-		if g := lc.Generated; g != nil {
-			// The generator is the program errata starts, so it prints
-			// as run does, under the same label.
-			writeField(&b, "file:", textValue(g.File))
-			writeField(&b, "run:", textValues(g.Run, " "))
-			writeField(&b, "max_bytes:", strconv.FormatInt(g.MaxBytes, 10))
-			writeField(&b, "timeout:", lc.Timeout)
-		}
-		if r := lc.listRule; r != nil {
-			var lines []string
-			for _, x := range c.Rule.Extractors {
-				lines = append(lines, textValue(x.Name)+": "+specText(x.Spec))
-			}
-			writeField(&b, "extract:", strings.Join(lines, "\n"))
-			if r.Relation.Agree != nil {
-				writeField(&b, "agree:", textValues(r.Relation.Agree, ", ")+" (compare "+r.Relation.Compare+")")
-			} else {
-				writeField(&b, "assert:", r.Relation.Assert)
-			}
-			for _, f := range []struct {
-				label string
-				names []string
-			}{{"normalize:", r.Normalize}, {"allow_empty:", r.AllowEmpty}, {"skip_not_literal:", r.SkipNotLiteral}} {
-				if len(f.names) > 0 {
-					writeField(&b, f.label, textValues(f.names, ", "))
-				}
-			}
+		for _, l := range c.Kind.ListLines(c, listQuoter{}) {
+			writeField(&b, l.Label, l.Text)
 		}
 		b.WriteString("\n")
 	}
-	fmt.Fprintf(&b, "%s: %s, %s", plural(len(checks), "check", "checks"),
-		plural(rules, "rule", "rules"), plural(len(checks)-rules-generated, "program check", "program checks"))
-	if generated > 0 {
-		b.WriteString(", " + plural(generated, "generated check", "generated checks"))
+	counts := make([]string, 0, len(kinds))
+	for i, k := range kinds {
+		n := count[k.Name()]
+		if n == 0 && i >= len(countedFirst) {
+			continue
+		}
+		one, many := k.Nouns()
+		counts = append(counts, plural(n, one, many))
 	}
+	fmt.Fprintf(&b, "%s: %s", plural(len(checks), "check", "checks"), strings.Join(counts, ", "))
 	if len(required) > 0 {
 		// The loader refuses a required list that is not the checks' ids.
 		b.WriteString("; required lists every one")
@@ -254,6 +146,13 @@ func (ListText) WriteList(w io.Writer, checks []check.Check, required []string) 
 	_, err := io.WriteString(w, QuoteControls(b.String()))
 	return err
 }
+
+// listQuoter writes the values of the text listing with textValue and
+// specText.
+type listQuoter struct{}
+
+func (listQuoter) Value(s string) string { return textValue(s) }
+func (listQuoter) Spec(spec any) string  { return specText(spec) }
 
 // writeField writes text after label, each further line indented to the
 // column the first starts in. The indent is the label's own, not one width
@@ -288,15 +187,6 @@ func textValue(s string) string {
 	default:
 		return strconv.Quote(s)
 	}
-}
-
-// textValues is each of s written by textValue, joined with sep.
-func textValues(s []string, sep string) string {
-	out := make([]string, len(s))
-	for i, v := range s {
-		out[i] = textValue(v)
-	}
-	return strings.Join(out, sep)
 }
 
 // specText is an extractor's entry as the text listing writes it: its kind,

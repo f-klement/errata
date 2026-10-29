@@ -11,13 +11,15 @@ import (
 	"github.com/f-klement/errata/internal/extract"
 	"github.com/f-klement/errata/internal/extract/core"
 	"github.com/f-klement/errata/internal/extract/extracttest"
+	"github.com/f-klement/errata/internal/extract/ini"
+	"github.com/f-klement/errata/internal/extract/properties"
 )
 
 // iniKinds is each kind this file adds, with file f and the max_bytes n.
 func iniKinds(f string, n int64) map[string]extract.Spec {
 	return map[string]extract.Spec{
-		"ini":        {INI: &extract.INI{File: f, Key: "a", MaxBytes: n}},
-		"properties": {Properties: &extract.Properties{File: f, Key: "a", MaxBytes: n}},
+		"ini":        extract.Of(ini.Kind, ini.Spec{File: f, Key: "a", MaxBytes: n}),
+		"properties": extract.Of(properties.Kind, properties.Spec{File: f, Key: "a", MaxBytes: n}),
 	}
 }
 
@@ -88,11 +90,11 @@ var iniValueLimitCases = []struct {
 	body func(n int) string
 	spec extract.Spec
 }{
-	{"plain", func(n int) string { return strings.Repeat("a=1\n", n) }, ini("f", "", "a")},
-	{"git", func(n int) string { return "[s]\n" + strings.Repeat("a\n", n) }, extract.Spec{INI: &extract.INI{File: "f", Dialect: "git", Section: "s", Key: "a"}}},
-	{"ansible", func(n int) string { return strings.Repeat("h\n", n) }, extract.Spec{INI: &extract.INI{File: "f", Dialect: "ansible", Section: "ungrouped"}}},
-	{"php", func(n int) string { return strings.Repeat("a=1\n", n) }, extract.Spec{INI: &extract.INI{File: "f", Dialect: "php", Key: "a"}}},
-	{"properties", func(n int) string { return strings.Repeat("a\n", n) }, extract.Spec{Properties: &extract.Properties{File: "f", Key: "a"}}},
+	{"plain", func(n int) string { return strings.Repeat("a=1\n", n) }, iniSpec("f", "", "a")},
+	{"git", func(n int) string { return "[s]\n" + strings.Repeat("a\n", n) }, extract.Of(ini.Kind, ini.Spec{File: "f", Dialect: "git", Section: "s", Key: "a"})},
+	{"ansible", func(n int) string { return strings.Repeat("h\n", n) }, extract.Of(ini.Kind, ini.Spec{File: "f", Dialect: "ansible", Section: "ungrouped"})},
+	{"php", func(n int) string { return strings.Repeat("a=1\n", n) }, extract.Of(ini.Kind, ini.Spec{File: "f", Dialect: "php", Key: "a"})},
+	{"properties", func(n int) string { return strings.Repeat("a\n", n) }, extract.Of(properties.Kind, properties.Spec{File: "f", Key: "a"})},
 }
 
 // checkValueLimit reads limit values and refuses one more, the planted
@@ -134,7 +136,7 @@ func TestINIValueLimitAtItsSize(t *testing.T) {
 // The value limit of an extractor errata builds is maxValues; a test that
 // sets valueLimit is the only one with another.
 func TestINIValueLimitIsTheConstant(t *testing.T) {
-	e, err := extract.Build(ini("f", "s", "k"))
+	e, err := extract.Build(iniSpec("f", "s", "k"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,22 +157,17 @@ func TestINIValueLimitIsTheConstant(t *testing.T) {
 func TestINIValueBytesLimit(t *testing.T) {
 	for _, c := range []struct {
 		file, body string
-		spec       extract.Spec
+		spec       func(limit int64) extract.Spec
 		limit      int64
 	}{
-		{".gitconfig", "[a]\n" + strings.Repeat("k\n", 9998), gitSpec(".gitconfig", "a", nil, "k"), 20000},
-		{"a.properties", "a=" + strings.Repeat("\xff", 998), props("a"), 1000},
+		{".gitconfig", "[a]\n" + strings.Repeat("k\n", 9998), func(n int64) extract.Spec {
+			return extract.Of(ini.Kind, ini.Spec{File: ".gitconfig", Section: "a", Key: "k", MaxBytes: n})
+		}, 20000},
+		{"a.properties", "a=" + strings.Repeat("\xff", 998), func(n int64) extract.Spec {
+			return extract.Of(properties.Kind, properties.Spec{File: "a.properties", Key: "a", MaxBytes: n})
+		}, 1000},
 	} {
-		s := c.spec
-		if s.INI != nil {
-			x := *s.INI
-			x.MaxBytes = c.limit
-			s = extract.Spec{INI: &x}
-		} else {
-			x := *s.Properties
-			x.MaxBytes = c.limit
-			s = extract.Spec{Properties: &x}
-		}
+		s := c.spec(c.limit)
 		_, err := run(t, s, extracttest.Repo(t, map[string]string{c.file: c.body}))
 		want := c.file + ": the values the extractor selects hold more than " + strconv.FormatInt(c.limit, 10) + " bytes in all, the extractor's max_bytes"
 		if err == nil || !strings.HasPrefix(err.Error(), want) {

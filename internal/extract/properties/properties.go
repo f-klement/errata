@@ -6,6 +6,7 @@ package properties
 import (
 	"bytes"
 	"errors"
+	"path/filepath"
 	"unicode/utf16"
 	"unicode/utf8"
 
@@ -21,6 +22,28 @@ type Spec struct {
 	File     string `json:"file"`
 	Key      string `json:"key"`
 	MaxBytes int64  `json:"max_bytes,omitempty"`
+}
+
+// Kind is the properties kind, which a rule writes under the key properties.
+var Kind = core.Kind[Spec]{Key: "properties", Place: Place, Resolve: Resolve, Describe: Describe}
+
+// Place is p with only what decides where it reads: the file cleaned, and
+// no max_bytes, since a limit does not change what is read.
+func Place(p Spec) Spec {
+	p.File, p.MaxBytes = filepath.Clean(p.File), 0
+	return p
+}
+
+// Resolve is p with its max_bytes written out, for errata list.
+func Resolve(p Spec) Spec {
+	p.MaxBytes = core.MaxBytes(p.MaxBytes)
+	return p
+}
+
+// Describe is what p's extractor returns: flat values, not literal in a
+// template file, as Build marks them.
+func Describe(p Spec) check.Description {
+	return check.Description{Label: "properties", NotLiteral: core.TemplateNotLiteral(p.File, nil) != nil}
 }
 
 // Build checks p and returns its extractor.

@@ -20,9 +20,10 @@ import `cli`.
 | `internal/config` | the `errata.yaml` format, strict decoding, load errors, the line each check starts on; builds each rule's extractors and compiles its assert through `rule.Compile`, so a type error is a load error | running anything |
 | `internal/engine` | which checks run, in what order, and which are skipped | the check protocol's details, output formats |
 | `internal/protocol` | the check protocol: run a program, map its exit code to a verdict; run a generated check's generator and compare its stdout with the committed file | config, providers, output |
+| `internal/program` | starting a program and waiting for it: argv, working directory, environment, stdin, timeout, a bound on each output stream, the kill of the process group | what its exit or its output means; checks, config, output |
 | `internal/rule` | evaluating a rule: run its extractors, compare their values or evaluate its assert, fail closed; the CEL environment, the assert helpers, the embedded time zone database and the limits | how an extractor reads a file, config, output |
 | `internal/semver` | versions and ranges as npm, Cargo, PEP 440, Go modules and RubyGems write them: their order, precision, satisfaction and overlap, for agree's `compare: semver` and the assert helpers alike | files, rules, CEL |
-| `internal/extract` | the kinds of extractor a rule names: the `Spec` a rule decodes into, the kinds table, `Build`, `Place`, `Resolved` and `Kind`, which see every kind and dispatch to its reader | how any kind reads a file; rules, config, output |
+| `internal/extract` | the kinds of extractor a rule names: the list of kinds, each a reader's `core.Kind` with its `Build`, and the `Spec` a rule's entry decodes into, which finds its kind by key and dispatches `Build`, `Place`, `Resolved` and `Describe` to it | how any kind reads a file; rules, config, output |
 | `internal/extract/core` | what every reader shares: the source held inside the repository and to its size cap, the walk of the repository and the directories it passes over, the limits on nodes, values, depth and bytes, the tree and the path grammar with its filters, the line index, quoting, the clocked regex search, the entry extractor and work meter of the INI, properties and env file readers, and the files git's index tracks, read without git | any one format |
 | `internal/extract/yaml`, `json`, `toml` | one reader each that parses its format into core's tree, for core's path to select from | each other |
 | `internal/extract/regex` | the regex extractor, which is core's search over the file | the other readers |
@@ -40,7 +41,7 @@ import `cli`.
 | `internal/provider` | the provider interface, capabilities, the reconciler model, scope gating | any concrete live system (none yet) |
 | `internal/report` | output formats: `text`, `junit` and `sarif` for a run, `text` and `json` for `errata list` | where the results came from |
 | `internal/heapcap` | the heap watchdog that every package's tests link under the `mutation` tag only | errata's own code: only test files built with the tag import it |
-| `internal/check` | the domain types: `Check`, `Rule`, `Extractor`, `Assertion`, `Value`, `Location`, `Extracted`, `Scope`, `Verdict`, `Result`, `Report` | every other package |
+| `internal/check` | the domain types: `Check`, `Rule`, `Extractor`, `Assertion`, `Value`, `Location`, `Extracted`, `Scope`, `Verdict`, `Result`, `Report`, and `ExtractorKind` with the `Description` and `Shape` it gives of what an extractor returns | every other package |
 
 Four seams carry the design:
 
@@ -48,7 +49,9 @@ Four seams carry the design:
    `engine.Dispatch`, which sends a program check to `protocol.Run`, a generated check to
    `protocol.RunGenerated` and a rule to `rule.Run`, so one run holds all three and prints one
    coverage line; tests pass a fake. The two in `protocol` start their program through one
-   function, so a generator gets a program check's timeout, environment and process group. A further runner, such as
+   function, `program.Run`, so a generator gets a program check's timeout, environment and
+   process group, and a plugin's host can start its process the same way without the check
+   protocol. A further runner, such as
    an in-process Kubernetes ownership check, plugs in here without the engine changing.
 2. **`provider.Provider`.** It declares capabilities, so the engine can skip a `live` or `applied`
    check by name when nothing can reach it. The render, read and predict methods are left out on
@@ -59,8 +62,8 @@ Four seams carry the design:
    errata's version, which SARIF writes as the driver's version.
 4. **`check.Extractor`.** `extract.Build` turns a spec into one, and `rule` calls it with the
    repository root. A new file format is a new reader, a package under `internal/extract` with a
-   `Spec` and a `Build` that import `core` and no other reader, and one row of the kinds table;
-   `rule` does not change.
+   `Spec`, a `Build` and a `core.Kind` beside the `Spec` that import `core` and no other reader,
+   and one line in the facade's list of kinds; `rule` does not change.
 
 ## Decisions taken in the code
 
@@ -173,5 +176,5 @@ its own, so a mutant of a reader counts as killed only when that reader's own te
 thresholds are 85% efficacy and 85% mutant coverage. The coverage figure is not 100% because Go's
 coverage profile starts a `switch` case's block after its colon, so Gremlins reports a mutant in a
 case expression as not covered even when a test runs that arm. Where such mutants cap a package,
-`core`, `ini`, `properties` and `xml` among them, its floor is the figure it reaches;
-`ci/README.md` (Floors per package) has the table.
+`ini`, `properties` and `xml` among them, its floor is the figure it reaches;
+`scripts/mutation-floors.txt` has each package's floors and the count behind a lowered one.

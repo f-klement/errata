@@ -27,10 +27,14 @@ func Run(ctx context.Context, root string, c check.Check) (res check.Result) {
 	// res is a named result so this assignment reaches the caller.
 	defer func() { res.Duration = time.Since(start) }()
 
-	if strings.TrimSpace(c.Rule.Assert) != "" {
-		res.Verdict, res.Message, res.Extracted = assert(ctx, root, *c.Rule)
+	r := c.Rule()
+	if strings.TrimSpace(r.Assert) != "" {
+		res.Verdict, res.Message, res.Extracted = assert(ctx, root, *r)
+		if res.Verdict == check.VerdictFalse {
+			res.Blamed = firstValue(res.Extracted)
+		}
 	} else {
-		res.Verdict, res.Message, res.Note, res.Extracted = agree(ctx, root, *c.Rule)
+		res.Verdict, res.Message, res.Note, res.Blamed, res.Extracted = agree(ctx, root, *r)
 	}
 	switch counted := check.LeftOutCount(res.Extracted); {
 	case counted == "":
@@ -40,6 +44,18 @@ func Run(ctx context.Context, root string, c check.Check) (res check.Result) {
 		res.Message += "\n" + counted
 	}
 	return res
+}
+
+// firstValue blames the first value of the first extractor that returned
+// one, or none: an assert has no majority, so no value is more to blame
+// than another.
+func firstValue(extracted []check.Extracted) *check.Blame {
+	for i, x := range extracted {
+		if len(x.Values) > 0 {
+			return &check.Blame{Extractor: i}
+		}
+	}
+	return nil
 }
 
 // count is n and noun, with an s for any n but one.
@@ -80,13 +96,16 @@ func extractAll(ctx context.Context, root string, r check.Rule, names []string) 
 			problems = append(problems, fmt.Sprintf("extractor %q: %v", name, err))
 			continue
 		}
-		x := check.Extracted{Extractor: name, Values: values}
+		x := check.Extracted{Extractor: name, Values: shown(r, values)}
 		computed := slices.ContainsFunc(values, func(v check.Value) bool { return v.NotLiteral })
 		skip := slices.Contains(r.SkipNotLiteral, name)
 		switch {
 		case computed && skip:
+			// The values with their shown form, so a whole value kept
+			// beside one left out keeps it.
+			all := x.Values
 			x.Values = nil
-			for _, v := range values {
+			for _, v := range all {
 				if v.NotLiteral {
 					x.LeftOut = append(x.LeftOut, v)
 				} else {
@@ -108,6 +127,21 @@ func extractAll(ctx context.Context, root string, r check.Rule, names []string) 
 		}
 	}
 	return extracted, problems, ""
+}
+
+// shown is values with each one handed over whole given its Shown form, a
+// copy when any is, so the extractor's own slice is left as it returned it.
+func shown(r check.Rule, values []check.Value) []check.Value {
+	if !slices.ContainsFunc(values, func(v check.Value) bool { return v.Data != nil }) {
+		return values
+	}
+	out := slices.Clone(values)
+	for i, v := range out {
+		if v.Data != nil {
+			out[i].Shown = normalizedData(r, v.Data).Show(check.ShownBytes)
+		}
+	}
+	return out
 }
 
 // extractOne runs e: Extract, or for a check.Dependent ExtractWith the
@@ -381,72 +415,75 @@ func saw(r check.Rule, extracted []check.Extracted) string {
 			fmt.Fprintf(&b, "  %s = [] (allow_empty)\n", x.Extractor)
 		}
 		for i, v := range x.Values {
-			shown := q.quote(r.Normalized(v.Text))
-			if v.Data != nil {
+			text := q.quote(r.Normalized(v.Text))
+			if v.Shown != "" {
 				// A mapping is shown as it is rendered, not quoted again,
 				// and in the form assert saw.
-				shown = normalizedData(r, v.Data).Show(check.ShownBytes)
+				text = v.Shown
 			}
-			fmt.Fprintf(&b, "  %s[%d] = %s at %s%s\n", x.Extractor, i, shown, v.At, v.Notes())
+			fmt.Fprintf(&b, "  %s[%d] = %s at %s%s\n", x.Extractor, i, text, v.At, v.Notes())
 		}
 	}
 	return strings.TrimSuffix(b.String(), "\n")
 }
 
-// found is one value with the extractor that returned it.
+// found is one value with the extractor that returned it, and where it is
+// in the result's Extracted.
 type found struct {
 	value     check.Value
 	extractor string
+	of        check.Blame
 }
 
 // agree runs every extractor that r.Agree names, in that order but each
 // after the extractors it reads (check.Rule.Order), and compares
 // the normalised string form of every value they return, as text or, with
 // compare: semver, as versions and ranges. It also returns
-// what each extractor that did not fail returned, for the result, and a
-// note for a rule that held, which the text output prints.
-func agree(ctx context.Context, root string, r check.Rule) (check.Verdict, string, string, []check.Extracted) {
+// what each extractor that did not fail returned, for the result, a
+// note for a rule that held, which the text output prints, and the value a
+// false rule blames.
+func agree(ctx context.Context, root string, r check.Rule) (check.Verdict, string, string, *check.Blame, []check.Extracted) {
 	extracted, problems, cancelled := extractAll(ctx, root, r, agreed(r))
 	if cancelled != "" {
-		return check.VerdictUnknown, cancelled, "", extracted
+		return check.VerdictUnknown, cancelled, "", nil, extracted
 	}
 	extracted, problems = onFields(r, extracted, problems)
 	var (
 		all        []found
 		listedNone bool
 	)
-	for _, x := range extracted {
+	for i, x := range extracted {
 		// An entry name.field is allowed empty by its extractor's name.
 		if on, _, _ := r.AgreeOn(x.Extractor); len(x.Values) == 0 && slices.Contains(r.AllowEmpty, on.Name) {
 			listedNone = true
 		}
-		for _, v := range x.Values {
-			all = append(all, found{value: v, extractor: x.Extractor})
+		for j, v := range x.Values {
+			all = append(all, found{value: v, extractor: x.Extractor, of: check.Blame{Extractor: i, Value: j}})
 		}
 	}
 	switch {
 	case len(problems) > 0:
-		return check.VerdictUnknown, strings.Join(problems, "\n"), "", extracted
+		return check.VerdictUnknown, strings.Join(problems, "\n"), "", nil, extracted
 	case len(all) == 0:
-		return check.VerdictUnknown, "no extractor found a value, so agree has nothing to compare", "", extracted
+		return check.VerdictUnknown, "no extractor found a value, so agree has nothing to compare", "", nil, extracted
 	case len(all) == 1 && !listedNone:
 		// One value agrees with itself. Only an extractor that allow_empty
 		// lists coming back empty makes one value a comparison the author
 		// asked for.
 		f := all[0]
 		return check.VerdictUnknown, fmt.Sprintf("agree found one value, so it has nothing to compare: %s at %s%s (%s)",
-			newQuoter(nil).quote(f.value.Text), f.value.At, f.value.Notes(), f.extractor), "", extracted
+			newQuoter(nil).quote(f.value.Text), f.value.At, f.value.Notes(), f.extractor), "", nil, extracted
 	}
 
 	groups := group(all, r)
 	if r.Comparison() == check.CompareSemver {
-		verdict, message, note := agreeSemver(groups)
-		return verdict, message, note, extracted
+		verdict, message, note, blamed := agreeSemver(groups)
+		return verdict, message, note, groups.blame(blamed), extracted
 	}
 	if len(groups) == 1 {
-		return check.VerdictTrue, "", "", extracted
+		return check.VerdictTrue, "", "", nil, extracted
 	}
-	return check.VerdictFalse, differ(groups), "", extracted
+	return check.VerdictFalse, differ(groups), "", groups.blame(groups.outsideMajority()), extracted
 }
 
 // agreed is the extractors r.Agree reads, each once, in the order of the
@@ -508,11 +545,42 @@ type distinct struct {
 	where []found
 }
 
+// grouping is the distinct values of one comparison, in the order group
+// gives them.
+type grouping []distinct
+
+// blame is the first place of group i, the value a false rule blames, or
+// none for an i below 0.
+func (gs grouping) blame(i int) *check.Blame {
+	if i < 0 {
+		return nil
+	}
+	b := gs[i].where[0].of
+	return &b
+}
+
+// outsideMajority is the earliest group that is not the majority: the
+// group with the most values, the earliest on a tie. Groups keep the order
+// of their first value, so its first value is the first value outside the
+// majority.
+func (gs grouping) outsideMajority() int {
+	majority := 0
+	for i, g := range gs {
+		if len(g.where) > len(gs[majority].where) {
+			majority = i
+		}
+	}
+	if majority == 0 {
+		return 1
+	}
+	return 0
+}
+
 // group collects the values by their normalised text. Groups keep the order
 // of the first value in each, and values keep the order they were found in, so
 // the message is stable for a given set of extractor results.
-func group(all []found, r check.Rule) []distinct {
-	var groups []distinct
+func group(all []found, r check.Rule) grouping {
+	var groups grouping
 	index := map[string]int{}
 	for _, f := range all {
 		text := r.Normalized(f.value.Text)
@@ -561,8 +629,11 @@ var newSemverReader = func() semverReader { return new(semver.Reader) }
 // semver.MaxIntervals before reading any more. The values agree as
 // semver.Agree decides. Any message lists each value with its places and
 // what it was read as, each clipped as the quoter clips a value. A rule that
-// held on ranges alone says so in its note.
-func agreeSemver(groups []distinct) (verdict check.Verdict, message, note string) {
+// held on ranges alone says so in its note. blamed is the group a false
+// rule blames: of the two semver.Agree found not to agree, the later, which
+// disagrees with a value before it; -1 for any other verdict, and for
+// ranges alone, where no pair is to blame.
+func agreeSemver(groups []distinct) (verdict check.Verdict, message, note string, blamed int) {
 	texts := make([]string, len(groups))
 	for i, g := range groups {
 		texts[i] = g.text
@@ -578,7 +649,7 @@ func agreeSemver(groups []distinct) (verdict check.Verdict, message, note string
 		v, err := reader.Parse(g.text)
 		switch {
 		case errors.As(err, &bound):
-			return check.VerdictUnknown, "agree: compare semver stopped at " + q.quote(g.text) + " at " + places(g) + ": " + err.Error(), ""
+			return check.VerdictUnknown, "agree: compare semver stopped at " + q.quote(g.text) + " at " + places(g) + ": " + err.Error(), "", -1
 		case err != nil:
 			unread = append(unread, fmt.Sprintf("%s at %s: %v", q.quote(g.text), places(g), err))
 		}
@@ -586,15 +657,15 @@ func agreeSemver(groups []distinct) (verdict check.Verdict, message, note string
 	}
 	if len(unread) > 0 {
 		return check.VerdictUnknown, "agree: compare semver reads every value as a version or a range, and cannot read " +
-			count(len(unread), "value") + "\n  " + strings.Join(unread, "\n  "), ""
+			count(len(unread), "value") + "\n  " + strings.Join(unread, "\n  "), "", -1
 	}
 	out := semver.Agree(values)
 	var lead string
 	switch {
 	case out.Holds && out.OnlyRanges:
-		return check.VerdictTrue, "", "agree: only ranges were compared, since no value is a version, and they overlap"
+		return check.VerdictTrue, "", "agree: only ranges were compared, since no value is a version, and they overlap", -1
 	case out.Holds:
-		return check.VerdictTrue, "", ""
+		return check.VerdictTrue, "", "", -1
 	case out.OnlyRanges:
 		lead = "agree: only ranges were compared, since no value is a version, and no release satisfies them all"
 	case values[out.First].IsRange() || values[out.Second].IsRange():
@@ -611,7 +682,7 @@ func agreeSemver(groups []distinct) (verdict check.Verdict, message, note string
 	for i, g := range groups {
 		fmt.Fprintf(&b, "\n  %s (%s) at %s", q.quote(g.text), clip(values[i].String()), places(g))
 	}
-	return check.VerdictFalse, b.String(), ""
+	return check.VerdictFalse, b.String(), "", out.Second
 }
 
 // clip is what a value was read as, cut to maxQuoted bytes with its length

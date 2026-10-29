@@ -72,7 +72,7 @@ func TestSkipNotLiteralLeavesValuesOut(t *testing.T) {
 		named("chart", fake{values: []check.Value{at("1.4.2", "Chart.yaml", 3)}}),
 		named("shell", fake{values: shellValues}),
 	)
-	c.Rule.SkipNotLiteral = []string{"shell"}
+	c.Rule().SkipNotLiteral = []string{"shell"}
 	res := Run(context.Background(), "", c)
 	if want := `skip_not_literal left out 1 not literal value of extractor "shell"`; res.Verdict != check.VerdictTrue || res.Message != want {
 		t.Fatalf("verdict %s message %q, want true and %q", res.Verdict, res.Message, want)
@@ -88,7 +88,7 @@ func TestSkipNotLiteralLeavesValuesOut(t *testing.T) {
 		t.Fatalf("the extractor's own slice changed: %+v", shellValues)
 	}
 
-	c.Rule.Extractors[0] = named("chart", fake{values: []check.Value{at("1.5.0", "Chart.yaml", 3)}})
+	c.Rule().Extractors[0] = named("chart", fake{values: []check.Value{at("1.5.0", "Chart.yaml", 3)}})
 	res = Run(context.Background(), "", c)
 	wantMsg := `agree: the values differ
   "1.5.0" at Chart.yaml:3 (chart)
@@ -108,7 +108,7 @@ func TestSkipNotLiteralCountsPerExtractor(t *testing.T) {
 		named("shell", fake{values: []check.Value{at("1.4.2", "build.sh", 2), computed("$(git describe)", "build.sh", 7)}}),
 		named("make", fake{values: []check.Value{at("1.4.2", "Makefile", 1)}}),
 	)
-	c.Rule.SkipNotLiteral = []string{"shell", "make", "ci"}
+	c.Rule().SkipNotLiteral = []string{"shell", "make", "ci"}
 	res := Run(context.Background(), "", c)
 	want := "skip_not_literal left out 2 not literal values of extractor \"ci\"\n" +
 		"skip_not_literal left out 1 not literal value of extractor \"shell\""
@@ -121,7 +121,7 @@ func TestSkipNotLiteralCountsPerExtractor(t *testing.T) {
 func TestSkipNotLiteralAssertSeesWhatIsLeft(t *testing.T) {
 	c := assertRule(t, "size(shell) == 1 && shell[0] == '1.4.2'",
 		named("shell", fake{values: []check.Value{computed("$(git describe)", "build.sh", 7), at("1.4.2", "build.sh", 2)}}))
-	c.Rule.SkipNotLiteral = []string{"shell"}
+	c.Rule().SkipNotLiteral = []string{"shell"}
 	res := Run(context.Background(), "", c)
 	if want := `skip_not_literal left out 1 not literal value of extractor "shell"`; res.Verdict != check.VerdictTrue || res.Message != want {
 		t.Fatalf("verdict %s message %q, want true and %q", res.Verdict, res.Message, want)
@@ -140,7 +140,7 @@ func TestSkipNotLiteralEveryValueLeftOut(t *testing.T) {
 	chart := named("chart", fake{values: []check.Value{at("1.4.2", "Chart.yaml", 3)}})
 
 	c := agreeRule(chart, onlyComputed())
-	c.Rule.SkipNotLiteral = []string{"shell"}
+	c.Rule().SkipNotLiteral = []string{"shell"}
 	res := Run(context.Background(), "", c)
 	want := `extractor "shell" found no literal value
 skip_not_literal left out all 2 not literal values of extractor "shell", so the rule compared nothing from it`
@@ -150,18 +150,18 @@ skip_not_literal left out all 2 not literal values of extractor "shell", so the 
 
 	// The planted break is the count of c8f93cc, which read as a partial
 	// skip on a rule that held having compared nothing from shell.
-	c.Rule.AllowEmpty = []string{"shell"}
+	c.Rule().AllowEmpty = []string{"shell"}
 	want = `skip_not_literal left out all 2 not literal values of extractor "shell", so the rule compared nothing from it`
 	if res := Run(context.Background(), "", c); res.Verdict != check.VerdictTrue || res.Message != want {
 		t.Fatalf("allow_empty lists it: verdict %s message %q, want true and %q", res.Verdict, res.Message, want)
 	}
 
 	a := assertRule(t, "size(shell) == 0", onlyComputed())
-	a.Rule.SkipNotLiteral = []string{"shell"}
+	a.Rule().SkipNotLiteral = []string{"shell"}
 	if res := Run(context.Background(), "", a); res.Verdict != check.VerdictUnknown || !strings.Contains(res.Message, `extractor "shell" found no literal value`) {
 		t.Fatalf("assert: verdict %s message %q, want unknown: found no literal value", res.Verdict, res.Message)
 	}
-	a.Rule.AllowEmpty = []string{"shell"}
+	a.Rule().AllowEmpty = []string{"shell"}
 	if res := Run(context.Background(), "", a); res.Verdict != check.VerdictTrue {
 		t.Fatalf("assert with allow_empty: verdict %s, want true: %s", res.Verdict, res.Message)
 	}
@@ -171,7 +171,7 @@ skip_not_literal left out all 2 not literal values of extractor "shell", so the 
 // literal value and a left out one has one value to compare.
 func TestSkipNotLiteralFloorCountsWhatIsLeft(t *testing.T) {
 	c := agreeRule(named("shell", fake{values: []check.Value{at("1.4.2", "build.sh", 2), computed("$(git describe)", "build.sh", 7)}}))
-	c.Rule.SkipNotLiteral = []string{"shell"}
+	c.Rule().SkipNotLiteral = []string{"shell"}
 	res := Run(context.Background(), "", c)
 	want := `agree found one value, so it has nothing to compare: "1.4.2" at build.sh:2 (shell)
 skip_not_literal left out 1 not literal value of extractor "shell"`
@@ -263,8 +263,8 @@ func TestPropertySkipNotLiteral(t *testing.T) {
 			extractors = append(extractors, named(name, fake{values: values}))
 		}
 		c := agreeRule(extractors...)
-		c.Rule.SkipNotLiteral = skip
-		c.Rule.AllowEmpty = allowEmpty
+		c.Rule().SkipNotLiteral = skip
+		c.Rule().AllowEmpty = allowEmpty
 		res := Run(context.Background(), "", c)
 
 		if !reflect.DeepEqual(res.Extracted, want) {

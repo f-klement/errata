@@ -1,9 +1,9 @@
 //go:build !unix
 
-package protocol
+package program
 
 import "os/exec"
 
 // isolate has no process groups to use here; Run's WaitDelay still stops a
-// child that outlives the check from holding the run open.
+// child that outlives the program from holding the run open.
 func isolate(*exec.Cmd) {}

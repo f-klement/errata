@@ -12,6 +12,7 @@ import (
 
 	"github.com/f-klement/errata/internal/check"
 	"github.com/f-klement/errata/internal/extract/core"
+	"github.com/f-klement/errata/internal/program"
 )
 
 // RunGenerated reads the committed file of c, a generated check, then runs
@@ -35,7 +36,7 @@ func RunGenerated(ctx context.Context, root string, c check.Check) (res check.Re
 	start := time.Now()
 	res.Check = c
 	defer func() { res.Duration = time.Since(start) }()
-	g := c.Generated
+	g := c.Generated()
 
 	// The file is read before the generator starts, so a generator that
 	// writes the file and prints it is compared with the file as
@@ -51,38 +52,38 @@ func RunGenerated(ctx context.Context, root string, c check.Check) (res check.Re
 	}
 	if gone {
 		res.Verdict = check.VerdictFalse
-		res.Message = fmt.Sprintf("%s is not in the repository, and its generator printed %d bytes: commit what the generator prints", g.File, len(p.stdout))
+		res.Message = fmt.Sprintf("%s is not in the repository, and its generator printed %d bytes: commit what the generator prints", g.File, len(p.Stdout))
 		return res
 	}
 	if err != nil {
 		res.Verdict, res.Message = check.VerdictUnknown, err.Error()
 		return res
 	}
-	if bytes.Equal(data, p.stdout) {
+	if bytes.Equal(data, p.Stdout) {
 		res.Verdict = check.VerdictTrue
 		res.Message = fmt.Sprintf("%s is what its generator prints, %d bytes", g.File, len(data))
 		return res
 	}
 	res.Verdict = check.VerdictFalse
-	res.Message, res.At = difference(g.File, data, p.stdout)
+	res.Message, res.At = difference(g.File, data, p.Stdout)
 	return res
 }
 
 // generatorFailed is the message of a generator that ended without an
 // output to compare, or "" for one that exited 0 within its bounds.
-func generatorFailed(p ended, c check.Check) string {
-	if p.overBound != "" {
-		return fmt.Sprintf("the generator wrote more than %d bytes to %s, generated.max_bytes, so errata stopped it; raise max_bytes if the file is that large", c.Generated.MaxBytes, p.overBound)
+func generatorFailed(p program.Ended, c check.Check) string {
+	if p.OverBound != "" {
+		return fmt.Sprintf("the generator wrote more than %d bytes to %s, generated.max_bytes, so errata stopped it; raise max_bytes if the file is that large", c.Generated().MaxBytes, p.OverBound)
 	}
-	if p.timedOut {
+	if p.TimedOut {
 		return fmt.Sprintf("the generator did not finish within %s", c.Timeout)
 	}
-	if p.err != nil {
+	if p.Err != nil {
 		// The tail is cut to as many bytes as a library's error, or up to
 		// max_bytes of one line would reach every report. It keeps the end,
 		// as tail keeps the last lines: a failing program says why last.
-		said := lastBytes(tail(string(p.stderr)), saidBytes)
-		return strings.TrimSpace("the generator failed: " + p.err.Error() + "\n" + said)
+		said := lastBytes(tail(string(p.Stderr)), saidBytes)
+		return strings.TrimSpace("the generator failed: " + p.Err.Error() + "\n" + said)
 	}
 	return ""
 }

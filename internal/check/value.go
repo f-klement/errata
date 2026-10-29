@@ -67,6 +67,11 @@ type Value struct {
 	// mapping its path selects (as: map); nil for a flat value. Text is
 	// then Data's Show, cut at ShownBytes, for a message and a report.
 	Data *Data
+	// Shown is how a report names a value handed over whole, as the rule's
+	// message shows it: Data after the rule's normalize, cut at ShownBytes.
+	// The rule sets it in its result; an extractor leaves it "", and so
+	// does the rule for a flat value, whose text a report quotes.
+	Shown string
 }
 
 // maxNote is the most bytes of a key or a condition a note quotes.
@@ -159,7 +164,7 @@ func MayReturnNotLiteral(e Extractor) bool {
 // its rule, such as a regex whose pattern references another extractor's
 // values. A rule runs each extractor that Needs names before it, and a
 // rule whose extractors need each other in a cycle, or one that extract
-// does not declare, does not load (Rule.validate).
+// does not declare, does not load (Rule.Validate).
 type Dependent interface {
 	Extractor
 	// Needs names the extractors whose values it reads.

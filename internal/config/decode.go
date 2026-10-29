@@ -15,6 +15,8 @@ import (
 	yamlv2 "go.yaml.in/yaml/v2"
 	"go.yaml.in/yaml/v3"
 	sigsyaml "sigs.k8s.io/yaml"
+
+	"github.com/f-klement/errata/internal/extract"
 )
 
 // typedFile is the target the YAML is converted against. sigs.k8s.io/yaml
@@ -25,6 +27,62 @@ type typedFile struct {
 	Checks   []checkEntry `json:"checks"`
 	Required []string     `json:"required"`
 	Defaults defaults     `json:"defaults"`
+}
+
+// typedTarget is typedFile as it is written: each extract.Spec in it read
+// as extract.Schema, the struct of every kind's spec under its key. A Spec
+// finds its kind by key when it decodes, which sigs.k8s.io/yaml cannot see
+// when it converts, so without this a kind's string field written 5 would
+// reach the decode as a number.
+var typedTarget = asWritten(reflect.TypeFor[typedFile]())
+
+// asWritten is t with each extract.Spec in it, at any depth, replaced by
+// extract.Schema. A type that holds no Spec is t itself, so its methods,
+// such as its own UnmarshalJSON, stay. A struct that holds one is rebuilt
+// from its exported fields, the only ones a decode reads.
+func asWritten(t reflect.Type) reflect.Type {
+	// Ifs rather than a switch: Go's coverage profile leaves case
+	// expressions outside every block.
+	if t == specType {
+		return extract.Schema()
+	}
+	if t.Kind() == reflect.Pointer {
+		if e := asWritten(t.Elem()); e != t.Elem() {
+			return reflect.PointerTo(e)
+		}
+		return t
+	}
+	if t.Kind() == reflect.Slice {
+		if e := asWritten(t.Elem()); e != t.Elem() {
+			return reflect.SliceOf(e)
+		}
+		return t
+	}
+	if t.Kind() == reflect.Map {
+		if e := asWritten(t.Elem()); e != t.Elem() {
+			return reflect.MapOf(t.Key(), e)
+		}
+		return t
+	}
+	if t.Kind() != reflect.Struct {
+		return t
+	}
+	var fields []reflect.StructField
+	changed := false
+	for f := range t.Fields() {
+		if !f.IsExported() {
+			continue
+		}
+		if w := asWritten(f.Type); w != f.Type {
+			f.Type, changed = w, true
+		}
+		f.Index, f.Offset = nil, 0
+		fields = append(fields, f)
+	}
+	if !changed {
+		return t
+	}
+	return reflect.StructOf(fields)
 }
 
 // toJSON converts raw YAML to JSON with the coercions of the real types and
@@ -43,7 +101,7 @@ func toJSON(raw []byte) (json.RawMessage, error) {
 		// on what the per-check pass reports with the check's name.
 		return json.NewDecoder(strings.NewReader("{}"))
 	}
-	if err := sigsyaml.UnmarshalStrict(raw, &typedFile{}, capture); err != nil {
+	if err := sigsyaml.UnmarshalStrict(raw, reflect.New(typedTarget).Interface(), capture); err != nil {
 		return nil, err
 	}
 	if captureErr != nil {
@@ -132,14 +190,50 @@ func lines(doc *yaml.Node) []int {
 	return nil
 }
 
-// decodeStrict decodes raw into v and refuses a key v does not have.
+// decodeStrict decodes raw into v and refuses a key v does not have. A
+// type error inside an extract.Spec comes from the Spec's own decode,
+// which cannot see the path to it, and stops the decode where an error
+// elsewhere would not. So when v holds a Spec and its decode fails, raw is
+// decoded again as it is written (asWritten), and that decode's error,
+// which names its path from v down, as it would anywhere else, is the one
+// returned.
 func decodeStrict(raw json.RawMessage, v any) error {
+	err := strictly(raw, v)
+	if err == nil {
+		return nil
+	}
+	t := reflect.TypeOf(v).Elem()
+	w := asWritten(t)
+	if w == t {
+		return err
+	}
+	werr := strictly(raw, reflect.New(w).Interface())
+	if werr == nil {
+		return err
+	}
+	if te, ok := errors.AsType[*json.UnmarshalTypeError](werr); ok {
+		// The struct asWritten built has no name, and the Schema stands
+		// for a Spec.
+		if te.Struct == "" {
+			te.Struct = t.Name()
+		}
+		if te.Type == extract.Schema() {
+			te.Type = specType
+		}
+	}
+	return werr
+}
+
+func strictly(raw json.RawMessage, v any) error {
 	d := json.NewDecoder(bytes.NewReader(raw))
 	d.DisallowUnknownFields()
 	return d.Decode(v)
 }
 
-var rawMessageType = reflect.TypeFor[json.RawMessage]()
+var (
+	rawMessageType = reflect.TypeFor[json.RawMessage]()
+	specType       = reflect.TypeFor[extract.Spec]()
+)
 
 // exactKeys returns an error for every key in raw that matches a key of t
 // only when case is ignored, with the path to it. A key that matches nothing
@@ -193,8 +287,14 @@ func exactKeys(raw json.RawMessage, t reflect.Type, path string) []error {
 	return errs
 }
 
-// jsonFields maps each JSON key of struct t to the field's type.
+// jsonFields maps each JSON key of struct t to the field's type. An
+// extract.Spec has the fields of extract.Schema: each kind's key, with the
+// kind's spec type, so a key and a string inside an extractor are checked
+// as any other key and string of a check.
 func jsonFields(t reflect.Type) map[string]reflect.Type {
+	if t == specType {
+		t = extract.Schema()
+	}
 	fields := make(map[string]reflect.Type, t.NumField())
 	for f := range t.Fields() {
 		name, _, _ := strings.Cut(f.Tag.Get("json"), ",")

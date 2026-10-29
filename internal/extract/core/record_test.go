@@ -9,6 +9,10 @@ import (
 	"github.com/f-klement/errata/internal/extract"
 	"github.com/f-klement/errata/internal/extract/core"
 	"github.com/f-klement/errata/internal/extract/extracttest"
+	"github.com/f-klement/errata/internal/extract/json"
+	"github.com/f-klement/errata/internal/extract/regex"
+	"github.com/f-klement/errata/internal/extract/toml"
+	"github.com/f-klement/errata/internal/extract/yaml"
 )
 
 // A regex extractor with as: record returns one record for each match:
@@ -24,7 +28,7 @@ func TestRegexRecordReturnsEachMatchsNamedGroups(t *testing.T) {
 	root := extracttest.Repo(t, map[string]string{"g.yaml": text, "crlf.yaml": strings.ReplaceAll(text, "\n", "\r\n")})
 	pattern := `- name: (?P<name>\S+)( # (?P<note>\w+))?\n\s*(?:group): (?P<group>\S+)`
 	for _, file := range []string{"g.yaml", "crlf.yaml"} {
-		s := extract.Spec{Regex: &extract.Regex{File: file, Pattern: pattern, As: "record"}}
+		s := extract.Of(regex.Kind, regex.Spec{File: file, Pattern: pattern, As: "record"})
 		got := mustRun(t, s, root)
 		want := []struct{ text, lines string }{
 			{`{"name": "a", "group": "g"}`, file + ":1 name=" + file + ":1 group=" + file + ":2"},
@@ -47,11 +51,11 @@ func TestRegexRecordReturnsEachMatchsNamedGroups(t *testing.T) {
 	// A pattern that looks back, ^ or \b, is searched after a match from
 	// the rune before it, which wraps the pattern in one more group; each
 	// field keeps its own group's offsets.
-	back := mustRun(t, extract.Spec{Regex: &extract.Regex{File: "g.yaml", Pattern: `^\s*- name: (?P<name>\w+)\b.*\n\s*group: (?P<group>\S+)`, As: "record"}}, root)
+	back := mustRun(t, extract.Of(regex.Kind, regex.Spec{File: "g.yaml", Pattern: `^\s*- name: (?P<name>\w+)\b.*\n\s*group: (?P<group>\S+)`, As: "record"}), root)
 	if len(back) != 2 || back[1].Text != `{"name": "b", "group": "h"}` || lines(back[1].Data) != "g.yaml:3 name=g.yaml:3 group=g.yaml:4" {
 		t.Errorf("a pattern that looks back: %v", back)
 	}
-	flat := extract.Spec{Regex: &extract.Regex{File: "g.yaml", Pattern: pattern}}
+	flat := extract.Of(regex.Kind, regex.Spec{File: "g.yaml", Pattern: pattern})
 	if got := mustRun(t, flat, root); flat.Maps() || flat.Fields() != nil || len(got) != 2 || got[0].Data != nil || got[0].Text != "a" {
 		t.Errorf("without as: %v", got)
 	}
@@ -70,11 +74,11 @@ func TestRegexRecordRefusesWhatIsNoRecord(t *testing.T) {
 		`(?P<x>a)(?P<y>b)(c`:  "regex: pattern",
 		`(?P<ok>a)(?P<x-y>b)`: "regex: pattern",
 	} {
-		_, err := extract.Build(extract.Spec{Regex: &extract.Regex{File: "f", Pattern: pattern, As: "record"}})
+		_, err := extract.Build(extract.Of(regex.Kind, regex.Spec{File: "f", Pattern: pattern, As: "record"}))
 		extracttest.WantError(t, err, want)
 	}
 	for _, as := range []string{"map", "records"} {
-		s := extract.Spec{Regex: &extract.Regex{File: "f", Pattern: `(?P<x>a)`, As: as}}
+		s := extract.Of(regex.Kind, regex.Spec{File: "f", Pattern: `(?P<x>a)`, As: as})
 		_, err := extract.Build(s)
 		extracttest.WantError(t, err, fmt.Sprintf("regex: as %q is not one errata reads; write record to read each match's named groups into one record, or leave the key out for group 1", as))
 		if s.Maps() || s.Fields() != nil {
@@ -98,7 +102,7 @@ func TestRegexRecordBoundsNodesAndBytes(t *testing.T) {
 		"s/2":  strings.Repeat("ab\n", under/2+1),
 	})
 	spec := func(file string, maxBytes int64) extract.Spec {
-		return extract.Spec{Regex: &extract.Regex{File: file, Pattern: `(?P<x>a)(?P<y>b)`, As: "record", MaxBytes: maxBytes}}
+		return extract.Of(regex.Kind, regex.Spec{File: file, Pattern: `(?P<x>a)(?P<y>b)`, As: "record", MaxBytes: maxBytes})
 	}
 	if got := mustRun(t, spec("fits", 0), root); len(got) != under {
 		t.Errorf("%d records of 3 nodes: %d", under, len(got))
@@ -111,7 +115,7 @@ func TestRegexRecordBoundsNodesAndBytes(t *testing.T) {
 	}
 	_, err = run(t, spec("long", 39), root)
 	extracttest.WantError(t, err, "long: the records the pattern matches hold more than 39 bytes of field names and text in all, the extractor's max_bytes")
-	_, err = run(t, extract.Spec{Regex: &extract.Regex{Files: []string{"s/1", "s/2"}, Pattern: `(?P<x>a)(?P<y>b)`, As: "record"}}, root)
+	_, err = run(t, extract.Of(regex.Kind, regex.Spec{Files: []string{"s/1", "s/2"}, Pattern: `(?P<x>a)(?P<y>b)`, As: "record"}), root)
 	extracttest.WantError(t, err, fmt.Sprintf("regex: the files hold more than %d values, the limit, each node of a mapping one", core.MaxValues))
 }
 
@@ -132,11 +136,11 @@ func TestRecordReadsTheFieldsOfEachElement(t *testing.T) {
 		spec  extract.Spec
 		lines []string
 	}{
-		{extract.Spec{YAML: &extract.YAML{File: "e.yaml", Path: "endpoints[*]", As: "record", Fields: fields}},
+		{extract.Of(yaml.Kind, yaml.Spec{File: "e.yaml", Path: "endpoints[*]", As: "record", Fields: fields}),
 			[]string{"e.yaml:2 desc=e.yaml:5 name=e.yaml:2 tags=e.yaml:6 e.yaml:6 e.yaml:6 url=e.yaml:3", "e.yaml:7 name=e.yaml:7"}},
-		{extract.Spec{JSON: &extract.JSON{File: "e.json", Path: "endpoints[*]", As: "record", Fields: fields}},
+		{extract.Of(json.Kind, json.Spec{File: "e.json", Path: "endpoints[*]", As: "record", Fields: fields}),
 			[]string{"e.json:2 desc=e.json:3 name=e.json:2 tags=e.json:4 e.json:4 e.json:4 url=e.json:2", "e.json:5 name=e.json:5"}},
-		{extract.Spec{TOML: &extract.TOML{File: "e.toml", Path: "endpoints[*]", As: "record", Fields: fields}},
+		{extract.Of(toml.Kind, toml.Spec{File: "e.toml", Path: "endpoints[*]", As: "record", Fields: fields}),
 			[]string{"e.toml:1 desc=e.toml:6 name=e.toml:2 tags=e.toml:4 e.toml:4 e.toml:4 url=e.toml:3", "e.toml:7 name=e.toml:8"}},
 	} {
 		got := mustRun(t, c.spec, root)
@@ -155,7 +159,7 @@ func TestRecordReadsTheFieldsOfEachElement(t *testing.T) {
 			t.Errorf("%s: Maps %v, Fields %v", c.spec.Kind(), c.spec.Maps(), c.spec.Fields())
 		}
 	}
-	m := extract.Spec{YAML: &extract.YAML{File: "e.yaml", Path: "endpoints[*]", As: "map"}}
+	m := extract.Of(yaml.Kind, yaml.Spec{File: "e.yaml", Path: "endpoints[*]", As: "map"})
 	if m.Fields() != nil {
 		t.Errorf("as: map has fields %v", m.Fields())
 	}
@@ -176,45 +180,45 @@ func TestRecordRefusesWhatIsNoRecord(t *testing.T) {
 		spec extract.Spec
 		want string
 	}{
-		{extract.Spec{YAML: &extract.YAML{File: "r.yaml", Path: "a[*]", As: "map", Fields: map[string]string{"n": "n"}}},
+		{extract.Of(yaml.Kind, yaml.Spec{File: "r.yaml", Path: "a[*]", As: "map", Fields: map[string]string{"n": "n"}}),
 			"yaml: fields takes as: record, which reads each field from the element the path selects into one record"},
-		{extract.Spec{JSON: &extract.JSON{File: "r.json", Path: "a[*]", Fields: map[string]string{"n": "n"}}},
+		{extract.Of(json.Kind, json.Spec{File: "r.json", Path: "a[*]", Fields: map[string]string{"n": "n"}}),
 			"json: fields takes as: record"},
-		{extract.Spec{TOML: &extract.TOML{File: "r.toml", Path: "a[*]", As: "record"}},
+		{extract.Of(toml.Kind, toml.Spec{File: "r.toml", Path: "a[*]", As: "record"}),
 			"toml: as: record takes fields, a name for each path read from the element the path selects, such as fields: {name: name, url: url}"},
-		{extract.Spec{YAML: &extract.YAML{File: "r.yaml", Path: "a[*]", As: "record", Fields: map[string]string{}}},
+		{extract.Of(yaml.Kind, yaml.Spec{File: "r.yaml", Path: "a[*]", As: "record", Fields: map[string]string{}}),
 			"yaml: as: record takes fields"},
-		{extract.Spec{YAML: &extract.YAML{File: "r.yaml", Path: "a[*]", As: "record", Fields: map[string]string{"a-b": "n"}}},
+		{extract.Of(yaml.Kind, yaml.Spec{File: "r.yaml", Path: "a[*]", As: "record", Fields: map[string]string{"a-b": "n"}}),
 			`yaml: fields: "a-b" is no field name; a field name is a letter or _, then letters, digits and _, so assert reads it as r.name`},
-		{extract.Spec{YAML: &extract.YAML{File: "r.yaml", Path: "a[*]", As: "record", Fields: map[string]string{"null": "n"}}},
+		{extract.Of(yaml.Kind, yaml.Spec{File: "r.yaml", Path: "a[*]", As: "record", Fields: map[string]string{"null": "n"}}),
 			`yaml: fields: "null" is a word CEL reserves, which its language definition keeps out of field names, so assert may not read it as r.null; name the field otherwise`},
-		{extract.Spec{YAML: &extract.YAML{File: "r.yaml", Path: "a[*]", As: "record", Fields: map[string]string{"n": "x[?"}}},
+		{extract.Of(yaml.Kind, yaml.Spec{File: "r.yaml", Path: "a[*]", As: "record", Fields: map[string]string{"n": "x[?"}}),
 			`yaml: fields: n: path "x[?"`},
-		{extract.Spec{YAML: &extract.YAML{File: "r.yaml", Path: "a[*]", As: "record", Fields: map[string]string{"second": "name", "first": "name", "url": "url"}}},
+		{extract.Of(yaml.Kind, yaml.Spec{File: "r.yaml", Path: "a[*]", As: "record", Fields: map[string]string{"second": "name", "first": "name", "url": "url"}}),
 			`yaml: fields: "first" and "second" both read the path "name"; two fields of one path hold the same node, so agree over them would compare it with itself; name the path once`},
-		{extract.Spec{YAML: &extract.YAML{File: "r.yaml", Path: "a[*]", As: "list"}},
+		{extract.Of(yaml.Kind, yaml.Spec{File: "r.yaml", Path: "a[*]", As: "list"}),
 			`yaml: as "list" is not one errata reads; write map to hand assert each mapping the path selects whole, record to read the fields of each element it selects into one, or leave the key out for its scalars`},
 	} {
 		_, err := extract.Build(c.spec)
 		extracttest.WantError(t, err, c.want)
 	}
 	root := extracttest.Repo(t, map[string]string{"r.yaml": "a:\n  - n: x\n  - n: y\n    t: [1, 2]\n"})
-	_, err := run(t, extract.Spec{YAML: &extract.YAML{File: "r.yaml", Path: "a[*]", As: "record", Fields: map[string]string{"n": "n", "t": "t[*]"}}}, root)
+	_, err := run(t, extract.Of(yaml.Kind, yaml.Spec{File: "r.yaml", Path: "a[*]", As: "record", Fields: map[string]string{"n": "n", "t": "t[*]"}}), root)
 	extracttest.WantError(t, err, `r.yaml: path "a[*]": field "t" selects 2 nodes in the element at line 3; a field holds one value, so select one, such as [0]`)
 	// A scalar or a sequence that holds none of the fields is no record a
 	// rule could read, such as the string a ConfigMap's key holds before an
 	// embedded step reads it. A mapping that holds none is an empty record,
 	// since a field may be optional (the delta review's probes P1 and P7).
-	empty := mustRun(t, extract.Spec{YAML: &extract.YAML{File: "r.yaml", Path: "a[*]", As: "record", Fields: map[string]string{"t": "t", "u": "u"}}}, root)
+	empty := mustRun(t, extract.Of(yaml.Kind, yaml.Spec{File: "r.yaml", Path: "a[*]", As: "record", Fields: map[string]string{"t": "t", "u": "u"}}), root)
 	if len(empty) != 2 || empty[0].Text != "{}" || empty[0].At.Line != 2 || empty[1].Text != `{"t": ["1", "2"]}` {
 		t.Errorf("a mapping that holds none of the fields: %v", empty)
 	}
-	_, err = run(t, extract.Spec{YAML: &extract.YAML{File: "r.yaml", Path: "a[1].t", As: "record", Fields: map[string]string{"n": "n"}}}, root)
+	_, err = run(t, extract.Of(yaml.Kind, yaml.Spec{File: "r.yaml", Path: "a[1].t", As: "record", Fields: map[string]string{"n": "n"}}), root)
 	extracttest.WantError(t, err, `selects a sequence at line 4, which holds none of the fields n`)
 	scalar := extracttest.Repo(t, map[string]string{"c.yaml": "data:\n  config.yaml: |\n    url: x\n"})
-	_, err = run(t, extract.Spec{YAML: &extract.YAML{File: "c.yaml", Path: "data['config.yaml']", As: "record", Fields: map[string]string{"url": "url"}}}, scalar)
+	_, err = run(t, extract.Of(yaml.Kind, yaml.Spec{File: "c.yaml", Path: "data['config.yaml']", As: "record", Fields: map[string]string{"url": "url"}}), scalar)
 	extracttest.WantError(t, err, `selects a scalar at line 2, which holds none of the fields url`)
-	got := mustRun(t, extract.Spec{YAML: &extract.YAML{File: "r.yaml", Path: "a[*]", As: "record", Fields: map[string]string{"n": "n", "t": "t[0]", "self": "$"}}}, root)
+	got := mustRun(t, extract.Of(yaml.Kind, yaml.Spec{File: "r.yaml", Path: "a[*]", As: "record", Fields: map[string]string{"n": "n", "t": "t[0]", "self": "$"}}), root)
 	if len(got) != 2 || got[1].Text != `{"n": "y", "self": {"n": "y", "t": ["1", "2"]}, "t": "1"}` {
 		t.Errorf("got %v", got)
 	}
@@ -230,12 +234,12 @@ func TestRecordReadsEmbeddedDocumentsAndFileSets(t *testing.T) {
 		"s/1.json": `[{"n": "1"}]`,
 		"s/2.json": `[{"n": "2"}]`,
 	})
-	got := mustRun(t, extract.Spec{YAML: &extract.YAML{File: "g.yaml", Path: "data['config.yaml']", Embedded: steps("yaml", "endpoints[*]"),
-		As: "record", Fields: map[string]string{"name": "name", "url": "url"}}}, root)
+	got := mustRun(t, extract.Of(yaml.Kind, yaml.Spec{File: "g.yaml", Path: "data['config.yaml']", Embedded: steps("yaml", "endpoints[*]"),
+		As: "record", Fields: map[string]string{"name": "name", "url": "url"}}), root)
 	if len(got) != 1 || lines(got[0].Data) != "g.yaml:4 name=g.yaml:4 url=g.yaml:5" {
 		t.Errorf("embedded: %v", got)
 	}
-	got = mustRun(t, extract.Spec{JSON: &extract.JSON{Files: []string{"s/1.json", "s/2.json"}, Path: "[*]", As: "record", Fields: map[string]string{"n": "n"}}}, root)
+	got = mustRun(t, extract.Of(json.Kind, json.Spec{Files: []string{"s/1.json", "s/2.json"}, Path: "[*]", As: "record", Fields: map[string]string{"n": "n"}}), root)
 	if len(got) != 2 || lines(got[0].Data) != "s/1.json:1 n=s/1.json:1" || lines(got[1].Data) != "s/2.json:1 n=s/2.json:1" {
 		t.Errorf("set: %v", got)
 	}
@@ -251,7 +255,7 @@ func TestRecordBoundsNodesAndBytes(t *testing.T) {
 	list := func(n int) string { return "[" + strings.TrimSuffix(strings.Repeat(`{"k": "v"}, `, n), ", ") + "]" }
 	root := extracttest.Repo(t, map[string]string{"many.json": list(half + 1), "fits.json": list(half), "long.json": list(2)})
 	spec := func(file string, maxBytes int64, name string) extract.Spec {
-		return extract.Spec{JSON: &extract.JSON{File: file, Path: "[*]", As: "record", Fields: map[string]string{name: "k"}, MaxBytes: maxBytes}}
+		return extract.Of(json.Kind, json.Spec{File: file, Path: "[*]", As: "record", Fields: map[string]string{name: "k"}, MaxBytes: maxBytes})
 	}
 	if got := mustRun(t, spec("fits.json", 0, "f"), root); len(got) != half {
 		t.Errorf("%d records of 2 nodes: %d", half, len(got))
@@ -279,7 +283,7 @@ func TestFieldNamesAreNoWordCELReserves(t *testing.T) {
 	} {
 		_, err := core.CheckFields("yaml", "record", map[string]string{w: "n"})
 		extracttest.WantError(t, err, fmt.Sprintf(`yaml: fields: %q is a word CEL reserves`, w))
-		_, err = extract.Build(extract.Spec{Regex: &extract.Regex{File: "f", Pattern: "(?P<" + w + ">a)", As: "record"}})
+		_, err = extract.Build(extract.Of(regex.Kind, regex.Spec{File: "f", Pattern: "(?P<" + w + ">a)", As: "record"}))
 		extracttest.WantError(t, err, fmt.Sprintf(`the group name %q is a word CEL reserves`, w))
 	}
 	if _, err := core.CheckFields("yaml", "record", map[string]string{"input": "a", "as_of": "b", "Null": "c"}); err != nil {

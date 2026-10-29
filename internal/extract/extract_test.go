@@ -3,7 +3,6 @@ package extract
 import (
 	encjson "encoding/json"
 	"reflect"
-	"strings"
 	"testing"
 
 	"github.com/f-klement/errata/internal/extract/core"
@@ -18,8 +17,8 @@ import (
 	"github.com/f-klement/errata/internal/extract/json"
 	"github.com/f-klement/errata/internal/extract/packageversion"
 	"github.com/f-klement/errata/internal/extract/properties"
+	"github.com/f-klement/errata/internal/extract/regex"
 	"github.com/f-klement/errata/internal/extract/shell"
-	"github.com/f-klement/errata/internal/extract/text"
 	"github.com/f-klement/errata/internal/extract/toml"
 	"github.com/f-klement/errata/internal/extract/toolversion"
 	"github.com/f-klement/errata/internal/extract/xml"
@@ -29,100 +28,12 @@ import (
 func TestBuildRefusesNoKindAndTwoKinds(t *testing.T) {
 	for name, s := range map[string]Spec{
 		"none": {},
-		"two":  {YAML: &yaml.Spec{File: "a", Path: "a"}, JSON: &json.Spec{File: "a", Path: "a"}},
+		"two":  decode(t, `{"yaml": {"file": "a", "path": "a"}, "json": {"file": "a", "path": "a"}}`),
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := Build(s)
 			extracttest.WantError(t, err, "an extractor sets exactly one of yaml, json, toml, regex")
 		})
-	}
-}
-
-// The kinds table is the only place Build counts and dispatches, so every
-// field of Spec must have a row, under its JSON name, in field order. A Spec
-// with only that field set builds through that row: the error names the kind.
-func TestKindsCoverSpec(t *testing.T) {
-	typ := reflect.TypeFor[Spec]()
-	kinds := Spec{}.kinds()
-	if typ.NumField() != len(kinds) {
-		t.Fatalf("Spec has %d fields and kinds lists %d", typ.NumField(), len(kinds))
-	}
-	for i := range typ.NumField() {
-		f := typ.Field(i)
-		name := strings.Split(f.Tag.Get("json"), ",")[0]
-		if kinds[i].name != name {
-			t.Errorf("field %s is %q in JSON, row %d is %q", f.Name, name, i, kinds[i].name)
-		}
-		var s Spec
-		reflect.ValueOf(&s).Elem().Field(i).Set(reflect.New(f.Type.Elem()))
-		_, err := Build(s)
-		required := "file"
-		switch name {
-		case "package_version":
-			// Nothing is required: without files it reads the root's
-			// manifests.
-			if err != nil {
-				t.Errorf("package_version with no field set: %v", err)
-			}
-			continue
-		case "tool_version":
-			required = "tool" // it reads the files that pin the tool
-		case "env":
-			required = "name" // it reads the variable in the files it lists
-		}
-		extracttest.WantError(t, err, name+": "+required+" is required")
-	}
-}
-
-// Place keeps every kind: for each row of the kinds table, a Spec with only
-// that kind set, its file a/../f and a max_bytes, has a place that sets the
-// same kind, with the file cleaned and no max_bytes, and two such specs of
-// different files have different places. A kind added to Spec and kinds
-// without a case in Place fails here. The planted break: Place without its
-// text case, which gave every text extractor the empty place, so a rule of
-// two text extractors was refused as reading one place.
-func TestPlaceKeepsEveryKind(t *testing.T) {
-	// A kind that reads several files, tool_version or package_version,
-	// names its one in
-	// Files.
-	kindSpec := func(i int, file string) Spec {
-		var s Spec
-		f := reflect.ValueOf(&s).Elem().Field(i)
-		f.Set(reflect.New(f.Type().Elem()))
-		if one := f.Elem().FieldByName("File"); one.IsValid() {
-			one.SetString(file)
-		} else {
-			f.Elem().FieldByName("Files").Set(reflect.ValueOf([]string{file}))
-		}
-		if n := f.Elem().FieldByName("MaxBytes"); n.IsValid() { // exists and size have none
-			n.SetInt(10)
-		}
-		return s
-	}
-	maxBytes := func(v reflect.Value) int64 {
-		if n := v.FieldByName("MaxBytes"); n.IsValid() {
-			return n.Int()
-		}
-		return 0
-	}
-	fileOf := func(v reflect.Value) string {
-		if one := v.FieldByName("File"); one.IsValid() {
-			return one.String()
-		}
-		return v.FieldByName("Files").Index(0).String()
-	}
-	for i, k := range (Spec{}).kinds() {
-		p := reflect.ValueOf(kindSpec(i, "a/../f").Place()).Field(i)
-		if p.IsNil() {
-			t.Errorf("%s: Place drops the kind", k.name)
-			continue
-		}
-		if file, n := fileOf(p.Elem()), maxBytes(p.Elem()); file != "f" || n != 0 {
-			t.Errorf("%s: Place keeps file %q and max_bytes %d, want f and 0", k.name, file, n)
-		}
-		if reflect.DeepEqual(kindSpec(i, "f").Place(), kindSpec(i, "g").Place()) {
-			t.Errorf("%s: files f and g have one place", k.name)
-		}
 	}
 }
 
@@ -133,13 +44,6 @@ func TestPlaceKeepsEveryKind(t *testing.T) {
 // fails here. Planted breaks: the files of yaml left unsorted; a list of
 // one file not read as file:; Resolved sharing the spec's slice.
 func TestPlaceOfFiles(t *testing.T) {
-	spec := func(i int, set func(reflect.Value)) Spec {
-		var s Spec
-		f := reflect.ValueOf(&s).Elem().Field(i)
-		f.Set(reflect.New(f.Type().Elem()))
-		set(f.Elem())
-		return s
-	}
 	files := func(fs ...string) func(reflect.Value) {
 		return func(v reflect.Value) { v.FieldByName("Files").Set(reflect.ValueOf(fs)) }
 	}
@@ -151,30 +55,30 @@ func TestPlaceOfFiles(t *testing.T) {
 		return string(b)
 	}
 	took := 0
-	for i, k := range (Spec{}).kinds() {
-		typ := reflect.TypeFor[Spec]().Field(i).Type.Elem()
-		if _, ok := typ.FieldByName("Files"); !ok {
+	for _, k := range kinds.order {
+		spec := func(set func(reflect.Value)) Spec { return specOf(k, set) }
+		if _, ok := k.Spec.FieldByName("Files"); !ok {
 			continue
 		}
 		took++
-		if a, b := key(spec(i, files("./b/*.yaml", "a/**"))), key(spec(i, files("a/**", "b/*.yaml"))); a != b {
-			t.Errorf("%s: one set of files, two places: %s and %s", k.name, a, b)
+		if a, b := key(spec(files("./b/*.yaml", "a/**"))), key(spec(files("a/**", "b/*.yaml"))); a != b {
+			t.Errorf("%s: one set of files, two places: %s and %s", k.Key, a, b)
 		}
-		if a, b := key(spec(i, files("*.y"))), key(spec(i, files("*.z"))); a == b {
-			t.Errorf("%s: two globs, one place %s", k.name, a)
+		if a, b := key(spec(files("*.y"))), key(spec(files("*.z"))); a == b {
+			t.Errorf("%s: two globs, one place %s", k.Key, a)
 		}
-		s := spec(i, files("a", "b"))
-		r := reflect.ValueOf(s.Resolved()).Field(i).Elem().FieldByName("Files")
+		s := spec(files("a", "b"))
+		r := reflect.ValueOf(s.Resolved().set[0].spec).FieldByName("Files")
 		r.Index(0).SetString("changed")
-		if got := reflect.ValueOf(s).Field(i).Elem().FieldByName("Files").Index(0).String(); got != "a" {
-			t.Errorf("%s: Resolved shares the files, which now read %q", k.name, got)
+		if got := reflect.ValueOf(s.set[0].spec).FieldByName("Files").Index(0).String(); got != "a" {
+			t.Errorf("%s: Resolved shares the files, which now read %q", k.Key, got)
 		}
-		if _, ok := typ.FieldByName("File"); !ok {
+		if _, ok := k.Spec.FieldByName("File"); !ok {
 			continue
 		}
-		one := spec(i, func(v reflect.Value) { v.FieldByName("File").SetString("f") })
-		if a, b := key(one), key(spec(i, files("./f"))); a != b {
-			t.Errorf("%s: file f and files [./f] read two places: %s and %s", k.name, a, b)
+		one := spec(func(v reflect.Value) { v.FieldByName("File").SetString("f") })
+		if a, b := key(one), key(spec(files("./f"))); a != b {
+			t.Errorf("%s: file f and files [./f] read two places: %s and %s", k.Key, a, b)
 		}
 	}
 	if took < 7 {
@@ -185,18 +89,18 @@ func TestPlaceOfFiles(t *testing.T) {
 // Two xml extractors over one file and path read one place, whatever their
 // max_bytes, and over another path or namespace they do not.
 func TestXMLPlace(t *testing.T) {
-	a := Spec{XML: &xml.Spec{File: "./f.xml", Path: "/a", Namespaces: map[string]string{"m": "u"}, MaxBytes: 10}}
-	b := Spec{XML: &xml.Spec{File: "f.xml", Path: "/a", Namespaces: map[string]string{"m": "u"}}}
+	a := Of(xml.Kind, xml.Spec{File: "./f.xml", Path: "/a", Namespaces: map[string]string{"m": "u"}, MaxBytes: 10})
+	b := Of(xml.Kind, xml.Spec{File: "f.xml", Path: "/a", Namespaces: map[string]string{"m": "u"}})
 	if !reflect.DeepEqual(a.Place(), b.Place()) {
-		t.Errorf("one place: %+v and %+v", a.Place().XML, b.Place().XML)
+		t.Errorf("one place: %+v and %+v", a.Place(), b.Place())
 	}
 	for _, c := range []Spec{
-		{XML: &xml.Spec{File: "f.xml", Path: "/b", Namespaces: map[string]string{"m": "u"}}},
-		{XML: &xml.Spec{File: "f.xml", Path: "/a", Namespaces: map[string]string{"m": "v"}}},
-		{XML: &xml.Spec{File: "g.xml", Path: "/a", Namespaces: map[string]string{"m": "u"}}},
+		Of(xml.Kind, xml.Spec{File: "f.xml", Path: "/b", Namespaces: map[string]string{"m": "u"}}),
+		Of(xml.Kind, xml.Spec{File: "f.xml", Path: "/a", Namespaces: map[string]string{"m": "v"}}),
+		Of(xml.Kind, xml.Spec{File: "g.xml", Path: "/a", Namespaces: map[string]string{"m": "u"}}),
 	} {
 		if reflect.DeepEqual(a.Place(), c.Place()) {
-			t.Errorf("another place reads as one: %+v", c.XML)
+			t.Errorf("another place reads as one: %+v", c)
 		}
 	}
 }
@@ -209,19 +113,19 @@ func TestEmbeddedPlace(t *testing.T) {
 	one := func(format, path string) []core.Embedded { return []core.Embedded{{Format: format, Path: path}} }
 	for _, c := range []struct{ a, b, other Spec }{
 		{
-			Spec{YAML: &yaml.Spec{File: "f", Path: "c", Embedded: one("toml", "x"), MaxBytes: 10}},
-			Spec{YAML: &yaml.Spec{File: "./f", Path: "c", Embedded: one("toml", "x")}},
-			Spec{YAML: &yaml.Spec{File: "f", Path: "c", Embedded: one("toml", "y")}},
+			Of(yaml.Kind, yaml.Spec{File: "f", Path: "c", Embedded: one("toml", "x"), MaxBytes: 10}),
+			Of(yaml.Kind, yaml.Spec{File: "./f", Path: "c", Embedded: one("toml", "x")}),
+			Of(yaml.Kind, yaml.Spec{File: "f", Path: "c", Embedded: one("toml", "y")}),
 		},
 		{
-			Spec{JSON: &json.Spec{File: "f", Path: "c", Embedded: one("yaml", "x"), MaxBytes: 10}},
-			Spec{JSON: &json.Spec{File: "./f", Path: "c", Embedded: one("yaml", "x")}},
-			Spec{JSON: &json.Spec{File: "f", Path: "c", Embedded: one("json", "x")}},
+			Of(json.Kind, json.Spec{File: "f", Path: "c", Embedded: one("yaml", "x"), MaxBytes: 10}),
+			Of(json.Kind, json.Spec{File: "./f", Path: "c", Embedded: one("yaml", "x")}),
+			Of(json.Kind, json.Spec{File: "f", Path: "c", Embedded: one("json", "x")}),
 		},
 		{
-			Spec{TOML: &toml.Spec{File: "f", Path: "c", Embedded: one("json", "x"), MaxBytes: 10}},
-			Spec{TOML: &toml.Spec{File: "./f", Path: "c", Embedded: one("json", "x")}},
-			Spec{TOML: &toml.Spec{File: "f", Path: "c"}},
+			Of(toml.Kind, toml.Spec{File: "f", Path: "c", Embedded: one("json", "x"), MaxBytes: 10}),
+			Of(toml.Kind, toml.Spec{File: "./f", Path: "c", Embedded: one("json", "x")}),
+			Of(toml.Kind, toml.Spec{File: "f", Path: "c"}),
 		},
 	} {
 		if !reflect.DeepEqual(c.a.Place(), c.b.Place()) {
@@ -238,11 +142,11 @@ func TestEmbeddedPlace(t *testing.T) {
 // written as section.subsection. Specs that read different places differ.
 func TestINIPlace(t *testing.T) {
 	same := [][2]Spec{
-		{iniSpec("f.ini", "s", "k"), {INI: &ini.Spec{File: "./f.ini", Dialect: "plain", Section: "s", Key: "k", MaxBytes: 10}}},
+		{iniSpec("f.ini", "s", "k"), Of(ini.Kind, ini.Spec{File: "./f.ini", Dialect: "plain", Section: "s", Key: "k", MaxBytes: 10})},
 		{gitINI(".gitconfig", "Remote", strPtr("origin"), "URL"), gitINI("a/../.gitconfig", "remote.origin", nil, "url")},
-		{{Properties: &properties.Spec{File: "a.properties", Key: "k"}}, {Properties: &properties.Spec{File: "./a.properties", Key: "k", MaxBytes: 5}}},
-		{{EnvFile: &envfile.Spec{File: ".env", Name: "A"}}, {EnvFile: &envfile.Spec{File: "./.env", Name: "A", MaxBytes: 5}}},
-		{{INI: &ini.Spec{File: "hosts", Section: "web", Key: "k"}}, {INI: &ini.Spec{File: "hosts", Section: "web:hosts", Key: "k"}}},
+		{Of(properties.Kind, properties.Spec{File: "a.properties", Key: "k"}), Of(properties.Kind, properties.Spec{File: "./a.properties", Key: "k", MaxBytes: 5})},
+		{Of(envfile.Kind, envfile.Spec{File: ".env", Name: "A"}), Of(envfile.Kind, envfile.Spec{File: "./.env", Name: "A", MaxBytes: 5})},
+		{Of(ini.Kind, ini.Spec{File: "hosts", Section: "web", Key: "k"}), Of(ini.Kind, ini.Spec{File: "hosts", Section: "web:hosts", Key: "k"})},
 		{iniSpec("tox.ini", "testenv", "Deps"), iniSpec("tox.ini", "testenv", "deps")},
 	}
 	for _, p := range same {
@@ -253,9 +157,9 @@ func TestINIPlace(t *testing.T) {
 	differ := [][2]Spec{
 		{iniSpec("f.ini", "s", "k"), iniSpec("f.ini", "s", "K")},
 		{gitINI(".gitconfig", "remote", strPtr("origin"), "url"), gitINI(".gitconfig", "remote", strPtr("Origin"), "url")},
-		{iniSpec("hosts", "s", "k"), {INI: &ini.Spec{File: "hosts", Dialect: "plain", Section: "s", Key: "k"}}},
-		{{Properties: &properties.Spec{File: "a.properties", Key: "k"}}, {Properties: &properties.Spec{File: "a.properties", Key: "K"}}},
-		{{EnvFile: &envfile.Spec{File: ".env", Name: "A"}}, {EnvFile: &envfile.Spec{File: ".env"}}},
+		{iniSpec("hosts", "s", "k"), Of(ini.Kind, ini.Spec{File: "hosts", Dialect: "plain", Section: "s", Key: "k"})},
+		{Of(properties.Kind, properties.Spec{File: "a.properties", Key: "k"}), Of(properties.Kind, properties.Spec{File: "a.properties", Key: "K"})},
+		{Of(envfile.Kind, envfile.Spec{File: ".env", Name: "A"}), Of(envfile.Kind, envfile.Spec{File: ".env"})},
 	}
 	for _, p := range differ {
 		if reflect.DeepEqual(p[0].Place(), p[1].Place()) {
@@ -271,27 +175,27 @@ func TestSpecKind(t *testing.T) {
 		spec Spec
 		want string
 	}{
-		{Spec{JSON: &json.Spec{File: "a.json", Path: "$"}}, "json"},
-		{Spec{Properties: &properties.Spec{File: "a.properties", Key: "k"}}, "properties"},
-		{Spec{ToolVersion: &toolversion.Spec{Tool: "node"}}, "tool_version"},
-		{Spec{PackageVersion: &packageversion.Spec{}}, "package_version"},
-		{Spec{EnvFile: &envfile.Spec{File: ".env", Name: "A"}}, "envfile"},
-		{Spec{GitLabCI: &gitlabci.Spec{File: ".gitlab-ci.yml", Job: "build", Key: "image"}}, "gitlab-ci"},
-		{Spec{Shell: &shell.Spec{File: "deploy.sh", Name: "X"}}, "shell"},
-		{Spec{GitHubActions: &githubactions.Spec{File: "ci.yml", Job: "test", Key: "runs-on"}}, "github-actions"},
-		{Spec{Jenkins: &jenkins.Spec{File: "Jenkinsfile", Variable: "X"}}, "jenkins"},
-		{Spec{Env: &env.Spec{Name: "X", Files: []string{".env"}}}, "env"},
-		{Spec{Exists: &filestat.Spec{File: "a"}}, "exists"},
-		{Spec{Size: &filestat.Spec{File: "a"}}, "size"},
-		{Spec{Exists: &filestat.Spec{File: "a"}, Size: &filestat.Spec{File: "a"}}, ""},
+		{Of(json.Kind, json.Spec{File: "a.json", Path: "$"}), "json"},
+		{Of(properties.Kind, properties.Spec{File: "a.properties", Key: "k"}), "properties"},
+		{Of(toolversion.Kind, toolversion.Spec{Tool: "node"}), "tool_version"},
+		{Of(packageversion.Kind, packageversion.Spec{}), "package_version"},
+		{Of(envfile.Kind, envfile.Spec{File: ".env", Name: "A"}), "envfile"},
+		{Of(gitlabci.Kind, gitlabci.Spec{File: ".gitlab-ci.yml", Job: "build", Key: "image"}), "gitlab-ci"},
+		{Of(shell.Kind, shell.Spec{File: "deploy.sh", Name: "X"}), "shell"},
+		{Of(githubactions.Kind, githubactions.Spec{File: "ci.yml", Job: "test", Key: "runs-on"}), "github-actions"},
+		{Of(jenkins.Kind, jenkins.Spec{File: "Jenkinsfile", Variable: "X"}), "jenkins"},
+		{Of(env.Kind, env.Spec{Name: "X", Files: []string{".env"}}), "env"},
+		{Of(filestat.ExistsKind, filestat.Spec{File: "a"}), "exists"},
+		{Of(filestat.SizeKind, filestat.Spec{File: "a"}), "size"},
+		{decode(t, `{"exists": {"file": "a"}, "size": {"file": "a"}}`), ""},
 		{iniSpec("php.ini", "", "a"), "ini, php dialect on php.ini"},
 		{iniSpec("etc/php.ini-production", "", "a"), "ini, php dialect on php.ini-production"},
 		{gitINI(".gitconfig", "a", nil, "k"), "ini, git dialect on .gitconfig"},
 		{iniSpec("conf/pytest.ini", "s", "k"), "ini, plain dialect on pytest.ini"},
-		{Spec{INI: &ini.Spec{File: "a.ini", Dialect: "tox", Key: "k"}}, "ini, tox dialect on a.ini"},
-		{Spec{INI: &ini.Spec{File: "a.ini", Dialect: "nope", Key: "k"}}, ""},
+		{Of(ini.Kind, ini.Spec{File: "a.ini", Dialect: "tox", Key: "k"}), "ini, tox dialect on a.ini"},
+		{Of(ini.Kind, ini.Spec{File: "a.ini", Dialect: "nope", Key: "k"}), ""},
 		{Spec{}, ""},
-		{Spec{JSON: &json.Spec{File: "a.json", Path: "$"}, Text: &text.Spec{File: "a"}}, ""},
+		{decode(t, `{"json": {"file": "a.json", "path": "$"}, "text": {"file": "a"}}`), ""},
 	} {
 		if got := c.spec.Kind(); got != c.want {
 			t.Errorf("%+v: %q, want %q", c.spec, got, c.want)
@@ -300,73 +204,14 @@ func TestSpecKind(t *testing.T) {
 }
 
 func iniSpec(file, section, key string) Spec {
-	return Spec{INI: &ini.Spec{File: file, Section: section, Key: key}}
+	return Of(ini.Kind, ini.Spec{File: file, Section: section, Key: key})
 }
 
 func gitINI(file, section string, subsection *string, key string) Spec {
-	return Spec{INI: &ini.Spec{File: file, Section: section, Subsection: subsection, Key: key}}
+	return Of(ini.Kind, ini.Spec{File: file, Section: section, Subsection: subsection, Key: key})
 }
 
 func strPtr(s string) *string { return &s }
-
-// Resolved keeps every kind and writes out the max_bytes Build reads to: for
-// each row of the kinds table, a Spec with only that kind set and no
-// max_bytes resolves to one with the same kind and core's default, a
-// max_bytes it sets stays, and the Spec it was called on is not changed. A
-// kind added to Spec without a case in Resolved fails here. The planted
-// break: Resolved without its toml case, which printed no extractor for a
-// toml entry.
-func TestResolvedKeepsEveryKind(t *testing.T) {
-	for i, k := range (Spec{}).kinds() {
-		for _, set := range []int64{0, 10} {
-			var s Spec
-			f := reflect.ValueOf(&s).Elem().Field(i)
-			f.Set(reflect.New(f.Type().Elem()))
-			// tool_version and package_version name their files in a list,
-			// every other kind in File.
-			file := func(v reflect.Value) string {
-				if fs := v.FieldByName("Files"); fs.IsValid() {
-					if fs.Len() != 1 {
-						return ""
-					}
-					return fs.Index(0).String()
-				}
-				return v.FieldByName("File").String()
-			}
-			if fs := f.Elem().FieldByName("Files"); fs.IsValid() {
-				fs.Set(reflect.ValueOf([]string{"f"}))
-			} else {
-				f.Elem().FieldByName("File").SetString("f")
-			}
-			n := f.Elem().FieldByName("MaxBytes")
-			r := reflect.ValueOf(s.Resolved()).Field(i)
-			if !n.IsValid() {
-				// exists and size read no byte, so they have no limit to
-				// write out: Resolved keeps the kind and its file.
-				if r.IsNil() || file(r.Elem()) != "f" || r.Pointer() == f.Pointer() {
-					t.Errorf("%s: Resolved gives %v, want a copy of the kind with file f", k.name, r)
-				}
-				continue
-			}
-			n.SetInt(set)
-			r = reflect.ValueOf(s.Resolved()).Field(i)
-			if r.IsNil() {
-				t.Errorf("%s: Resolved drops the kind", k.name)
-				continue
-			}
-			want := set
-			if set == 0 {
-				want = core.DefaultMaxBytes
-			}
-			if got := r.Elem().FieldByName("MaxBytes").Int(); got != want || file(r.Elem()) != "f" {
-				t.Errorf("%s with max_bytes %d: Resolved has max_bytes %d and file %q, want %d and f", k.name, set, got, file(r.Elem()), want)
-			}
-			if got := f.Elem().FieldByName("MaxBytes").Int(); got != set {
-				t.Errorf("%s: Resolved changed the spec's max_bytes to %d", k.name, got)
-			}
-		}
-	}
-}
 
 // Resolved writes out the dialect an ini spec's file chooses, keeps one the
 // spec names, and leaves one errata does not read as written, for Build to
@@ -381,12 +226,12 @@ func TestResolvedINIDialect(t *testing.T) {
 		{"setup.cfg", "php", "php"},
 		{"setup.cfg", "nginx", "nginx"},
 	} {
-		s := Spec{INI: &ini.Spec{File: c.file, Dialect: c.dialect, Key: "k"}}
-		if got := s.Resolved().INI.Dialect; got != c.want {
+		s := Of(ini.Kind, ini.Spec{File: c.file, Dialect: c.dialect, Key: "k"})
+		if got := s.Resolved().set[0].spec.(ini.Spec).Dialect; got != c.want {
 			t.Errorf("%s with dialect %q: Resolved has %q, want %q", c.file, c.dialect, got, c.want)
 		}
-		if s.INI.Dialect != c.dialect {
-			t.Errorf("%s: Resolved changed the spec's dialect to %q", c.file, s.INI.Dialect)
+		if got := s.set[0].spec.(ini.Spec).Dialect; got != c.dialect {
+			t.Errorf("%s: Resolved changed the spec's dialect to %q", c.file, got)
 		}
 	}
 }
@@ -399,19 +244,19 @@ func TestSpecMaps(t *testing.T) {
 		s    Spec
 		want bool
 	}{
-		"yaml map":  {Spec{YAML: &YAML{File: "a.yaml", Path: "x[*]", As: "map"}}, true},
-		"yaml flat": {Spec{YAML: &YAML{File: "a.yaml", Path: "x[*]"}}, false},
-		"json map":  {Spec{JSON: &JSON{File: "a.json", Path: "x[*]", As: "map"}}, true},
-		"json flat": {Spec{JSON: &JSON{File: "a.json", Path: "x[*]"}}, false},
-		"toml map":  {Spec{TOML: &TOML{File: "a.toml", Path: "x[*]", As: "map"}}, true},
-		"toml flat": {Spec{TOML: &TOML{File: "a.toml", Path: "x[*]"}}, false},
-		"regex":     {Spec{Regex: &Regex{File: "a", Pattern: "(x)"}}, false},
+		"yaml map":  {Of(yaml.Kind, yaml.Spec{File: "a.yaml", Path: "x[*]", As: "map"}), true},
+		"yaml flat": {Of(yaml.Kind, yaml.Spec{File: "a.yaml", Path: "x[*]"}), false},
+		"json map":  {Of(json.Kind, json.Spec{File: "a.json", Path: "x[*]", As: "map"}), true},
+		"json flat": {Of(json.Kind, json.Spec{File: "a.json", Path: "x[*]"}), false},
+		"toml map":  {Of(toml.Kind, toml.Spec{File: "a.toml", Path: "x[*]", As: "map"}), true},
+		"toml flat": {Of(toml.Kind, toml.Spec{File: "a.toml", Path: "x[*]"}), false},
+		"regex":     {Of(regex.Kind, regex.Spec{File: "a", Pattern: "(x)"}), false},
 		// A record is a map to assert, from a path or a regex alike.
-		"yaml record":  {Spec{YAML: &YAML{File: "a.yaml", Path: "x[*]", As: "record", Fields: map[string]string{"n": "n"}}}, true},
-		"json record":  {Spec{JSON: &JSON{File: "a.json", Path: "x[*]", As: "record", Fields: map[string]string{"n": "n"}}}, true},
-		"toml record":  {Spec{TOML: &TOML{File: "a.toml", Path: "x[*]", As: "record", Fields: map[string]string{"n": "n"}}}, true},
-		"regex record": {Spec{Regex: &Regex{File: "a", Pattern: "(?P<n>x)", As: "record"}}, true},
-		"ini":          {Spec{INI: &INI{File: "a.ini", Section: "s", Key: "k"}}, false},
+		"yaml record":  {Of(yaml.Kind, yaml.Spec{File: "a.yaml", Path: "x[*]", As: "record", Fields: map[string]string{"n": "n"}}), true},
+		"json record":  {Of(json.Kind, json.Spec{File: "a.json", Path: "x[*]", As: "record", Fields: map[string]string{"n": "n"}}), true},
+		"toml record":  {Of(toml.Kind, toml.Spec{File: "a.toml", Path: "x[*]", As: "record", Fields: map[string]string{"n": "n"}}), true},
+		"regex record": {Of(regex.Kind, regex.Spec{File: "a", Pattern: "(?P<n>x)", As: "record"}), true},
+		"ini":          {Of(ini.Kind, ini.Spec{File: "a.ini", Section: "s", Key: "k"}), false},
 	} {
 		if got := c.s.Maps(); got != c.want {
 			t.Errorf("%s: Maps() = %t, want %t", name, got, c.want)
@@ -430,15 +275,15 @@ func TestSpecFields(t *testing.T) {
 		s    Spec
 		want []string
 	}{
-		"yaml record":  {Spec{YAML: &YAML{File: "a.yaml", Path: "x[*]", As: "record", Fields: fields}}, []string{"name", "url"}},
-		"json record":  {Spec{JSON: &JSON{File: "a.json", Path: "x[*]", As: "record", Fields: fields}}, []string{"name", "url"}},
-		"toml record":  {Spec{TOML: &TOML{File: "a.toml", Path: "x[*]", As: "record", Fields: fields}}, []string{"name", "url"}},
-		"regex record": {Spec{Regex: &Regex{File: "a", Pattern: "(?P<url>x)(y)(?P<name>z)", As: "record"}}, []string{"url", "name"}},
-		"regex flat":   {Spec{Regex: &Regex{File: "a", Pattern: "(?P<url>x)"}}, nil},
-		"yaml map":     {Spec{YAML: &YAML{File: "a.yaml", Path: "x[*]", As: "map", Fields: fields}}, nil},
-		"json flat":    {Spec{JSON: &JSON{File: "a.json", Path: "x[*]", Fields: fields}}, nil},
-		"record, none": {Spec{TOML: &TOML{File: "a.toml", Path: "x[*]", As: "record"}}, nil},
-		"ini":          {Spec{INI: &INI{File: "a.ini", Section: "s", Key: "k"}}, nil},
+		"yaml record":  {Of(yaml.Kind, yaml.Spec{File: "a.yaml", Path: "x[*]", As: "record", Fields: fields}), []string{"name", "url"}},
+		"json record":  {Of(json.Kind, json.Spec{File: "a.json", Path: "x[*]", As: "record", Fields: fields}), []string{"name", "url"}},
+		"toml record":  {Of(toml.Kind, toml.Spec{File: "a.toml", Path: "x[*]", As: "record", Fields: fields}), []string{"name", "url"}},
+		"regex record": {Of(regex.Kind, regex.Spec{File: "a", Pattern: "(?P<url>x)(y)(?P<name>z)", As: "record"}), []string{"url", "name"}},
+		"regex flat":   {Of(regex.Kind, regex.Spec{File: "a", Pattern: "(?P<url>x)"}), nil},
+		"yaml map":     {Of(yaml.Kind, yaml.Spec{File: "a.yaml", Path: "x[*]", As: "map", Fields: fields}), nil},
+		"json flat":    {Of(json.Kind, json.Spec{File: "a.json", Path: "x[*]", Fields: fields}), nil},
+		"record, none": {Of(toml.Kind, toml.Spec{File: "a.toml", Path: "x[*]", As: "record"}), nil},
+		"ini":          {Of(ini.Kind, ini.Spec{File: "a.ini", Section: "s", Key: "k"}), nil},
 	} {
 		got := c.s.Fields()
 		if !reflect.DeepEqual(got, c.want) {
@@ -452,12 +297,12 @@ func TestSpecFields(t *testing.T) {
 // breaks: Place and Resolved copying the regex spec as it is.
 func TestRegexValuesAsPlace(t *testing.T) {
 	ref := func(valuesAs string) Spec {
-		return Spec{Regex: &Regex{File: "f", Pattern: `((?{a}))`, ValuesAs: valuesAs}}
+		return Of(regex.Kind, regex.Spec{File: "f", Pattern: `((?{a}))`, ValuesAs: valuesAs})
 	}
 	if !reflect.DeepEqual(ref("literal").Place(), ref("").Place()) {
-		t.Errorf("values_as literal and none read two places: %+v, %+v", ref("literal").Place().Regex, ref("").Place().Regex)
+		t.Errorf("values_as literal and none read two places: %+v, %+v", ref("literal").Place(), ref("").Place())
 	}
-	if got := ref("").Resolved().Regex.ValuesAs; got != "literal" {
+	if got := ref("").Resolved().set[0].spec.(regex.Spec).ValuesAs; got != "literal" {
 		t.Errorf("Resolved gives values_as %q, want literal", got)
 	}
 }
@@ -467,7 +312,7 @@ func TestRegexValuesAsPlace(t *testing.T) {
 // break: Place leaving the context out.
 func TestRegexContextPlace(t *testing.T) {
 	with := func(c *core.Context) []byte {
-		key, err := encjson.Marshal(Spec{Regex: &Regex{File: "f", Pattern: `(v)`, Context: c}}.Place())
+		key, err := encjson.Marshal(Of(regex.Kind, regex.Spec{File: "f", Pattern: `(v)`, Context: c}).Place())
 		if err != nil {
 			t.Fatal(err)
 		}

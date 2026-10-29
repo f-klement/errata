@@ -4,6 +4,7 @@ package text
 
 import (
 	"fmt"
+	"path/filepath"
 	"time"
 
 	"github.com/f-klement/errata/internal/check"
@@ -25,6 +26,27 @@ type Spec struct {
 	Pattern  string `json:"pattern"`
 	Code     bool   `json:"code,omitempty"`
 	MaxBytes int64  `json:"max_bytes,omitempty"`
+}
+
+// Kind is the text kind, which a rule writes under the key text.
+var Kind = core.Kind[Spec]{Key: "text", Place: Place, Resolve: Resolve, Describe: Describe}
+
+// Place is t with only what decides where it reads: the file cleaned, and
+// no max_bytes, since a limit does not change what is read.
+func Place(t Spec) Spec {
+	t.File, t.MaxBytes = filepath.Clean(t.File), 0
+	return t
+}
+
+// Resolve is t with its max_bytes written out, for errata list.
+func Resolve(t Spec) Spec {
+	t.MaxBytes = core.MaxBytes(t.MaxBytes)
+	return t
+}
+
+// Describe is what the kind's extractor returns: flat values, each literal.
+func Describe(Spec) check.Description {
+	return check.Description{Label: "text"}
 }
 
 // maxProseRatio is how many times the size of its file the prose may be.

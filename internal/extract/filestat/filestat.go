@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"path/filepath"
 	"strconv"
 
 	"github.com/f-klement/errata/internal/check"
@@ -16,6 +17,26 @@ import (
 // Spec names the one file an exists or a size extractor looks at.
 type Spec struct {
 	File string `json:"file"`
+}
+
+// ExistsKind and SizeKind are the exists and size kinds, which a rule
+// writes under the keys exists and size. Neither has a max_bytes, since
+// neither reads a byte, so a place cleans the file and nothing else.
+var (
+	ExistsKind = core.Kind[Spec]{Key: "exists", Place: Place, Resolve: Resolve, Describe: describe("exists")}
+	SizeKind   = core.Kind[Spec]{Key: "size", Place: Place, Resolve: Resolve, Describe: describe("size")}
+)
+
+// Place is s with its file cleaned.
+func Place(s Spec) Spec { return Spec{File: filepath.Clean(s.File)} }
+
+// Resolve is s: exists and size have no default to write out.
+func Resolve(s Spec) Spec { return s }
+
+// describe is the description of a spec of the kind under key: one literal
+// flat value.
+func describe(key string) func(Spec) check.Description {
+	return func(Spec) check.Description { return check.Description{Label: key} }
 }
 
 // BuildExists checks s and returns the exists extractor. Its one value is

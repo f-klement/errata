@@ -82,7 +82,7 @@ type generatedEntry struct {
 
 // ruleKeys are the keys only a rule has. A check that sets any of them is a
 // rule, whatever the value, so a program check that sets one is refused as
-// both rather than loading with a key that does nothing.
+// two kinds rather than loading with a key that does nothing.
 var ruleKeys = []string{"extract", "agree", "compare", "assert", "allow_empty", "normalize", "skip_not_literal"}
 
 // Load reads and validates the config at path. It reports every invalid check
@@ -392,63 +392,218 @@ func build(raw json.RawMessage, def defaults, newExtractor Builder) (c check.Che
 		return refuse(err)
 	}
 
-	isRule := slices.ContainsFunc(ruleKeys, func(k string) bool { _, ok := keys[k]; return ok })
-	_, isGenerated := keys["generated"]
 	c = check.Check{
 		ID:     e.ID,
 		Reason: e.Reason,
 		Scope:  check.Scope(e.Scope),
-		Run:    e.Run,
 	}
-	var errs []error
-	if !isRule {
-		c.Timeout = DefaultTimeout
+	row, errs := kindOf(keys)
+	var kerrs []error
+	if row != nil {
+		c.Timeout, errs = timeout(row, e.Timeout, errs)
+		c.Kind, kerrs = row.build(e, keys, def, newExtractor)
+		errs = append(errs, kerrs...)
 	}
-	if e.Timeout != "" {
-		d, perr := time.ParseDuration(e.Timeout)
-		switch {
-		case perr != nil:
-			errs = append(errs, fmt.Errorf("timeout: %w", perr))
-		case isRule:
-			// Refused whatever its value: a rule's timeout of 0s would load
-			// as a key that does nothing, which validation, reading the
-			// field, could not tell from no key.
-			errs = append(errs, errors.New("timeout applies to a program check only: a rule's extractors take no timeout"))
-		case d <= 0:
-			// The protocol reads a timeout of zero as no limit, so 0s would
-			// let a hung program hold the run for ever while reading as zero
-			// time. The check keeps the default, so validation does not
-			// refuse a negative one a second time.
-			errs = append(errs, fmt.Errorf("timeout is %s: write a positive duration such as 10s, or leave the key out for the default of %s", e.Timeout, DefaultTimeout))
-		default:
-			c.Timeout = d
+	var berr error
+	if len(errs) > 0 {
+		berr = fmt.Errorf("check %q: %w", e.ID, errors.Join(errs...))
+	}
+	// Validate even after a build error, so one pass reports every problem
+	// with the check, and after the defaults apply, so a program check that
+	// has neither its own run nor the default is refused as one with no run.
+	// On a conflict the check holds no kind and does not load. It is
+	// validated as a program check with a stand-in run, which refuses
+	// nothing, so its id, reason and scope are still checked in the same
+	// pass and it is not also refused as one with no kind.
+	// A run refused for listing no argument is validated as present in
+	// the same way: the specific error stands alone, without "run or
+	// extract is required" after it, which would tell an author who wrote
+	// run to write run.
+	v := c
+	if row == nil || errors.Is(errors.Join(kerrs...), errEmptyRun) {
+		v.Kind = &check.Program{Run: []string{"the stand-in run"}}
+	}
+	return c, errors.Join(berr, v.Validate())
+}
+
+// kindRow is one kind of check in config's kind decision: what an entry is
+// when it writes one of keys, and how that kind is built from the entry.
+type kindRow struct {
+	// is names the kind after "makes", as the error of a conflict says it.
+	is string
+	// kind is a zero value of the kind the row builds, for Kinds.
+	kind check.Kind
+	keys []string
+	// isDefault marks the row of an entry that writes the keys of no kind.
+	isDefault bool
+	// noTimeout refuses the timeout key on a kind that takes none, whatever
+	// its value, or is nil when the kind takes one.
+	noTimeout error
+	// build builds the kind from the entry e, whose keys as written are
+	// keys, with the defaults def and the extractors of newExtractor.
+	build func(e checkEntry, keys map[string]json.RawMessage, def defaults, newExtractor Builder) (check.Kind, []error)
+}
+
+// kindRows is config's kind decision, a row for each check kind. An entry
+// is the kind whose keys it writes, whatever their values, so a key of
+// another kind is refused rather than loaded as one that does nothing. An
+// entry that writes the keys of no kind is a program check, which takes
+// the default run.
+var kindRows = []kindRow{
+	{is: "a program check", kind: &check.Program{}, keys: []string{"run"}, isDefault: true, build: buildProgram},
+	{is: "a rule", kind: &check.Rule{}, keys: ruleKeys, noTimeout: check.ErrRuleTimeout, build: buildRuleKind},
+	{is: "a generated check", kind: &check.Generated{}, keys: []string{"generated"}, build: buildGeneratedKind},
+}
+
+// Kinds returns a zero value of each check kind a config can load, in the
+// order of config's kind decision. It is the one list of the kinds: engine's
+// tests hold its dispatch table to it, and report's tests hold errata list
+// to it.
+func Kinds() []check.Kind {
+	out := make([]check.Kind, len(kindRows))
+	for i, row := range kindRows {
+		out[i] = reflect.New(reflect.TypeOf(row.kind).Elem()).Interface().(check.Kind)
+	}
+	return out
+}
+
+// kindOf decides the kind of an entry from its keys: the row of the one
+// kind whose keys it writes, or the program check's when it writes none.
+// An entry that writes the keys of more than one kind has no row and one
+// error, which names each kind's keys.
+func kindOf(keys map[string]json.RawMessage) (*kindRow, []error) {
+	var rows []*kindRow
+	var says []string
+	for i := range kindRows {
+		row := &kindRows[i]
+		var wrote []string
+		for _, k := range row.keys {
+			if _, ok := keys[k]; ok {
+				wrote = append(wrote, k)
+			}
+		}
+		if len(wrote) == 0 {
+			continue
+		}
+		rows = append(rows, row)
+		verb := " makes "
+		if len(wrote) > 1 {
+			verb = " make "
+		}
+		says = append(says, andJoin(wrote)+verb+row.is)
+	}
+	switch len(rows) {
+	case 0:
+		return defaultRow(), nil
+	case 1:
+		return rows[0], nil
+	}
+	return nil, []error{fmt.Errorf("keys of %s kinds of check: %s; a check is one kind: remove the keys of the kinds it is not, or write a check for each", countWord(len(rows)), commaAndJoin(says))}
+}
+
+// defaultRow is the row marked isDefault, the program check's.
+func defaultRow() *kindRow {
+	for i := range kindRows {
+		if kindRows[i].isDefault {
+			return &kindRows[i]
 		}
 	}
+	panic("config: no kind row is marked isDefault")
+}
+
+// andJoin is words joined with commas and a last "and", such as "extract,
+// agree and compare".
+func andJoin(words []string) string {
+	if len(words) == 1 {
+		return words[0]
+	}
+	return strings.Join(words[:len(words)-1], ", ") + " and " + words[len(words)-1]
+}
+
+// commaAndJoin is clauses joined with commas and a last ", and", since a
+// clause may hold an and of its own.
+func commaAndJoin(clauses []string) string {
+	return strings.Join(clauses[:len(clauses)-1], ", ") + ", and " + clauses[len(clauses)-1]
+}
+
+// countWord is n as a word, for the two or three kinds a conflict names.
+func countWord(n int) string {
+	if words := []string{2: "two", 3: "three"}; n < len(words) {
+		return words[n]
+	}
+	return strconv.Itoa(n)
+}
+
+// timeout is the timeout of an entry of the kind row, from written, the
+// timeout key's value or "" for none: DefaultTimeout when it writes none,
+// and 0 for a kind that takes no timeout. A refused value appends its
+// error to errs.
+func timeout(row *kindRow, written string, errs []error) (time.Duration, []error) {
+	var d time.Duration
+	if row.noTimeout == nil {
+		d = DefaultTimeout
+	}
+	if written == "" {
+		return d, errs
+	}
+	parsed, err := time.ParseDuration(written)
+	switch {
+	case err != nil:
+		return d, append(errs, fmt.Errorf("timeout: %w", err))
+	case row.noTimeout != nil:
+		// Refused whatever its value: a rule's timeout of 0s would load
+		// as a key that does nothing, which validation, reading the
+		// field, could not tell from no key.
+		return d, append(errs, row.noTimeout)
+	case parsed <= 0:
+		// The protocol reads a timeout of zero as no limit, so 0s would
+		// let a hung program hold the run for ever while reading as zero
+		// time. The check keeps the default, so validation does not
+		// refuse a negative one a second time.
+		return d, append(errs, fmt.Errorf("timeout is %s: write a positive duration such as 10s, or leave the key out for the default of %s", written, DefaultTimeout))
+	}
+	return parsed, errs
+}
+
+// errEmptyRun refuses a program check's run that lists no argument. build
+// reads it to validate the check as one with a run, so it is refused once.
+var errEmptyRun = errors.New("run lists no argument: write the command, or remove the key, which takes the default run if the file sets one")
+
+// buildProgram builds a program check: its own run, or the default run
+// when the entry writes none. An empty run would take the default run, a
+// program the entry says it does not have, so it is refused.
+func buildProgram(e checkEntry, keys map[string]json.RawMessage, def defaults, _ Builder) (check.Kind, []error) {
+	p := &check.Program{Run: e.Run}
+	var errs []error
+	if _, wrote := keys["run"]; wrote && len(e.Run) == 0 {
+		errs = append(errs, errEmptyRun)
+	}
+	if err := def.apply(p, keys, e.ID); err != nil {
+		errs = append(errs, err)
+	}
+	return p, errs
+}
+
+// buildGeneratedKind builds a generated check. One written null holds no
+// kind, rather than a nil *check.Generated that validation would read.
+func buildGeneratedKind(e checkEntry, _ map[string]json.RawMessage, _ defaults, _ Builder) (check.Kind, []error) {
+	g, errs := buildGenerated(e.Generated, e.ID)
+	if g == nil {
+		return nil, errs
+	}
+	return g, errs
+}
+
+// buildRuleKind builds a rule: its keys that are written but blank, which
+// would load as keys that do nothing, are refused, and buildRule builds
+// the rest.
+func buildRuleKind(e checkEntry, keys map[string]json.RawMessage, _ defaults, newExtractor Builder) (check.Kind, []error) {
+	var errs []error
 	if _, ok := keys["assert"]; ok && strings.TrimSpace(e.Assert) == "" {
 		errs = append(errs, errors.New("assert is blank: write the expression or remove the key"))
 	}
 	if _, ok := keys["compare"]; ok && e.Compare == "" {
 		errs = append(errs, errors.New("compare is blank: write text or semver, or remove the key for text"))
-	}
-	// An empty run on a program check would take the default run, a program
-	// the entry says it does not have.
-	_, wroteRun := keys["run"]
-	emptyRun := wroteRun && !isRule && !isGenerated && len(e.Run) == 0
-	if emptyRun {
-		errs = append(errs, errors.New("run lists no argument: write the command, or remove the key, which takes the default run if the file sets one"))
-	}
-	// Refused whatever its value, as a rule's timeout is: a rule's empty or
-	// null run would load as a key that does nothing. The check keeps no
-	// run, so validation does not refuse it a second time as both kinds.
-	if _, ok := keys["run"]; ok && isRule {
-		errs = append(errs, errors.New("run is set on a rule, whatever its value: a check is a program check (run) or a rule (extract), never both"))
-		c.Run = nil
-	}
-	// The same for a generated check, whose command is generated.run: an
-	// empty run beside it would load as a key that does nothing.
-	if wroteRun && isGenerated && !isRule {
-		errs = append(errs, errors.New("run is set beside generated, whatever its value: a generated check runs generated.run, so write the command there"))
-		c.Run = nil
 	}
 	if _, ok := keys["normalize"]; ok && len(e.Normalize) == 0 {
 		errs = append(errs, errors.New("normalize lists no option: name trim, lower or both, or remove the key"))
@@ -459,35 +614,8 @@ func build(raw json.RawMessage, def defaults, newExtractor Builder) (c check.Che
 	if _, ok := keys["skip_not_literal"]; ok && len(e.SkipNotLiteral) == 0 {
 		errs = append(errs, errors.New("skip_not_literal lists no extractor: name the extractors whose not literal values to leave out, or remove the key"))
 	}
-	if isRule {
-		r, rerrs := buildRule(e, newExtractor)
-		c.Rule = r
-		errs = append(errs, rerrs...)
-	}
-	if isGenerated {
-		g, gerrs := buildGenerated(e.Generated, e.ID)
-		c.Generated = g
-		errs = append(errs, gerrs...)
-	}
-	// A generated check takes no default run: its generator is its own.
-	if err := def.apply(&c, keys, isRule || isGenerated); err != nil {
-		errs = append(errs, err)
-	}
-	var berr error
-	if len(errs) > 0 {
-		berr = fmt.Errorf("check %q: %w", e.ID, errors.Join(errs...))
-	}
-	// Validate even after a build error, so one pass reports every problem
-	// with the check, and after the defaults apply, so a program check that
-	// has neither its own run nor the default is refused as one with no run.
-	// A run refused above for listing no argument is validated as present:
-	// the specific error stands alone, without "run or extract is required"
-	// after it, which would tell an author who wrote run to write run.
-	v := c
-	if emptyRun {
-		v.Run = []string{"the refused run"}
-	}
-	return c, errors.Join(berr, v.Validate())
+	r, rerrs := buildRule(e, newExtractor)
+	return r, append(errs, rerrs...)
 }
 
 // buildGenerated builds a generated check from its generated key, g, for the

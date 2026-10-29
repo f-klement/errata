@@ -103,16 +103,30 @@ func dialectFor(file string) *iniDialect {
 	return plainDialect
 }
 
-// Describe names the dialect i reads in and the file's name, as a
-// message names an ini extractor's kind: "plain dialect on pytest.ini". It
-// is false when i names no dialect errata reads.
-func Describe(i Spec) (string, bool) {
+// Describe is what i's extractor returns: flat values, not literal where
+// the dialect's tool or a template engine computes them, as Build marks
+// them, under a label that names the dialect i reads in and the file's
+// name, since what a dialect's tool computes can hang on the file: "ini,
+// plain dialect on pytest.ini". The label is "" when i names no dialect
+// errata reads.
+func Describe(i Spec) check.Description {
 	d, err := chooseDialect(i.Dialect, i.File)
 	if err != nil {
-		return "", false
+		return check.Description{}
 	}
 	_, base := core.FileParts(i.File)
-	return d.name + " dialect on " + base, true
+	return check.Description{Label: "ini, " + d.name + " dialect on " + base, NotLiteral: d.notLiteralIn(i.File) != nil}
+}
+
+// notLiteralIn is the test of an entry of file whose value the dialect's
+// tool or a template engine computes, nil when the dialect computes none
+// and the file is no template.
+func (d *iniDialect) notLiteralIn(file string) func(*core.Entry) bool {
+	var test func(*core.Entry) bool
+	if d.notLiteral != nil {
+		test = d.notLiteral(file)
+	}
+	return core.TemplateNotLiteral(file, test)
 }
 
 // chooseDialect is the dialect named, or the one for the file when none is.
@@ -160,12 +174,7 @@ func Build(i Spec) (check.Extractor, error) {
 	if err != nil {
 		return nil, fmt.Errorf("ini: %s: %w", d.name, err)
 	}
-	x := core.EntryExtractor{Source: src, Query: q, Read: d.read}
-	if d.notLiteral != nil {
-		x.NotLiteral = d.notLiteral(i.File)
-	}
-	x.NotLiteral = core.TemplateNotLiteral(i.File, x.NotLiteral)
-	return x, nil
+	return core.EntryExtractor{Source: src, Query: q, Read: d.read, NotLiteral: d.notLiteralIn(i.File)}, nil
 }
 
 // eachTextLine calls f with every line of data and its number, until f
@@ -336,19 +345,28 @@ func onlyDialect(i Spec, subsection, host bool) error {
 	return nil
 }
 
-// Resolve is i with the dialect it reads in written out: the one it names,
-// or the one Build chooses by the file's name. It is i unchanged when i names
-// no dialect errata reads, which Build refuses.
+// Kind is the ini kind, which a rule writes under the key ini.
+var Kind = core.Kind[Spec]{Key: "ini", Place: Place, Resolve: Resolve, Describe: Describe}
+
+// Resolve is i with its max_bytes and the dialect it reads in written out:
+// the dialect it names, or the one Build chooses by the file's name. The
+// dialect stays as written when i names none errata reads, which Build
+// refuses. A subsection is copied.
 func Resolve(i Spec) Spec {
 	if d, err := chooseDialect(i.Dialect, i.File); err == nil {
 		i.Dialect = d.name
 	}
+	if i.Subsection != nil {
+		sub := *i.Subsection
+		i.Subsection = &sub
+	}
+	i.MaxBytes = core.MaxBytes(i.MaxBytes)
 	return i
 }
 
-// Place is i with only what decides where it reads, for Spec.Place: the
-// file cleaned, no max_bytes, the dialect the file reads in, and the names
-// in the form the dialect compares them in.
+// Place is i with only what decides where it reads, as extract's Spec.Place
+// says: the file cleaned, no max_bytes, the dialect the file reads in, and
+// the names in the form the dialect compares them in.
 func Place(i Spec) Spec {
 	i.File, i.MaxBytes = filepath.Clean(i.File), 0
 	d, err := chooseDialect(i.Dialect, i.File)

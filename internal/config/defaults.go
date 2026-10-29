@@ -53,27 +53,23 @@ func parseDefaults(raw json.RawMessage, node *yaml.Node) (defaults, []error) {
 	return d, unknownPlaceholders("defaults.run", d.Run)
 }
 
-// apply gives c what d sets for a key the entry does not write, and
-// replaces the placeholders in its run. keys are the entry's keys as written
-// and isRule is build's reading of them. It decides on keys, not on the
-// built check, since a built check cannot tell a key left out from one
-// written with the value build fills in for it: a later default, such as a
-// timeout, decides on keys too. A program check that does not write run gets
-// the default; one that writes run keeps its own, even an empty one, which
-// build refuses. A rule takes no default, and build refuses a rule that
-// writes run.
-func (d defaults) apply(c *check.Check, keys map[string]json.RawMessage, isRule bool) error {
-	if isRule {
-		return nil
-	}
+// apply gives p, the program check of the entry id, what d sets for a key
+// the entry does not write, and replaces the placeholders in its run. keys
+// are the entry's keys as written. It decides on keys, not on the built
+// check, since a built check cannot tell a key left out from one written
+// with the value build fills in for it: a later default, such as a timeout,
+// decides on keys too. A program check that does not write run gets the
+// default; one that writes run keeps its own, even an empty one, which
+// build refuses. Only a program check takes a default.
+func (d defaults) apply(p *check.Program, keys map[string]json.RawMessage, id string) error {
 	if _, written := keys["run"]; !written {
-		c.Run = substitute(d.Run, c.ID)
+		p.Run = substitute(d.Run, id)
 		return nil
 	}
-	if errs := unknownPlaceholders("run", c.Run); len(errs) > 0 {
+	if errs := unknownPlaceholders("run", p.Run); len(errs) > 0 {
 		return errors.Join(errs...)
 	}
-	c.Run = substitute(c.Run, c.ID)
+	p.Run = substitute(p.Run, id)
 	return nil
 }
 

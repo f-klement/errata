@@ -105,6 +105,11 @@ releases and the plugins of v0.3.0 are added in one place.
 - The readers `env:` asks come from the registry of kinds.
 - A file over its size limit is recognised by its error, not by the words of its message.
 - CI's lists of readers and fuzz targets come from the tree, and mutation floors sit in one table.
+- An erratum points at the value its rule blames, which the rule names, so no report decides a
+  verdict again. Under `compare: semver`, SARIF points at the value that disagrees.
+- Mutation counts a case expression as covered when its case runs, so code is not shaped around
+  the measure and fewer packages keep a lowered floor.
+- CI's own tests sit beside each script, under one shared harness.
 
 ## v0.2.4: docs claims
 

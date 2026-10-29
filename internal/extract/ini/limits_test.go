@@ -3,6 +3,9 @@ package ini
 import (
 	"reflect"
 	"testing"
+
+	"github.com/f-klement/errata/internal/check"
+	"github.com/f-klement/errata/internal/extract/core"
 )
 
 // A file name chooses the dialect, and dialect: overrides it. The planted
@@ -27,21 +30,26 @@ func TestDialectForFileNames(t *testing.T) {
 	}
 }
 
-// Describe names the dialect and the file's base name, and nothing for a
-// dialect errata does not read.
+// Describe labels the kind with the dialect and the file's base name, and
+// gives nothing for a dialect errata does not read. A spec is not literal
+// where its dialect's tool or a template engine computes values: git's
+// dialect computes none, and plain only in setup.cfg. Planted break: the
+// template suffix not asked.
 func TestDescribe(t *testing.T) {
 	for _, c := range []struct {
-		spec Spec
-		want string
-		ok   bool
+		spec       Spec
+		want       string
+		notLiteral bool
 	}{
-		{Spec{File: "a/pytest.ini"}, "plain dialect on pytest.ini", true},
-		{Spec{File: "conf/x", Dialect: "git"}, "git dialect on x", true},
-		{Spec{File: "hosts"}, "ansible dialect on hosts", true},
+		{Spec{File: "a/pytest.ini"}, "ini, plain dialect on pytest.ini", false},
+		{Spec{File: "setup.cfg"}, "ini, plain dialect on setup.cfg", true},
+		{Spec{File: "conf/x", Dialect: "git"}, "ini, git dialect on x", false},
+		{Spec{File: "conf/x.j2", Dialect: "git"}, "ini, git dialect on x.j2", true},
+		{Spec{File: "hosts"}, "ini, ansible dialect on hosts", true},
 		{Spec{File: "x.ini", Dialect: "toml"}, "", false},
 	} {
-		if got, ok := Describe(c.spec); got != c.want || ok != c.ok {
-			t.Errorf("%+v: %q, %v; want %q, %v", c.spec, got, ok, c.want, c.ok)
+		if d := Describe(c.spec); d.Label != c.want || d.NotLiteral != c.notLiteral || d.Shape != check.ShapeFlat || d.Reads != nil {
+			t.Errorf("%+v: %+v; want %q, not literal %v", c.spec, d, c.want, c.notLiteral)
 		}
 	}
 }
@@ -62,7 +70,7 @@ func TestResolve(t *testing.T) {
 	} {
 		got := Resolve(c.spec)
 		want := c.spec
-		want.Dialect = c.want
+		want.Dialect, want.MaxBytes = c.want, core.DefaultMaxBytes
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("Resolve(%+v) = %+v, want %+v", c.spec, got, want)
 		}

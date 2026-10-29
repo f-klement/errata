@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/f-klement/errata/internal/check"
+	"github.com/f-klement/errata/internal/config"
 )
 
 // listChecks are one check of each kind: a program check, an agree rule, an
@@ -17,12 +18,12 @@ import (
 func listChecks() []check.Check {
 	spec := map[string]any{"regex": map[string]any{"file": "f", "pattern": "(.)", "max_bytes": 1}}
 	return []check.Check{
-		{ID: "p", Reason: "r", Scope: check.ScopeRepo, Run: []string{"true"}, Timeout: 90 * time.Second, At: check.Location{File: "errata.yaml", Line: 2}},
-		{ID: "a", Reason: "r", Scope: check.ScopeRepo, Rule: &check.Rule{
+		{ID: "p", Reason: "r", Scope: check.ScopeRepo, Kind: &check.Program{Run: []string{"true"}}, Timeout: 90 * time.Second, At: check.Location{File: "errata.yaml", Line: 2}},
+		{ID: "a", Reason: "r", Scope: check.ScopeRepo, Kind: &check.Rule{
 			Extractors: []check.NamedExtractor{{Name: "x", Spec: spec}, {Name: "y", Spec: spec}},
 			Agree:      []string{"y", "x"}, AllowEmpty: []string{"x"}, Normalize: []check.Normalization{check.NormalizeTrim},
 		}},
-		{ID: "s", Reason: "r", Scope: check.ScopeRepo, Rule: &check.Rule{
+		{ID: "s", Reason: "r", Scope: check.ScopeRepo, Kind: &check.Rule{
 			Extractors: []check.NamedExtractor{{Name: "x", Spec: spec}}, Assert: "size(x) > 0",
 		}},
 		generatedCheck(),
@@ -44,11 +45,11 @@ func listDocument(t *testing.T, checks []check.Check) map[string]any {
 }
 
 // A rule that compares as semver lists as semver, in JSON and in text, and
-// one that names no compare as text. The planted break: toListCheck printing
+// one that names no compare as text. The planted break: Rule.ListFields printing
 // "text" for every agree rule, as before #89, fails the first check.
 func TestListCompare(t *testing.T) {
 	checks := listChecks()
-	checks[1].Rule.Compare = check.CompareSemver
+	checks[1].Rule().Compare = check.CompareSemver
 	rel := listedCheck(t, checks, 1)["relation"].(map[string]any)
 	if rel["compare"] != "semver" {
 		t.Errorf("a semver rule lists compare %v, want semver", rel["compare"])
@@ -60,7 +61,7 @@ func TestListCompare(t *testing.T) {
 	if !strings.Contains(buf.String(), "y, x (compare semver)") {
 		t.Errorf("the text listing does not say compare semver:\n%s", buf.String())
 	}
-	checks[1].Rule.Compare = ""
+	checks[1].Rule().Compare = ""
 	if rel := listedCheck(t, checks, 1)["relation"].(map[string]any); rel["compare"] != "text" {
 		t.Errorf("a rule with no compare lists compare %v, want text", rel["compare"])
 	}
@@ -153,7 +154,7 @@ g (repo) generated check
 
 	b.Reset()
 	one := checks[2]
-	one.Rule.Extractors = []check.NamedExtractor{{Name: "x", Spec: make(chan int)}}
+	one.Rule().Extractors = []check.NamedExtractor{{Name: "x", Spec: make(chan int)}}
 	if err := (ListText{}).WriteList(&b, []check.Check{one}, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -173,11 +174,11 @@ g (repo) generated check
 func TestListTextQuotesWhatCouldReadAsTwo(t *testing.T) {
 	fake := "app json file package.json, path version\nchart"
 	spec := map[string]any{"regex": map[string]any{"file": "r.txt", "pattern": `v(\d+)`}}
-	c := check.Check{ID: "a", Reason: "r", Scope: check.ScopeRepo, Rule: &check.Rule{
+	c := check.Check{ID: "a", Reason: "r", Scope: check.ScopeRepo, Kind: &check.Rule{
 		Extractors: []check.NamedExtractor{{Name: fake, Spec: spec}, {Name: "b, c", Spec: spec}},
 		Agree:      []string{fake, "b, c"}, AllowEmpty: []string{"b, c"}, SkipNotLiteral: []string{"a`b"},
 	}}
-	p := check.Check{ID: "p", Reason: "r", Scope: check.ScopeRepo, Run: []string{"sh", "-c", `echo "a b"`, "", "x\ty"}}
+	p := check.Check{ID: "p", Reason: "r", Scope: check.ScopeRepo, Kind: &check.Program{Run: []string{"sh", "-c", `echo "a b"`, "", "x\ty"}}}
 	var b bytes.Buffer
 	if err := (ListText{}).WriteList(&b, []check.Check{c, p}, nil); err != nil {
 		t.Fatal(err)
@@ -232,7 +233,9 @@ func TestSpecText(t *testing.T) {
 
 // listedFields places every field of the types a loaded check is made of:
 // the key of the JSON that prints it; "fields" for one whose own type is
-// placed here field by field; or, for a field list leaves out, why. A field
+// placed here field by field; "kinds" for the kind, whose every type is
+// placed here, each kind config.Kinds names; or, for a field list leaves
+// out, why. A field
 // added to one of these types fails TestListPlacesEveryField until it is
 // placed here, and one placed under a key fails until its value reaches
 // that key. So list cannot go on printing a check the old way while check
@@ -240,9 +243,10 @@ func TestSpecText(t *testing.T) {
 // printed from the rule rather than as a constant.
 var listedFields = map[reflect.Type]map[string]string{
 	reflect.TypeFor[check.Check](): {
-		"ID": "id", "Reason": "reason", "Scope": "scope", "Run": "run", "Timeout": "timeout",
-		"At": "fields", "Rule": "fields", "Generated": "fields",
+		"ID": "id", "Reason": "reason", "Scope": "scope", "Timeout": "timeout",
+		"At": "fields", "Kind": "kinds",
 	},
+	reflect.TypeFor[check.Program]():   {"Run": "run"},
 	reflect.TypeFor[check.Generated](): {"File": "generated.file", "Run": "generated.run", "MaxBytes": "generated.max_bytes"},
 	reflect.TypeFor[check.Location]():  {"File": "at.file", "Line": "at.line", "Outside": "at.outside"},
 	reflect.TypeFor[check.Rule](): {
@@ -267,11 +271,13 @@ func fieldOwner(typ reflect.Type, c *check.Check) reflect.Value {
 	case reflect.TypeFor[check.Location]():
 		return reflect.ValueOf(&c.At).Elem()
 	case reflect.TypeFor[check.Rule]():
-		return reflect.ValueOf(c.Rule).Elem()
+		return reflect.ValueOf(c.Rule()).Elem()
 	case reflect.TypeFor[check.NamedExtractor]():
-		return reflect.ValueOf(&c.Rule.Extractors[0]).Elem()
+		return reflect.ValueOf(&c.Rule().Extractors[0]).Elem()
 	case reflect.TypeFor[check.Generated]():
-		return reflect.ValueOf(c.Generated).Elem()
+		return reflect.ValueOf(c.Generated()).Elem()
+	case reflect.TypeFor[check.Program]():
+		return reflect.ValueOf(c.Program()).Elem()
 	default:
 		return reflect.ValueOf(c).Elem()
 	}
@@ -319,7 +325,7 @@ func listedCheck(t *testing.T, checks []check.Check, i int) map[string]any {
 // or left out on purpose, and each one printed reaches the key the table
 // names: given a distinct value, the JSON at that key changes. The planted
 // breaks: a field Compare added to check.Rule, which fails until the table
-// places it; and placed as relation.compare without toListCheck reading it,
+// places it; and placed as relation.compare without Rule.ListFields reading it,
 // which fails because the JSON there stays "text".
 func TestListPlacesEveryField(t *testing.T) {
 	for typ, fields := range listedFields {
@@ -340,6 +346,13 @@ func TestListPlacesEveryField(t *testing.T) {
 					t.Errorf("%s.%s is placed field by field, but listedFields does not place %s", typ, f.Name, f.Type)
 				}
 				continue
+			case placed == "kinds":
+				for _, kind := range config.Kinds() {
+					if listedFields[reflect.TypeOf(kind).Elem()] == nil {
+						t.Errorf("%s.%s holds a %T, which listedFields does not place", typ, f.Name, kind)
+					}
+				}
+				continue
 			case strings.HasPrefix(placed, "left out: "):
 				continue
 			}
@@ -348,7 +361,7 @@ func TestListPlacesEveryField(t *testing.T) {
 			// the agree rule every other field of a rule.
 			i := 1
 			switch {
-			case typ == reflect.TypeFor[check.Check]() || typ == reflect.TypeFor[check.Location]():
+			case typ == reflect.TypeFor[check.Check]() || typ == reflect.TypeFor[check.Location]() || typ == reflect.TypeFor[check.Program]():
 				i = 0
 			case f.Name == "Assert":
 				i = 2

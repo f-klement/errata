@@ -8,6 +8,9 @@ import (
 	"github.com/f-klement/errata/internal/extract"
 	"github.com/f-klement/errata/internal/extract/core"
 	"github.com/f-klement/errata/internal/extract/extracttest"
+	"github.com/f-klement/errata/internal/extract/json"
+	"github.com/f-klement/errata/internal/extract/toml"
+	"github.com/f-klement/errata/internal/extract/yaml"
 )
 
 // steps is embedded steps from format and path pairs.
@@ -52,7 +55,7 @@ func TestEmbeddedReadsEachFormat(t *testing.T) {
 		"two.yaml": "a: |\n  b: |\n    {\"c\": [3]}\n",
 	})
 	yaml := func(file, path string, e ...string) extract.Spec {
-		return extract.Spec{YAML: &extract.YAML{File: file, Path: path, Embedded: steps(e...)}}
+		return extract.Of(yaml.Kind, yaml.Spec{File: file, Path: path, Embedded: steps(e...)})
 	}
 	for _, c := range []struct {
 		name string
@@ -67,8 +70,8 @@ func TestEmbeddedReadsEachFormat(t *testing.T) {
 		{"a block after a comment and a blank line", yaml("f.yaml", "data.noted", "toml", "x"), "1@16"},
 		{"a block that holds an LS", yaml("ls.yaml", "s", "toml", "b"), "2@1"},
 		{"a block that holds a PS", yaml("ps.yaml", "s", "toml", "b"), "2@1"},
-		{"a block in a JSON string", extract.Spec{JSON: &extract.JSON{File: "f.json", Path: "cfg", Embedded: steps("yaml", "a", "toml", "x")}}, "1@1"},
-		{"json in a TOML string", extract.Spec{TOML: &extract.TOML{File: "f.toml", Path: "cfg", Embedded: steps("json", "a[*]")}}, "1@2 2@2"},
+		{"a block in a JSON string", extract.Of(json.Kind, json.Spec{File: "f.json", Path: "cfg", Embedded: steps("yaml", "a", "toml", "x")}), "1@1"},
+		{"json in a TOML string", extract.Of(toml.Kind, toml.Spec{File: "f.toml", Path: "cfg", Embedded: steps("json", "a[*]")}), "1@2 2@2"},
 		{"json in a block in a block", yaml("two.yaml", "a", "yaml", "b", "json", "c[0]"), "3@3"},
 		{"no steps", yaml("f.yaml", "kind"), "ConfigMap@1"},
 	} {
@@ -121,7 +124,7 @@ func TestEmbeddedBlockLinesFromTheIndicator(t *testing.T) {
 		{"ls.yaml", "s", "y", "2@2"},
 		{"crs.yaml", "s", "y", "2@1"},
 	} {
-		got := mustRun(t, extract.Spec{YAML: &extract.YAML{File: c.file, Path: c.path, Embedded: steps("toml", c.key)}}, root)
+		got := mustRun(t, extract.Of(yaml.Kind, yaml.Spec{File: c.file, Path: c.path, Embedded: steps("toml", c.key)}), root)
 		if extracttest.Texts(got) != c.want {
 			t.Errorf("%s %s: got %q, want %q", c.file, c.path, extracttest.Texts(got), c.want)
 		}
@@ -134,7 +137,7 @@ func TestEmbeddedBlockLinesFromTheIndicator(t *testing.T) {
 func TestEmbeddedEmptyJSONIsRefused(t *testing.T) {
 	root := extracttest.Repo(t, map[string]string{"f.json": `{"s": "", "w": " \n\t"}`})
 	for _, path := range []string{"s", "w"} {
-		_, err := run(t, extract.Spec{JSON: &extract.JSON{File: "f.json", Path: path, Embedded: steps("json", "$")}}, root)
+		_, err := run(t, extract.Of(json.Kind, json.Spec{File: "f.json", Path: path, Embedded: steps("json", "$")}), root)
 		extracttest.WantError(t, err, `f.json: path "`+path+`" then json path "$": the json document in the string at line 1: the string holds nothing but white space, and no JSON value`)
 	}
 }
@@ -143,7 +146,7 @@ func TestEmbeddedEmptyJSONIsRefused(t *testing.T) {
 // which allow_empty decides, as for an empty YAML file.
 func TestEmbeddedEmptyYAMLSelectsNothing(t *testing.T) {
 	root := extracttest.Repo(t, map[string]string{"f.yaml": "s: \"\"\n"})
-	got := mustRun(t, extract.Spec{YAML: &extract.YAML{File: "f.yaml", Path: "s", Embedded: steps("yaml", "a")}}, root)
+	got := mustRun(t, extract.Of(yaml.Kind, yaml.Spec{File: "f.yaml", Path: "s", Embedded: steps("yaml", "a")}), root)
 	if len(got) != 0 {
 		t.Fatalf("got %q, want nothing", extracttest.Texts(got))
 	}
@@ -155,22 +158,22 @@ func TestEmbeddedEmptyYAMLSelectsNothing(t *testing.T) {
 // breaks: the limit off by one either way, and each refusal removed.
 func TestEmbeddedRefusesStepsItCannotRead(t *testing.T) {
 	four := steps("yaml", "a", "yaml", "a", "yaml", "a", "yaml", "a")
-	if _, err := extract.Build(extract.Spec{YAML: &extract.YAML{File: "f", Path: "a", Embedded: four}}); err != nil {
+	if _, err := extract.Build(extract.Of(yaml.Kind, yaml.Spec{File: "f", Path: "a", Embedded: four})); err != nil {
 		t.Fatalf("%d steps: %v", core.MaxEmbedded, err)
 	}
 	for _, c := range []struct {
 		spec extract.Spec
 		want string
 	}{
-		{extract.Spec{YAML: &extract.YAML{File: "f", Path: "a", Embedded: append(four, core.Embedded{Format: "yaml", Path: "a"})}},
+		{extract.Of(yaml.Kind, yaml.Spec{File: "f", Path: "a", Embedded: append(four, core.Embedded{Format: "yaml", Path: "a"})}),
 			"yaml: embedded takes 5 steps, over the limit of 4"},
-		{extract.Spec{YAML: &extract.YAML{File: "f", Path: "a", Embedded: steps("", "a")}},
+		{extract.Of(yaml.Kind, yaml.Spec{File: "f", Path: "a", Embedded: steps("", "a")}),
 			"yaml: embedded[0]: format is required; write yaml, json or toml"},
-		{extract.Spec{JSON: &extract.JSON{File: "f", Path: "a", Embedded: steps("toml", "a", "xml", "a")}},
+		{extract.Of(json.Kind, json.Spec{File: "f", Path: "a", Embedded: steps("toml", "a", "xml", "a")}),
 			`json: embedded[1]: format "xml" is not one errata reads; write yaml, json or toml`},
-		{extract.Spec{TOML: &extract.TOML{File: "f", Path: "a", Embedded: steps("json", "")}},
+		{extract.Of(toml.Kind, toml.Spec{File: "f", Path: "a", Embedded: steps("json", "")}),
 			"toml: embedded[0]: path is required"},
-		{extract.Spec{TOML: &extract.TOML{File: "f", Path: "a", Embedded: steps("json", "a..b")}},
+		{extract.Of(toml.Kind, toml.Spec{File: "f", Path: "a", Embedded: steps("json", "a..b")}),
 			`toml: embedded[0]: path "a..b": column 3: recursive descent`},
 	} {
 		_, err := extract.Build(c.spec)
@@ -212,11 +215,11 @@ func TestEmbeddedRefusesWhatItCannotRead(t *testing.T) {
 		{"inner", steps("yaml", "a"), `f.yaml: path "inner" then yaml path "a" selects a mapping at line 9, not a scalar`},
 		{"deep", steps("yaml", "a", "toml", "x"), `f.yaml: path "deep" then yaml path "a" then toml path "x": the toml document in the string at line 11: toml: line 1:`},
 	} {
-		_, err := run(t, extract.Spec{YAML: &extract.YAML{File: "f.yaml", Path: c.path, Embedded: c.e}}, root)
+		_, err := run(t, extract.Of(yaml.Kind, yaml.Spec{File: "f.yaml", Path: c.path, Embedded: c.e}), root)
 		extracttest.WantError(t, err, c.want)
 	}
 	// A string a tag makes one holds a document as any string does.
-	got := mustRun(t, extract.Spec{YAML: &extract.YAML{File: "f.yaml", Path: "str", Embedded: steps("json", "$")}}, root)
+	got := mustRun(t, extract.Of(yaml.Kind, yaml.Spec{File: "f.yaml", Path: "str", Embedded: steps("json", "$")}), root)
 	if extracttest.Texts(got) != "1@8" {
 		t.Fatalf("got %q, want 1@8", extracttest.Texts(got))
 	}
@@ -235,23 +238,23 @@ func TestEmbeddedDocumentsCountAgainstMaxBytes(t *testing.T) {
 		"bytes.yaml": "s: &s " + long + "\nl: [*s, *s, *s, *s, *s, *s, *s, *s]\n",
 		"nodes.toml": "a = [" + ones + ", " + ones + "]\n",
 	})
-	_, err := run(t, extract.Spec{YAML: &extract.YAML{File: "bytes.yaml", Path: "l[*]", Embedded: steps("toml", "x"), MaxBytes: 300}}, root)
+	_, err := run(t, extract.Of(yaml.Kind, yaml.Spec{File: "bytes.yaml", Path: "l[*]", Embedded: steps("toml", "x"), MaxBytes: 300}), root)
 	extracttest.WantError(t, err, `bytes.yaml: path "l[*]" then toml path "x": the documents in strings hold more than 300 bytes in all, the extractor's max_bytes`)
-	_, err = run(t, extract.Spec{YAML: &extract.YAML{File: "bytes.yaml", Path: "l[*]", Embedded: steps("toml", "x"), MaxBytes: 343}}, root)
+	_, err = run(t, extract.Of(yaml.Kind, yaml.Spec{File: "bytes.yaml", Path: "l[*]", Embedded: steps("toml", "x"), MaxBytes: 343}), root)
 	extracttest.WantError(t, err, "the documents in strings hold more than 343 bytes in all")
-	got := mustRun(t, extract.Spec{YAML: &extract.YAML{File: "bytes.yaml", Path: "l[*]", Embedded: steps("toml", "x"), MaxBytes: 344}}, root)
+	got := mustRun(t, extract.Of(yaml.Kind, yaml.Spec{File: "bytes.yaml", Path: "l[*]", Embedded: steps("toml", "x"), MaxBytes: 344}), root)
 	if len(got) != 8 {
 		t.Fatalf("at 344 bytes: got %q, want 8 values", extracttest.Texts(got))
 	}
-	_, err = run(t, extract.Spec{TOML: &extract.TOML{File: "nodes.toml", Path: "a[*]", Embedded: steps("json", "[0]"), MaxBytes: 1000}}, root)
+	_, err = run(t, extract.Of(toml.Kind, toml.Spec{File: "nodes.toml", Path: "a[*]", Embedded: steps("json", "[0]"), MaxBytes: 1000}), root)
 	extracttest.WantError(t, err, "the documents in strings can hold more nodes in all than max_bytes allows, one for every 8 bytes of it in json")
-	got = mustRun(t, extract.Spec{TOML: &extract.TOML{File: "nodes.toml", Path: "a[0]", Embedded: steps("json", "[0]"), MaxBytes: 1000}}, root)
+	got = mustRun(t, extract.Of(toml.Kind, toml.Spec{File: "nodes.toml", Path: "a[0]", Embedded: steps("json", "[0]"), MaxBytes: 1000}), root)
 	if extracttest.Texts(got) != "1@1" {
 		t.Fatalf("one document: got %q, want 1@1", extracttest.Texts(got))
 	}
-	_, err = run(t, extract.Spec{TOML: &extract.TOML{File: "nodes.toml", Path: "a[*]", Embedded: steps("json", "[0]"), MaxBytes: 1983}}, root)
+	_, err = run(t, extract.Of(toml.Kind, toml.Spec{File: "nodes.toml", Path: "a[*]", Embedded: steps("json", "[0]"), MaxBytes: 1983}), root)
 	extracttest.WantError(t, err, "the documents in strings can hold more nodes in all than max_bytes allows")
-	got = mustRun(t, extract.Spec{TOML: &extract.TOML{File: "nodes.toml", Path: "a[*]", Embedded: steps("json", "[0]"), MaxBytes: 1984}}, root)
+	got = mustRun(t, extract.Of(toml.Kind, toml.Spec{File: "nodes.toml", Path: "a[*]", Embedded: steps("json", "[0]"), MaxBytes: 1984}), root)
 	if extracttest.Texts(got) != "1@1 1@1" {
 		t.Fatalf("two documents at 1984 bytes: got %q, want 1@1 1@1", extracttest.Texts(got))
 	}
@@ -269,12 +272,12 @@ func TestEmbeddedAliasesCountWithTheFile(t *testing.T) {
 		"f.yaml": "a: &a [" + items + "]\nb: [" + aliases + "]\ns: \"x: &x 1\\ny: *x\\n\"\n",
 		"g.yaml": "s: \"x: &x 1\\ny: *x\\n\"\n",
 	})
-	_, err := run(t, extract.Spec{YAML: &extract.YAML{File: "f.yaml", Path: "s", Embedded: steps("yaml", "y")}}, root)
+	_, err := run(t, extract.Of(yaml.Kind, yaml.Spec{File: "f.yaml", Path: "s", Embedded: steps("yaml", "y")}), root)
 	extracttest.WantError(t, err, "the yaml document in the string at line 3: line 2: aliases and merge keys expand to more than 1000000 nodes")
 	if strings.Contains(err.Error(), "files of a set") {
 		t.Errorf("one file's refusal speaks of a set: %v", err)
 	}
-	got := mustRun(t, extract.Spec{YAML: &extract.YAML{File: "g.yaml", Path: "s", Embedded: steps("yaml", "y")}}, root)
+	got := mustRun(t, extract.Of(yaml.Kind, yaml.Spec{File: "g.yaml", Path: "s", Embedded: steps("yaml", "y")}), root)
 	if extracttest.Texts(got) != "1@1" {
 		t.Fatalf("got %q, want 1@1", extracttest.Texts(got))
 	}
@@ -295,10 +298,10 @@ func TestEmbeddedFiltersShareTheBudget(t *testing.T) {
 	doc := `"[` + strings.Repeat("0,", int(members)-1) + `0]"`
 	root := extracttest.Repo(t, map[string]string{"f.yaml": "l: [" + doc + ", " + doc + "]\n"})
 	filter := "[?" + strings.Join(terms, " && ") + "]"
-	_, err := run(t, extract.Spec{YAML: &extract.YAML{File: "f.yaml", Path: "l[*]", Embedded: steps("json", filter)}}, root)
+	_, err := run(t, extract.Of(yaml.Kind, yaml.Spec{File: "f.yaml", Path: "l[*]", Embedded: steps("json", filter)}), root)
 	extracttest.WantError(t, err, "its filters would hash and compare more than")
 	extracttest.WantError(t, err, `f.yaml: path "l[*]" then json path "[?@ == `)
-	got := mustRun(t, extract.Spec{YAML: &extract.YAML{File: "f.yaml", Path: "l[0]", Embedded: steps("json", filter)}}, root)
+	got := mustRun(t, extract.Of(yaml.Kind, yaml.Spec{File: "f.yaml", Path: "l[0]", Embedded: steps("json", filter)}), root)
 	if len(got) != 0 {
 		t.Fatalf("one string: got %d values, want none", len(got))
 	}
@@ -315,12 +318,12 @@ func TestEmbeddedValuesCountTogether(t *testing.T) {
 		"f.yaml":     "l: [" + doc + ", " + doc + "]\n",
 		"exact.yaml": "l: [" + exact + ", " + exact + "]\n",
 	})
-	if got := mustRun(t, extract.Spec{YAML: &extract.YAML{File: "exact.yaml", Path: "l[*]", Embedded: steps("json", "[*]")}}, root); len(got) != core.MaxValues {
+	if got := mustRun(t, extract.Of(yaml.Kind, yaml.Spec{File: "exact.yaml", Path: "l[*]", Embedded: steps("json", "[*]")}), root); len(got) != core.MaxValues {
 		t.Fatalf("two strings at the limit: got %d values, want %d", len(got), core.MaxValues)
 	}
-	_, err := run(t, extract.Spec{YAML: &extract.YAML{File: "f.yaml", Path: "l[*]", Embedded: steps("json", "[*]")}}, root)
+	_, err := run(t, extract.Of(yaml.Kind, yaml.Spec{File: "f.yaml", Path: "l[*]", Embedded: steps("json", "[*]")}), root)
 	extracttest.WantError(t, err, "f.yaml: the extractor selects more than 100000 values")
-	if got := mustRun(t, extract.Spec{YAML: &extract.YAML{File: "f.yaml", Path: "l[0]", Embedded: steps("json", "[*]")}}, root); len(got) != half+1 {
+	if got := mustRun(t, extract.Of(yaml.Kind, yaml.Spec{File: "f.yaml", Path: "l[0]", Embedded: steps("json", "[*]")}), root); len(got) != half+1 {
 		t.Fatalf("one string: got %d values, want %d", len(got), half+1)
 	}
 }
@@ -354,7 +357,7 @@ func TestEmbeddedStringsOfASetCountTogether(t *testing.T) {
 		"jalias/b.json": `{"s": "x: &x 1\ny: *x\n"}`,
 	})
 	yamlSet := func(glob, path string, maxBytes int64, embedded []core.Embedded) extract.Spec {
-		return extract.Spec{YAML: &extract.YAML{Files: []string{glob}, Path: path, Embedded: embedded, MaxBytes: maxBytes}}
+		return extract.Of(yaml.Kind, yaml.Spec{Files: []string{glob}, Path: path, Embedded: embedded, MaxBytes: maxBytes})
 	}
 	_, err := run(t, yamlSet("bytes/*.yaml", "l[*]", 220, steps("toml", "x")), root)
 	extracttest.WantError(t, err, `bytes/b.yaml: path "l[*]" then toml path "x": the documents in strings hold more than 220 bytes in all, the extractor's max_bytes`)
@@ -367,12 +370,12 @@ func TestEmbeddedStringsOfASetCountTogether(t *testing.T) {
 	if got := mustRun(t, yamlSet("bytes/*.yaml", "l[*]", 300, steps("toml", "x")), root); len(got) != 6 {
 		t.Fatalf("two files at 300 bytes: got %q, want 6 values", extracttest.Texts(got))
 	}
-	_, err = run(t, extract.Spec{TOML: &extract.TOML{Files: []string{"nodes/*.toml"}, Path: "a[*]", Embedded: steps("json", "[0]"), MaxBytes: 1000}}, root)
+	_, err = run(t, extract.Of(toml.Kind, toml.Spec{Files: []string{"nodes/*.toml"}, Path: "a[*]", Embedded: steps("json", "[0]"), MaxBytes: 1000}), root)
 	extracttest.WantError(t, err, "nodes/b.toml: path \"a[*]\" then json path \"[0]\": the documents in strings can hold more nodes in all than max_bytes allows")
 	_, err = run(t, yamlSet("alias/*.yaml", "s", 0, steps("yaml", "y")), root)
 	extracttest.WantError(t, err, "alias/b.yaml: path \"s\" then yaml path \"y\": the yaml document in the string at line 1: line 2: aliases and merge keys expand to more than 1000000 nodes")
 	extracttest.WantError(t, err, "; the files of a set share the limits on aliases and merge keys")
-	_, err = run(t, extract.Spec{JSON: &extract.JSON{Files: []string{"jalias/*.json"}, Path: "s", Embedded: steps("yaml", "y")}}, root)
+	_, err = run(t, extract.Of(json.Kind, json.Spec{Files: []string{"jalias/*.json"}, Path: "s", Embedded: steps("yaml", "y")}), root)
 	extracttest.WantError(t, err, "jalias/b.json: path \"s\" then yaml path \"y\": the yaml document in the string at line 1: line 2: aliases and merge keys expand to more than 1000000 nodes")
 	extracttest.WantError(t, err, "; the files of a set share the limits on aliases and merge keys")
 }
@@ -389,7 +392,7 @@ func TestSetValuesAreHeldToTheSetsMaxBytes(t *testing.T) {
 	pad := func(other string) string { return "p: " + strings.Repeat("x", 1000-len(other)-4) + "\n" }
 	root := extracttest.Tracked(t, map[string]string{"s/a.yaml": pad(b), "s/b.yaml": b, "t/a.yaml": pad(long), "t/b.yaml": long})
 	set := func(dir string) extract.Spec {
-		return extract.Spec{YAML: &extract.YAML{Files: []string{dir + "/*.yaml"}, Path: "b[*][*]", MaxBytes: 1000}}
+		return extract.Of(yaml.Kind, yaml.Spec{Files: []string{dir + "/*.yaml"}, Path: "b[*][*]", MaxBytes: 1000})
 	}
 	if got := mustRun(t, set("s"), root); len(got) != 3 {
 		t.Fatalf("got %d values, want 3", len(got))
@@ -407,7 +410,7 @@ func TestEmbeddedLinesInEachFileOfASet(t *testing.T) {
 		"a.yaml": "kind: x\nc: |\n  y = 1\n",
 		"b.yaml": "kind: x\nother: 0\nmore: 1\nc: |\n  z = 0\n  y = 2\n",
 	})
-	got := mustRun(t, extract.Spec{YAML: &extract.YAML{Files: []string{"*.yaml"}, Path: "c", Embedded: steps("toml", "y")}}, root)
+	got := mustRun(t, extract.Of(yaml.Kind, yaml.Spec{Files: []string{"*.yaml"}, Path: "c", Embedded: steps("toml", "y")}), root)
 	if extracttest.Texts(got) != "1@3 2@6" || got[0].At.File != "a.yaml" || got[1].At.File != "b.yaml" {
 		t.Fatalf("got %v, want 1@3 in a.yaml and 2@6 in b.yaml", got)
 	}

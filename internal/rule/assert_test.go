@@ -202,7 +202,7 @@ func assertRule(t *testing.T, expr string, extractors ...check.NamedExtractor) c
 	if err != nil {
 		t.Fatal(err)
 	}
-	return check.Check{ID: "r", Reason: "r", Scope: check.ScopeRepo, Rule: &check.Rule{Extractors: extractors, Assert: expr, Compiled: a}}
+	return check.Check{ID: "r", Reason: "r", Scope: check.ScopeRepo, Kind: &check.Rule{Extractors: extractors, Assert: expr, Compiled: a}}
 }
 
 // The worked case from the ticket: a staleness threshold must lie between one
@@ -289,7 +289,7 @@ func TestAssertUnknownBeforeCELRuns(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var calls int
-			c := check.Check{ID: "r", Rule: &check.Rule{Extractors: tc.extractors, AllowEmpty: tc.allowEmpty, Assert: "x", Compiled: counting{&calls}}}
+			c := check.Check{ID: "r", Kind: &check.Rule{Extractors: tc.extractors, AllowEmpty: tc.allowEmpty, Assert: "x", Compiled: counting{&calls}}}
 			res := Run(context.Background(), "", c)
 			if res.Verdict != check.VerdictUnknown {
 				t.Fatalf("verdict %s, want unknown", res.Verdict)
@@ -308,7 +308,7 @@ func TestAssertUnknownBeforeCELRuns(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	var calls int
-	c := check.Check{ID: "r", Rule: &check.Rule{Extractors: []check.NamedExtractor{named("a", fake{values: one})}, Assert: "x", Compiled: counting{&calls}}}
+	c := check.Check{ID: "r", Kind: &check.Rule{Extractors: []check.NamedExtractor{named("a", fake{values: one})}, Assert: "x", Compiled: counting{&calls}}}
 	res := Run(ctx, "", c)
 	if res.Verdict != check.VerdictUnknown || !strings.Contains(res.Message, `cancelled before extractor "a" ran`) || calls != 0 {
 		t.Fatalf("cancelled: verdict %s message %q calls %d", res.Verdict, res.Message, calls)
@@ -319,7 +319,7 @@ func TestAssertUnknownBeforeCELRuns(t *testing.T) {
 // true, and runs no extractor.
 func TestAssertNotCompiled(t *testing.T) {
 	var ran string
-	c := check.Check{ID: "r", Rule: &check.Rule{
+	c := check.Check{ID: "r", Kind: &check.Rule{
 		Extractors: []check.NamedExtractor{named("a", fake{values: []check.Value{at("x", "f", 1)}, root: &ran})},
 		Assert:     "size(a) > 0",
 	}}
@@ -339,13 +339,13 @@ func TestAssertAllowEmpty(t *testing.T) {
 		return []check.NamedExtractor{named("a", fake{values: []check.Value{at("x", "a.yaml", 1)}}), named("b", fake{})}
 	}
 	c := assertRule(t, "size(b) == 0 && a[0] == 'x'", extractors()...)
-	c.Rule.AllowEmpty = []string{"b"}
+	c.Rule().AllowEmpty = []string{"b"}
 	if res := Run(context.Background(), "", c); res.Verdict != check.VerdictTrue {
 		t.Fatalf("verdict %s, want true: %s", res.Verdict, res.Message)
 	}
 
 	c = assertRule(t, "b[0] == a[0]", extractors()...)
-	c.Rule.AllowEmpty = []string{"b"}
+	c.Rule().AllowEmpty = []string{"b"}
 	res := Run(context.Background(), "", c)
 	want := `assert: index out of bounds: 0
   expression: b[0] == a[0]
@@ -512,7 +512,7 @@ func TestAssertTimeoutLooksEveryStep(t *testing.T) {
 func TestAssertUnknownOnAnyError(t *testing.T) {
 	run := func(expr string, extractors ...check.NamedExtractor) check.Result {
 		c := assertRule(t, expr, extractors...)
-		c.Rule.AllowEmpty = []string{"empty"}
+		c.Rule().AllowEmpty = []string{"empty"}
 		return Run(context.Background(), "", c)
 	}
 	ports := named("v", fake{values: []check.Value{at("${HTTPS_PORT}", "compose.yaml", 4), at("443", "compose.yaml", 5)}})
@@ -573,7 +573,7 @@ func TestAssertSeesNormalisedValues(t *testing.T) {
 	if res := Run(context.Background(), "", c); res.Verdict != check.VerdictUnknown {
 		t.Fatalf("without normalize: verdict %s, want unknown: %s", res.Verdict, res.Message)
 	}
-	c.Rule.Normalize = []check.Normalization{check.NormalizeTrim, check.NormalizeLower}
+	c.Rule().Normalize = []check.Normalization{check.NormalizeTrim, check.NormalizeLower}
 	res := Run(context.Background(), "", c)
 	if res.Verdict != check.VerdictTrue {
 		t.Fatalf("with normalize: verdict %s, want true: %s", res.Verdict, res.Message)
@@ -581,8 +581,8 @@ func TestAssertSeesNormalisedValues(t *testing.T) {
 	if want := []check.Extracted{{Extractor: "v", Values: raw}}; !reflect.DeepEqual(res.Extracted, want) {
 		t.Fatalf("extracted = %+v, want %+v", res.Extracted, want)
 	}
-	c.Rule.Assert = "v[0] == 'x'"
-	c.Rule.Compiled, _ = Compile(c.Rule.Assert, []string{"v"}, Lists{})
+	c.Rule().Assert = "v[0] == 'x'"
+	c.Rule().Compiled, _ = Compile(c.Rule().Assert, []string{"v"}, Lists{})
 	if res := Run(context.Background(), "", c); !strings.Contains(res.Message, `v[0] = "90s" at a.yaml:3`) {
 		t.Fatalf("message %q does not show the normalised value", res.Message)
 	}

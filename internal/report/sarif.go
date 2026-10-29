@@ -598,8 +598,7 @@ func sarifResultOf(res check.Result, ruleIndex int) sarifResult {
 	out := sarifResult{RuleID: res.Check.ID, RuleIndex: ruleIndex, Level: "error"}
 
 	values := flatten(res.Extracted)
-	showWhole(values, res.Check.Rule)
-	primary := disagreeing(res.Check.Rule, values)
+	primary := blamed(res)
 	// A result that names its own place, such as the line where a
 	// generated file first differs, points there. Its file is one the
 	// loader held inside the repository.
@@ -747,26 +746,10 @@ func leftOutLocations(res check.Result) ([]sarifLocation, string) {
 // quotes it, cut at valueLimit, and its extractor.
 func label(f named) string {
 	text := quoteValue(f.value.Text)
-	if f.shown != "" {
-		text = f.shown
+	if f.value.Shown != "" {
+		text = f.value.Shown
 	}
 	return plain(text + f.value.Notes() + " (" + f.extractor + ")")
-}
-
-// showWhole sets how each value handed over whole is named: its mapping
-// shown as the rule's message shows it, after the rule's normalize, and not
-// quoted again, since Show quotes every string in it.
-func showWhole(values []named, r *check.Rule) {
-	for i, f := range values {
-		if f.value.Data == nil {
-			continue
-		}
-		d := f.value.Data
-		if r != nil && len(r.Normalize) > 0 {
-			d = d.Normalized(r.Normalized)
-		}
-		values[i].shown = d.Show(check.ShownBytes)
-	}
 }
 
 // outside is the message of a value whose path leaves the repository. It has
@@ -779,10 +762,6 @@ func outside(f named) string {
 type named struct {
 	value     check.Value
 	extractor string
-	// shown is how a value an extractor handed over whole (as: map) is
-	// named, as the rule's message shows it; "" for a flat value, which is
-	// quoted.
-	shown string
 }
 
 func flatten(extracted []check.Extracted) []named {
@@ -795,38 +774,20 @@ func flatten(extracted []check.Extracted) []named {
 	return out
 }
 
-// disagreeing returns the index of the value an erratum points at, or -1 when
-// there is none. For agree it is the first value outside the majority: the
-// largest group of values with one normalised text, the earliest group on a
-// tie. Any other relation, assert included, has no majority, so it is the
-// first value.
-func disagreeing(r *check.Rule, values []named) int {
-	if len(values) == 0 {
+// blamed is the index in flatten(res.Extracted) of the value res's rule
+// blames, the one its erratum points at, or -1 when it blames none. The
+// rule decided it with its verdict; a report does not compare the values
+// again.
+func blamed(res check.Result) int {
+	b := res.Blamed
+	if b == nil || b.Extractor < 0 || b.Extractor >= len(res.Extracted) || b.Value < 0 || b.Value >= len(res.Extracted[b.Extractor].Values) {
 		return -1
 	}
-	if r == nil || len(r.Agree) == 0 {
-		return 0
+	i := b.Value
+	for _, x := range res.Extracted[:b.Extractor] {
+		i += len(x.Values)
 	}
-	texts := make([]string, len(values))
-	size := map[string]int{}
-	for i, f := range values {
-		texts[i] = r.Normalized(f.value.Text)
-		size[texts[i]]++
-	}
-	majority := texts[0]
-	for _, t := range texts {
-		if size[t] > size[majority] {
-			majority = t
-		}
-	}
-	for i, t := range texts {
-		if t != majority {
-			return i
-		}
-	}
-	// Every value agrees, which a false agree never reports. The first value
-	// still gives the result a place.
-	return 0
+	return i
 }
 
 // physical places at under %SRCROOT%. It reports false for a location

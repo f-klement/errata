@@ -39,7 +39,7 @@ func TestParseRule(t *testing.T) {
 	if len(cfg.Checks) != 2 {
 		t.Fatalf("got %d checks, want 2", len(cfg.Checks))
 	}
-	r := cfg.Checks[0].Rule
+	r := cfg.Checks[0].Rule()
 	if r == nil {
 		t.Fatal("rule decoded without a Rule")
 	}
@@ -67,7 +67,7 @@ func TestParseRule(t *testing.T) {
 	if cfg.Checks[0].Timeout != 0 || cfg.Checks[1].Timeout != DefaultTimeout {
 		t.Errorf("timeouts = %s and %s, want 0 and %s", cfg.Checks[0].Timeout, cfg.Checks[1].Timeout, DefaultTimeout)
 	}
-	if cfg.Checks[1].Rule != nil {
+	if cfg.Checks[1].Rule() != nil {
 		t.Error("program check decoded with a Rule")
 	}
 	// The loader wires the real extractor: the client regex reads its file.
@@ -101,13 +101,13 @@ func TestParseCompare(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := cfg.Checks[0].Rule.Compare; got != want {
+		if got := cfg.Checks[0].Rule().Compare; got != want {
 			t.Errorf("compare %q, want %q, from:\n%s", got, want, yaml)
 		}
 	}
 	cfg, err := parseRaw([]byte("checks:\n- id: r\n  reason: r\n  scope: repo\n  extract: {v: {json: {file: f.json, path: a}}}\n  assert: size(v) > 0\n"))
-	if err != nil || cfg.Checks[0].Rule.Compare != "" {
-		t.Errorf("an assert rule has compare %q, %v; want none", cfg.Checks[0].Rule.Compare, err)
+	if err != nil || cfg.Checks[0].Rule().Compare != "" {
+		t.Errorf("an assert rule has compare %q, %v; want none", cfg.Checks[0].Rule().Compare, err)
 	}
 }
 
@@ -117,7 +117,7 @@ func TestParseAssertRule(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := cfg.Checks[0].Rule
+	r := cfg.Checks[0].Rule()
 	if r.Assert != "v[0] == w[0]" {
 		t.Fatalf("assert = %q", r.Assert)
 	}
@@ -130,8 +130,8 @@ func TestParseAssertRule(t *testing.T) {
 			t.Errorf("%v: %v, %v; want %v", values, got, err, want)
 		}
 	}
-	if cfg, err := parseRaw([]byte(goodRule)); err != nil || cfg.Checks[0].Rule.Compiled != nil {
-		t.Errorf("an agree rule: err %v, compiled %v; want no assert compiled", err, cfg.Checks[0].Rule.Compiled)
+	if cfg, err := parseRaw([]byte(goodRule)); err != nil || cfg.Checks[0].Rule().Compiled != nil {
+		t.Errorf("an agree rule: err %v, compiled %v; want no assert compiled", err, cfg.Checks[0].Rule().Compiled)
 	}
 }
 
@@ -209,10 +209,10 @@ func TestParseRejectsRules(t *testing.T) {
 	head := "checks:\n- id: bad-rule\n  reason: r\n  scope: repo\n"
 	cases := map[string]struct{ yaml, want string }{
 		"run and extract": {
-			head + "  run: [x]\n" + ex + "  agree: [v]\n", "a check is a program check (run) or a rule (extract), never both",
+			head + "  run: [x]\n" + ex + "  agree: [v]\n", "keys of two kinds of check: run makes a program check, and extract and agree make a rule; a check is one kind: remove the keys of the kinds it is not, or write a check for each",
 		},
 		"run and agree": {
-			head + "  run: [x]\n  agree: [v]\n", "never both",
+			head + "  run: [x]\n  agree: [v]\n", "keys of two kinds of check: run makes a program check, and agree makes a rule",
 		},
 		"neither run nor extract": {
 			head, "run or extract is required",
@@ -240,13 +240,13 @@ func TestParseRejectsRules(t *testing.T) {
 			head + ex + "  agree: [v]\n  normalize: [trim, upper]\n", `normalize "upper" must be one of trim, lower`,
 		},
 		"timeout on a rule": {
-			head + ex + "  agree: [v]\n  timeout: 5s\n", "timeout applies to a program check only",
+			head + ex + "  agree: [v]\n  timeout: 5s\n", "timeout applies to a program check and a generated check",
 		},
 		// A zero timeout left the field at zero, which validation reads as
 		// no key, so the rule loaded with a key that does nothing. The
 		// planted break: the case for a rule removed from build.
 		"zero timeout on a rule": {
-			head + ex + "  agree: [v]\n  timeout: 0s\n", "timeout applies to a program check only: a rule's extractors take no timeout",
+			head + ex + "  agree: [v]\n  timeout: 0s\n", "timeout applies to a program check and a generated check: a rule's extractors take no timeout",
 		},
 		"extractor with no kind": {
 			head + "  extract: {v: {}}\n  agree: [v]\n", `extractor "v": an extractor sets exactly one of yaml, json, toml, regex`,
@@ -279,7 +279,7 @@ func TestParseRejectsRules(t *testing.T) {
 			head + ex + "  agree: [v]\n  allow_empty: [w]\n", `allow_empty names "w", which extract does not declare`,
 		},
 		"allow_empty on a program check": {
-			head + "  run: [x]\n  allow_empty: [v]\n", "never both",
+			head + "  run: [x]\n  allow_empty: [v]\n", "keys of two kinds of check: run makes a program check, and allow_empty makes a rule",
 		},
 		"skip_not_literal as a bool": {
 			head + ex + "  agree: [v]\n  skip_not_literal: true\n", "skip_not_literal takes a list of extractor names, such as skip_not_literal: [name]; true is not accepted",
@@ -350,7 +350,7 @@ func TestParseRejectsRules(t *testing.T) {
 			head + ex + "  agree: [v]\n  skip_not_literal: [v, v]\n", `skip_not_literal names "v" twice`,
 		},
 		"skip_not_literal on a program check": {
-			head + "  run: [x]\n  skip_not_literal: [v]\n", "a check is a program check (run) or a rule (extract), never both",
+			head + "  run: [x]\n  skip_not_literal: [v]\n", "keys of two kinds of check: run makes a program check, and skip_not_literal makes a rule",
 		},
 		"skip_not_literal in another case": {
 			head + ex + "  agree: [v]\n  Skip_Not_Literal: [v]\n", `key "Skip_Not_Literal" must be spelled "skip_not_literal"`,
@@ -419,7 +419,7 @@ func TestParseRejectsRules(t *testing.T) {
 			head + ex + "  assert: size(v) > 0\n  compare: semver\n", `compare "semver" applies to agree; assert compares in its expression`,
 		},
 		"compare on a program check": {
-			head + "  run: [x]\n  compare: text\n", "never both",
+			head + "  run: [x]\n  compare: text\n", "keys of two kinds of check: run makes a program check, and compare makes a rule",
 		},
 		"normalize empty": {
 			head + ex + "  agree: [v]\n  normalize: []\n", "normalize lists no option: name trim, lower or both, or remove the key",
@@ -503,7 +503,7 @@ func TestParseInfAndNaNInStrings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(cfg.Checks[0].Run, " "); got != "ls .inf -.inf" || cfg.Checks[0].Reason != ".nan" {
+	if got := strings.Join(runOf(cfg.Checks[0]), " "); got != "ls .inf -.inf" || cfg.Checks[0].Reason != ".nan" {
 		t.Errorf("run = %q, reason = %q, want \"ls .inf -.inf\" and \".nan\"", got, cfg.Checks[0].Reason)
 	}
 }
@@ -684,7 +684,7 @@ checks:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(cfg.Checks[0].Rule.SkipNotLiteral, " "); got != "shell chart" {
+	if got := strings.Join(cfg.Checks[0].Rule().SkipNotLiteral, " "); got != "shell chart" {
 		t.Errorf("skip_not_literal = %q, want \"shell chart\"", got)
 	}
 	// An ini extractor whose dialect's tool computes values may be listed.

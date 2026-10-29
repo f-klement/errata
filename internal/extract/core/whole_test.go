@@ -9,6 +9,9 @@ import (
 	"github.com/f-klement/errata/internal/extract"
 	"github.com/f-klement/errata/internal/extract/core"
 	"github.com/f-klement/errata/internal/extract/extracttest"
+	"github.com/f-klement/errata/internal/extract/json"
+	"github.com/f-klement/errata/internal/extract/toml"
+	"github.com/f-klement/errata/internal/extract/yaml"
 )
 
 // lines is each node of d with its line, in file order, as key=line for
@@ -46,11 +49,11 @@ func TestAsMapReturnsEachMappingWhole(t *testing.T) {
 		spec  extract.Spec
 		lines []string
 	}{
-		{extract.Spec{JSON: &extract.JSON{File: "r.json", Path: "packageRules[*]", As: "map"}},
+		{extract.Of(json.Kind, json.Spec{File: "r.json", Path: "packageRules[*]", As: "map"}),
 			[]string{"r.json:2 matchPackageNames=r.json:2 r.json:2 r.json:3 automerge=r.json:4", "r.json:5 prPriority=r.json:5 x=r.json:5 y=r.json:5"}},
-		{extract.Spec{YAML: &extract.YAML{File: "r.yaml", Path: "packageRules[*]", As: "map"}},
+		{extract.Of(yaml.Kind, yaml.Spec{File: "r.yaml", Path: "packageRules[*]", As: "map"}),
 			[]string{"r.yaml:2 matchPackageNames=r.yaml:2 r.yaml:2 r.yaml:3 automerge=r.yaml:4", "r.yaml:5 prPriority=r.yaml:5 x=r.yaml:6 y=r.yaml:6"}},
-		{extract.Spec{TOML: &extract.TOML{File: "r.toml", Path: "packageRules[*]", As: "map"}},
+		{extract.Of(toml.Kind, toml.Spec{File: "r.toml", Path: "packageRules[*]", As: "map"}),
 			[]string{"r.toml:1 matchPackageNames=r.toml:2 r.toml:2 r.toml:3 automerge=r.toml:4", "r.toml:5 prPriority=r.toml:6 x=r.toml:7 y=r.toml:7"}},
 	} {
 		got := mustRun(t, c.spec, root)
@@ -71,7 +74,7 @@ func TestAsMapReturnsEachMappingWhole(t *testing.T) {
 			t.Errorf("%s: Maps is false", c.spec.Kind())
 		}
 	}
-	flat := extract.Spec{JSON: &extract.JSON{File: "r.json", Path: "packageRules[*].automerge"}}
+	flat := extract.Of(json.Kind, json.Spec{File: "r.json", Path: "packageRules[*].automerge"})
 	if got := mustRun(t, flat, root); flat.Maps() || len(got) != 1 || got[0].Data != nil || got[0].Text != "false" {
 		t.Errorf("without as: %v", got)
 	}
@@ -82,7 +85,7 @@ func TestAsMapReturnsEachMappingWhole(t *testing.T) {
 // which held every byte of a long mapping twice.
 func TestAsMapCutsTheText(t *testing.T) {
 	root := extracttest.Repo(t, map[string]string{"r.json": `[{"a": "` + strings.Repeat("x", 1000) + `"}]`})
-	got := mustRun(t, extract.Spec{JSON: &extract.JSON{File: "r.json", Path: "[*]", As: "map"}}, root)
+	got := mustRun(t, extract.Of(json.Kind, json.Spec{File: "r.json", Path: "[*]", As: "map"}), root)
 	if len(got) != 1 || len(got[0].Text) != check.ShownBytes+3 || !strings.HasSuffix(got[0].Text, "...") || len(got[0].Data.Items[0].Text) != 1000 {
 		t.Errorf("got %d bytes of text: %.40s", len(got[0].Text), got[0].Text)
 	}
@@ -95,9 +98,9 @@ func TestAsMapCutsTheText(t *testing.T) {
 // sequence over as a mapping.
 func TestAsMapRefusesWhatIsNoMapping(t *testing.T) {
 	for _, s := range []extract.Spec{
-		{YAML: &extract.YAML{File: "r.yaml", Path: "a", As: "list"}},
-		{JSON: &extract.JSON{File: "r.json", Path: "a", As: "list"}},
-		{TOML: &extract.TOML{File: "r.toml", Path: "a", As: "list"}},
+		extract.Of(yaml.Kind, yaml.Spec{File: "r.yaml", Path: "a", As: "list"}),
+		extract.Of(json.Kind, json.Spec{File: "r.json", Path: "a", As: "list"}),
+		extract.Of(toml.Kind, toml.Spec{File: "r.toml", Path: "a", As: "list"}),
 	} {
 		_, err := extract.Build(s)
 		want := s.Kind() + `: as "list" is not one errata reads; write map to hand assert each mapping the path selects whole, record to read the fields of each element it selects into one, or leave the key out for its scalars`
@@ -113,10 +116,10 @@ func TestAsMapRefusesWhatIsNoMapping(t *testing.T) {
 		"a": `r.yaml: path "a" selects a scalar at line 1, not a mapping; as: map hands assert each mapping the path selects, so add [*] to take a sequence's members`,
 		"b": `r.yaml: path "b" selects a sequence at line 3, not a mapping;`,
 	} {
-		_, err := run(t, extract.Spec{YAML: &extract.YAML{File: "r.yaml", Path: path, As: "map"}}, root)
+		_, err := run(t, extract.Of(yaml.Kind, yaml.Spec{File: "r.yaml", Path: path, As: "map"}), root)
 		extracttest.WantError(t, err, want)
 	}
-	if got := mustRun(t, extract.Spec{YAML: &extract.YAML{File: "r.yaml", Path: "$", As: "map"}}, root); len(got) != 1 || got[0].Text != `{"a": "x", "b": ["1"]}` {
+	if got := mustRun(t, extract.Of(yaml.Kind, yaml.Spec{File: "r.yaml", Path: "$", As: "map"}), root); len(got) != 1 || got[0].Text != `{"a": "x", "b": ["1"]}` {
 		t.Errorf("the document: %v", got)
 	}
 }
@@ -132,7 +135,7 @@ func TestAsMapReadsEmbeddedDocuments(t *testing.T) {
 		"data['rules.json']": "c.yaml:3 a=c.yaml:3 b=c.yaml:4 c.yaml:4",
 		"data.q":             "c.yaml:5 a=c.yaml:5 b=c.yaml:5",
 	} {
-		got := mustRun(t, extract.Spec{YAML: &extract.YAML{File: "c.yaml", Path: path, As: "map", Embedded: steps("json", "[*]")}}, root)
+		got := mustRun(t, extract.Of(yaml.Kind, yaml.Spec{File: "c.yaml", Path: path, As: "map", Embedded: steps("json", "[*]")}), root)
 		if len(got) != 1 || lines(got[0].Data) != want {
 			t.Errorf("%s: %v", path, got)
 		} else if got[0].At.Line != got[0].Data.At.Line {
@@ -145,7 +148,7 @@ func TestAsMapReadsEmbeddedDocuments(t *testing.T) {
 // Planted break: the set's values given the first file's name.
 func TestAsMapReadsAFileSet(t *testing.T) {
 	root := extracttest.Repo(t, map[string]string{"a/1.json": `{"n": "1"}`, "a/2.json": `{"n": "2"}`})
-	got := mustRun(t, extract.Spec{JSON: &extract.JSON{Files: []string{"a/1.json", "a/2.json"}, Path: "$", As: "map"}}, root)
+	got := mustRun(t, extract.Of(json.Kind, json.Spec{Files: []string{"a/1.json", "a/2.json"}, Path: "$", As: "map"}), root)
 	if len(got) != 2 || got[0].Data.Items[0].At.File != "a/1.json" || got[1].Data.At.File != "a/2.json" || got[1].At.File != "a/2.json" {
 		t.Errorf("got %v", got)
 	}
@@ -177,19 +180,19 @@ func TestAsMapBoundsNodesAndBytes(t *testing.T) {
 		"b/1.yaml":   long,
 		"b/2.yaml":   long,
 	})
-	got := mustRun(t, extract.Spec{YAML: &extract.YAML{File: "under.yaml", Path: "l[*]", As: "map"}}, root)
+	got := mustRun(t, extract.Of(yaml.Kind, yaml.Spec{File: "under.yaml", Path: "l[*]", As: "map"}), root)
 	if len(got) != 990 {
 		t.Errorf("990 mappings of 101 nodes: %d", len(got))
 	}
-	_, err := run(t, extract.Spec{YAML: &extract.YAML{File: "many.yaml", Path: "l[*]", As: "map"}}, root)
+	_, err := run(t, extract.Of(yaml.Kind, yaml.Spec{File: "many.yaml", Path: "l[*]", As: "map"}), root)
 	extracttest.WantError(t, err, fmt.Sprintf("many.yaml: the mappings the path selects hold more than %d nodes in all, the limit on an extractor's values; aliases can repeat a mapping, so narrow the path", core.MaxValues))
-	_, err = run(t, extract.Spec{YAML: &extract.YAML{File: "long.yaml", Path: "l[*]", As: "map", MaxBytes: 240}}, root)
+	_, err = run(t, extract.Of(yaml.Kind, yaml.Spec{File: "long.yaml", Path: "l[*]", As: "map", MaxBytes: 240}), root)
 	extracttest.WantError(t, err, "long.yaml: the mappings the path selects hold more than 240 bytes of keys and scalars in all, the extractor's max_bytes")
-	if got := mustRun(t, extract.Spec{YAML: &extract.YAML{File: "fits.yaml", Path: "l[*]", As: "map", MaxBytes: 240}}, root); len(got) != 3 {
+	if got := mustRun(t, extract.Of(yaml.Kind, yaml.Spec{File: "fits.yaml", Path: "l[*]", As: "map", MaxBytes: 240}), root); len(got) != 3 {
 		t.Errorf("123 bytes of keys and scalars under 240: %v", got)
 	}
-	_, err = run(t, extract.Spec{JSON: &extract.JSON{Files: []string{"s/1.json", "s/2.json"}, Path: "[*]", As: "map"}}, root)
+	_, err = run(t, extract.Of(json.Kind, json.Spec{Files: []string{"s/1.json", "s/2.json"}, Path: "[*]", As: "map"}), root)
 	extracttest.WantError(t, err, fmt.Sprintf("json: the files hold more than %d values, the limit, each node of a mapping one", core.MaxValues))
-	_, err = run(t, extract.Spec{YAML: &extract.YAML{Files: []string{"b/1.yaml", "b/2.yaml"}, Path: "l[*]", As: "map", MaxBytes: 400}}, root)
+	_, err = run(t, extract.Of(yaml.Kind, yaml.Spec{Files: []string{"b/1.yaml", "b/2.yaml"}, Path: "l[*]", As: "map", MaxBytes: 400}), root)
 	extracttest.WantError(t, err, "yaml: the values of the files hold more than 400 bytes in all, the extractor's max_bytes")
 }

@@ -292,6 +292,22 @@ func TestGlobNeedsGit(t *testing.T) {
 	extracttest.WantError(t, err, `env: files lists the glob "*.sh": the repository root holds no .git`)
 }
 
+// A file over the bytes the files before it left is known by
+// core.ErrTooLarge, which the note keeps, and not by the words of core's
+// message, so the note survives a reworded message (#197). Planted break:
+// Extract's errors.Is replaced by a match of "bytes, past the limit of",
+// which is the old text match after core rewords its message.
+func TestAFileOverTheBytesLeftIsKnownByItsSentinel(t *testing.T) {
+	root := extracttest.Repo(t, map[string]string{"a.sh": "A=1\n", "b.sh": "A=2\n"})
+	_, _, err := run(t, Spec{Name: "A", Files: []string{"a.sh", "b.sh"}, MaxBytes: 6}, root)
+	if !errors.Is(err, core.ErrTooLarge) {
+		t.Fatalf("%v: is not core.ErrTooLarge", err)
+	}
+	if !strings.HasSuffix(err.Error(), "; the files env reads, and a GitLab CI file's includes, hold at most max_bytes, 6, in all") {
+		t.Fatalf("%v: lacks the note on the files' budget", err)
+	}
+}
+
 // The files hold at most max_bytes in all, a GitLab CI file's includes
 // too, and the values too, and at most core.MaxValues values; values of
 // exactly max_bytes are kept. A file past what the files before left is

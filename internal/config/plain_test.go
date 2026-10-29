@@ -78,7 +78,7 @@ func TestParseRefusesOnlyATextThatLoadsAsAnother(t *testing.T) {
 		if err != nil {
 			return nil, err
 		}
-		return []string{cfg.Checks[0].Reason, cfg.Checks[0].Run[0]}, nil
+		return []string{cfg.Checks[0].Reason, runOf(cfg.Checks[0])[0]}, nil
 	}
 	for _, text := range refused {
 		value := text[strings.LastIndex(text, " ")+1:]
@@ -126,7 +126,7 @@ func TestParseKeepsStringsThatAreWrittenAsStrings(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got := cfg.Checks[0].Run[0]; got != tc.want {
+			if got := runOf(cfg.Checks[0])[0]; got != tc.want {
 				t.Fatalf("run[0] = %q, want %q", got, tc.want)
 			}
 		})
@@ -135,10 +135,11 @@ func TestParseKeepsStringsThatAreWrittenAsStrings(t *testing.T) {
 
 // Every string field of a check, found from the types the file decodes
 // into, is refused when written y: a string field added later is covered
-// without a line here. The refusal comes before validation, so each file
-// holds only the path to the field.
+// without a line here, and so is one of an extractor kind, through the
+// types a check is written as (asWritten). The refusal comes before
+// validation, so each file holds only the path to the field.
 func TestParseRefusesYInEveryStringField(t *testing.T) {
-	paths := stringFields(reflect.TypeFor[checkEntry](), nil)
+	paths := stringFields(asWritten(reflect.TypeFor[checkEntry]()), nil)
 	if len(paths) < 20 {
 		t.Fatalf("found %d string fields: %v; the walk of the types misses some", len(paths), paths)
 	}
@@ -238,7 +239,7 @@ func TestParseKeepsAnExtractorNameThatLoadsAsWritten(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := cfg.Checks[0].Rule.Agree; len(got) != 2 || got[0] != "1" || got[1] != "20.04" {
+	if got := cfg.Checks[0].Rule().Agree; len(got) != 2 || got[0] != "1" || got[1] != "20.04" {
 		t.Fatalf("agree = %q, want [1 20.04]", got)
 	}
 }

@@ -75,7 +75,7 @@ stderr 'check "skip-bool": decode: skip_not_literal takes a list of extractor na
 ! exec errata check -c skip-scalar.yaml
 stderr 'check "skip-scalar": decode: skip_not_literal takes a list of extractor names, such as skip_not_literal: \[name\]; "shell" is not accepted'
 ! exec errata check -c skip-program.yaml
-stderr 'check "skip-program": .*a check is a program check \(run\) or a rule \(extract\), never both'
+stderr 'check "skip-program": keys of two kinds of check: run makes a program check, and skip_not_literal makes a rule'
 ! stdout .
 
 -- build.sh --

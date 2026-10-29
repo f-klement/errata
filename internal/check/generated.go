@@ -3,6 +3,7 @@ package check
 import (
 	"errors"
 	"fmt"
+	"strconv"
 )
 
 // Generated is what makes a check a generated check: a file the repository
@@ -21,23 +22,25 @@ type Generated struct {
 	MaxBytes int64
 }
 
-// IsGenerated reports whether c is a generated check.
-func (c Check) IsGenerated() bool { return c.Generated != nil }
+// Name is generated.
+func (*Generated) Name() string { return "generated" }
 
-// validate returns every problem with g. c is the check g belongs to.
-func (g Generated) validate(c Check) []error {
+// Nouns are generated check and generated checks.
+func (*Generated) Nouns() (one, many string) { return "generated check", "generated checks" }
+
+// ScopeRefusal refuses every scope but repo: the check compares a file of
+// the repository with what its generator prints from the repository, so it
+// needs no provider.
+func (*Generated) ScopeRefusal(s Scope) string {
+	if s != ScopeRepo {
+		return "a generated check compares a file of the repository with what its generator prints, so its scope is repo"
+	}
+	return ""
+}
+
+// Validate returns every problem with g.
+func (g *Generated) Validate(Check) []error {
 	var errs []error
-	if len(c.Run) > 0 {
-		errs = append(errs, errors.New("run is set beside generated: a generated check runs generated.run, so write the command there"))
-	}
-	if c.Rule != nil {
-		errs = append(errs, errors.New("a check is a rule (extract) or a generated check (generated), never both"))
-	}
-	if c.Scope != ScopeRepo && c.Scope.known() {
-		// The check compares a file of the repository with what its
-		// generator prints from the repository, so it needs no provider.
-		errs = append(errs, fmt.Errorf("scope %q: a generated check compares a file of the repository with what its generator prints, so its scope is repo", c.Scope))
-	}
 	if g.File == "" {
 		errs = append(errs, errors.New("generated.file is required: name the committed file the generator prints"))
 	}
@@ -49,4 +52,25 @@ func (g Generated) validate(c Check) []error {
 		errs = append(errs, fmt.Errorf("generated.max_bytes is %d: the bound on the file and the generator's output must be positive", g.MaxBytes))
 	}
 	return errs
+}
+
+// ListFields are generated, with the file, the generator and the bound,
+// and timeout.
+func (g *Generated) ListFields(c Check) Fields {
+	return Fields{
+		{"generated", Fields{{"file", g.File}, {"run", OrEmpty(g.Run)}, {"max_bytes", g.MaxBytes}}},
+		{"timeout", c.Timeout.String()},
+	}
+}
+
+// ListLines are the file, the generator under run, as a program check's
+// run is written since it is the program errata starts, the bound and
+// timeout.
+func (g *Generated) ListLines(c Check, q Quoter) []Line {
+	return []Line{
+		{"file:", q.Value(g.File)},
+		{"run:", quoted(q, g.Run, " ")},
+		{"max_bytes:", strconv.FormatInt(g.MaxBytes, 10)},
+		{"timeout:", c.Timeout.String()},
+	}
 }

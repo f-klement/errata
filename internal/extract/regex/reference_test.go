@@ -221,6 +221,27 @@ func TestResolveAndPlace(t *testing.T) {
 	}
 }
 
+// A regex is described as reading the extractor its pattern references,
+// and none for a pattern with none or one Build refuses; as: record gives
+// records of the named groups, in the order the pattern opens them.
+// Planted breaks: each condition of Describe negated.
+func TestDescribe(t *testing.T) {
+	for _, c := range []struct {
+		spec Spec
+		want check.Description
+	}{
+		{Spec{Pattern: `((?{a}))`}, check.Description{Label: "regex", Reads: []string{"a"}}},
+		{Spec{Pattern: `(x)`}, check.Description{Label: "regex"}},
+		{Spec{Pattern: `((?{a})(?{b}))`}, check.Description{Label: "regex"}},
+		{Spec{Pattern: `(?P<b>x)(?P<a>y)`, As: "record"}, check.Description{Label: "regex", Shape: check.ShapeRecord, Fields: []string{"b", "a"}}},
+		{Spec{Pattern: `(?P<b>x)`, As: "map"}, check.Description{Label: "regex"}},
+	} {
+		if got := Describe(c.spec); !reflect.DeepEqual(got, c.want) {
+			t.Errorf("Describe(%+v) = %+v, want %+v", c.spec, got, c.want)
+		}
+	}
+}
+
 // Under values_as: pattern, ^ and $ in a value match at the start and end
 // of the text, as in a JavaScript regex without the m flag, such as a
 // Renovate matchString, though the pattern around the value keeps the m

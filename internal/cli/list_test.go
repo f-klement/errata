@@ -37,7 +37,7 @@ func recordingLoader(calls *[]loadCall, checks []check.Check, err error) loader 
 // the absent planted.yaml.
 func TestListAndCheckShareTheLoader(t *testing.T) {
 	root := t.TempDir()
-	planted := []check.Check{{ID: "from-the-loader", Reason: "r", Scope: check.ScopeRepo, Run: []string{"true"}, Timeout: 7 * time.Second}}
+	planted := []check.Check{{ID: "from-the-loader", Reason: "r", Scope: check.ScopeRepo, Kind: &check.Program{Run: []string{"true"}}, Timeout: 7 * time.Second}}
 	for _, flags := range [][]string{
 		{"--root", root, "-c", "planted.yaml"},
 		{"--root", root},

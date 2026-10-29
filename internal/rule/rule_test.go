@@ -39,7 +39,7 @@ func agreeRule(extractors ...check.NamedExtractor) check.Check {
 	for _, e := range extractors {
 		r.Agree = append(r.Agree, e.Name)
 	}
-	return check.Check{ID: "r", Reason: "r", Scope: check.ScopeRepo, Rule: r}
+	return check.Check{ID: "r", Reason: "r", Scope: check.ScopeRepo, Kind: r}
 }
 
 func named(name string, f fake) check.NamedExtractor {
@@ -117,7 +117,7 @@ func TestNormalize(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(fmt.Sprint(tc.normalize), func(t *testing.T) {
 			c := agreeRule(values()...)
-			c.Rule.Normalize = tc.normalize
+			c.Rule().Normalize = tc.normalize
 			if res := Run(context.Background(), "", c); res.Verdict != tc.want {
 				t.Fatalf("verdict %s, want %s: %s", res.Verdict, tc.want, res.Message)
 			}
@@ -131,7 +131,7 @@ func TestNormalizedTextInMessage(t *testing.T) {
 		named("a", fake{values: []check.Value{at(" A ", "a.yaml", 1)}}),
 		named("b", fake{values: []check.Value{at("b", "b.yaml", 2)}}),
 	)
-	c.Rule.Normalize = []check.Normalization{check.NormalizeTrim, check.NormalizeLower}
+	c.Rule().Normalize = []check.Normalization{check.NormalizeTrim, check.NormalizeLower}
 	res := Run(context.Background(), "", c)
 	if !strings.Contains(res.Message, `"a" at a.yaml:1 (a)`) {
 		t.Fatalf("message %q, want the normalised value", res.Message)
@@ -199,7 +199,7 @@ func TestAgreeUnknown(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			c := agreeRule(tc.extractors...)
-			c.Rule.AllowEmpty = tc.allowEmpty
+			c.Rule().AllowEmpty = tc.allowEmpty
 			res := Run(context.Background(), "", c)
 			if res.Verdict != check.VerdictUnknown {
 				t.Fatalf("verdict %s, want unknown", res.Verdict)
@@ -234,16 +234,16 @@ func TestAllowEmptyComparesTheRest(t *testing.T) {
 		named("b", fake{values: []check.Value{at("x", "b.yaml", 1)}}),
 		named("c", fake{values: []check.Value{at("y", "c.yaml", 1)}}),
 	)
-	c.Rule.AllowEmpty = []string{"a"}
+	c.Rule().AllowEmpty = []string{"a"}
 	if res := Run(context.Background(), "", c); res.Verdict != check.VerdictFalse {
 		t.Fatalf("verdict %s, want false: %s", res.Verdict, res.Message)
 	}
-	c.Rule.Extractors[2] = named("c", fake{values: []check.Value{at("x", "c.yaml", 1)}})
+	c.Rule().Extractors[2] = named("c", fake{values: []check.Value{at("x", "c.yaml", 1)}})
 	if res := Run(context.Background(), "", c); res.Verdict != check.VerdictTrue {
 		t.Fatalf("verdict %s, want true: %s", res.Verdict, res.Message)
 	}
 	c = agreeRule(named("a", fake{}), named("b", fake{values: []check.Value{at("x", "b.yaml", 1)}}))
-	c.Rule.AllowEmpty = []string{"a"}
+	c.Rule().AllowEmpty = []string{"a"}
 	if res := Run(context.Background(), "", c); res.Verdict != check.VerdictTrue {
 		t.Fatalf("one value beside a listed empty extractor: verdict %s, want true: %s", res.Verdict, res.Message)
 	}
@@ -256,8 +256,8 @@ func TestResultCarriesExtractedValues(t *testing.T) {
 	svc := []check.Value{at(" X ", "deploy/service.yaml", 3)}
 	cfg := []check.Value{at("y", "config/endpoints.yaml", 9), at("x", "config/endpoints.yaml", 12)}
 	c := agreeRule(named("service", fake{values: svc}), named("config", fake{values: cfg}), named("spare", fake{}))
-	c.Rule.AllowEmpty = []string{"spare"}
-	c.Rule.Normalize = []check.Normalization{check.NormalizeTrim, check.NormalizeLower}
+	c.Rule().AllowEmpty = []string{"spare"}
+	c.Rule().Normalize = []check.Normalization{check.NormalizeTrim, check.NormalizeLower}
 	res := Run(context.Background(), "", c)
 	want := []check.Extracted{{Extractor: "service", Values: svc}, {Extractor: "config", Values: cfg}, {Extractor: "spare"}}
 	if !reflect.DeepEqual(res.Extracted, want) {
@@ -337,8 +337,8 @@ func TestPropertyAgree(t *testing.T) {
 			extractors = append(extractors, named(name, fake{values: values}))
 		}
 		c := agreeRule(extractors...)
-		c.Rule.Normalize = normalize
-		c.Rule.AllowEmpty = allowEmpty
+		c.Rule().Normalize = normalize
+		c.Rule().AllowEmpty = allowEmpty
 		res := Run(context.Background(), "", c)
 
 		if !reflect.DeepEqual(res.Extracted, wantValues) {
@@ -541,7 +541,7 @@ func TestSharedWindowsPrintAFingerprint(t *testing.T) {
 // read as an ordinary error, which made the allow_empty rule unknown.
 func TestNoValueAndConditions(t *testing.T) {
 	c := agreeRule(named("a", fake{values: []check.Value{at("x", "f", 1), at("x", "f", 2)}}), named("b", fake{err: &check.NoValue{Reason: "settings"}}))
-	c.Rule.AllowEmpty = []string{"b"}
+	c.Rule().AllowEmpty = []string{"b"}
 	if res := Run(context.Background(), "", c); res.Verdict != check.VerdictTrue {
 		t.Fatalf("verdict %s, %s; want true", res.Verdict, res.Message)
 	}

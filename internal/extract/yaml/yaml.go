@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"slices"
 	"strings"
 
@@ -35,6 +36,33 @@ type Spec struct {
 	// Fields names each path read from a selected node into its record,
 	// for as: record, as core.CheckFields says.
 	Fields map[string]string `json:"fields,omitempty"`
+}
+
+// Kind is the yaml kind, which a rule writes under the key yaml.
+var Kind = core.Kind[Spec]{Key: "yaml", Place: Place, Resolve: Resolve, Describe: Describe}
+
+// Place is y with only what decides where it reads: its file or files as
+// core.PlaceFiles writes them, and no max_bytes, since a limit does not
+// change what is read.
+func Place(y Spec) Spec {
+	y.File, y.Files = core.PlaceFiles(y.File, y.Files)
+	y.MaxBytes = 0
+	return y
+}
+
+// Resolve is y with its max_bytes written out, and its files, embedded
+// steps and fields copied, for errata list.
+func Resolve(y Spec) Spec {
+	y.Files, y.Embedded, y.Fields = slices.Clone(y.Files), slices.Clone(y.Embedded), maps.Clone(y.Fields)
+	y.MaxBytes = core.MaxBytes(y.MaxBytes)
+	return y
+}
+
+// Describe is what y's extractor returns: literal values, each flat, a
+// mapping or a record as its as key says.
+func Describe(y Spec) check.Description {
+	shape, fields := core.TreeShape(y.As, y.Fields)
+	return check.Description{Label: "yaml", Shape: shape, Fields: fields}
 }
 
 // yamlExtractor reads a path in the documents of a YAML file that its kind

@@ -24,7 +24,7 @@ func TestEnvAsksEachReader(t *testing.T) {
 		".github/workflows/ci.yml": "on: push\njobs:\n  test:\n    runs-on: x\n    steps:\n      - id: up\n        env: {PORT: \"4\"}\n        run: up\n",
 		"Jenkinsfile":              "pipeline {\n  environment { PORT = '5' }\n  stages { stage('a') { steps { sh 'a' } } }\n}\n",
 	})
-	x, err := Build(Spec{Env: &env.Spec{Name: "PORT", Files: []string{".env", "deploy.sh", "bin/run", ".gitlab-ci.yml", ".github/workflows/ci.yml", "Jenkinsfile"}}})
+	x, err := Build(Of(env.Kind, env.Spec{Name: "PORT", Files: []string{".env", "deploy.sh", "bin/run", ".gitlab-ci.yml", ".github/workflows/ci.yml", "Jenkinsfile"}}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +58,7 @@ func TestEnvChargesGitLabIncludes(t *testing.T) {
 		".gitlab-ci.yml":   "include: big.yml\na: {script: [s]}\n",
 		"a/.gitlab-ci.yml": "include: big.yml\nb: {script: [s]}\n",
 	})
-	x, err := Build(Spec{Env: &env.Spec{Name: "PORT", Files: []string{".gitlab-ci.yml", "a/.gitlab-ci.yml"}, MaxBytes: 3000}})
+	x, err := Build(Of(env.Kind, env.Spec{Name: "PORT", Files: []string{".gitlab-ci.yml", "a/.gitlab-ci.yml"}, MaxBytes: 3000}))
 	if err != nil {
 		t.Fatal(err)
 	}

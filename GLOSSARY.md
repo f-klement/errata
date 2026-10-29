@@ -102,6 +102,12 @@ command check.
 holds when what the generator prints on stdout equals the file byte for byte. Its verdict comes
 from the comparison, never from the generator's exit status.
 
+**Check kind.** What a check is: a program check, a rule or a generated check. errata decides it
+once, when it loads the config, from the keys an entry writes: `run` makes a program check, any
+of a rule's keys a rule, and `generated` a generated check. An entry that writes none of them is
+a program check, which takes the default run. One that writes the keys of two kinds does not
+load. Not to be confused with an extractor kind.
+
 **Generator.** The program a generated check runs, as a list of arguments and never through a
 shell, the way a program check's program runs. errata compares what it prints and never runs that.
 
@@ -114,6 +120,12 @@ XML file, a key in an INI, properties or env file, a regular expression capture,
 Markdown prose, the versions of a tool in the files that pin it, the version a package gives
 itself in each of its manifests, one variable in every file a rule lists, whether a file is there and its size in bytes, an image
 digest, a field on a live object.
+
+**Extractor kind.** The key an entry under a rule's `extract:` names, such as `yaml`, `regex` or
+`ini`, and the reader that reads an entry of it: it decodes the entry, builds its extractor, gives
+its place and its defaults, and describes what the extractor returns. Each entry names exactly
+one. Not a check kind, which says whether a check is a program check, a rule or a generated
+check.
 
 **Reference.** A `(?{name})` in a `regex` pattern, which stands for the values of another
 extractor of the rule. The rule runs that extractor first, and the pattern is searched once for

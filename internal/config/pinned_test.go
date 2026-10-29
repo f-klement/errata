@@ -96,9 +96,9 @@ func TestDefaultsAndRequiredLoadAsV020Did(t *testing.T) {
 	}
 	for i, w := range want {
 		c := cfg.Checks[i]
-		if c.ID != w.id || !slices.Equal(c.Run, w.run) || c.Timeout != w.timeout || c.IsRule() != w.rule {
+		if c.ID != w.id || !slices.Equal(runOf(c), w.run) || c.Timeout != w.timeout || c.IsRule() != w.rule {
 			t.Errorf("checks[%d] = %s run %q timeout %s rule %v; want %s run %q timeout %s rule %v",
-				i, c.ID, c.Run, c.Timeout, c.IsRule(), w.id, w.run, w.timeout, w.rule)
+				i, c.ID, runOf(c), c.Timeout, c.IsRule(), w.id, w.run, w.timeout, w.rule)
 		}
 	}
 	if wantReq := []string{"suite", "b-two", "a-one", "own-placeholder", "merged", "rule-agree", "rule-assert", "slow", "aliased-run", "merged-run"}; !slices.Equal(cfg.Required, wantReq) {

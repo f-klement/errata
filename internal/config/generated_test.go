@@ -28,26 +28,26 @@ func TestGeneratedLoads(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := cfg.Checks[0]
-	if c.Generated == nil || c.Generated.File != "architecture.md" || !slices.Equal(c.Generated.Run, []string{"python3", "scripts/build.py", "--stdout"}) {
-		t.Fatalf("generated = %+v", c.Generated)
+	if c.Generated() == nil || c.Generated().File != "architecture.md" || !slices.Equal(c.Generated().Run, []string{"python3", "scripts/build.py", "--stdout"}) {
+		t.Fatalf("generated = %+v", c.Generated())
 	}
-	if c.Generated.MaxBytes != core.DefaultMaxBytes || c.Timeout != DefaultTimeout || c.Run != nil || c.Rule != nil {
-		t.Fatalf("max_bytes %d, timeout %s, run %q, rule %v", c.Generated.MaxBytes, c.Timeout, c.Run, c.Rule)
+	if c.Generated().MaxBytes != core.DefaultMaxBytes || c.Timeout != DefaultTimeout || runOf(c) != nil || c.Rule() != nil {
+		t.Fatalf("max_bytes %d, timeout %s, run %q, rule %v", c.Generated().MaxBytes, c.Timeout, runOf(c), c.Rule())
 	}
 
 	cfg, err = parseRaw([]byte("checks:\n- {id: arch, reason: r, scope: repo, timeout: 2m, generated: {file: a.md, run: [gen], max_bytes: 4096}}\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c := cfg.Checks[0]; c.Generated.MaxBytes != 4096 || c.Timeout != 2*time.Minute {
-		t.Fatalf("max_bytes %d, timeout %s, want 4096 and 2m", c.Generated.MaxBytes, c.Timeout)
+	if c := cfg.Checks[0]; c.Generated().MaxBytes != 4096 || c.Timeout != 2*time.Minute {
+		t.Fatalf("max_bytes %d, timeout %s, want 4096 and 2m", c.Generated().MaxBytes, c.Timeout)
 	}
 }
 
 // defaults.run is a program check's, so a generated check does not take it,
 // and its generator takes the placeholders a run takes. The planted breaks:
-// apply given isRule alone, which gave the generated check the default run
-// and refused it as both, and substitute left out of buildGenerated.
+// the generated row calling apply, which gave the generated check the
+// default run, and substitute left out of buildGenerated.
 func TestGeneratedTakesNoDefaultRun(t *testing.T) {
 	cfg, err := parseRaw([]byte("defaults: {run: [check.py, <errata.id>]}\nchecks:\n" +
 		"- {id: arch-doc, reason: r, scope: repo, generated: {file: a.md, run: [gen, --for=<errata.id_underscored>]}}\n" +
@@ -55,11 +55,11 @@ func TestGeneratedTakesNoDefaultRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if g := cfg.Checks[0]; g.Run != nil || !slices.Equal(g.Generated.Run, []string{"gen", "--for=arch_doc"}) {
-		t.Errorf("generated check: run %q, generated.run %q", g.Run, g.Generated.Run)
+	if g := cfg.Checks[0]; runOf(g) != nil || !slices.Equal(g.Generated().Run, []string{"gen", "--for=arch_doc"}) {
+		t.Errorf("generated check: run %q, generated.run %q", runOf(g), g.Generated().Run)
 	}
-	if p := cfg.Checks[1]; !slices.Equal(p.Run, []string{"check.py", "prog"}) {
-		t.Errorf("program check beside it: run %q", p.Run)
+	if p := cfg.Checks[1]; !slices.Equal(runOf(p), []string{"check.py", "prog"}) {
+		t.Errorf("program check beside it: run %q", runOf(p))
 	}
 }
 
@@ -82,11 +82,13 @@ func TestGeneratedRefusals(t *testing.T) {
 		name, check, want string
 	}{
 		{"run beside it", `{id: a, reason: r, scope: repo, run: [x], generated: {file: f, run: [g]}}`,
-			"run is set beside generated, whatever its value"},
+			"keys of two kinds of check: run makes a program check, and generated makes a generated check; a check is one kind: remove the keys of the kinds it is not, or write a check for each"},
 		{"empty run beside it", `{id: a, reason: r, scope: repo, run: [], generated: {file: f, run: [g]}}`,
-			"run is set beside generated, whatever its value"},
+			"keys of two kinds of check: run makes a program check, and generated makes a generated check"},
 		{"extract beside it", `{id: a, reason: r, scope: repo, extract: {x: {yaml: {file: f.yaml, path: a}}}, assert: "size(x) > 0", generated: {file: f, run: [g]}}`,
-			"a rule (extract) or a generated check (generated), never both"},
+			"keys of two kinds of check: extract and assert make a rule, and generated makes a generated check"},
+		{"all three", `{id: a, reason: r, scope: repo, run: [x], agree: [x], generated: {file: f, run: [g]}}`,
+			"keys of three kinds of check: run makes a program check, agree makes a rule, and generated makes a generated check; a check is one kind: remove the keys of the kinds it is not, or write a check for each"},
 		{"null", `{id: a, reason: r, scope: repo, generated: null}`, "generated takes file, the committed file, and run"},
 		{"no file", `{id: a, reason: r, scope: repo, generated: {run: [g]}}`, "generated.file is required"},
 		{"outside the repository", `{id: a, reason: r, scope: repo, generated: {file: ../f, run: [g]}}`, "generated: file \"../f\" is outside the repository"},
@@ -125,10 +127,10 @@ func TestGeneratedRefusesEachProblemOnce(t *testing.T) {
 	if err == nil || strings.Contains(err.Error(), "generated: file is required") {
 		t.Errorf("no file: error = %v, want validation's message alone", err)
 	}
-	// An empty run beside generated is refused as run beside generated,
-	// not as a program check's run of no argument.
+	// An empty run beside generated is refused as keys of two kinds, not
+	// also as a program check's run of no argument.
 	_, err = parseRaw([]byte("checks:\n- {id: a, reason: r, scope: repo, run: [], generated: {file: f, run: [g]}}\n"))
-	if err == nil || strings.Contains(err.Error(), "run lists no argument") || strings.Count(err.Error(), "run is set beside generated") != 1 {
+	if err == nil || strings.Contains(err.Error(), "run lists no argument") || strings.Count(err.Error(), "keys of two kinds of check") != 1 {
 		t.Errorf("empty run beside generated: error = %v, want the one refusal", err)
 	}
 	_, err = parseRaw([]byte("checks:\n- {id: a, reason: r, scope: repo, generated: {file: f, run: [g], max_bytes: -1}}\n"))

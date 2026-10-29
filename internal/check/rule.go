@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-// Rule is what makes a check a rule rather than a program check: the
+// Rule is what makes a check a rule: the
 // extractors it names and the relation their values must satisfy. A rule
 // states exactly one relation, agree or assert.
 type Rule struct {
@@ -78,10 +78,10 @@ type NamedExtractor struct {
 
 // AgreeOn is what an entry of agree names: the extractor of that name,
 // with field "", or, when no extractor has the name and it is x.f, split at
-// its last dot, the extractor x and its records' field f. validate refuses
+// its last dot, the extractor x and its records' field f. Validate refuses
 // an entry that is both. ok is false when it names neither
-// an extractor nor a field of one, which validate refuses; the field is
-// then checked against the extractor's Fields by validate, not here.
+// an extractor nor a field of one, which Validate refuses; the field is
+// then checked against the extractor's Fields by Validate, not here.
 func (r Rule) AgreeOn(entry string) (x NamedExtractor, field string, ok bool) {
 	for _, e := range r.Extractors {
 		if e.Name == entry {
@@ -119,6 +119,11 @@ type Extracted struct {
 	// the comparison. A report shows each as left out.
 	LeftOut []Value
 }
+
+// Blame names the value of a result that its rule blames:
+// Extracted[Extractor].Values[Value]. The rule decides it with the verdict,
+// so a report reads it and never compares the values again.
+type Blame struct{ Extractor, Value int }
 
 // LeftOutCount is the part of a rule's message that counts the values
 // skip_not_literal left out: a line for each extractor that left any out, in
@@ -199,23 +204,87 @@ func (r Rule) Normalized(text string) string {
 	return text
 }
 
-// validate returns every problem with r. c is the check r belongs to, for the
-// keys that a rule and a program check treat differently.
-func (r Rule) validate(c Check) []error {
+// ErrRuleTimeout refuses a timeout on a rule. An extractor reads files in
+// process and takes no context, so a timeout on a rule would be a key that
+// does nothing.
+var ErrRuleTimeout = errors.New("timeout applies to a program check and a generated check: a rule's extractors take no timeout")
+
+// Name is rule.
+func (*Rule) Name() string { return "rule" }
+
+// Nouns are rule and rules.
+func (*Rule) Nouns() (one, many string) { return "rule", "rules" }
+
+// ScopeRefusal refuses every scope but repo. Every extractor reads a file
+// under the root, so a live rule would be true about the running system
+// without having read it.
+func (*Rule) ScopeRefusal(s Scope) string {
+	if s != ScopeRepo {
+		return "a rule reads files, so its scope is repo; a live extractor comes with a provider"
+	}
+	return ""
+}
+
+// ListFields are extract, each entry by its name, the relation, and the
+// lists of names a rule takes, as [] when it sets none.
+func (r *Rule) ListFields(Check) Fields {
+	extract := make(map[string]any, len(r.Extractors))
+	for _, x := range r.Extractors {
+		extract[x.Name] = x.Spec
+	}
+	relation := Fields{}
+	if len(r.Agree) > 0 {
+		relation = Fields{{"agree", r.Agree}, {"compare", string(r.Comparison())}}
+	} else if r.Assert != "" {
+		relation = Fields{{"assert", r.Assert}}
+	}
+	normalize := []string{}
+	for _, n := range r.Normalize {
+		normalize = append(normalize, string(n))
+	}
+	return Fields{
+		{"extract", extract},
+		{"relation", relation},
+		{"normalize", normalize},
+		{"allow_empty", OrEmpty(r.AllowEmpty)},
+		{"skip_not_literal", OrEmpty(r.SkipNotLiteral)},
+	}
+}
+
+// ListLines are extract, a line for each extractor, agree with its compare
+// or assert, and each list of names the rule sets.
+func (r *Rule) ListLines(_ Check, q Quoter) []Line {
+	var extract []string
+	for _, x := range r.Extractors {
+		extract = append(extract, q.Value(x.Name)+": "+q.Spec(x.Spec))
+	}
+	lines := []Line{{"extract:", strings.Join(extract, "\n")}}
+	if len(r.Agree) > 0 {
+		lines = append(lines, Line{"agree:", quoted(q, r.Agree, ", ") + " (compare " + string(r.Comparison()) + ")"})
+	} else {
+		lines = append(lines, Line{"assert:", r.Assert})
+	}
+	normalize := make([]string, len(r.Normalize))
+	for i, n := range r.Normalize {
+		normalize[i] = string(n)
+	}
+	for _, f := range []struct {
+		label string
+		names []string
+	}{{"normalize:", normalize}, {"allow_empty:", r.AllowEmpty}, {"skip_not_literal:", r.SkipNotLiteral}} {
+		if len(f.names) > 0 {
+			lines = append(lines, Line{f.label, quoted(q, f.names, ", ")})
+		}
+	}
+	return lines
+}
+
+// Validate returns every problem with r. c is the check r is the kind of,
+// for its timeout, which a rule does not take.
+func (r *Rule) Validate(c Check) []error {
 	var errs []error
-	if len(c.Run) > 0 {
-		errs = append(errs, errors.New("a check is a program check (run) or a rule (extract), never both"))
-	}
 	if c.Timeout != 0 {
-		// An extractor reads files in process and takes no context, so a
-		// timeout on a rule would be a key that does nothing.
-		errs = append(errs, errors.New("timeout applies to a program check only: a rule's extractors take no timeout"))
-	}
-	if c.Scope != ScopeRepo && c.Scope.known() {
-		// An unknown scope is refused once, by Check.Validate.
-		// Every extractor reads a file under the root. A live rule would be
-		// true about the running system without having read it.
-		errs = append(errs, fmt.Errorf("scope %q: a rule reads files, so its scope is repo; a live extractor comes with a provider", c.Scope))
+		errs = append(errs, ErrRuleTimeout)
 	}
 	if len(r.Extractors) == 0 {
 		errs = append(errs, errors.New("extract is required for a rule and must declare at least one extractor"))

@@ -39,7 +39,7 @@ The limits are what keep that honest:
   command line, so no argument is split, globbed or expanded. The placeholders a `run` takes
   (`<errata.id>`, `<errata.id_underscored>`) are replaced inside one argument, as there.
 - **The rules of a program check, through the same code.** The generator and a program check
-  start through one function in `internal/protocol`: the repository root as the working
+  start through one function, `Run` in `internal/program`: the repository root as the working
   directory; errata's environment with `ERRATA_ROOT`, `ERRATA_CHECK_ID` and `ERRATA_SCOPE` added;
   the check's `timeout`, 30 seconds when it sets none; a process group of its own, which the
   timeout kills while the program runs. A child left running after the program exits runs on,

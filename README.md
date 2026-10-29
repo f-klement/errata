@@ -667,8 +667,8 @@ the line where it starts, or the file alone for `exists` and `size`; `yaml`, `js
 `regex` read every file `files:` names instead of one (see [A set of files](#a-set-of-files)),
 `tool_version` reads every file that pins one tool, `package_version` each manifest of the package,
 and `env` one variable in every file a rule lists; `exists` and `size` look at one file and read
-none of it. A rule names its extractors under `extract:` and sets exactly one of the eighteen keys
-in each:
+none of it. A rule names its extractors under `extract:` and sets exactly one key in each, the
+extractor's kind:
 
 ```yaml
 extract:
@@ -3080,14 +3080,20 @@ Code scanning does not display notifications. An unknown or a skip shows on GitH
 failed job; the file holds them, and `errata check` in the text format prints them. A clean code
 scanning tab is therefore not a clean run: read the job's result.
 
-For an agree rule, errata groups the values by their normalised text and takes the largest group
-as the majority. The result points at the first value outside the majority and links every other
-value as a related location. Values come in the order `agree:` names their extractors, so on a tie
-the first name in `agree:` counts as right. With two values that differ, the alert is on the second
-one. List the source of truth first. An assert rule has no majority, so its result points at the
-first value it extracted. A program check reports no values, so its result points at the line where the check starts
-in the config file, and so does a rule whose extractors found nothing; the message is what the
-program printed.
+The result points at the value the rule blames and links every other value as a related location.
+An agree rule compared as text groups the values by their normalised text and takes the largest
+group as the majority, and blames the first value outside it. Values come in the order `agree:`
+names their extractors, so on a tie the first name in `agree:` counts as right. With two values
+that differ, the alert is on the second one. List the source of truth first. With
+`compare: semver` there are no groups of text: of the two values the message names, the rule
+blames the later, the one that does not agree with a value before it, so over `20`, `20.11.1` and
+`18` the alert is on `18`. The semver blame goes by position alone, however many places hold each
+value: with `18` in one file and `20.1.0` in two after it, semver blames `20.1.0`, where the text
+rule would blame `18`, the minority. Ranges alone that no release satisfies blame no value, and the
+result points at the check in the config. An assert rule has no majority, so it blames the first
+value it extracted. A program check reports no values, so its result points at the line where the
+check starts in the config file, and so does a rule whose extractors found nothing; the message is
+what the program printed.
 
 Every path is relative to the repository root, with `uriBaseId` `%SRCROOT%`, so code scanning
 places it in the checkout. A value whose path is absolute, names a host or climbs out with `..` gets
@@ -3174,6 +3180,7 @@ Each package has one job, and the domain types import nothing else:
 | `internal/config` | reads `errata.yaml`, strictly, and builds each rule's extractors and assert |
 | `internal/engine` | decides which checks run and which are skipped |
 | `internal/protocol` | runs a check program and turns its exit code into a verdict |
+| `internal/program` | starts every program errata runs, with its stdin, timeout, output bound and process group |
 | `internal/rule` | evaluates a rule: runs its extractors, compares their values or evaluates its assert in CEL |
 | `internal/semver` | reads versions and ranges in five ecosystems' syntax, for `compare: semver` and the assert helpers |
 | `internal/extract` | builds the extractors a rule names and reads their values from files, one reader package beneath it for each kind |

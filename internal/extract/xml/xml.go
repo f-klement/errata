@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -30,6 +32,29 @@ type Spec struct {
 	Path       string            `json:"path"`
 	Namespaces map[string]string `json:"namespaces,omitempty"`
 	MaxBytes   int64             `json:"max_bytes,omitempty"`
+}
+
+// Kind is the xml kind, which a rule writes under the key xml.
+var Kind = core.Kind[Spec]{Key: "xml", Place: Place, Resolve: Resolve, Describe: Describe}
+
+// Place is x with only what decides where it reads: the file cleaned, and
+// no max_bytes, since a limit does not change what is read.
+func Place(x Spec) Spec {
+	x.File, x.MaxBytes = filepath.Clean(x.File), 0
+	return x
+}
+
+// Resolve is x with its max_bytes written out and its namespaces copied,
+// for errata list.
+func Resolve(x Spec) Spec {
+	x.Namespaces = maps.Clone(x.Namespaces)
+	x.MaxBytes = core.MaxBytes(x.MaxBytes)
+	return x
+}
+
+// Describe is what the kind's extractor returns: flat values, each literal.
+func Describe(Spec) check.Description {
+	return check.Description{Label: "xml"}
 }
 
 // xmlBytesPerNode is how many bytes of max_bytes allow one node of an XML

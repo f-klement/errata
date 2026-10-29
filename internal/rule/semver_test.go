@@ -73,7 +73,7 @@ func TestSemverErrors(t *testing.T) {
 
 func semverRule(extractors ...check.NamedExtractor) check.Check {
 	c := agreeRule(extractors...)
-	c.Rule.Compare = check.CompareSemver
+	c.Rule().Compare = check.CompareSemver
 	return c
 }
 
@@ -164,11 +164,11 @@ func TestAgreeSemverStopsAtTheBound(t *testing.T) {
 // is unchanged: "20" and "20.11.1" differ as text.
 func TestAgreeSemverNormalizesAndTextStays(t *testing.T) {
 	c := semverRule(named("a", fake{values: []check.Value{at(" V20 ", "a", 1)}}), named("b", fake{values: []check.Value{at("20.11.1", "b", 1)}}))
-	c.Rule.Normalize = []check.Normalization{check.NormalizeTrim, check.NormalizeLower}
+	c.Rule().Normalize = []check.Normalization{check.NormalizeTrim, check.NormalizeLower}
 	if res := Run(context.Background(), "/repo", c); res.Verdict != check.VerdictTrue {
 		t.Errorf("normalised semver: %s %s", res.Verdict, res.Message)
 	}
-	c.Rule.Compare = check.CompareText
+	c.Rule().Compare = check.CompareText
 	if res := Run(context.Background(), "/repo", c); res.Verdict != check.VerdictFalse {
 		t.Errorf("text compare of 20 and 20.11.1: %s", res.Verdict)
 	}

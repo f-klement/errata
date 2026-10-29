@@ -13,14 +13,14 @@ import (
 // generatedCheck is a generated check as the loader builds one.
 func generatedCheck() check.Check {
 	return check.Check{ID: "g", Reason: "r", Scope: check.ScopeRepo, Timeout: 30 * time.Second, At: check.Location{File: "errata.yaml", Line: 9},
-		Generated: &check.Generated{File: "architecture.md", Run: []string{"python3", "scripts/build architecture.py", "--stdout"}, MaxBytes: 1 << 20}}
+		Kind: &check.Generated{File: "architecture.md", Run: []string{"python3", "scripts/build architecture.py", "--stdout"}, MaxBytes: 1 << 20}}
 }
 
 // errata list prints the generator's argv, so a reader sees what will run:
 // in JSON as generated.run beside the file, the bound and the timeout, with
 // no run or extract of its own, and in text under the run: label a program
 // check's command takes, an argument with a space between backquotes. The
-// count names the generated checks apart. The planted breaks: toListCheck
+// count names the generated checks apart. The planted breaks: the listing
 // reading a generated check as a program check, which listed run [] and no
 // file, and the count leaving generated checks among the program checks.
 func TestListGenerated(t *testing.T) {

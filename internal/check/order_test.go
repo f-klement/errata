@@ -20,7 +20,7 @@ func ne(name string, x Extractor) NamedExtractor { return NamedExtractor{Name: n
 // ruleOf is an assert rule whose extractors, in name order, are given as
 // name and extractor pairs.
 func ruleOf(extractors ...NamedExtractor) Check {
-	return Check{ID: "r", Reason: "r", Scope: ScopeRepo, Rule: &Rule{Extractors: extractors, Assert: "true"}}
+	return Check{ID: "r", Reason: "r", Scope: ScopeRepo, Kind: &Rule{Extractors: extractors, Assert: "true"}}
 }
 
 // Each case plants one break in the dependencies of a rule that loads, and
@@ -75,7 +75,7 @@ func TestOrder(t *testing.T) {
 	r := ruleOf(
 		ne("a", reads{"c"}), ne("b", noValues{}),
 		ne("c", reads{"d"}), ne("d", noValues{}),
-	).Rule
+	).Rule()
 	cases := []struct {
 		name  string
 		names []string
@@ -98,7 +98,7 @@ func TestOrder(t *testing.T) {
 
 // A cycle, which validation refuses, still ends, with each name once.
 func TestOrderEndsOnACycle(t *testing.T) {
-	r := ruleOf(ne("a", reads{"b"}), ne("b", reads{"a"})).Rule
+	r := ruleOf(ne("a", reads{"b"}), ne("b", reads{"a"})).Rule()
 	if got := r.Order([]string{"a", "b"}); !slices.Equal(got, []string{"b", "a"}) {
 		t.Fatalf("Order = %q, want [b a]", got)
 	}
