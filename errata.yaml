@@ -43,7 +43,8 @@ checks:
   - id: docs-state-the-max-bytes-bounds
     reason: >
       The README and ADR 0003 tell a user the file size an extractor reads by default and the most
-      max_bytes accepts, and the README's errata list section gives the default in bytes. A bound
+      max_bytes accepts, and the README's errata list section and its generated check's keys give
+      them in bytes. A bound
       changed in internal/extract/core/limits.go and not in them has a user pick max_bytes from a
       number errata no longer enforces, and a file the documentation says loads is refused.
     scope: repo
@@ -53,8 +54,10 @@ checks:
       readme_default: {regex: {file: README.md, pattern: '(?:\| file size \| |writing 0, keeps )(\d+) MiB'}}
       readme_ceiling: {regex: {file: README.md, pattern: 'or one over \d+ \((\d+) MiB\)'}}
       readme_ceiling_bytes: {regex: {file: README.md, pattern: 'or one over (\d+) \(\d+ MiB\)'}}
-      readme_list_default: {regex: {file: README.md, pattern: '^- `max_bytes` of every extractor: (\d+) \(\d+ MiB\)'}}
-      readme_list_default_mib: {regex: {file: README.md, pattern: '^- `max_bytes` of every extractor: \d+ \((\d+) MiB\)'}}
+      readme_list_default: {regex: {file: README.md, pattern: '^- `max_bytes` of every extractor and of a generated check: (\d+) \(\d+ MiB\)'}}
+      readme_list_default_mib: {regex: {file: README.md, pattern: '^- `max_bytes` of every extractor and of a generated check: \d+ \((\d+) MiB\)'}}
+      readme_generated_ceiling: {regex: {file: README.md, pattern: '^\| `generated.max_bytes` \| no \| .*from 1 to (\d+) \(\d+ MiB\)'}}
+      readme_generated_default: {regex: {file: README.md, pattern: '^\| `generated.max_bytes` \| no \| .*default (\d+) \(\d+ MiB\)'}}
       adr_default: {regex: {file: docs/adr/0003-extractors-bound-time-and-size-and-let-memory-fail-closed.md, pattern: 'a file size cap \((\d+) MiB by default'}}
       adr_ceiling: {regex: {file: docs/adr/0003-extractors-bound-time-and-size-and-let-memory-fail-closed.md, pattern: 'never above (\d+) MiB'}}
     assert: |
@@ -62,7 +65,9 @@ checks:
       readme_ceiling.all(v, v == code_ceiling[0]) && adr_ceiling.all(v, v == code_ceiling[0]) &&
       readme_ceiling_bytes.all(v, int(v) == int(code_ceiling[0]) * 1048576) &&
       readme_list_default.all(v, int(v) == int(code_default[0]) * 1048576) &&
-      readme_list_default_mib.all(v, v == code_default[0])
+      readme_list_default_mib.all(v, v == code_default[0]) &&
+      readme_generated_ceiling.all(v, int(v) == int(code_ceiling[0]) * 1048576) &&
+      readme_generated_default.all(v, int(v) == int(code_default[0]) * 1048576)
 
   - id: readme-names-the-zone-database
     reason: >

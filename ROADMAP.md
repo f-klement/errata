@@ -85,7 +85,28 @@ Claims about how values sit together, not only what they are.
 - A generated file is current: a committed file equals what its generator prints. This is the one
   check kind besides a program check that runs anything, and an ADR sets its limits.
 
-## v0.2.3: docs claims
+## v0.2.3: consolidation before plugins
+
+No new features. The places where a new extractor, check kind or reader is added today each hold
+a case per kind; this release makes each of them one table, so the readers of the later v0.2
+releases and the plugins of v0.3.0 are added in one place.
+
+- Each kind of extractor is registered once, and a rule's extract entry finds its kind by its
+  key, so a key no installed reader knows can be named in an unknown result.
+- An extractor describes what it returns once (flat values, maps or records, which are not
+  literal, which other extractors it reads), and config, rules and reports read that description.
+- Where an extractor reads is one part every reader shares, and one read of a file serves every
+  reader of it.
+- The bounds on what an extractor returns hold where its values reach the rule, and extraction
+  can be cancelled.
+- One function starts every program errata runs, with its input, bounds, timeout and process
+  group.
+- A check's kind is decided once at load and dispatched from one table.
+- The readers `env:` asks come from the registry of kinds.
+- A file over its size limit is recognised by its error, not by the words of its message.
+- CI's lists of readers and fuzz targets come from the tree, and mutation floors sit in one table.
+
+## v0.2.4: docs claims
 
 The claims documentation makes, read by its structure.
 
@@ -96,7 +117,7 @@ The claims documentation makes, read by its structure.
 - Markers: a claim tagged inline in a document or a comment, found anywhere in the repository and
   bound to the rule with the same id. A marker that no rule checks is an erratum.
 
-## v0.2.4: literals and dependencies
+## v0.2.5: literals and dependencies
 
 Values written in code, and one version pinned in many places.
 
@@ -109,7 +130,7 @@ Values written in code, and one version pinned in many places.
 - A package's version read from the git tag on HEAD, and unknown on a checkout with no tags.
 - A TOML date written as a version is refused, as Cargo and the Python tools refuse it.
 
-## v0.2.5: host config and formats
+## v0.2.6: host config and formats
 
 The files a host is configured with, and the formats the earlier readers left open.
 

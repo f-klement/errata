@@ -1,0 +1,184 @@
+# A regex pattern can reference another extractor's values with (?{name}):
+# the rule runs that extractor first and searches for each of its values,
+# quoted as text. Here every release a bootstrap script pins with --version
+# must be named by a Renovate matchString, the claim that let
+# gitlab-runner-k3s sit untracked while gitlab-runner was bumped. A glob
+# matches the files git tracks.
+exec git init -q
+exec git add infra docs
+! exec errata check
+stdout '^FALSE pinned-charts-are-renovate-tracked \(repo\)$'
+stdout '^          releases\[0\] = "gitlab-runner-k3s" at infra/gitlab-runner-k3s/bootstrap.sh:2$'
+stdout '^          releases\[1\] = "gitlab-runner" at infra/gitlab-runner/bootstrap.sh:2$'
+stdout '^          tracked\[0\] = "gitlab-runner" at renovate.json:5$'
+stdout '^1 erratum, 0 unknown.'
+
+# by_file groups a referencing extractor's values by the files it searched,
+# each file's in the order they stand in it.
+exec errata check -c byfile.yaml
+stdout '^0 errata, 0 unknown.'
+cp runners-old.md docs/runners.md
+! exec errata check -c byfile.yaml
+stdout '^FALSE each-runbook-names-its-releases \(repo\)$'
+stdout '^          mentioned\[0\] = "gitlab-runner" at docs/old.md:1$'
+stdout '^          mentioned\[1\] = "gitlab-runner" at docs/runners.md:1$'
+cp runners-new.md docs/runners.md
+
+# A matchString for the second release: the claim holds.
+cp renovate-fixed.json renovate.json
+exec errata check
+stdout '^0 errata, 0 unknown. Coverage: ran 1, skipped 0.$'
+
+# The release renamed in the script alone: an erratum again.
+cp renamed.sh infra/gitlab-runner-k3s/bootstrap.sh
+! exec errata check
+stdout '^FALSE pinned-charts-are-renovate-tracked'
+stdout 'releases\[0\] = "runner-k3s" at infra/gitlab-runner-k3s/bootstrap.sh:2$'
+
+# No script pins a chart: releases is empty, so the rule is unknown, and
+# tracked, which allow_empty lists, has nothing to search for.
+exec git rm -q -f infra/gitlab-runner/bootstrap.sh infra/gitlab-runner-k3s/bootstrap.sh
+! exec errata check
+stdout '^UNKNOWN pinned-charts-are-renovate-tracked'
+stdout 'said: extractor "releases" found no value$'
+
+# errata list writes the default values_as out.
+exec errata list
+stdout 'tracked: regex file renovate.json, pattern `--install \(\(\?\{releases\}\)\) `, max_bytes 33554432, values_as literal$'
+
+# values_as: pattern runs each value as RE2 syntax, here Renovate's own
+# matchString over the scripts, and the assert need not name the extractor
+# the pattern reads. A matchString RE2 lacks, a lookahead, is unknown.
+exec errata check -c pattern.yaml
+stdout '^0 errata, 0 unknown.'
+cp renovate-lookahead.json renovate.json
+! exec errata check -c pattern.yaml
+stdout '^UNKNOWN renovate-matches-the-pin \(repo\)$'
+stdout 'said: extractor "matched": regex: the value "--version \(\?=\\\\d\)\(\?<currentValue>\\\\S\+\)" of extractor "matchers", at renovate.json:5, is no RE2 pattern'
+
+# The dependency is checked at load: a reference to an extractor the rule
+# does not declare, and extractors that read each other, exit 2 and run
+# nothing.
+exec sh -c 'errata check -c missing.yaml 2>/dev/null; echo code=$?'
+stdout code=2
+! exec errata check -c missing.yaml
+stderr 'check "missing": .*extractor "tracked" reads the values of "charts", which extract does not declare'
+! stdout .
+exec sh -c 'errata check -c cycle.yaml 2>/dev/null; echo code=$?'
+stdout code=2
+! exec errata check -c cycle.yaml
+stderr 'check "cycle": .*extractors read each other.s values in a cycle, so none of them can run first: "a" reads "b" reads "a"'
+! stdout .
+
+-- errata.yaml --
+required: [pinned-charts-are-renovate-tracked]
+checks:
+  - id: pinned-charts-are-renovate-tracked
+    reason: >-
+      A chart pinned with --version in a shell script is tracked only through a customManager
+      regex, and one anchored on another release name tracks nothing.
+    scope: repo
+    extract:
+      releases:
+        regex:
+          files: ['infra/**/bootstrap.sh']
+          pattern: '^\s*helm upgrade --install ([\w.-]+) \S+ .*--version'
+      tracked:
+        regex: {file: renovate.json, pattern: '--install ((?{releases})) '}
+    allow_empty: [tracked]
+    assert: releases.all(r, r in tracked)
+-- infra/gitlab-runner/bootstrap.sh --
+#!/bin/sh
+helm upgrade --install gitlab-runner gitlab/gitlab-runner -n ci --version 0.91.2
+-- infra/gitlab-runner-k3s/bootstrap.sh --
+#!/bin/sh
+helm upgrade --install gitlab-runner-k3s gitlab/gitlab-runner -n ci --version 0.90.1
+-- renamed.sh --
+#!/bin/sh
+helm upgrade --install runner-k3s gitlab/gitlab-runner -n ci --version 0.90.1
+-- renovate.json --
+{
+  "customManagers": [
+    {
+      "managerFilePatterns": ["/bootstrap\\.sh$/"],
+      "matchStrings": ["helm upgrade --install gitlab-runner gitlab/gitlab-runner .*--version (?<currentValue>\\S+)"]
+    }
+  ]
+}
+-- renovate-fixed.json --
+{
+  "customManagers": [
+    {
+      "managerFilePatterns": ["/bootstrap\\.sh$/"],
+      "matchStrings": ["helm upgrade --install gitlab-runner gitlab/gitlab-runner .*--version (?<currentValue>\\S+)"]
+    },
+    {
+      "managerFilePatterns": ["/bootstrap\\.sh$/"],
+      "matchStrings": ["helm upgrade --install gitlab-runner-k3s gitlab/gitlab-runner .*--version (?<currentValue>\\S+)"]
+    }
+  ]
+}
+-- missing.yaml --
+checks:
+  - id: missing
+    reason: r
+    scope: repo
+    extract:
+      releases: {regex: {file: a.sh, pattern: '--install (\S+)'}}
+      tracked: {regex: {file: renovate.json, pattern: '--install ((?{charts})) '}}
+    assert: releases.all(r, r in tracked)
+-- cycle.yaml --
+checks:
+  - id: cycle
+    reason: r
+    scope: repo
+    extract:
+      a: {regex: {file: a.sh, pattern: '((?{b}))'}}
+      b: {regex: {file: b.sh, pattern: '((?{a}))'}}
+    assert: size(a) == size(b)
+-- pattern.yaml --
+checks:
+  - id: renovate-matches-the-pin
+    reason: A matchString that matches nothing tracks nothing, on a green run.
+    scope: repo
+    extract:
+      matchers: {json: {file: renovate.json, path: 'customManagers[*].matchStrings[0]'}}
+      matched: {regex: {file: pin.sh, pattern: '((?{matchers}))', values_as: pattern}}
+    assert: size(matched) == 1
+-- pin.sh --
+helm upgrade --install gitlab-runner gitlab/gitlab-runner -n ci --version 0.91.2
+-- renovate-lookahead.json --
+{
+  "customManagers": [
+    {
+      "managerFilePatterns": ["/pin\\.sh$/"],
+      "matchStrings": ["--version (?=\\d)(?<currentValue>\\S+)"]
+    }
+  ]
+}
+-- byfile.yaml --
+checks:
+  - id: each-runbook-names-its-releases
+    reason: A runbook that stops naming a release leaves it without instructions.
+    scope: repo
+    extract:
+      releases:
+        regex:
+          files: ['infra/**/bootstrap.sh']
+          pattern: '^\s*helm upgrade --install ([\w.-]+) \S+ .*--version'
+      mentioned:
+        regex: {files: ['docs/*.md'], pattern: '(?:^|\s)((?{releases}))(?:\s|$)'}
+    assert: >-
+      size(by_file(mentioned)) == 2 &&
+      by_file(mentioned)['docs/runners.md'] == ['gitlab-runner-k3s', 'gitlab-runner'] &&
+      by_file(mentioned)['docs/old.md'] == ['gitlab-runner']
+-- docs/runners.md --
+gitlab-runner-k3s serves this project's pipelines.
+gitlab-runner serves the group's.
+-- runners-new.md --
+gitlab-runner-k3s serves this project's pipelines.
+gitlab-runner serves the group's.
+-- runners-old.md --
+gitlab-runner serves the group's.
+-- docs/old.md --
+gitlab-runner was installed by hand before 2026.

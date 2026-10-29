@@ -195,16 +195,22 @@ type treeExtractor struct {
 	embedded Embedding
 	format   *Format
 	parse    func([]byte) (*Node, error)
+	maps     bool
+	fields   []Field
 }
 
 // Tree is what a JSON or TOML spec says of where it reads: its file or its
-// files, its path and its embedded steps, with its max_bytes.
+// files, its path and its embedded steps, with its max_bytes, and what it
+// hands over: each scalar, with As map each mapping whole, or with As
+// record a record of Fields for each node.
 type Tree struct {
 	File     string
 	Files    []string
 	Path     string
 	Embedded []Embedded
 	MaxBytes int64
+	As       string
+	Fields   map[string]string
 }
 
 // BuildTree checks t, the spec of a JSON or TOML extractor of kind, and
@@ -226,7 +232,15 @@ func BuildTree(kind string, t Tree, f *Format, parse func([]byte) (*Node, error)
 		if err != nil {
 			return nil, err
 		}
-		return treeExtractor{Source: src, path: parsed, embedded: embedded, format: f, parse: parse}, nil
+		maps, err := CheckAs(kind, t.As)
+		if err != nil {
+			return nil, err
+		}
+		fields, err := CheckFields(kind, t.As, t.Fields)
+		if err != nil {
+			return nil, err
+		}
+		return treeExtractor{Source: src, path: parsed, embedded: embedded, format: f, parse: parse, maps: maps, fields: fields}, nil
 	})
 }
 
@@ -255,6 +269,6 @@ func (e treeExtractor) FromShared(data []byte, spent *Spent) ([]check.Value, err
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", e.File, err)
 	}
-	vs, err := e.EmbeddedValues(e.path, e.embedded, Reading{Last: LastLine(data)}, spent, tree)
+	vs, err := e.EmbeddedValues(e.path, e.embedded, Reading{Last: LastLine(data), Maps: e.maps, Fields: e.fields}, spent, tree)
 	return vs, spent.SharedAliases(err)
 }

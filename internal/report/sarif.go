@@ -598,26 +598,36 @@ func sarifResultOf(res check.Result, ruleIndex int) sarifResult {
 	out := sarifResult{RuleID: res.Check.ID, RuleIndex: ruleIndex, Level: "error"}
 
 	values := flatten(res.Extracted)
+	showWhole(values, res.Check.Rule)
 	primary := disagreeing(res.Check.Rule, values)
-	if primary < 0 {
-		at := res.Check.At
-		if at.File == "" {
-			at = check.Location{File: configFile, Line: 1}
-		}
-		if p, inside := physical(at); inside {
-			out.Locations = []sarifLocation{{Physical: p}}
+	// A result that names its own place, such as the line where a
+	// generated file first differs, points there. Its file is one the
+	// loader held inside the repository.
+	placed, inside := physical(res.At)
+	if res.At.File != "" && inside {
+		out.Locations = []sarifLocation{{Physical: placed}}
+	}
+	if out.Locations == nil {
+		if primary < 0 {
+			at := res.Check.At
+			if at.File == "" {
+				at = check.Location{File: configFile, Line: 1}
+			}
+			if p, inside := physical(at); inside {
+				out.Locations = []sarifLocation{{Physical: p}}
+			} else {
+				where := cut(at.File, "path", valueLimit)
+				out.Locations = []sarifLocation{{Message: &sarifMessage{"the check is in " + where + ", outside the repository"}}}
+				msg += "\nThe check is in " + where + ", outside the repository, so this result has no place in a file."
+			}
 		} else {
-			where := cut(at.File, "path", valueLimit)
-			out.Locations = []sarifLocation{{Message: &sarifMessage{"the check is in " + where + ", outside the repository"}}}
-			msg += "\nThe check is in " + where + ", outside the repository, so this result has no place in a file."
-		}
-	} else {
-		first := values[primary]
-		if p, inside := physical(first.value.At); inside {
-			out.Locations = []sarifLocation{{Physical: p}}
-		} else {
-			out.Locations = []sarifLocation{{Message: &sarifMessage{outside(first)}}}
-			msg += "\nThe value is at " + cut(first.value.At.File, "path", valueLimit) + ", outside the repository, so this result has no place in a file."
+			first := values[primary]
+			if p, inside := physical(first.value.At); inside {
+				out.Locations = []sarifLocation{{Physical: p}}
+			} else {
+				out.Locations = []sarifLocation{{Message: &sarifMessage{outside(first)}}}
+				msg += "\nThe value is at " + cut(first.value.At.File, "path", valueLimit) + ", outside the repository, so this result has no place in a file."
+			}
 		}
 	}
 
@@ -736,7 +746,27 @@ func leftOutLocations(res check.Result) ([]sarifLocation, string) {
 // label names a value in a message: its text quoted as the agree message
 // quotes it, cut at valueLimit, and its extractor.
 func label(f named) string {
-	return plain(quoteValue(f.value.Text) + f.value.Notes() + " (" + f.extractor + ")")
+	text := quoteValue(f.value.Text)
+	if f.shown != "" {
+		text = f.shown
+	}
+	return plain(text + f.value.Notes() + " (" + f.extractor + ")")
+}
+
+// showWhole sets how each value handed over whole is named: its mapping
+// shown as the rule's message shows it, after the rule's normalize, and not
+// quoted again, since Show quotes every string in it.
+func showWhole(values []named, r *check.Rule) {
+	for i, f := range values {
+		if f.value.Data == nil {
+			continue
+		}
+		d := f.value.Data
+		if r != nil && len(r.Normalize) > 0 {
+			d = d.Normalized(r.Normalized)
+		}
+		values[i].shown = d.Show(check.ShownBytes)
+	}
 }
 
 // outside is the message of a value whose path leaves the repository. It has
@@ -749,6 +779,10 @@ func outside(f named) string {
 type named struct {
 	value     check.Value
 	extractor string
+	// shown is how a value an extractor handed over whole (as: map) is
+	// named, as the rule's message shows it; "" for a flat value, which is
+	// quoted.
+	shown string
 }
 
 func flatten(extracted []check.Extracted) []named {

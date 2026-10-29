@@ -35,9 +35,25 @@ type Search struct {
 	// (regexTime); a test shortens it, so a refusal on time comes fast.
 	TimeLimit time.Duration
 	// shared is the deadline the searches of a file set share, which a
-	// FileSet sets in place of TimeLimit from now; zero for a search of
-	// one file.
+	// FileSet sets in place of TimeLimit from now, or the searches of an
+	// Each; zero for a search of one file.
 	shared time.Time
+	// whose is what a refusal on time calls the limit of shared, "" for
+	// the limit of a file set's searches.
+	whose string
+	// fields names the capture groups a record holds, by group number, ""
+	// for a group it leaves out; nil for a search that returns group 1
+	// (Records).
+	fields []string
+	// around is the context a match must have to be kept, nil for none.
+	around *Around
+}
+
+// Around is e keeping only the matches with the context a gives, nil for
+// every match. The context's searches share e's time limit.
+func (e Search) Around(a *Around) Search {
+	e.around = a
+	return e
 }
 
 // CompileSearch checks the file and the pattern of an extractor of kind that
@@ -48,6 +64,17 @@ func CompileSearch(kind, file, pattern string, maxBytes int64) (Search, error) {
 	if err != nil {
 		return Search{}, err
 	}
+	e, err := compilePattern(kind, pattern)
+	if err != nil {
+		return Search{}, err
+	}
+	e.Source, e.TimeLimit = src, regexTime(src.Limit)
+	return e, nil
+}
+
+// compilePattern is CompileSearch without the file: the search of pattern,
+// with no Source and no TimeLimit.
+func compilePattern(kind, pattern string) (Search, error) {
 	if pattern == "" {
 		return Search{}, fmt.Errorf("%s: pattern is required", kind)
 	}
@@ -56,7 +83,25 @@ func CompileSearch(kind, file, pattern string, maxBytes int64) (Search, error) {
 	if _, err := regexp.Compile(pattern); err != nil {
 		return Search{}, fmt.Errorf("%s: pattern %s: %w", kind, Quote(pattern), ClipError(err))
 	}
-	re := regexp.MustCompile("(?m)" + pattern)
+	return compiled(kind, pattern, regexp.MustCompile("(?m)"+pattern))
+}
+
+// compileOnce is compilePattern with one compile, for a pattern errata
+// built, such as the pattern of a value in an Each, rather than one a
+// config wrote: its refusal quotes RE2's message about the pattern with
+// the m flag, where compilePattern compiles again to quote the pattern as
+// written.
+func compileOnce(kind, pattern string) (Search, error) {
+	re, err := regexp.Compile("(?m)" + pattern)
+	if err != nil {
+		return Search{}, fmt.Errorf("%s: pattern %s: %w", kind, Quote(pattern), ClipError(err))
+	}
+	return compiled(kind, pattern, re)
+}
+
+// compiled is the search of pattern, which re is with the m flag: its
+// capture groups checked, and the forms find searches with set up.
+func compiled(kind, pattern string, re *regexp.Regexp) (Search, error) {
 	switch n := re.NumSubexp(); {
 	case n == 0:
 		return Search{}, fmt.Errorf("%s: pattern %s has no capture group; the extractor returns group 1", kind, Quote(pattern))
@@ -64,11 +109,22 @@ func CompileSearch(kind, file, pattern string, maxBytes int64) (Search, error) {
 		return Search{}, fmt.Errorf("%s: pattern %s: it has %d capture groups, over the limit of %d; write (?:...) for a group that need not capture",
 			kind, Quote(pattern), n, MaxGroups)
 	}
-	e := Search{Source: src, re: re, TimeLimit: regexTime(src.Limit)}
+	e, err := searchOf(pattern, re)
+	if err != nil {
+		return Search{}, fmt.Errorf("%s: pattern %s: %w", kind, Quote(pattern), ClipError(err))
+	}
+	return e, nil
+}
+
+// searchOf is the search of pattern, which re is with the m flag, with
+// the forms find searches with set up, and its groups not checked.
+func searchOf(pattern string, re *regexp.Regexp) (Search, error) {
+	e := Search{re: re}
 	back, atStart := looksBack(pattern)
 	if back {
+		var err error
 		if e.after, err = compileAfter(pattern); err != nil {
-			return Search{}, fmt.Errorf("%s: pattern %s: %w", kind, Quote(pattern), ClipError(err))
+			return Search{}, err
 		}
 	}
 	if prefix, _ := re.LiteralPrefix(); prefix != "" {
@@ -178,14 +234,23 @@ func (e Search) FromShared(data []byte, _ *Spent) ([]check.Value, error) {
 
 // FromData matches data with every CRLF line ending read as LF, so $ matches
 // before a CRLF too and no value ends in its CR. Only CRs go, so the lines
-// are those of the file.
+// are those of the file. A search for records returns one for each match
+// (Records). A match without the context e.around asks for gives no value,
+// and the context's searches run under the deadline the matching did.
 func (e Search) FromData(data []byte) ([]check.Value, error) {
-	if crlf := []byte("\r\n"); bytes.Contains(data, crlf) {
-		data = bytes.ReplaceAll(data, crlf, []byte("\n"))
+	data = lineFeeds(data)
+	if e.fields != nil {
+		return e.records(data)
 	}
-	matches, err := e.Matches(data)
+	clock := e.clock()
+	matches, err := e.matches(data, clock)
 	if err != nil {
 		return nil, err
+	}
+	if e.around != nil {
+		if matches, err = e.around.keep(data, matches, clock.deadline, e.File, e.TimeLimit, e.whoseLimit()); err != nil {
+			return nil, err
+		}
 	}
 	l := NewLineCursor(data) // matches start in file order
 	out := []check.Value{}
@@ -201,6 +266,14 @@ func (e Search) FromData(data []byte) ([]check.Value, error) {
 	return out, nil
 }
 
+// lineFeeds is data with every CRLF read as LF.
+func lineFeeds(data []byte) []byte {
+	if crlf := []byte("\r\n"); bytes.Contains(data, crlf) {
+		return bytes.ReplaceAll(data, crlf, []byte("\n"))
+	}
+	return data
+}
+
 // Match is where a match starts and ends, and where group 1 starts and
 // ends, -1 for both when it took no part: the first four of what
 // FindSubmatchIndex returns. A match keeps no other group.
@@ -214,11 +287,17 @@ type Match [4]int
 // search reads the file through a clock that ends it once the time limit has
 // passed, so one search that finds nothing is stopped too.
 func (e Search) Matches(data []byte) ([]Match, error) {
+	return e.matches(data, e.clock())
+}
+
+// clock is the clock of one search of a file: TimeLimit from now, or the
+// deadline the files of a set share.
+func (e Search) clock() *clockedReader {
 	clock := newClock(e.TimeLimit)
 	if !e.shared.IsZero() {
 		clock.deadline = e.shared
 	}
-	return e.matches(data, clock)
+	return clock
 }
 
 // whoseLimit is what a refusal on time calls TimeLimit: the limit of the
@@ -226,6 +305,9 @@ func (e Search) Matches(data []byte) ([]Match, error) {
 func (e Search) whoseLimit() string {
 	if e.shared.IsZero() {
 		return "the limit"
+	}
+	if e.whose != "" {
+		return e.whose
 	}
 	return "the limit of the files the extractor reads, together"
 }
@@ -239,13 +321,30 @@ func newClock(limit time.Duration) *clockedReader {
 // matches is Matches through clock, which a test reads after.
 func (e Search) matches(data []byte, clock *clockedReader) ([]Match, error) {
 	var out []Match
+	err := e.each(data, clock, func(m []int) error {
+		if out = append(out, Match(m[:4])); len(out) > MaxValues {
+			return TooManyValues(e.File)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// each runs the searches of Matches through clock and hands keep each match
+// it accepts, every group's start and end, as FindSubmatchIndex returns
+// them, in file order. It stops at the first error keep returns.
+func (e Search) each(data []byte, clock *clockedReader, keep func(m []int) error) error {
+	accepted := 0
 	for pos, prevEnd := 0, -1; pos <= len(data); {
 		m := e.find(data, pos, clock)
 		if clock.stopped || clock.late() {
-			return nil, fmt.Errorf("%s: matching took more than %s, %s, and stopped after %d matches; "+
+			return fmt.Errorf("%s: matching took more than %s, %s, and stopped after %d matches; "+
 				"start the pattern with ^, drop an optional part that scans to the end of the line, such as (?:.*x)?, "+
 				"or shorten a counted repeat, such as {0,1000}",
-				e.File, e.TimeLimit, e.whoseLimit(), len(out))
+				e.File, e.TimeLimit, e.whoseLimit(), accepted)
 		}
 		if m == nil {
 			break
@@ -265,12 +364,13 @@ func (e Search) matches(data []byte, clock *clockedReader) ([]Match, error) {
 		}
 		prevEnd = m[1]
 		if accept {
-			if out = append(out, Match(m[:4])); len(out) > MaxValues {
-				return nil, TooManyValues(e.File)
+			accepted++
+			if err := keep(m); err != nil {
+				return err
 			}
 		}
 	}
-	return out, nil
+	return nil
 }
 
 // find returns the first match at or after start, through clock. A

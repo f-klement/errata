@@ -17,11 +17,11 @@ import (
 // eval compiles expr over the extractor v and evaluates it with values.
 func eval(t *testing.T, expr string, values ...string) (bool, error) {
 	t.Helper()
-	a, err := Compile(expr, []string{"v"})
+	a, err := Compile(expr, []string{"v"}, Lists{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return a.Eval(context.Background(), map[string][]string{"v": values}, nil)
+	return a.Eval(context.Background(), map[string][]string{"v": values}, nil, nil)
 }
 
 func TestParseDuration(t *testing.T) {
@@ -181,10 +181,10 @@ func TestSetsCountTowardTheCostLimit(t *testing.T) {
 	for i := range values {
 		values[i] = strconv.Itoa(i)
 	}
-	if _, err := a.Eval(context.Background(), map[string][]string{"v": values}, nil); err == nil || err.Error() != "the evaluation exceeded the cost limit of 100" {
+	if _, err := a.Eval(context.Background(), map[string][]string{"v": values}, nil, nil); err == nil || err.Error() != "the evaluation exceeded the cost limit of 100" {
 		t.Fatalf("120 members under a limit of 100: error = %v", err)
 	}
-	if ok, err := a.Eval(context.Background(), map[string][]string{"v": values[:40]}, nil); err != nil || !ok {
+	if ok, err := a.Eval(context.Background(), map[string][]string{"v": values[:40]}, nil, nil); err != nil || !ok {
 		t.Fatalf("80 members under a limit of 100: %v, %v", ok, err)
 	}
 }
@@ -192,11 +192,11 @@ func TestSetsCountTowardTheCostLimit(t *testing.T) {
 // For any two lists, same_set holds exactly when each is a subset of the
 // other, and subset agrees with a membership test written out.
 func TestPropertySets(t *testing.T) {
-	a, err := Compile("same_set(v, w) == (subset(v, w) && subset(w, v))", []string{"v", "w"})
+	a, err := Compile("same_set(v, w) == (subset(v, w) && subset(w, v))", []string{"v", "w"}, Lists{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	sub, err := Compile("subset(v, w) == v.all(x, x in w)", []string{"v", "w"})
+	sub, err := Compile("subset(v, w) == v.all(x, x in w)", []string{"v", "w"}, Lists{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +204,7 @@ func TestPropertySets(t *testing.T) {
 		member := rapid.SampledFrom([]string{"a", "b", "c", "d"})
 		values := map[string][]string{"v": rapid.SliceOf(member).Draw(t, "v"), "w": rapid.SliceOf(member).Draw(t, "w")}
 		for _, x := range []*assertion{a.(*assertion), sub.(*assertion)} {
-			if ok, err := x.Eval(context.Background(), values, nil); err != nil || !ok {
+			if ok, err := x.Eval(context.Background(), values, nil, nil); err != nil || !ok {
 				t.Fatalf("%v: %v, %v", values, ok, err)
 			}
 		}

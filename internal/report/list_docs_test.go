@@ -101,9 +101,10 @@ func keyPaths(v map[string]any, prefix string, into map[string]bool) {
 }
 
 // The README's table documents every key the JSON holds, nested ones
-// included, and no other. A key added to the output or renamed without the
-// README fails here. The planted breaks: the table without its row for at,
-// and ListJSON writing at.outside as external.
+// included, and no other, for a check of each kind. A key added to the
+// output or renamed without the README fails here. The planted breaks: the
+// table without its row for at, ListJSON writing at.outside as external,
+// and the table without its row for generated.max_bytes.
 func TestListJSONKeysAreDocumented(t *testing.T) {
 	var buf bytes.Buffer
 	if err := (ListJSON{}).WriteList(&buf, listChecks(), nil); err != nil {

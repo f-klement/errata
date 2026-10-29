@@ -90,6 +90,15 @@ const (
 	// thread it keeps alive. 100000 matches of a pattern of 32 groups take
 	// 0.5 s and 29 MB.
 	MaxGroups = 32
+
+	// MaxReference is the most bytes a value that a regex pattern
+	// references may hold. Its pattern is compiled up to three times for
+	// each file it searches, and a compile of a long literal, which Go's
+	// size check does not stop, cost 1.4 s and 824 MiB of allocation for
+	// each MiB on a worker node: a value of 4 MiB took 5.6 s and 3.8 GB. The
+	// longest real value known, a Renovate matchString, is under 200
+	// bytes.
+	MaxReference = 4096
 )
 
 // regexTime is the time limit of a regex extractor that reads at most

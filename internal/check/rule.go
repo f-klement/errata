@@ -15,7 +15,9 @@ type Rule struct {
 	// Extractors are sorted by name, so every message that lists them reads
 	// the same on every run.
 	Extractors []NamedExtractor
-	// Agree names the extractors whose values must all agree.
+	// Agree names the extractors whose values must all agree, each by its
+	// name, or one field of a record extractor's records as name.field
+	// (AgreeOn).
 	Agree []string
 	// Compare is how agree compares the values: CompareText or
 	// CompareSemver. The loader sets CompareText on an agree rule that names
@@ -43,9 +45,11 @@ type Rule struct {
 type Assertion interface {
 	// Eval evaluates the expression over each extractor's values, by
 	// extractor name, and the file of each value, by the same name and the
-	// value's index, which by_file groups the values by. An error means it
-	// could not decide, and the rule is unknown.
-	Eval(ctx context.Context, values, files map[string][]string) (bool, error)
+	// value's index, which by_file groups the values by. maps holds the
+	// values whole of each extractor the expression reads as maps, by the
+	// same name and index; values then holds their text for no use. An
+	// error means it could not decide, and the rule is unknown.
+	Eval(ctx context.Context, values, files map[string][]string, maps map[string][]*Data) (bool, error)
 }
 
 // NamedExtractor is one entry under a rule's extract:, with the name agree:
@@ -62,6 +66,46 @@ type NamedExtractor struct {
 	// as errata.yaml spells the entry, such as {"yaml": {"file": ...}}; in
 	// errata it is an extract.Spec, which this package cannot name.
 	Spec any
+	// Maps marks an extractor that hands assert each mapping its path
+	// selects whole (as: map), so assert reads it as a list of maps and
+	// agree, which compares flat values, does not take it.
+	Maps bool
+	// Fields are the keys of the records the extractor returns (as:
+	// record), which agree can name one of as name.field; nil for an
+	// extractor that returns no record.
+	Fields []string
+}
+
+// AgreeOn is what an entry of agree names: the extractor of that name,
+// with field "", or, when no extractor has the name and it is x.f, split at
+// its last dot, the extractor x and its records' field f. validate refuses
+// an entry that is both. ok is false when it names neither
+// an extractor nor a field of one, which validate refuses; the field is
+// then checked against the extractor's Fields by validate, not here.
+func (r Rule) AgreeOn(entry string) (x NamedExtractor, field string, ok bool) {
+	for _, e := range r.Extractors {
+		if e.Name == entry {
+			return e, "", true
+		}
+	}
+	dot := strings.LastIndexByte(entry, '.')
+	if dot < 0 {
+		return NamedExtractor{}, "", false
+	}
+	for _, e := range r.Extractors {
+		if e.Name == entry[:dot] {
+			return e, entry[dot+1:], true
+		}
+	}
+	return NamedExtractor{}, "", false
+}
+
+// fieldToo reports whether name, which names an extractor, also splits at
+// its last dot into a record extractor of byName and one of its fields.
+// AgreeOn takes the extractor, so the field could not be named at all.
+func fieldToo(byName map[string]NamedExtractor, name string) bool {
+	dot := strings.LastIndexByte(name, '.')
+	return dot >= 0 && slices.Contains(byName[name[:dot]].Fields, name[dot+1:])
 }
 
 // Extracted is what one extractor returned to a rule, in the order it found
@@ -191,9 +235,12 @@ func (r Rule) validate(c Check) []error {
 		declared[e.Name] = true
 		byName[e.Name] = e
 	}
+	errs = append(errs, r.dependencyErrors(declared)...)
 	named := make(map[string]bool, len(r.Agree))
+	compared := make(map[string]bool, len(r.Agree)) // the extractors agree reads
 	for _, name := range r.Agree {
-		if !declared[name] {
+		x, field, ok := r.AgreeOn(name)
+		if !ok {
 			errs = append(errs, fmt.Errorf("agree names %q, which extract does not declare", name))
 		}
 		if named[name] {
@@ -201,7 +248,22 @@ func (r Rule) validate(c Check) []error {
 			// satisfies the coverage check below without comparing anything.
 			errs = append(errs, fmt.Errorf("agree names %q twice", name))
 		}
+		switch {
+		case !ok:
+		case field == "" && fieldToo(byName, name):
+			dot := strings.LastIndexByte(name, '.')
+			errs = append(errs, fmt.Errorf("agree names %q, which is both an extractor and field %q of the records of extractor %q; rename the extractor, so each entry names one", name, name[dot+1:], name[:dot]))
+		case field != "" && x.Fields == nil:
+			errs = append(errs, fmt.Errorf("agree names %q, but extractor %q returns no record, so it has no field %q", name, x.Name, field))
+		case field != "" && !slices.Contains(x.Fields, field):
+			errs = append(errs, fmt.Errorf("agree names %q, but the records of extractor %q have no field %q; their fields are %s", name, x.Name, field, strings.Join(x.Fields, ", ")))
+		case field == "" && x.Fields != nil:
+			errs = append(errs, fmt.Errorf("agree names %q, whose extractor returns records (as: record); agree compares flat values, so name one field, such as %s.%s, or write an assert", name, name, x.Fields[0]))
+		case field == "" && x.Maps:
+			errs = append(errs, fmt.Errorf("agree names %q, whose extractor hands assert each mapping whole (as: map); agree compares flat values, so write an assert, or leave as: map out", name))
+		}
 		named[name] = true
+		compared[x.Name] = true
 	}
 	listed := make(map[string]bool, len(r.AllowEmpty))
 	for _, name := range r.AllowEmpty {
@@ -237,7 +299,7 @@ func (r Rule) validate(c Check) []error {
 		// An extractor that agree leaves out is never compared, so the rule
 		// would pass without testing the place the author added it for.
 		for _, e := range r.Extractors {
-			if !slices.Contains(r.Agree, e.Name) {
+			if !compared[e.Name] {
 				errs = append(errs, fmt.Errorf("extractor %q is declared but agree does not name it", e.Name))
 			}
 		}

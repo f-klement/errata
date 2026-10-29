@@ -28,6 +28,13 @@ type Spec struct {
 	Name     string          `json:"name,omitempty"`
 	Embedded []core.Embedded `json:"embedded,omitempty"`
 	MaxBytes int64           `json:"max_bytes,omitempty"`
+	// As is map to hand assert each mapping the path selects whole, or
+	// record to read Fields from each node it selects into one, as
+	// core.CheckAs says; "" for each scalar.
+	As string `json:"as,omitempty"`
+	// Fields names each path read from a selected node into its record,
+	// for as: record, as core.CheckFields says.
+	Fields map[string]string `json:"fields,omitempty"`
 }
 
 // yamlExtractor reads a path in the documents of a YAML file that its kind
@@ -40,6 +47,8 @@ type yamlExtractor struct {
 	embedded   core.Embedding
 	kind, name string
 	inSet      bool
+	maps       bool
+	fields     []core.Field
 }
 
 // Build checks y and returns its extractor, which reads the documents
@@ -59,7 +68,15 @@ func Build(y Spec, p core.Parsers) (check.Extractor, error) {
 		if err != nil {
 			return nil, err
 		}
-		return yamlExtractor{Source: src, path: path, embedded: embedded, kind: y.Kind, name: y.Name, inSet: inSet}, nil
+		maps, err := core.CheckAs("yaml", y.As)
+		if err != nil {
+			return nil, err
+		}
+		fields, err := core.CheckFields("yaml", y.As, y.Fields)
+		if err != nil {
+			return nil, err
+		}
+		return yamlExtractor{Source: src, path: path, embedded: embedded, kind: y.Kind, name: y.Name, inSet: inSet, maps: maps, fields: fields}, nil
 	})
 }
 
@@ -98,7 +115,7 @@ func (e yamlExtractor) FromShared(data []byte, spent *core.Spent) ([]check.Value
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", e.File, err)
 	}
-	vs, err := e.EmbeddedValues(e.path, e.embedded, core.Reading{Last: core.LastLine(data)}, spent, docs...)
+	vs, err := e.EmbeddedValues(e.path, e.embedded, core.Reading{Last: core.LastLine(data), Maps: e.maps, Fields: e.fields}, spent, docs...)
 	return vs, spent.SharedAliases(err)
 }
 

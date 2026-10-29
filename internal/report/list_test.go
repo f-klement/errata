@@ -12,8 +12,8 @@ import (
 	"github.com/f-klement/errata/internal/check"
 )
 
-// listChecks are one check of each kind: a program check, an agree rule and
-// an assert rule.
+// listChecks are one check of each kind: a program check, an agree rule, an
+// assert rule and a generated check.
 func listChecks() []check.Check {
 	spec := map[string]any{"regex": map[string]any{"file": "f", "pattern": "(.)", "max_bytes": 1}}
 	return []check.Check{
@@ -25,6 +25,7 @@ func listChecks() []check.Check {
 		{ID: "s", Reason: "r", Scope: check.ScopeRepo, Rule: &check.Rule{
 			Extractors: []check.NamedExtractor{{Name: "x", Spec: spec}}, Assert: "size(x) > 0",
 		}},
+		generatedCheck(),
 	}
 }
 
@@ -137,7 +138,14 @@ s (repo) rule
   extract: x: regex file f, max_bytes 1, pattern (.)
   assert: size(x) > 0
 
-3 checks: 2 rules, 1 program check.
+g (repo) generated check
+  why: r
+  file: architecture.md
+  run: python3 ` + "`scripts/build architecture.py`" + ` --stdout
+  max_bytes: 1048576
+  timeout: 30s
+
+4 checks: 2 rules, 1 program check, 1 generated check.
 `
 	if b.String() != want {
 		t.Errorf("text listing:\n%s\nwant:\n%s", b.String(), want)
@@ -233,9 +241,10 @@ func TestSpecText(t *testing.T) {
 var listedFields = map[reflect.Type]map[string]string{
 	reflect.TypeFor[check.Check](): {
 		"ID": "id", "Reason": "reason", "Scope": "scope", "Run": "run", "Timeout": "timeout",
-		"At": "fields", "Rule": "fields",
+		"At": "fields", "Rule": "fields", "Generated": "fields",
 	},
-	reflect.TypeFor[check.Location](): {"File": "at.file", "Line": "at.line", "Outside": "at.outside"},
+	reflect.TypeFor[check.Generated](): {"File": "generated.file", "Run": "generated.run", "MaxBytes": "generated.max_bytes"},
+	reflect.TypeFor[check.Location]():  {"File": "at.file", "Line": "at.line", "Outside": "at.outside"},
 	reflect.TypeFor[check.Rule](): {
 		"Extractors": "fields", "Agree": "relation.agree", "Compare": "relation.compare", "Assert": "relation.assert",
 		"AllowEmpty": "allow_empty", "SkipNotLiteral": "skip_not_literal", "Normalize": "normalize",
@@ -245,6 +254,8 @@ var listedFields = map[reflect.Type]map[string]string{
 		"Name": "extract", "Spec": "extract",
 		"Kind":      "left out: the kind as a message names it, made from Spec",
 		"Extractor": "left out: built from Spec",
+		"Maps":      "left out: made from Spec, whose as: map is printed",
+		"Fields":    "left out: made from Spec, whose as: record and fields, or regex pattern, are printed",
 	},
 }
 
@@ -259,6 +270,8 @@ func fieldOwner(typ reflect.Type, c *check.Check) reflect.Value {
 		return reflect.ValueOf(c.Rule).Elem()
 	case reflect.TypeFor[check.NamedExtractor]():
 		return reflect.ValueOf(&c.Rule.Extractors[0]).Elem()
+	case reflect.TypeFor[check.Generated]():
+		return reflect.ValueOf(c.Generated).Elem()
 	default:
 		return reflect.ValueOf(c).Elem()
 	}
@@ -331,13 +344,16 @@ func TestListPlacesEveryField(t *testing.T) {
 				continue
 			}
 			// The program check holds the check's own fields, the assert
-			// rule its assert, and the agree rule every other field of a rule.
+			// rule its assert, the generated check its generated key, and
+			// the agree rule every other field of a rule.
 			i := 1
 			switch {
 			case typ == reflect.TypeFor[check.Check]() || typ == reflect.TypeFor[check.Location]():
 				i = 0
 			case f.Name == "Assert":
 				i = 2
+			case typ == reflect.TypeFor[check.Generated]():
+				i = 3
 			}
 			checks := listChecks()
 			before := at(listedCheck(t, checks, i), placed)

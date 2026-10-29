@@ -22,6 +22,7 @@ import (
 
 	"github.com/f-klement/errata/internal/check"
 	"github.com/f-klement/errata/internal/extract"
+	"github.com/f-klement/errata/internal/extract/core"
 	"github.com/f-klement/errata/internal/rule"
 )
 
@@ -66,6 +67,17 @@ type checkEntry struct {
 	// SkipNotLiteral is skip_not_literal: the extractors whose not literal
 	// values the rule leaves out.
 	SkipNotLiteral []string `json:"skip_not_literal,omitempty"`
+
+	// Generated makes the entry a generated check.
+	Generated *generatedEntry `json:"generated,omitempty"`
+}
+
+// generatedEntry is a generated check's generated key: the committed file,
+// the generator's argv, and the bound on both.
+type generatedEntry struct {
+	File     string   `json:"file"`
+	Run      []string `json:"run"`
+	MaxBytes int64    `json:"max_bytes,omitempty"`
 }
 
 // ruleKeys are the keys only a rule has. A check that sets any of them is a
@@ -381,6 +393,7 @@ func build(raw json.RawMessage, def defaults, newExtractor Builder) (c check.Che
 	}
 
 	isRule := slices.ContainsFunc(ruleKeys, func(k string) bool { _, ok := keys[k]; return ok })
+	_, isGenerated := keys["generated"]
 	c = check.Check{
 		ID:     e.ID,
 		Reason: e.Reason,
@@ -420,7 +433,7 @@ func build(raw json.RawMessage, def defaults, newExtractor Builder) (c check.Che
 	// An empty run on a program check would take the default run, a program
 	// the entry says it does not have.
 	_, wroteRun := keys["run"]
-	emptyRun := wroteRun && !isRule && len(e.Run) == 0
+	emptyRun := wroteRun && !isRule && !isGenerated && len(e.Run) == 0
 	if emptyRun {
 		errs = append(errs, errors.New("run lists no argument: write the command, or remove the key, which takes the default run if the file sets one"))
 	}
@@ -429,6 +442,12 @@ func build(raw json.RawMessage, def defaults, newExtractor Builder) (c check.Che
 	// run, so validation does not refuse it a second time as both kinds.
 	if _, ok := keys["run"]; ok && isRule {
 		errs = append(errs, errors.New("run is set on a rule, whatever its value: a check is a program check (run) or a rule (extract), never both"))
+		c.Run = nil
+	}
+	// The same for a generated check, whose command is generated.run: an
+	// empty run beside it would load as a key that does nothing.
+	if wroteRun && isGenerated && !isRule {
+		errs = append(errs, errors.New("run is set beside generated, whatever its value: a generated check runs generated.run, so write the command there"))
 		c.Run = nil
 	}
 	if _, ok := keys["normalize"]; ok && len(e.Normalize) == 0 {
@@ -445,7 +464,13 @@ func build(raw json.RawMessage, def defaults, newExtractor Builder) (c check.Che
 		c.Rule = r
 		errs = append(errs, rerrs...)
 	}
-	if err := def.apply(&c, keys, isRule); err != nil {
+	if isGenerated {
+		g, gerrs := buildGenerated(e.Generated, e.ID)
+		c.Generated = g
+		errs = append(errs, gerrs...)
+	}
+	// A generated check takes no default run: its generator is its own.
+	if err := def.apply(&c, keys, isRule || isGenerated); err != nil {
 		errs = append(errs, err)
 	}
 	var berr error
@@ -465,9 +490,36 @@ func build(raw json.RawMessage, def defaults, newExtractor Builder) (c check.Che
 	return c, errors.Join(berr, v.Validate())
 }
 
+// buildGenerated builds a generated check from its generated key, g, for the
+// check id. The file is held as an extractor's is: inside the repository and
+// at most 4096 bytes long, with max_bytes from 1 to 64 MiB and 32 MiB when
+// left out, which bounds the file and the generator's stdout alike. The
+// generator's argv takes the placeholders a run takes. A key written null or
+// as no mapping, a file left out and an argv of no argument do not load.
+func buildGenerated(g *generatedEntry, id string) (*check.Generated, []error) {
+	if g == nil {
+		return nil, []error{errors.New("generated takes file, the committed file, and run, the generator's command; null is not accepted")}
+	}
+	var errs []error
+	// An empty file is refused once, by validation; CheckSource would
+	// refuse it again and stop before it read max_bytes.
+	limit := core.MaxBytes(g.MaxBytes)
+	if g.File != "" {
+		if _, err := core.CheckSource("generated", g.File, g.MaxBytes); err != nil {
+			errs = append(errs, err)
+			// Refused here, so validation does not refuse a max_bytes
+			// below 1 a second time.
+			limit = core.DefaultMaxBytes
+		}
+	}
+	errs = append(errs, unknownPlaceholders("generated.run", g.Run)...)
+	return &check.Generated{File: g.File, Run: substitute(g.Run, id), MaxBytes: limit}, errs
+}
+
 // buildRule builds a rule's extractors in the order of their names, so the
 // errors and every later message list them the same way on every run, and
-// compiles its assert, so a type error is a load error.
+// compiles its assert, so a type error is a load error. An extractor whose
+// values another reads need not be named in the assert.
 func buildRule(e checkEntry, newExtractor Builder) (*check.Rule, []error) {
 	r := &check.Rule{
 		Agree:          e.Agree,
@@ -483,10 +535,15 @@ func buildRule(e checkEntry, newExtractor Builder) (*check.Rule, []error) {
 		r.Normalize = append(r.Normalize, check.Normalization(n))
 	}
 	var errs []error
+	var read []string // the extractors another extractor reads the values of
 	names := slices.Sorted(maps.Keys(e.Extract))
+	var whole []string // the extractors assert reads as lists of maps
 	errs = append(errs, samePlaces(e.Extract, names)...)
 	for _, name := range names {
 		x, err := newExtractor(e.Extract[name])
+		if d, ok := x.(check.Dependent); ok {
+			read = append(read, d.Needs()...)
+		}
 		switch {
 		case err != nil:
 			errs = append(errs, fmt.Errorf("extractor %q: %w", name, err))
@@ -499,12 +556,16 @@ func buildRule(e checkEntry, newExtractor Builder) (*check.Rule, []error) {
 		// report agree naming an extractor that extract does not declare.
 		r.Extractors = append(r.Extractors, check.NamedExtractor{
 			Name: name, Kind: e.Extract[name].Kind(), Extractor: x, Spec: e.Extract[name].Resolved(),
+			Maps: e.Extract[name].Maps(), Fields: e.Extract[name].Fields(),
 		})
+		if e.Extract[name].Maps() {
+			whole = append(whole, name)
+		}
 	}
 	// A rule with agree beside assert is refused by validation, so its
 	// expression is not compiled into a second error.
 	if strings.TrimSpace(e.Assert) != "" && len(e.Agree) == 0 && len(names) > 0 {
-		a, err := rule.Compile(e.Assert, names)
+		a, err := rule.Compile(e.Assert, names, rule.Lists{Maps: whole, Read: read})
 		if err != nil {
 			errs = append(errs, err)
 		}

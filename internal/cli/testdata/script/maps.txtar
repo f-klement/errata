@@ -1,0 +1,171 @@
+# Two rules that fold Renovate's packageRules, read whole with as: map, after
+# two checks of a GitOps repository. On the real tree both hold. Each planted
+# break is an erratum whose message names every rule at its line, the one
+# that decided among them: a later rule that turns automerge back on for a
+# never-automerge chart, and a batched image whose only automerge rule leaves
+# out digest updates. A path that selects a scalar under as: map is unknown,
+# and agree over a map extractor does not load.
+exec errata check
+stdout '^0 errata, 0 unknown. Coverage: ran 2, skipped 0.$'
+! stderr .
+
+cp leaked/renovate.json renovate.json
+! exec errata check
+stdout '^FALSE blast-radius-charts-never-automerge \(repo\)$'
+stdout '^          rules\[5\] = \{"matchPackageNames": \["cert-manager"\], "automerge": "true"\} at renovate.json:28$'
+stdout '^1 erratum, 0 unknown. Coverage: ran 2, skipped 0.$'
+
+cp stuck/renovate.json renovate.json
+! exec errata check
+stdout '^FALSE batched-digests-can-actually-automerge \(repo\)$'
+stdout '^          rules\[1\] = \{"matchPackageNames": \["clamav/clamav", "nginx"\], "matchUpdateTypes": \["minor", "patch"\], "automerge": "true"\} at renovate.json:8$'
+stdout '^1 erratum, 0 unknown. Coverage: ran 2, skipped 0.$'
+
+! exec errata check -c scalar.yaml
+stdout '^UNKNOWN scalar \(repo\)$'
+stdout 'renovate.json: path "packageRules\[\*\].automerge" selects a scalar at line 6, not a mapping; as: map hands assert each mapping the path selects, so add \[\*\] to take a sequence.s members'
+
+! exec errata check -c agree.yaml
+stderr 'agree names "rules", whose extractor hands assert each mapping whole \(as: map\); agree compares flat values, so write an assert, or leave as: map out'
+! stdout .
+
+-- errata.yaml --
+checks:
+  - id: blast-radius-charts-never-automerge
+    reason: >
+      The blast-radius charts auto-sync, so Renovate's never-automerge rule is the only gate in
+      front of them, and packageRules are last write wins: a later rule that names one of them
+      with automerge on would let a bump deploy itself.
+    scope: repo
+    extract:
+      rules: {json: {file: renovate.json, path: "packageRules[*]", as: map}}
+    assert: |
+      rules.exists(b, has(b.automerge) && b.automerge == 'false' && !has(b.matchUpdateTypes) && has(b.prPriority) && b.prPriority == '5' && has(b.matchPackageNames) && size(b.matchPackageNames) > 0) &&
+      rules.filter(b, has(b.automerge) && b.automerge == 'false' && !has(b.matchUpdateTypes) && has(b.prPriority) && b.prPriority == '5' && has(b.matchPackageNames)).all(b,
+        b.matchPackageNames.all(n,
+          rules.map(r, has(r.automerge) && r.automerge != 'null' && has(r.matchPackageNames) && n in r.matchPackageNames, r.automerge)[
+            size(rules.filter(r, has(r.automerge) && r.automerge != 'null' && has(r.matchPackageNames) && n in r.matchPackageNames)) - 1] != 'true'))
+
+  - id: batched-digests-can-actually-automerge
+    reason: >
+      Renovate automerges a group only if every update in it may automerge, so an image batched
+      with digest updates whose automerge rules leave out digest parks the whole batch.
+    scope: repo
+    extract:
+      rules: {json: {file: renovate.json, path: "packageRules[*]", as: map}}
+    assert: |
+      rules.exists(g, has(g.matchUpdateTypes) && 'digest' in g.matchUpdateTypes && has(g.groupName) && !(g.groupName in ['', 'null']) && has(g.matchPackageNames) && size(g.matchPackageNames) > 0) &&
+      rules.filter(g, has(g.matchUpdateTypes) && 'digest' in g.matchUpdateTypes && has(g.groupName) && !(g.groupName in ['', 'null']) && has(g.matchPackageNames)).all(g,
+        g.matchPackageNames.all(n, rules.exists(r,
+          (!has(r.matchUpdateTypes) || 'digest' in r.matchUpdateTypes) && has(r.automerge) && r.automerge != 'null' && has(r.matchPackageNames) && n in r.matchPackageNames)))
+-- scalar.yaml --
+checks:
+  - id: scalar
+    reason: r
+    scope: repo
+    extract:
+      rules: {json: {file: renovate.json, path: "packageRules[*].automerge", as: map}}
+    assert: size(rules) > 0
+-- agree.yaml --
+checks:
+  - id: agree
+    reason: r
+    scope: repo
+    extract:
+      rules: {json: {file: renovate.json, path: "packageRules[*]", as: map}}
+      other: {json: {file: renovate.json, path: "packageRules[0].automerge"}}
+    agree: [rules, other]
+-- renovate.json --
+{
+  "packageRules": [
+    {
+      "matchUpdateTypes": ["major"],
+      "dependencyDashboardApproval": true,
+      "automerge": false
+    },
+    {
+      "matchPackageNames": ["clamav/clamav", "nginx"],
+      "matchUpdateTypes": ["minor", "patch", "digest"],
+      "automerge": true
+    },
+    {
+      "matchPackageNames": ["clamav/clamav", "nginx"],
+      "matchUpdateTypes": ["minor", "patch", "digest"],
+      "groupName": "app images"
+    },
+    {
+      "matchManagers": ["argocd"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "automerge": true
+    },
+    {
+      "matchPackageNames": ["openbao", "cert-manager", "metallb"],
+      "automerge": false,
+      "prPriority": 5
+    }
+  ]
+}
+-- leaked/renovate.json --
+{
+  "packageRules": [
+    {
+      "matchUpdateTypes": ["major"],
+      "dependencyDashboardApproval": true,
+      "automerge": false
+    },
+    {
+      "matchPackageNames": ["clamav/clamav", "nginx"],
+      "matchUpdateTypes": ["minor", "patch", "digest"],
+      "automerge": true
+    },
+    {
+      "matchPackageNames": ["clamav/clamav", "nginx"],
+      "matchUpdateTypes": ["minor", "patch", "digest"],
+      "groupName": "app images"
+    },
+    {
+      "matchManagers": ["argocd"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "automerge": true
+    },
+    {
+      "matchPackageNames": ["openbao", "cert-manager", "metallb"],
+      "automerge": false,
+      "prPriority": 5
+    },
+    {
+      "matchPackageNames": ["cert-manager"],
+      "automerge": true
+    }
+  ]
+}
+-- stuck/renovate.json --
+{
+  "packageRules": [
+    {
+      "matchUpdateTypes": ["major"],
+      "dependencyDashboardApproval": true,
+      "automerge": false
+    },
+    {
+      "matchPackageNames": ["clamav/clamav", "nginx"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "automerge": true
+    },
+    {
+      "matchPackageNames": ["clamav/clamav", "nginx"],
+      "matchUpdateTypes": ["minor", "patch", "digest"],
+      "groupName": "app images"
+    },
+    {
+      "matchManagers": ["argocd"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "automerge": true
+    },
+    {
+      "matchPackageNames": ["openbao", "cert-manager", "metallb"],
+      "automerge": false,
+      "prPriority": 5
+    }
+  ]
+}

@@ -19,7 +19,7 @@ import `cli`.
 | `internal/cli` | flags, wiring, the exit code contract (0 clean, 1 errata, 2 usage) | how a check runs or how output looks |
 | `internal/config` | the `errata.yaml` format, strict decoding, load errors, the line each check starts on; builds each rule's extractors and compiles its assert through `rule.Compile`, so a type error is a load error | running anything |
 | `internal/engine` | which checks run, in what order, and which are skipped | the check protocol's details, output formats |
-| `internal/protocol` | the check protocol: run a program, map its exit code to a verdict | config, providers, output |
+| `internal/protocol` | the check protocol: run a program, map its exit code to a verdict; run a generated check's generator and compare its stdout with the committed file | config, providers, output |
 | `internal/rule` | evaluating a rule: run its extractors, compare their values or evaluate its assert, fail closed; the CEL environment, the assert helpers, the embedded time zone database and the limits | how an extractor reads a file, config, output |
 | `internal/semver` | versions and ranges as npm, Cargo, PEP 440, Go modules and RubyGems write them: their order, precision, satisfaction and overlap, for agree's `compare: semver` and the assert helpers alike | files, rules, CEL |
 | `internal/extract` | the kinds of extractor a rule names: the `Spec` a rule decodes into, the kinds table, `Build`, `Place`, `Resolved` and `Kind`, which see every kind and dispatch to its reader | how any kind reads a file; rules, config, output |
@@ -45,8 +45,10 @@ import `cli`.
 Four seams carry the design:
 
 1. **`engine.Runner`.** The engine calls a function to run a check. Production passes
-   `engine.Dispatch`, which sends a program check to `protocol.Run` and a rule to `rule.Run`, so
-   one run holds both and prints one coverage line; tests pass a fake. A further runner, such as
+   `engine.Dispatch`, which sends a program check to `protocol.Run`, a generated check to
+   `protocol.RunGenerated` and a rule to `rule.Run`, so one run holds all three and prints one
+   coverage line; tests pass a fake. The two in `protocol` start their program through one
+   function, so a generator gets a program check's timeout, environment and process group. A further runner, such as
    an in-process Kubernetes ownership check, plugs in here without the engine changing.
 2. **`provider.Provider`.** It declares capabilities, so the engine can skip a `live` or `applied`
    check by name when nothing can reach it. The render, read and predict methods are left out on

@@ -1,0 +1,94 @@
+# A regex's context keeps a match only where the lines around it hold what
+# with asks for and nothing without names: here node-provisioning.sh may
+# not change the cluster by hand, except to ask Argo to refresh, to apply
+# the k3s upgrade Plans, and in a comment. RE2 has no lookahead, so the
+# exceptions are the context's without, searched in the match's line.
+exec errata check
+stdout '^0 errata, 0 unknown. Coverage: ran 1, skipped 0.$'
+
+# A kubectl apply of a staging file is an erratum, at its line.
+cp applies.sh scripts/node-provisioning.sh
+! exec errata check
+stdout '^FALSE provisioning-writes-git-not-the-cluster \(repo\)$'
+stdout '^          changes\[0\] = "kubectl apply" at scripts/node-provisioning.sh:4$'
+stdout '^1 erratum, 0 unknown.'
+
+# A command chained after an exempt one on its line: the line's context is
+# the whole line, so only a line with no ; & | backtick $( <( or >( is
+# exempt, and both commands of the chain are errata, as is a command in
+# $( ) or <( ), and one after a $ that a separator follows.
+cp chained.sh scripts/node-provisioning.sh
+! exec errata check
+stdout '^          changes\[0\] = "kubectl apply" at scripts/node-provisioning.sh:2$'
+stdout '^          changes\[1\] = "kubectl apply" at scripts/node-provisioning.sh:2$'
+stdout '^          changes\[3\] = "kubectl apply" at scripts/node-provisioning.sh:3$'
+stdout '^          changes\[5\] = "kubectl apply" at scripts/node-provisioning.sh:4$'
+stdout '^          changes\[7\] = "kubectl apply" at scripts/node-provisioning.sh:5$'
+stdout '^1 erratum, 0 unknown.'
+
+# errata list writes the context out, before and after included.
+exec errata list
+stdout 'changes: regex file scripts/node-provisioning.sh, pattern .*, max_bytes 33554432, context \{before 0, after 0, without .*\}$'
+
+# A context with no pattern does not load, and exits 2.
+exec sh -c 'errata check -c nopattern.yaml 2>/dev/null; echo code=$?'
+stdout code=2
+! exec errata check -c nopattern.yaml
+stderr 'regex: context needs with, without or both'
+
+# A without that matches the empty text at every line start would drop
+# every match, so it does not load either.
+exec sh -c 'errata check -c everywhere.yaml 2>/dev/null; echo code=$?'
+stdout code=2
+! exec errata check -c everywhere.yaml
+stderr 'regex: context without "\^\\\\s\*#\?" matches the empty text at the start or the end of every line'
+
+-- errata.yaml --
+required: [provisioning-writes-git-not-the-cluster]
+checks:
+  - id: provisioning-writes-git-not-the-cluster
+    reason: >-
+      Per-node objects belong to Argo CD; a kubectl apply from the provisioning script leaves objects
+      no Application tracks.
+    scope: repo
+    extract:
+      changes:
+        regex:
+          file: scripts/node-provisioning.sh
+          pattern: '\b(kubectl[^\S\n]+(?:-n[^\S\n]+\S+[^\S\n]+)?(?:apply|annotate|delete)|helm[^\S\n]+(?:upgrade|install))\b'
+          context: {without: '^\s*#|^(?:[^;&|`$<>]|[$<>][^(;&|`$<>])*(?:infra/k3s-upgrade/|argocd\.argoproj\.io/refresh)(?:[^;&|`$<>]|[$<>][^(;&|`$<>])*$'}
+    allow_empty: [changes]
+    assert: size(changes) == 0
+-- scripts/node-provisioning.sh --
+#!/bin/sh
+# kubectl apply -f staging.yaml was the old way
+kubectl -n argocd annotate app x argocd.argoproj.io/refresh=hard
+echo "kubectl apply -f infra/k3s-upgrade/plans.yaml"
+-- applies.sh --
+#!/bin/sh
+# kubectl apply -f staging.yaml was the old way
+kubectl -n argocd annotate app x argocd.argoproj.io/refresh=hard
+kubectl apply -f staging.yaml
+-- nopattern.yaml --
+checks:
+  - id: nopattern
+    reason: r
+    scope: repo
+    extract:
+      a: {regex: {file: f, pattern: '(v)', context: {before: 1}}}
+    assert: size(a) == 0
+-- chained.sh --
+#!/bin/sh
+kubectl apply -f infra/k3s-upgrade/plans.yaml && kubectl apply -f staging.yaml
+kubectl apply -f infra/k3s-upgrade/plans.yaml $(kubectl apply -f staging.yaml)
+kubectl apply -f infra/k3s-upgrade/plans.yaml <(kubectl apply -f staging.yaml)
+kubectl apply -f infra/k3s-upgrade/plans.yaml $; kubectl apply -f staging.yaml
+-- everywhere.yaml --
+checks:
+  - id: everywhere
+    reason: r
+    scope: repo
+    extract:
+      a: {regex: {file: f, pattern: '(v)', context: {without: '^\s*#?'}}}
+    allow_empty: [a]
+    assert: size(a) == 0

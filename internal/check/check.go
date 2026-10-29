@@ -32,8 +32,9 @@ func (s Scope) known() bool {
 	}
 }
 
-// Check is one test of one claim. It is a program check when Run is set and a
-// rule when Rule is set; Validate refuses both and neither.
+// Check is one test of one claim. It is a program check when Run is set, a
+// rule when Rule is set and a generated check when Generated is set;
+// Validate refuses more than one and none.
 type Check struct {
 	ID     string
 	Reason string
@@ -43,6 +44,9 @@ type Check struct {
 	Run     []string
 	Timeout time.Duration
 	Rule    *Rule
+	// Generated is set on a generated check: the committed file and the
+	// generator whose stdout must equal it.
+	Generated *Generated
 	// At is where the check is written: the config file and the line its
 	// entry starts on. The loader sets it; a line of 0 is not known.
 	At Location
@@ -71,11 +75,16 @@ func (c Check) Validate() error {
 	if !c.Scope.known() {
 		errs = append(errs, fmt.Errorf("scope %q must be one of repo, live, applied", c.Scope))
 	}
-	switch {
-	case c.Rule != nil:
+	// Ifs rather than a switch: Go's coverage profile leaves case
+	// expressions outside every block (Rule.validate says more).
+	if c.Rule != nil {
 		errs = append(errs, c.Rule.validate(c)...)
-	case len(c.Run) == 0:
-		errs = append(errs, errors.New("run or extract is required: a program check has run, a rule has extract"))
+	}
+	if c.Generated != nil {
+		errs = append(errs, c.Generated.validate(c)...)
+	}
+	if c.Rule == nil && c.Generated == nil && len(c.Run) == 0 {
+		errs = append(errs, errors.New("run or extract is required: a program check has run, a rule has extract, and a generated check has generated"))
 	}
 	if c.Timeout < 0 {
 		errs = append(errs, errors.New("timeout must not be negative"))
@@ -110,8 +119,13 @@ type Result struct {
 	// agree rule with compare: semver that compared ranges alone. Only a
 	// rule sets it: a program check's output is its Message, which the
 	// text output prints only for a check that failed.
-	Note     string
-	Gap      string
+	Note string
+	Gap  string
+	// At is the place in the repository a result that is not a rule's
+	// points at, such as the line where a generated file first differs
+	// from what its generator prints. A File of "" is no place: a report
+	// then points at the check in the config.
+	At       Location
 	Duration time.Duration
 	// Extracted holds the raw values a rule evaluated, one entry per
 	// extractor that ran without an error, in the order the rule ran them.

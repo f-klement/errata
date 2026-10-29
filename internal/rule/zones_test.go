@@ -49,11 +49,11 @@ func TestZoneDatabaseMatchesGo(t *testing.T) {
 func zoneVerdicts(t *testing.T) {
 	t.Helper()
 	for zone, want := range map[string]string{"Europe/Berlin": "13", "America/New_York": "8"} {
-		a, err := Compile("string(timestamp('2020-03-08T12:00:00Z').getHours(v[0])) == '"+want+"'", []string{"v"})
+		a, err := Compile("string(timestamp('2020-03-08T12:00:00Z').getHours(v[0])) == '"+want+"'", []string{"v"}, Lists{})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if ok, err := a.Eval(context.Background(), map[string][]string{"v": {zone}}, nil); err != nil || !ok {
+		if ok, err := a.Eval(context.Background(), map[string][]string{"v": {zone}}, nil, nil); err != nil || !ok {
 			t.Errorf("getHours(%q): %v, %v; want %s", zone, ok, err, want)
 		}
 	}

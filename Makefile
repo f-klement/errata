@@ -177,6 +177,7 @@ SLOW_TESTS := ./internal/report:TestSARIFBoundsTheReviewersUpload \
               ./internal/extract/yaml:TestExcusedYAMLIsLinear \
               ./internal/extract/core:TestMessagesQuoteAShortPartOfALargeFile \
               ./internal/extract/core:TestFilterReadsALargeNumberOnce \
+              ./internal/extract/core:TestContextIsLinear \
               ./internal/extract/xml:TestXMLValueLimitAtItsSize \
               ./internal/extract/xml:TestXMLComparisonsStopAtTheFilterLimitAtItsSize \
               ./internal/extract/xml:TestXMLDeclarationsLookAtALargeFileOnce \
@@ -227,6 +228,9 @@ cover: test
 # Left as they are, both steps cover every package, as locally and weekly. MUTATION_DIFF, a
 # commit, narrows mutation to the lines each package in scope changed since it
 # (scripts/mutation.sh --diff); CI's mutation job sets it to the base of the scope.
+# MUTATION_DEADLINE, in seconds since the epoch, is when mutation must have ended; a package
+# that would not end by then is left out and named (scripts/mutation.sh --deadline). CI's
+# mutation job sets it from the job's start and timeout.
 #
 # Only a value given on make's command line counts. make exports command-line variables
 # to every recipe, so `make check MUTATION_SCOPE=x` reaches each make a recipe starts, the
@@ -242,9 +246,16 @@ endif
 ifeq ($(origin MUTATION_DIFF),environment)
 override MUTATION_DIFF :=
 endif
-MUTATION_SCOPE ?= all
-FUZZ_FLAGS     ?=
-MUTATION_DIFF  ?=
+ifeq ($(origin MUTATION_DEADLINE),environment)
+override MUTATION_DEADLINE :=
+endif
+ifeq ($(origin MUTATION_MEASURE_LEAST),environment)
+override MUTATION_MEASURE_LEAST :=
+endif
+MUTATION_SCOPE    ?= all
+FUZZ_FLAGS        ?=
+MUTATION_DIFF     ?=
+MUTATION_DEADLINE ?=
 
 fuzz:
 	@ran=0; for t in $(FUZZ_TARGETS); do \
@@ -257,7 +268,7 @@ fuzz:
 # scripts/mutation.sh runs gremlins from a copy of the tracked tree, one pass per package of
 # MUTATION_SCOPE, each held to its own floors; it says why.
 mutation: $(BIN)/gremlins
-	GREMLINS=$(BIN)/gremlins scripts/mutation.sh $(if $(MUTATION_DIFF),--diff $(MUTATION_DIFF) )$(MUTATION_SCOPE)
+	GREMLINS=$(BIN)/gremlins scripts/mutation.sh $(if $(MUTATION_DIFF),--diff $(MUTATION_DIFF) )$(if $(MUTATION_DEADLINE),--deadline $(MUTATION_DEADLINE) )$(MUTATION_SCOPE)
 
 vuln: $(BIN)/govulncheck
 	$(BIN)/govulncheck ./...

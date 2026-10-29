@@ -1,6 +1,7 @@
 // Package engine runs a set of checks and produces a report. It decides
 // whether each check can run; the protocol package decides what a program
-// check returns, and the rule package what a rule returns.
+// check and a generated check return, and the rule package what a rule
+// returns.
 package engine
 
 import (
@@ -33,11 +34,15 @@ func New(root string, providers []provider.Provider) *Engine {
 	return &Engine{Root: root, Providers: providers, Run: Dispatch}
 }
 
-// Dispatch is the production Runner: it sends a rule to rule.Run and a
-// program check to protocol.Run.
+// Dispatch is the production Runner: it sends a rule to rule.Run, a
+// generated check to protocol.RunGenerated and a program check to
+// protocol.Run.
 func Dispatch(ctx context.Context, root string, c check.Check) check.Result {
 	if c.IsRule() {
 		return rule.Run(ctx, root, c)
+	}
+	if c.IsGenerated() {
+		return protocol.RunGenerated(ctx, root, c)
 	}
 	return protocol.Run(ctx, root, c)
 }

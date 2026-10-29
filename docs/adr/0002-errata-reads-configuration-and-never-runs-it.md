@@ -31,3 +31,9 @@ start up is out of reach, and the documentation of each reader says which forms 
 Go parsing runtime with real grammars proves sound (a pure Go tree-sitter runtime exists, and is
 young), it can replace the hand written lexers behind the same literal reader without changing a
 rule. The binary stays one static file with no runtime beside it.
+
+This decision is about rules. A program check runs the program its config names, and so does a
+generated check, which compares what its generator prints with a committed file; [ADR
+0011](0011-a-generated-check-runs-its-generator-and-compares-what-it-prints.md) says why that
+leaves this decision standing, and the limits that keep the generator to argv, the program
+check's timeout and environment, and an output that is compared and never run.

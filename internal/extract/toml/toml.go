@@ -25,12 +25,19 @@ type Spec struct {
 	Path     string          `json:"path"`
 	Embedded []core.Embedded `json:"embedded,omitempty"`
 	MaxBytes int64           `json:"max_bytes,omitempty"`
+	// As is map to hand assert each mapping the path selects whole, or
+	// record to read Fields from each node it selects into one, as
+	// core.CheckAs says; "" for each scalar.
+	As string `json:"as,omitempty"`
+	// Fields names each path read from a selected node into its record,
+	// for as: record, as core.CheckFields says.
+	Fields map[string]string `json:"fields,omitempty"`
 }
 
 // Build checks s and returns its extractor, which reads the documents
 // embedded names with p.
 func Build(s Spec, p core.Parsers) (check.Extractor, error) {
-	return core.BuildTree("toml", core.Tree{File: s.File, Files: s.Files, Path: s.Path, Embedded: s.Embedded, MaxBytes: s.MaxBytes}, core.TOMLFormat, Parse, p)
+	return core.BuildTree("toml", core.Tree{File: s.File, Files: s.Files, Path: s.Path, Embedded: s.Embedded, MaxBytes: s.MaxBytes, As: s.As, Fields: s.Fields}, core.TOMLFormat, Parse, p)
 }
 
 // Parse reads a TOML file into a tree. go-toml's unstable parser gives

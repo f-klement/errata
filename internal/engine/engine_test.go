@@ -2,7 +2,10 @@ package engine
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"pgregory.net/rapid"
 
@@ -141,4 +144,34 @@ func TestPropertyOneResultPerCheckInOrder(t *testing.T) {
 			t.Fatalf("runner ran %d checks, want %d", len(ran), n-skipped)
 		}
 	})
+}
+
+// New sends a generated check to the generator runner: a generator whose
+// output matches the committed file holds, where protocol.Run would have
+// read its exit code, and one whose output differs is an erratum. Without a
+// provider the check runs, since its scope is repo, so --fail-on-skip never
+// sees it skipped. The planted break: Dispatch sending a generated check to
+// protocol.Run, which ran nothing, since its Run is empty, and was unknown.
+func TestNewRunsAGeneratedCheck(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "out.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gen := func(id, printed string) check.Check {
+		return check.Check{ID: id, Scope: check.ScopeRepo, Timeout: 5 * time.Second, Generated: &check.Generated{
+			File: "out.txt", Run: []string{"printf", printed}, MaxBytes: 1 << 10,
+		}}
+	}
+	e := New(root, nil)
+	e.SkipsFail = true
+	rep := e.Execute(context.Background(), []check.Check{gen("current", `x\n`), gen("stale", `y\n`)})
+	want := []check.Verdict{check.VerdictTrue, check.VerdictFalse}
+	for i, res := range rep.Results {
+		if res.Verdict != want[i] {
+			t.Errorf("%s: verdict %q, want %q (%s)", res.Check.ID, res.Verdict, want[i], res.Message)
+		}
+	}
+	if r, s := rep.Coverage(); r != 2 || s != 0 || rep.FailingSkips() != 0 {
+		t.Fatalf("coverage = ran %d skipped %d, failing skips %d, want 2, 0 and 0", r, s, rep.FailingSkips())
+	}
 }

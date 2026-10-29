@@ -144,10 +144,17 @@ func (m lineMap) into(n *Node) lineMap {
 }
 
 // Reading is what a reader knows of its file that a reading needs: the
-// line it ends on, which no line a value is reported at passes. A zero Last
-// reports every line as the tree has it.
+// line it ends on, which no line a value is reported at passes, and
+// whether the spec hands over each mapping whole. A zero Last reports
+// every line as the tree has it.
 type Reading struct {
 	Last int
+	// Maps hands each node the path selects whole, as a mapping (as: map),
+	// where false turns each into its scalar.
+	Maps bool
+	// Fields turns each node the path selects into a record of these
+	// fields (as: record), in place of Maps; nil for no record.
+	Fields []Field
 }
 
 // line is the file's line for line k of the document m maps, kept inside
@@ -195,6 +202,12 @@ func (s Source) EmbeddedValues(p Path, e Embedding, f Reading, spent *Spent, roo
 		if nodes, at, err = r.step(st, nodes, at); err != nil {
 			return nil, err
 		}
+	}
+	if f.Fields != nil {
+		return r.records(nodes, at)
+	}
+	if f.Maps {
+		return r.whole(nodes, at)
 	}
 	return r.values(nodes, at)
 }

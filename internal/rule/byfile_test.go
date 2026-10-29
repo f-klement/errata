@@ -76,12 +76,12 @@ func TestByFileRefusesWhatIsNoExtractor(t *testing.T) {
 		"size(by_file(v, v)) > 0":     "undeclared reference to 'by_file'",
 		"size(@errata_by_file_v) > 0": "Syntax error",
 	} {
-		_, err := Compile(expr, []string{"v"})
+		_, err := Compile(expr, []string{"v"}, Lists{})
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%s: %v, want %q", expr, err, want)
 		}
 	}
-	if _, err := Compile("size(by_file(v)) > 0", []string{"v"}); err != nil {
+	if _, err := Compile("size(by_file(v)) > 0", []string{"v"}, Lists{}); err != nil {
 		t.Errorf("an extractor read only through by_file: %v", err)
 	}
 }
@@ -90,15 +90,15 @@ func TestByFileRefusesWhatIsNoExtractor(t *testing.T) {
 // grouped under a file that did not give it, and the rule is unknown.
 // Planted break: the count left unchecked, which indexed past the files.
 func TestByFileRefusesValuesWithoutTheirFiles(t *testing.T) {
-	a, err := Compile("size(by_file(v)) > 0", []string{"v"})
+	a, err := Compile("size(by_file(v)) > 0", []string{"v"}, Lists{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = a.Eval(context.Background(), map[string][]string{"v": {"1", "2"}}, map[string][]string{"v": {"a"}})
+	_, err = a.Eval(context.Background(), map[string][]string{"v": {"1", "2"}}, map[string][]string{"v": {"a"}}, nil)
 	if err == nil || err.Error() != "by_file(v): 2 values came with 1 files, so they cannot be grouped" {
 		t.Errorf("got %v", err)
 	}
-	if ok, err := a.Eval(context.Background(), map[string][]string{"v": {"1"}}, map[string][]string{"v": {"a"}}); err != nil || !ok {
+	if ok, err := a.Eval(context.Background(), map[string][]string{"v": {"1"}}, map[string][]string{"v": {"a"}}, nil); err != nil || !ok {
 		t.Errorf("one value in one file: %v, %v", ok, err)
 	}
 }
@@ -125,12 +125,12 @@ func TestByFileIteratesInTheOrderOfTheValues(t *testing.T) {
 		if strings.Contains(expr, "(w)") {
 			names = append(names, "w")
 		}
-		a, err := Compile(expr, names)
+		a, err := Compile(expr, names, Lists{})
 		if err != nil {
 			t.Fatal(err)
 		}
 		for range 200 {
-			ok, err := a.Eval(context.Background(), map[string][]string{"v": vals, "w": {"y"}}, map[string][]string{"v": files, "w": {"g"}})
+			ok, err := a.Eval(context.Background(), map[string][]string{"v": vals, "w": {"y"}}, map[string][]string{"v": files, "w": {"g"}}, nil)
 			if got := fmt.Sprintf("%v %v", ok, err); got != want {
 				t.Fatalf("%s: %s, want %s", expr, got, want)
 			}

@@ -125,7 +125,7 @@ func TestParseAssertRule(t *testing.T) {
 		t.Fatal("assert loaded without being compiled")
 	}
 	for values, want := range map[[2]string]bool{{"x", "x"}: true, {"x", "y"}: false} {
-		got, err := r.Compiled.Eval(context.Background(), map[string][]string{"v": {values[0]}, "w": {values[1]}}, nil)
+		got, err := r.Compiled.Eval(context.Background(), map[string][]string{"v": {values[0]}, "w": {values[1]}}, nil, nil)
 		if err != nil || got != want {
 			t.Errorf("%v: %v, %v; want %v", values, got, err, want)
 		}

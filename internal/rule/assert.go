@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"cel.dev/cel-go/common/types"
 	"cel.dev/cel-go/common/types/ref"
 	"cel.dev/cel-go/common/types/traits"
+	"cel.dev/cel-go/ext"
 	"cel.dev/cel-go/interpreter"
 
 	"github.com/f-klement/errata/internal/check"
@@ -76,8 +78,16 @@ var baseEnv = sync.OnceValues(func() (*cel.Env, error) {
 		return nil, err
 	}
 	opts = append(opts, strs...)
+	opts = append(opts, ext.Bindings(ext.BindingsVersion(bindingsVersion)))
 	return cel.NewCustomEnv(append(opts, noting()...)...)
 })
+
+// bindingsVersion is the version of cel-go's bindings library assert
+// declares: cel.bind(name, value, expr) names value in expr, so a rule can
+// write an intermediate value once, such as the matching rules of a fold.
+// Version 0 is the macro alone. A later one adds cel.@block, which only
+// cel-go's optimizer writes, and is left out.
+const bindingsVersion = 0
 
 // identifier is what CEL reads as one variable name. An extractor named
 // otherwise could not be written in the expression.
@@ -99,8 +109,14 @@ const (
 	byFilePrefix = "@errata_by_file_"
 )
 
-// byFileType is the type of by_file(x).
-var byFileType = cel.MapType(cel.StringType, cel.ListType(cel.StringType))
+// The types an extractor's variable and its by_file have: a list of
+// strings, or for an extractor with as: map a list of maps, each from a key
+// to a string, a list or a map again, which CEL types dyn.
+var (
+	mapType       = cel.MapType(cel.StringType, cel.DynType)
+	byFileType    = cel.MapType(cel.StringType, cel.ListType(cel.StringType))
+	byFileMapType = cel.MapType(cel.StringType, cel.ListType(mapType))
+)
 
 // byFileMacro rewrites by_file(x), for x one of extractors, as x's hidden
 // variable. Any other argument is a load error, at the argument.
@@ -114,13 +130,28 @@ func byFileMacro(extractors []string) cel.EnvOption {
 	}))
 }
 
-// Compile type checks expr over the named extractors, each a list(string),
-// and returns it ready to evaluate. Each of these is a load error: a name that
+// Lists names the extractors of a rule that assert reads apart from the
+// rest. They are two lists of names with different meanings, so each has its
+// own field: a call cannot hand one where the other belongs.
+type Lists struct {
+	// Maps are read as lists of maps, list(map(string, dyn)), rather than as
+	// lists of strings.
+	Maps []string
+	// Read are the extractors another extractor of the rule reads the
+	// values of. The expression need not name them, since what reads them
+	// does.
+	Read []string
+}
+
+// Compile type checks expr over the named extractors, each a list(string)
+// but those l.Maps names, each a list(map(string, dyn)), and returns it ready
+// to evaluate. Each of these is a load error: a name that
 // is not an extractor, a type error, a result that is not a bool and a parse
 // error, each with the expression and a caret under the column; an extractor
-// the expression never uses; an extractor name CEL cannot read.
-func Compile(expr string, extractors []string) (check.Assertion, error) {
-	a, err := compile(expr, extractors, limits{cost: CostLimit, timeout: EvalTimeout, grace: stopGrace})
+// the expression never uses, unless l.Read lists it; an extractor name CEL
+// cannot read.
+func Compile(expr string, extractors []string, l Lists) (check.Assertion, error) {
+	a, err := compileWith(expr, extractors, l, limits{cost: CostLimit, timeout: EvalTimeout, grace: stopGrace})
 	if err != nil {
 		// A nil *assertion in the interface would not compare equal to nil.
 		return nil, err
@@ -131,6 +162,11 @@ func Compile(expr string, extractors []string) (check.Assertion, error) {
 // compile is Compile with the limits given, and with extra declarations,
 // which only tests pass.
 func compile(expr string, extractors []string, lim limits, extra ...cel.EnvOption) (*assertion, error) {
+	return compileWith(expr, extractors, Lists{}, lim, extra...)
+}
+
+// compileWith is compile with the extractors l names read apart.
+func compileWith(expr string, extractors []string, l Lists, lim limits, extra ...cel.EnvOption) (*assertion, error) {
 	base, err := baseEnv()
 	if err != nil {
 		return nil, fmt.Errorf("assert: the CEL environment: %w", err)
@@ -142,6 +178,10 @@ func compile(expr string, extractors []string, lim limits, extra ...cel.EnvOptio
 	for _, name := range extractors {
 		if !identifier.MatchString(name) || slices.Contains(reserved, name) {
 			errs = append(errs, fmt.Errorf("extractor %q: assert refers to an extractor by its name, so the name must be letters, digits and _, must not start with a digit and must not be one of CEL's reserved words", name))
+			continue
+		}
+		if slices.Contains(l.Maps, name) {
+			vars = append(vars, cel.Variable(name, cel.ListType(mapType)), cel.Variable(byFilePrefix+name, byFileMapType))
 			continue
 		}
 		vars = append(vars, cel.Variable(name, cel.ListType(cel.StringType)), cel.Variable(byFilePrefix+name, byFileType))
@@ -167,13 +207,16 @@ func compile(expr string, extractors []string, lim limits, extra ...cel.EnvOptio
 		return nil, located(expr, root.SourceInfo().GetStartLocation(root.Expr().ID()),
 			fmt.Sprintf("the expression has type %s; assert needs a bool", cel.FormatCELType(t)))
 	}
+	if errs := mapLiterals(expr, ast.NativeRep()); len(errs) > 0 {
+		return nil, errors.Join(errs...)
+	}
 	used := free(ast.NativeRep())
 	var grouped []string
 	for _, name := range extractors {
 		if used[byFilePrefix+name] {
 			grouped = append(grouped, name)
 		}
-		if !used[name] && !used[byFilePrefix+name] {
+		if !used[name] && !used[byFilePrefix+name] && !slices.Contains(l.Read, name) {
 			// It would still run, but the relation would hold or fail without
 			// testing the place the author added it for.
 			errs = append(errs, fmt.Errorf("extractor %q is declared but assert does not use it", name))
@@ -194,7 +237,265 @@ func compile(expr string, extractors []string, lim limits, extra ...cel.EnvOptio
 	if err != nil {
 		return nil, fmt.Errorf("assert: %w", err)
 	}
-	return &assertion{program: program, limits: lim, grouped: grouped}, nil
+	var whole []string
+	for _, name := range extractors {
+		if slices.Contains(l.Maps, name) {
+			whole = append(whole, name)
+		}
+	}
+	return &assertion{program: program, limits: lim, grouped: grouped, maps: whole}, nil
+}
+
+// mapLiterals refuses each ==, != and in that compares a value CEL types
+// dyn, which a value of a map is, or a list or map that holds such values,
+// with an operand of a type such a value never equals: bool, int, uint,
+// double, null, bytes, duration or timestamp, or a list or map whose
+// members, keys or values are of such a type. A map's scalar is always a
+// string, and CEL's equality makes such a comparison false, or != true, on
+// every input; the checker cannot see it, since dyn takes any type, so
+// r.automerge != true would hold on the rule it exists to refuse. The pass
+// goes by the operand's checked type, so int('5'), size(m), !false, a
+// ternary and v.map(x, int(x)) are refused as a literal is. A list or map
+// literal is refused at each element, key or value of such a type, so an
+// empty one loads, and so is the literal a cel.bind name binds or a
+// comprehension variable runs over, since a literal that mixes types, such
+// as {'name': 'x', 'automerge': true}, is typed map(string, dyn). Any other
+// operand is checked by its type alone. A value the expression writes as
+// dyn() itself is left alone, which is also the way out for a dyn that is
+// not a map's, such as [1, 'a'][0]. Each refusal is at the operand, or the
+// member, of that type.
+func mapLiterals(expr string, checked *celast.AST) []error {
+	errs, _ := refusals(expr, checked)
+	return errs
+}
+
+// refusals is mapLiterals, and the number of nodes it visited. Each node is
+// visited at most once as a compared operand and once as the right side of
+// in, so the visits are linear in the expression however often a followed
+// name is read: without that, a chain of binds that each name the last one
+// k times took k to the power of its depth, 56 s for 400 bytes. The calls
+// are not: each read of a comprehension variable follows it to every
+// element of its range before the visited set answers, so they grow as the
+// reads times the range's length, about 0.1 s at MaxLength.
+func refusals(expr string, checked *celast.AST) ([]error, int) {
+	var errs []error
+	nodes := map[int64]celast.NavigableExpr{}
+	for _, n := range celast.MatchDescendants(celast.NavigateAST(checked), func(celast.NavigableExpr) bool { return true }) {
+		nodes[n.ID()] = n
+	}
+	dyn := func(e celast.Expr) bool {
+		if e.Kind() == celast.CallKind && e.AsCall().FunctionName() == "dyn" {
+			return false
+		}
+		return holdsDyn(checked.GetType(e.ID()))
+	}
+	refused := map[int64]bool{}
+	at := func(e celast.Expr, msg string) {
+		if !refused[e.ID()] {
+			refused[e.ID()] = true
+			errs = append(errs, located(expr, checked.SourceInfo().GetStartLocation(e.ID()), msg))
+		}
+	}
+	// follow is what a name stands for: the value a cel.bind name binds, or
+	// the elements of the list literal a comprehension variable runs over.
+	// It is nil, and false, for any other expression.
+	follow := func(e celast.Expr) ([]celast.Expr, bool) {
+		if e.Kind() != celast.IdentKind {
+			return nil, false
+		}
+		c, ok := binder(nodes[e.ID()], e.AsIdent())
+		if !ok {
+			return nil, false
+		}
+		if c.AccuVar() == e.AsIdent() {
+			return []celast.Expr{c.AccuInit()}, true
+		}
+		if c.IterVar() == e.AsIdent() && c.IterRange().Kind() == celast.ListKind {
+			return c.IterRange().AsList().Elements(), true
+		}
+		return nil, false
+	}
+	visits := 0
+	compared, searched := map[int64]bool{}, map[int64]bool{}
+	var refuse, member func(e celast.Expr)
+	refuse = func(e celast.Expr) {
+		if compared[e.ID()] {
+			return
+		}
+		compared[e.ID()] = true
+		visits++
+		t := checked.GetType(e.ID())
+		if neverEqual(t) {
+			at(e, dynMessage(e, t))
+			return
+		}
+		if e.Kind() == celast.ListKind {
+			for _, el := range e.AsList().Elements() {
+				refuse(el)
+			}
+			return
+		}
+		if e.Kind() == celast.MapKind {
+			for _, entry := range e.AsMap().Entries() {
+				refuse(entry.AsMapEntry().Key())
+				refuse(entry.AsMapEntry().Value())
+			}
+			return
+		}
+		if to, ok := follow(e); ok {
+			for _, f := range to {
+				refuse(f)
+			}
+			return
+		}
+		if holdsNever(t) {
+			at(e, dynMessage(e, t))
+		}
+	}
+	// member refuses the members of e, the right side of in: those of a
+	// literal one by one, and any other by e's member type.
+	member = func(e celast.Expr) {
+		if searched[e.ID()] {
+			return
+		}
+		searched[e.ID()] = true
+		visits++
+		if to, ok := follow(e); ok {
+			for _, f := range to {
+				member(f)
+			}
+			return
+		}
+		t := checked.GetType(e.ID())
+		switch {
+		case e.Kind() == celast.ListKind:
+			for _, el := range e.AsList().Elements() {
+				refuse(el)
+			}
+		case e.Kind() == celast.MapKind:
+			for _, entry := range e.AsMap().Entries() {
+				refuse(entry.AsMapEntry().Key())
+			}
+		case t.Kind() == types.ListKind && holdsNever(t.Parameters()[0]),
+			t.Kind() == types.MapKind && holdsNever(t.Parameters()[0]):
+			at(e, fmt.Sprintf("an expression of type %s is searched for %sit never holds one; build it of strings, such as with string()%s", cel.FormatCELType(t), dynValue, escapeValue))
+		}
+	}
+	for _, e := range celast.MatchDescendants(celast.NavigateAST(checked), celast.KindMatcher(celast.CallKind)) {
+		call := e.AsCall()
+		args := call.Args()
+		fn := call.FunctionName()
+		if (fn == operators.Equals || fn == operators.NotEquals) && len(args) == 2 {
+			if dyn(args[0]) {
+				refuse(args[1])
+			}
+			if dyn(args[1]) {
+				refuse(args[0])
+			}
+		}
+		if fn == operators.In && len(args) == 2 {
+			if t := checked.GetType(args[1].ID()); dyn(args[1]) || (t.Kind() == types.ListKind && holdsDyn(t.Parameters()[0])) {
+				refuse(args[0])
+			}
+			if dyn(args[0]) {
+				member(args[1])
+			}
+		}
+	}
+	return errs, visits
+}
+
+// holdsNever reports whether t is a type a value of a map never equals, or
+// a list or map with members, keys or values of such a type.
+func holdsNever(t *types.Type) bool {
+	switch t.Kind() {
+	case types.ListKind:
+		return holdsNever(t.Parameters()[0])
+	case types.MapKind:
+		return holdsNever(t.Parameters()[0]) || holdsNever(t.Parameters()[1])
+	default:
+		return neverEqual(t)
+	}
+}
+
+// holdsDyn reports whether a value of type t may be or hold a value of a
+// map: t is dyn, or a list or map whose members are of such a type, as a
+// map(string, dyn) and a list(map(string, dyn)) are.
+func holdsDyn(t *types.Type) bool {
+	switch t.Kind() {
+	case types.DynKind:
+		return true
+	case types.ListKind:
+		return holdsDyn(t.Parameters()[0])
+	case types.MapKind:
+		return holdsDyn(t.Parameters()[1])
+	default:
+		return false
+	}
+}
+
+// neverEqual reports whether a value of type t is never equal to a value of
+// a map: a string, a list or a map.
+func neverEqual(t *types.Type) bool {
+	switch t.Kind() {
+	case types.BoolKind, types.IntKind, types.UintKind, types.DoubleKind, types.NullTypeKind,
+		types.BytesKind, types.DurationKind, types.TimestampKind:
+		return true
+	default:
+		return false
+	}
+}
+
+// dynValue names the side a refusal compares with, and says why the two
+// never meet; escape and escapeValue are the way out, for == and for in.
+const (
+	dynValue    = "a value CEL types dyn, such as one from a map; a map's scalars are always strings, so "
+	escape      = "; if the other side does not come from a map, wrap it in dyn()"
+	escapeValue = "; if the value does not come from a map, wrap it in dyn()"
+)
+
+// dynMessage is the refusal of e, of type t, compared with a value CEL
+// types dyn. A bool, number or null literal is named by its value, any
+// other expression by its type; a list or map by what its members are.
+func dynMessage(e celast.Expr, t *types.Type) string {
+	subject := "an expression of type " + cel.FormatCELType(t)
+	never := "the two are never equal"
+	var hint string
+	switch t.Kind() {
+	case types.BoolKind:
+		hint = "compare with the string 'true' or 'false'"
+	case types.NullTypeKind:
+		hint = "a mapping holds null as the string 'null', so compare with 'null'"
+	case types.IntKind, types.UintKind, types.DoubleKind:
+		hint = "compare with a string, or convert the value with int(), uint() or double()"
+	case types.ListKind, types.MapKind:
+		never = "its members never equal a map's, and the two are equal only when both are empty"
+		hint = "build it of strings, such as with string()"
+	default:
+		hint = fmt.Sprintf("convert the value with %s()", cel.FormatCELType(t))
+	}
+	if e.Kind() == celast.LiteralKind {
+		switch v := e.AsLiteral().(type) {
+		case types.Bool:
+			subject = fmt.Sprintf("the bool %t", bool(v))
+			hint = fmt.Sprintf("compare with the string '%t'", bool(v))
+		case types.Null:
+			subject = "null"
+		case types.Int, types.Uint, types.Double:
+			var text string
+			switch n := v.(type) {
+			case types.Int:
+				text = strconv.FormatInt(int64(n), 10)
+			case types.Uint:
+				text = strconv.FormatUint(uint64(n), 10)
+			case types.Double:
+				text = strconv.FormatFloat(float64(n), 'g', -1, 64)
+			}
+			subject = "the number " + text
+			hint = fmt.Sprintf("compare with the string '%s', or convert the value with int(), uint() or double()", text)
+		}
+	}
+	return subject + " is compared with " + dynValue + never + "; " + hint + escape
 }
 
 // The names of the hidden function and variable noteOperands adds. A name
@@ -346,18 +647,25 @@ func free(checked *celast.AST) map[string]bool {
 // bound reports whether a comprehension around e binds name where e is: in
 // its condition, step or result, and not in the range or the initial value.
 func bound(e celast.NavigableExpr, name string) bool {
+	_, ok := binder(e, name)
+	return ok
+}
+
+// binder is the innermost comprehension around e that binds name where e
+// is, as bound tests it.
+func binder(e celast.NavigableExpr, name string) (celast.ComprehensionExpr, bool) {
 	child := e
 	for parent, ok := e.Parent(); ok; parent, ok = parent.Parent() {
 		if parent.Kind() == celast.ComprehensionKind {
 			c := parent.AsComprehension()
 			binds := name == c.IterVar() || name == c.IterVar2() || name == c.AccuVar()
 			if binds && child.ID() != c.IterRange().ID() && child.ID() != c.AccuInit().ID() {
-				return true
+				return c, true
 			}
 		}
 		child = parent
 	}
-	return false
+	return nil, false
 }
 
 // depthMessage replaces both of the parser's depth errors. One names the
@@ -396,6 +704,8 @@ type assertion struct {
 	limits  limits
 	// grouped are the extractors the expression reads by_file of.
 	grouped []string
+	// maps are the extractors it reads as lists of maps.
+	maps []string
 }
 
 type outcome struct {
@@ -412,14 +722,27 @@ type outcome struct {
 // the grace, such as one in a call that does not return, keeps its goroutine
 // until it ends, and Eval returns without it; the run goes on. An error that
 // && or || absorbed is still the result.
-func (a *assertion) Eval(parent context.Context, values, files map[string][]string) (bool, error) {
+func (a *assertion) Eval(parent context.Context, values, files map[string][]string, maps map[string][]*check.Data) (bool, error) {
 	log := &errorLog{}
 	vars := map[string]any{}
+	members := map[string][]ref.Val{}
 	for name, v := range values {
 		vars[name] = v
+		members[name] = celStrings(v)
+	}
+	for _, name := range a.maps {
+		if len(maps[name]) != len(files[name]) {
+			return false, fmt.Errorf("extractor %q: %d maps came with %d files, so the values are not whole", name, len(maps[name]), len(files[name]))
+		}
+		list := make([]ref.Val, len(maps[name]))
+		for i, d := range maps[name] {
+			list[i] = toCEL(d)
+		}
+		vars[name] = types.NewRefValList(types.DefaultTypeAdapter, list)
+		members[name] = list
 	}
 	for _, name := range a.grouped {
-		groups, err := groupByFile(values[name], files[name])
+		groups, err := groupByFile(members[name], files[name])
 		if err != nil {
 			return false, fmt.Errorf("by_file(%s): %w", name, err)
 		}
@@ -473,11 +796,11 @@ func (a *assertion) Eval(parent context.Context, values, files map[string][]stri
 // is the same on every run. A count of files other than the values' is
 // refused, so a group never holds a value under a file that did not give
 // it.
-func groupByFile(values, files []string) (ref.Val, error) {
+func groupByFile(values []ref.Val, files []string) (ref.Val, error) {
 	if len(files) != len(values) {
 		return nil, fmt.Errorf("%d values came with %d files, so they cannot be grouped", len(values), len(files))
 	}
-	groups := map[string][]string{}
+	groups := map[string][]ref.Val{}
 	var order []string
 	for i, v := range values {
 		if _, ok := groups[files[i]]; !ok {
@@ -485,11 +808,41 @@ func groupByFile(values, files []string) (ref.Val, error) {
 		}
 		groups[files[i]] = append(groups[files[i]], v)
 	}
-	m, ok := types.DefaultTypeAdapter.NativeToValue(groups).(traits.Mapper)
-	if !ok {
-		return nil, errors.New("the groups do not form a CEL map")
+	m := map[ref.Val]ref.Val{}
+	for file, group := range groups {
+		m[types.String(file)] = types.NewRefValList(types.DefaultTypeAdapter, group)
 	}
-	return orderedMap{Mapper: m, keys: order}, nil
+	return orderedMap{Mapper: types.NewRefValMap(types.DefaultTypeAdapter, m), keys: order}, nil
+}
+
+// celStrings is values as CEL strings.
+func celStrings(values []string) []ref.Val {
+	out := make([]ref.Val, len(values))
+	for i, v := range values {
+		out[i] = types.String(v)
+	}
+	return out
+}
+
+// toCEL is d as CEL reads it: a scalar as a string, a sequence as a list,
+// and a mapping as a map whose keys come in file order, so a comprehension
+// over it, and the error it reports, is the same on every run.
+func toCEL(d *check.Data) ref.Val {
+	if d.Kind == check.DataScalar {
+		return types.String(d.Text)
+	}
+	items := make([]ref.Val, len(d.Items))
+	for i, it := range d.Items {
+		items[i] = toCEL(it)
+	}
+	if d.Kind == check.DataList {
+		return types.NewRefValList(types.DefaultTypeAdapter, items)
+	}
+	m := map[ref.Val]ref.Val{}
+	for i, k := range d.Keys {
+		m[types.String(k)] = items[i]
+	}
+	return orderedMap{Mapper: types.NewRefValMap(types.DefaultTypeAdapter, m), keys: d.Keys}
 }
 
 // orderedMap is a CEL map that iterates its keys in the order keys gives,

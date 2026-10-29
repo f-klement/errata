@@ -109,6 +109,9 @@ docker run --rm -v "$PWD:/repo" -w /repo fklement/errata check
   or that a [CEL](https://cel.dev) expression over them holds.
   An erratum names every value with the `file:line` it came from, or the file alone for whether a
   file is there and its size.
+- **Generated files.** A generated check runs a generator, as a list of arguments and never
+  through a shell, and fails when the committed file differs by a byte from what it prints,
+  naming the first line and column that differ.
 - **Output for people and for CI.** Readable text, JUnit XML that GitLab, GitHub Actions and
   Jenkins render per check, or SARIF that GitHub code scanning turns into alerts on the line that
   disagrees.
@@ -164,18 +167,20 @@ files, its rule, the erratum errata prints and the fix:
 
 ### Checks
 
-A check is a program check or a rule. A program check has `run`, or takes the file's
-[default run](#a-default-run); a rule has `extract`. A check with both does not load, and neither
-does a check with neither when the file sets no default run. A file with no checks does not load
+A check is a program check, a rule or a [generated check](#generated-files). A program check has
+`run`, or takes the file's [default run](#a-default-run); a rule has `extract`; a generated check
+has `generated`. A check with two of them does not load, and neither does a check with none when
+the file sets no default run. A file with no checks does not load
 either: it would run nothing and pass. Every check has these keys:
 
 | Key | Required | Meaning |
 |---|---|---|
 | `id` | yes | lower-case words joined by single hyphens, unique in the file |
 | `reason` | yes | why the check exists and what breaks without it |
-| `scope` | yes | `repo`, `live` or `applied`; a rule is always `repo` |
+| `scope` | yes | `repo`, `live` or `applied`; a rule and a generated check are always `repo` |
 | `run` | program check, unless the file sets a [default run](#a-default-run) | the command, as a list of arguments, run from the repository root |
-| `timeout` | no | program check only: a positive Go duration such as `10s` or `2m`; default `30s`. Zero or less does not load |
+| `timeout` | no | program check and generated check: a positive Go duration such as `10s` or `2m`; default `30s`. Zero or less does not load |
+| `generated` | generated check | the committed file and its generator: see [Generated files](#generated-files) |
 | `extract` | rule | the rule's extractors, each under a name of its own |
 | `agree` | rule: this or `assert` | the extractors whose values must all agree |
 | `compare` | no | agree only: how the values must agree, `text` (the default) or `semver` (see [Comparing versions](#comparing-versions)) |
@@ -270,10 +275,73 @@ no argument. The placeholders need no quotes in YAML. A program that reads the i
 `ERRATA_CHECK_ID` needs no placeholder. `errata list` prints each check's `run` with the
 placeholders replaced, as the command errata starts.
 
-A default `run` is a program errata starts, as a check's own `run` is: it runs from the repository
-root with the environment of the job that runs errata, secrets included. On a ref you do not
-trust, such as a merge request from a fork, the config's programs and its default `run` are that
-ref's. Run errata there with a config of rules only, or in a job without secrets.
+A default `run` is a program errata starts, as a check's own `run` is, and as a generated check's
+generator is: each runs from the repository root with the environment of the job that runs
+errata, secrets included. On a ref you do not trust, such as a merge request from a fork, the
+config's programs, its default `run` and its generators are that ref's, and so are the scripts
+they start. Run errata there with a config of rules only, or in a job without secrets.
+
+#### Generated files
+
+A file the repository commits and a program generates, such as a public copy of a document with
+private sections stripped, must be what the program prints today. A generated check names the
+file and the generator:
+
+```yaml
+checks:
+  - id: architecture-public-copy-is-current
+    reason: architecture.md is handed to people, and is generated from architecture-full.md.
+    scope: repo
+    generated:
+      file: architecture.md
+      run: [python3, scripts/build-architecture.py, --stdout]
+```
+
+errata reads the file, then runs `generated.run` and compares what it prints on stdout with the
+file as it was read, byte for byte.
+When they differ, the check is an erratum that names the first line and column where they part,
+and quotes each side from a little before that column to the end of the line:
+
+```text
+FALSE architecture-public-copy-is-current (repo)
+  why:  architecture.md is handed to people, and is generated from architecture-full.md.
+  said: architecture.md:15, column 7, differs from what its generator prints: the file has "## 1. The shape of it\n", the generator printed "## 1. Planted The shape of it\n"
+```
+
+The text and JUnit reports carry the place in that message, and SARIF puts the result on that
+line of the file.
+
+| Key | Required | Meaning |
+|---|---|---|
+| `generated.file` | yes | the committed file, relative to the repository root and inside it, as an extractor's `file` |
+| `generated.run` | yes | the generator, as a list of arguments, run from the repository root; it takes the placeholders of a [default run](#a-default-run) |
+| `generated.max_bytes` | no | the most bytes errata reads of the file and holds of the generator's stdout, and of its stderr apart: from 1 to 67108864 (64 MiB), default 33554432 (32 MiB) |
+
+The generator runs as a program check does, through the same code: argv and never a shell, the
+check's `timeout`, the environment the [check protocol](#the-check-protocol) gives, its own process
+group, which a timeout kills while the generator runs. Its stdin is empty, so a generator that reads
+stdin reads nothing and goes on. errata compares the output and never runs it.
+
+| What happened | Verdict |
+|---|---|
+| the output equals the file | true |
+| the output differs from the file in any byte, a CR before a newline and the last newline included | false, at the first line that differs |
+| nothing is at `generated.file` | false: the generator printed a file the repository lacks |
+| the generator exits with any status but 0, exit 1 included, or cannot be started | unknown, with the end of its stderr |
+| the generator runs past `timeout`, or writes more than `max_bytes` to stdout or to stderr | unknown; errata kills its process group if the generator is still running. A child left running after the generator exits runs on |
+| the file is over `max_bytes`, a directory, or a link that leads out of the repository | unknown |
+
+Line ends are compared as they are: a file of CRLF lines differs from a generator that prints LF.
+A generator that only writes its file needs a mode that prints it and writes nothing. Do not
+wrap it as `make docs && cat docs/api.md`: errata reads the file before the generator starts,
+so the check still fails on a stale file, but the generator has rewritten the file in the
+working tree, and every check that runs after it reads the new one. A generated check takes
+no default run, and a `run` or a rule's key beside `generated` does not load. Its scope is `repo`,
+so `--fail-on-skip` never sees it skipped, and `required` lists it by its id as any other check.
+[ADR 0011](docs/adr/0011-a-generated-check-runs-its-generator-and-compares-what-it-prints.md)
+says why errata runs a generator although rules never run anything
+([ADR 0002](docs/adr/0002-errata-reads-configuration-and-never-runs-it.md)), and argues each
+verdict above.
 
 ### Rules
 
@@ -296,7 +364,8 @@ checks:
 `agree` holds when every value from every named extractor has the same string form, or with
 `compare: semver` the same version (see [Comparing versions](#comparing-versions)). It names
 only extractors the rule declares, each once, and every extractor the rule declares, so none is
-left out of the comparison by mistake. When the values differ, the message lists each distinct
+left out of the comparison by mistake. For an extractor that returns records, it names one field
+of them, as `name.field` (see [Records](#records)). When the values differ, the message lists each distinct
 value with every `file:line` it was found at:
 
 ```text
@@ -467,10 +536,13 @@ checks:
 ```
 
 Each extractor is a variable named after it, and every variable is a `list(string)`: `schedule[0]`
-is the first value the extractor found. An extractor named in `assert` must be a CEL identifier
+is the first value the extractor found. An extractor with `as: map` or `as: record` is a list of
+maps instead (see [Mappings whole](#mappings-whole) and [Records](#records)). An extractor named in `assert` must be a CEL identifier
 (letters, digits and `_`, not starting with a digit). `normalize` applies to the values before the
 expression sees them. Numbers, durations and ports go through the functions below, so errata knows
-the type of every part of the expression when it loads the file.
+the type of every part of the expression when it loads the file, except a value read from a map,
+which CEL types `dyn`; a comparison of such a value with a bool, a number, null, bytes, a duration
+or a timestamp does not load (see [Mappings whole](#mappings-whole)).
 
 | Function | Gives |
 |---|---|
@@ -490,7 +562,8 @@ the type of every part of the expression when it loads the file.
 `same_set` and `subset` compare lists of strings, ints, uints, doubles or bools, so
 `same_set(ports.map(p, int(p)), [80, 443])` works. A duration times a whole number is a duration.
 The rest of CEL's standard library is there too: `size`, `in`, `contains`, `startsWith`,
-`matches`, and the macros `all`, `exists`, `exists_one`, `map` and `filter`. The timestamp
+`matches`, and the macros `all`, `exists`, `exists_one`, `map` and `filter`. `cel.bind(name,
+value, expr)` names `value` in `expr`, so an intermediate value is written once. The timestamp
 accessors that take a time zone, such as `getHours('Europe/Berlin')`, read `'UTC'`, fixed offsets
 such as `'+01:00'`, and IANA zone names. errata carries its own copy of the IANA time zone
 database (release 2026c in this version) and never reads the zone files, `ZONEINFO` or `TZ` of
@@ -644,10 +717,10 @@ extract:
 
 | Key | Fields | Returns |
 |---|---|---|
-| `yaml` | `file` or `files`, `path`, `kind` or `name` for a file of several documents, and `embedded` to read a document in a string | every scalar the path selects |
-| `json` | `file` or `files`, `path`, and `embedded` | every scalar the path selects |
-| `toml` | `file` or `files`, `path`, and `embedded` | every scalar the path selects |
-| `regex` | `file` or `files`, `pattern` | capture group 1 of every match |
+| `yaml` | `file` or `files`, `path`, `kind` or `name` for a file of several documents, `embedded` to read a document in a string, and `as: map`, or `as: record` with `fields` | every scalar the path selects, with `as: map` each mapping whole (see [Mappings whole](#mappings-whole)), or with `as: record` a record of the fields for each node (see [Records](#records)) |
+| `json` | `file` or `files`, `path`, `embedded`, and `as: map`, or `as: record` with `fields` | every scalar the path selects, each mapping whole, or a record for each node |
+| `toml` | `file` or `files`, `path`, `embedded`, and `as: map`, or `as: record` with `fields` | every scalar the path selects, each mapping whole, or a record for each node |
+| `regex` | `file` or `files`, `pattern`, `as: record`, `values_as` for a pattern that references another extractor's values, and `context` to keep a match by the lines around it | capture group 1 of every match (see [Values of another extractor](#values-of-another-extractor) and [The context of a match](#the-context-of-a-match)), or with `as: record` a record of the named groups of each match |
 | `text` | `file`, `pattern`, and `code` to read code blocks too | capture group 1 of every match in the prose of a Markdown file |
 | `xml` | `file`, `path`, and `namespaces` for a file with namespaces | every node the path selects: an element's text, an attribute's value or a text node |
 | `ini` | `file`, `key`, `section`, and `dialect`, `subsection` (git) or `host` (ansible) | every value of the key in the section, or the hosts or child groups of an ansible group |
@@ -1074,6 +1147,174 @@ count together across every file of the set.
 [ADR 0007](docs/adr/0007-embedded-reads-a-document-a-string-holds.md) says why the steps are a
 list and how lines are reported.
 
+#### Mappings whole
+
+A path selects scalars, so a list of objects reaches assert as one flat list for each field, and
+which value belonged to which object is lost. Renovate's `packageRules` need the objects whole:
+Renovate applies them in order, and a later rule's `automerge` overrides an earlier one's. With
+`as: map`, a `yaml`, `json` or `toml` extractor hands assert each mapping its path selects, in
+file order. This rule says that no rule after Renovate's never-automerge rule turns automerge back
+on for the charts it names:
+
+```yaml
+checks:
+  - id: blast-radius-charts-never-automerge
+    reason: >
+      The charts auto-sync, so the never-automerge rule is the only gate before a bump deploys,
+      and a later packageRule that names one of them with automerge on would remove it.
+    scope: repo
+    extract:
+      rules: {json: {file: renovate.json, path: "packageRules[*]", as: map}}
+    assert: |
+      rules.exists(b, has(b.prPriority) && b.prPriority == '5' && has(b.automerge) && b.automerge == 'false' && !has(b.matchUpdateTypes) && has(b.matchPackageNames) && size(b.matchPackageNames) > 0) &&
+      rules.filter(b, has(b.prPriority) && b.prPriority == '5' && has(b.automerge) && b.automerge == 'false' && !has(b.matchUpdateTypes) && has(b.matchPackageNames)).all(b,
+        b.matchPackageNames.all(n,
+          rules.map(r, has(r.automerge) && has(r.matchPackageNames) && n in r.matchPackageNames, r.automerge)[
+            size(rules.filter(r, has(r.automerge) && has(r.matchPackageNames) && n in r.matchPackageNames)) - 1] != 'true'))
+```
+
+The `exists` at the start holds the rule to the never-automerge rule itself: without it, a
+`renovate.json` that lost that rule would pass, since `all` over no member holds.
+
+In assert the extractor is a `list(map(string, dyn))`. A nested mapping is a map, a sequence a
+list, and a scalar a string, the text the file wrote as [Values](#values) gives it: `automerge:
+false` is `'false'` and `prPriority: 5` is `'5'`, which `int()` converts. So JSON `false` and
+`"false"` are one value, `'false'`, and so are `null` and `"null"`, `'null'`; `{}` and `[]` are an
+empty map and an empty list. A key set to null is set: `has(r.automerge)` is true for
+`"automerge": null`, so a rule that reads null as unset tests `r.automerge != 'null'` too. A key is
+its text as the file wrote it, so YAML's `1` and `0x1` are two keys, and `~` and `true` are the
+keys `'~'` and `'true'`. A map's keys come in the order the file wrote them, but for a YAML merge
+key: the keys `<<` adds come after the mapping's own, wherever `<<` stands, so `{<<: *b, a: 3}`
+with `b: {x: 1}` gives `a`, then `x`. `has(r.automerge)` tests whether a mapping sets a key, and
+reading a key it lacks makes the rule unknown. The last write of a fold is the last of the
+matching values, `l[size(l)-1]`, as above. `cel.bind` writes the filter once:
+`cel.bind(l, rules.filter(r, ...), l[size(l)-1].automerge != 'true')`.
+
+CEL types a value of a map `dyn`, which takes any type, and its equality makes a string and a bool
+or a number unequal without an error. So `r.automerge != true` would hold on every input, the rule
+that turns automerge on included. errata refuses at load every `==`, `!=` and `in` between a value
+CEL types `dyn` and an operand whose type such a value never equals: bool, int, uint, double, null,
+bytes, duration or timestamp, or a list or map with members, keys or values of such a type. It
+goes by the operand's type, not its spelling, so `r.replicas == size(l)`, `r.z == int('5')`, a
+ternary and `r.z in v.map(x, int(x))` are refused as `5` is. Inside a list or map literal it looks
+at each element, key and value, so `r == {'automerge': true}` is refused at `true`, and `[]` and
+`{}` load. It does the same for the literal a `cel.bind` name binds and for the list literal a
+comprehension variable runs over, so `cel.bind(want, {'name': 'x', 'automerge': true}, rules.exists(r,
+r == want))` is refused at `true`, though that map's type, `map(string, dyn)`, says nothing. Any
+other operand, such as the result of `map()` over the file's values, is checked by its type alone.
+A side that is a whole map, or a list of maps, counts as a map's value too. The refusal is at the
+operand, or the member, and says what to write instead:
+
+```text
+assert: the bool true is compared with a value CEL types dyn, such as one from a map; a map's scalars are always strings, so the two are never equal; compare with the string 'true'; if the other side does not come from a map, wrap it in dyn(), at line 1 column 46 of the expression:
+```
+
+A value the expression wraps in `dyn()` itself is left alone. That is the way out for a `dyn` that
+does not come from a map, such as a member of a list literal that mixes types: `[1, 'a'][0] == 1`
+is refused in any rule, and `dyn([1, 'a'][0]) == 1` loads.
+
+Every node the path selects, or the last `embedded` step selects, must be a mapping. A scalar or a
+sequence makes the rule unknown, naming its line; add `[*]` to take a sequence's members. `as`
+takes `map`, or `record` with `fields` (see [Records](#records)), and any other word does not
+load. Each map and each value in it keeps the file
+and the line where it starts, through a document in a string as [Documents in
+strings](#documents-in-strings) gives them, and the message shows each map at its place, close to
+JSON and cut at 256 bytes, and a report names it the same way:
+
+```text
+          rules[41] = {"matchPackageNames": ["cert-manager"], "automerge": "true"} at renovate.json:607
+```
+
+Over `files:`, each map is at its own file, and `by_file(x)` maps each file to its maps. `normalize`
+applies to every scalar of a map and to no key. `agree` compares flat values, so a rule that names
+an extractor with `as: map` in `agree` does not load. Every node of the maps counts as one of the
+extractor's 100000 values, and the bytes of their keys and scalars count against `max_bytes`,
+also when YAML aliases select one mapping many times (see Limits). An assert over maps runs under
+the cost limit and the timeout of any other. errata builds the maps in time linear in their nodes,
+and reads one by index at once. cel-go makes a comprehension take time quadratic in the members it
+runs over, so an `all` over 16000 maps takes 1.5 s, as one over 16000 strings does, and one over
+50000 maps, or over the keys of one mapping of 99999 keys, reaches the timeout and is unknown.
+[ADR 0009](docs/adr/0009-as-map-hands-assert-each-mapping-whole.md) says why a scalar stays a
+string and how a record of several paths uses the same maps.
+
+#### Records
+
+Two fields of one element are often a pair: a Gatus endpoint's `name` and `group` make the key an
+app pushes to, and a regex match's name and source groups belong together. Read as two flat
+lists, the pairing is lost. A record keeps it: one mapping for each element, whose keys are the
+fields the rule names. A `yaml`, `json` or `toml` extractor with `as: record` reads each path in
+`fields` from every node its path selects, after any `embedded` step:
+
+```yaml
+checks:
+  - id: landingpage-push-keys-match-gatus
+    reason: A push to a key Gatus does not define 404s and is swallowed, so the alert never fires.
+    scope: repo
+    extract:
+      pushed: {regex: {file: app/monitoring.py, pattern: '^[A-Z_]+ = "([a-z0-9_-]+)"$'}}
+      gatus:
+        yaml:
+          file: infra/gatus/gatus.yaml
+          kind: ConfigMap
+          path: "data['config.yaml']"
+          embedded: [{format: yaml, path: "external-endpoints[*]"}]
+          as: record
+          fields: {name: name, group: group}
+    assert: pushed.all(k, gatus.exists(e, e.group + '_' + e.name == k))
+```
+
+A field's path starts at the element, and `$` is the element itself. A field takes the node its path
+selects whole, so a mapping is a map and a sequence a list, as under `as: map`. A field whose path
+selects nothing is left out of that record, so `has(e.desc)` tests it; one that selects more than
+one node makes the rule unknown, naming the element's line, so write `[0]` to take the first. A
+scalar or a sequence that holds none of the fields makes the rule unknown at its line; a mapping
+that holds none is an empty record. A field that no record holds makes the rule unknown, since
+`!has(e.url) || ...` would then hold on every record over a mistyped path or a key the file renamed;
+`allow_empty` on the extractor says that no record need hold it. Two fields over one path do not
+load, since `agree` over them would compare each node with itself. A record's keys are sorted by
+name. A field name is a letter or `_` and then letters, digits and `_`, and none of the words CEL
+reserves (`true`, `false`, `null`, `in`, and `as`, `break`, `const`, `continue`, `else`, `for`,
+`function`, `if`, `import`, `let`, `loop`, `namespace`, `package`, `return`, `var`, `void`,
+`while`), so assert reads it as `e.name`.
+
+A `regex` extractor with `as: record` returns a record for each match, whose fields are the
+pattern's named groups, `(?P<name>...)` or `(?<name>...)`, in the order the pattern opens them. A
+group without a name is no field, and a named group that took no part in a match is left out of
+that record. A pattern with no named group, one name given to two groups, or a name that is no
+field name, does not load. With a [`context`](#the-context-of-a-match), only a match that has it
+gives a record. A pattern that references another extractor's values does not load with `as:
+record`, since its searches return group 1 of each value's matches.
+
+```yaml
+extract:
+  images: {regex: {file: deploy.yaml, pattern: 'image: (?P<repo>[^:\s]+):(?P<tag>\S+)', as: record}}
+  chart:  {yaml: {file: Chart.yaml, path: appVersion}}
+agree: [images.tag, chart]
+```
+
+In assert, a record is a map like any other under `as: map`: the same `list(map(string, dyn))`, the
+same strings, the same refusal of a comparison with a type such a value never equals, and `by_file`
+groups records by file. `agree` names one field of each record as `name.field`, and compares that
+field of every record as a flat value at its own line; a record without the field adds nothing. Two
+fields of the same records can agree with each other, and the extractor runs once. A field that
+holds a mapping or a sequence makes the rule unknown, and so do records none of which has the field,
+unless `allow_empty` lists the extractor. A field the records do not have, a field of an extractor
+that returns no record, and a record extractor named whole in `agree` do not load. An extractor's
+own name may hold a dot, but an entry that names such an extractor and also a field, as `a.b` beside
+a record extractor `a` with the field `b`, does not load: rename the extractor.
+
+Each record keeps the line where its element or match starts, and each field the line where its
+value starts, so a message about a whole record names the record, and `agree` names each field:
+
+```text
+          "1.2.2" at deploy.yaml:5 (images.tag)
+```
+
+`normalize` applies to every field. Each record and each node of its fields counts as one of the
+extractor's 100000 values, and the bytes of field names, keys and scalars count against
+`max_bytes`, in one file and over a set together. [ADR 0013](docs/adr/0013-a-record-is-a-map-of-the-fields-a-rule-names.md)
+says how records meet the rules for flat values.
+
 #### Regular expressions
 
 `pattern` is Go's [RE2 syntax](https://github.com/google/re2/wiki/Syntax) and needs a capture
@@ -1083,6 +1324,131 @@ that need not capture. The `m` flag is on, so `^` and `$` match at each line;
 CRLF line ending reads as LF, so `$` matches before it and no value ends in its `\r`; a lone `\r`
 is kept. Each value is at the line where its match starts, counted in the file as it is. A match in
 which group 1 took no part gives no value.
+
+#### Values of another extractor
+
+Some claims say that every name one file lists appears in another file of free text. A `regex`
+pattern may reference another extractor of its rule as `(?{name})`: the rule runs that extractor
+first, and searches the file once for each of its values, with the value in the reference's place,
+quoted as text. This rule says that every release a bootstrap script pins with `--version` is
+named by a Renovate `matchString`:
+
+```yaml
+extract:
+  releases:
+    regex: {files: ['infra/**/bootstrap.sh'], pattern: '^\s*helm upgrade --install ([\w.-]+) \S+ .*--version'}
+  tracked:
+    regex: {file: renovate.json, pattern: '--install ((?{releases})) '}
+allow_empty: [tracked]
+assert: releases.all(r, r in tracked)
+```
+
+- The value goes in inside a group of its own, `(?:value)`, so `.` in `a.b` matches only a dot,
+  and a repeat after the reference repeats the whole value. The values come in the order their
+  matches start in the file, and two that start at one place in the order of the values. A value
+  found twice is searched for once.
+- A pattern holds at most one reference. A reference to an extractor the rule does not declare,
+  and extractors that reference each other, a pattern its own included, do not load, and
+  `errata check` exits 2. So does a reference inside a character class or `\Q...\E`, where RE2
+  reads it as text, and a pattern that does not load with an empty value in the reference's place.
+  RE2 refuses `(?{` as syntax, so no pattern that loaded before means anything else now.
+- A rule runs each extractor after the ones it references, and otherwise in the order it would
+  have. A referenced extractor that cannot be read makes the rule unknown. One that finds no value
+  leaves nothing to search for, so the referencing extractor finds none either, and `allow_empty`
+  decides: `extractor "tracked" found no value: extractor "releases" gave no value to search for`.
+  Only the literal values are searched for, after `skip_not_literal`, and each as its file holds
+  it, before `normalize`, since a lowered value would miss the text it came from; a pattern that
+  should ignore case starts with `(?i)`.
+- An empty value, and one longer than 4096 bytes, make the rule unknown, naming where the value
+  was found. An empty value would leave the pattern to match its context alone, so
+  `--install ((?{releases})) ` would return the empty text for `--install  x`, and
+  `releases.all(r, r in tracked)` would hold for an empty release no file names. A long value's
+  pattern is compiled once for each file it searches, and a literal of 4 MiB took 5.6 s and 3.8 GB
+  to compile.
+- With `files:`, each file is searched for every value, and each value keeps its file, so
+  `by_file` groups by the files searched.
+- `values_as: pattern` puts each value in as RE2 syntax instead, for a rule that runs a regex
+  another file holds, such as a Renovate `matchString`. The value goes in as `(?-m:value)`, so its
+  `^` and `$` match at the start and end of the text, as in a JavaScript regex without the `m` flag,
+  which is how Renovate compiles one; the pattern around it keeps the `m` flag. What matches is
+  RE2's reading of the value, which differs from JavaScript's: `\s` matches only ASCII spaces, `.`
+  matches `\r`, U+2028 and U+2029, and RE2 accepts syntax JavaScript rejects or reads otherwise,
+  such as `(?m)` inside a value, `\p{..}`, `\Q...\E`, `\A`, `\z`, `\x{..}` and `[[:alpha:]]` ([ADR
+  0010](docs/adr/0010-a-regex-pattern-references-another-extractors-values.md)). The reference must
+  then stand inside capture group 1 or after it, or the pattern does not load, since a value's own
+  groups would come first. A value that is no RE2 pattern by itself, such as a JavaScript lookahead,
+  one that ends inside `\Q`, and one whose groups take the pattern past 32 make the rule unknown,
+  naming the value and where it was found. `literal` is the default.
+
+The cost is the number of values times the size of the file, since each value is one linear search
+of it. The regex time limit (see Limits) starts before the first value is checked and is shared by
+checking the values, compiling their patterns and every search, so many values over a large file
+make the rule unknown rather than run long. On the
+build node, one value searched over 32 MiB of short lines with `^\s*((?{v}))$` took 0.69 s and four
+values 2.64 s, and 50 values were refused at 10 s; a value costs what the same pattern with the
+value written in costs. 100000 values over a 1 KB file took 0.97 s, at a peak of 222 MiB. Values
+of 4096 bytes, the most a value may hold, were refused at 10.2 s, 100000 of them over a 2 byte file
+and over 32 MiB alike, and so were 100000 values of `(?:\pL{1000}|\pN{1000}|\pS{1000}|\pP{1000})`
+padded to 4 KiB under `values_as: pattern`, each of which costs two parses to check. The
+matches of every value together are held to 100000 values and `max_bytes` bytes.
+[ADR 0010](docs/adr/0010-a-regex-pattern-references-another-extractors-values.md) says why the
+reference is spelled this way and why each value is its own search.
+
+#### The context of a match
+
+RE2 has no lookahead or lookbehind, so a regex cannot say "a `kubectl apply`, except on a line that
+applies the upgrade Plans". A `regex` may take a `context`, which keeps a match only where the
+lines around it hold what `with` asks for and nothing `without` names. This rule says that a
+provisioning script changes the cluster only to ask Argo CD to refresh, to apply the k3s upgrade
+Plans, or in a comment:
+
+```yaml
+extract:
+  changes:
+    regex:
+      file: scripts/node-provisioning.sh
+      pattern: '\b(kubectl[^\S\n]+(?:-n[^\S\n]+\S+[^\S\n]+)?(?:apply|annotate|delete)|helm[^\S\n]+(?:upgrade|install))\b'
+      context: {without: '^\s*#|^(?:[^;&|`$<>]|[$<>][^(;&|`$<>])*(?:infra/k3s-upgrade/|argocd\.argoproj\.io/refresh)(?:[^;&|`$<>]|[$<>][^(;&|`$<>])*$'}
+allow_empty: [changes]
+assert: size(changes) == 0
+```
+
+`[^\S\n]` is a space that is no newline: with `\s` a command could start on one line and end on
+the next, and both lines would be its context. A context is whole lines, the text before the match
+as well as after it, so an exemption anywhere on a line exempts every command on it. The `without`
+above exempts only a line with no `;`, `&`, `|`, backtick, `$(`, `<(` or `>(`, so `kubectl apply
+-f infra/k3s-upgrade/p.yaml && kubectl apply -f staging.yaml` is still an erratum, and so is a
+command in `$( )` or `<( )` on that line. A redirect such as `2>&1` or `>>` on an exempt line is
+refused too, which fails closed.
+
+- A match's context is its own lines, `before` lines before the first and `after` lines after the
+  last, cut to the file; a final newline ends the last line and starts no empty one. Both default
+  to 0 and cannot be below 0. `context: {before: 2, with:
+  '^# managed'}` keeps a match only when one of the two lines above it, or its own, holds the
+  comment.
+- A match is kept when `with` matches in a line of its context and `without` in none. A context
+  needs one of them or both, and neither may reference values. A pattern that matches the empty
+  text at the start or the end of every line, such as `x*`, `^`, `$` or `^\s*#?`, does not load,
+  since it holds in every line; `^$`, which matches only an empty line, loads.
+- Each of the two is searched in each line alone, as though the line were the whole text. Nothing
+  in it matches a line break, so `a\sb` never matches `a` at the end of one line and `b` at the
+  start of the next, and `\A` and `\z` match at the start and end of each line. Its groups capture
+  nothing.
+- A kept match returns group 1, or with `as: record` its record, as it would without a context.
+  The limits of 100000 values and `max_bytes` bytes count the matches before the context drops
+  any.
+- For a pattern that references values, the context applies to the matches of every value. With
+  `files:`, each file's lines are its own.
+
+Each context pattern is one search of the file, which reads each line about once, and errata keeps
+the lines it matched in as one bit each, so whether a match has its context is two lookups however
+wide the context is. The cost is linear in the file and does not depend on `before` or `after`. The
+context's searches share the regex time limit of the pattern's search. On the slowest node, over
+32 MiB of short lines with 99274 matches, a context as wide as the file took 4.1 s against 2.2 s
+for the pattern alone, and 32 MiB of empty lines each matched by `with: '^$'`, the most calls a
+file can cost, was refused at 10 s.
+[ADR 0012](docs/adr/0012-a-regex-keeps-a-match-by-the-lines-around-it.md) says why each line is
+searched alone.
 
 #### Markdown prose
 
@@ -2279,13 +2645,14 @@ core machine.
 | the config file | 1 MiB (1048576 bytes) | checked while reading, so a pipe given with `--config` is held to it too. YAML aliases may expand it to at most 4 MiB, counted as the bytes of every scalar and one for each node before anything is expanded: one scalar of 64 KiB aliased by 8000 checks, 528 KB of config, ran the loader out of memory, since the YAML library's own guard counts aliased nodes, not their bytes. Unlike the limits below, a config over it does not load, and errata exits 2. The largest real config known, a GitOps repository's, is 37 KB for 72 checks, 28 times under the limit. Loading costs memory in proportion to the config: the densest shape measured, one rule of thousands of regex extractors, allocates about 630 bytes for each byte of config |
 | file size | 32 MiB, or `max_bytes` | checked before reading. An ordinary file costs about 27 times its size in memory: an 8.2 MB OpenAPI document takes 0.95 s and 223 MB |
 | nodes | `max_bytes` divided by 7 (YAML), 3 (TOML), 8 (JSON) or 3 (XML) | checked before parsing, since the YAML and TOML parsers build a whole document or expression before errata sees it. errata counts in one pass an upper bound on the nodes the parser can build: two for each byte after which a key, a value or an item can start, with YAML's NEL, LS and PS line breaks among them, and a UTF-16 YAML file counted as the UTF-8 the parser reads. A file of one-character items counts one for each byte, an ordinary file one for every 3 to 16: a 6.3 MB Helm index has 6 times room at the default, a 7.9 MB uv.lock 4.8 times, a 7.4 MB Google API document 8 times. The limit bounds nodes, not memory, since a node costs more or less by its shape. The densest files measured so far at the default peak at 2.0 GB in YAML (mappings of 62 anchored, tagged keys), 2.55 GB in TOML (inline tables of dotted keys of 500 parts) and 0.42 GB in JSON (objects nested 900 deep), and grow in proportion to `max_bytes`; 32 MiB of one-character items ran out of 4.7 GB in YAML without the limit. Raise `max_bytes` to read a denser file. For XML errata counts each element, attribute, namespace declaration and text node as it builds them from encoding/xml's tokens, since it builds the tree itself. The densest of 39 real XML files, MARC library records, holds a node for every 11.5 bytes, almost 4 times the room at the default. The densest file XML can write, text between empty elements (`x<a/>`), reaches the limit at 28 MB, which takes 1.0 GB; 32 MiB of empty elements takes 1.3 GB. An attribute costs more memory than an element, since encoding/xml builds a whole start tag before errata counts it: the densest XML measured so far, one start tag of 8.4 million attributes in 32 MiB, peaks at 1.94 GB before it is refused |
-| values per extractor | 100000 | every value is kept in memory and printed; a regex `(\d*)` matches at every byte. A path that selects more nodes at any step stops there. The values of one extractor also hold at most `max_bytes` bytes in all, since YAML aliases can repeat a value, decoding can lengthen one, and an XML element's value holds the text of every element inside it: `//a` over 1000 nested elements around 30 MB would return 30 GB, and is refused. 100000 regex matches in 4.3 MB take 0.8 s and 45 MB |
+| values per extractor | 100000 | each node of a mapping that `as: map` hands over counts as one, the mapping itself included, and so does each record and each node of its fields. Every value is kept in memory and printed; a regex `(\d*)` matches at every byte. A path that selects more nodes at any step stops there. The values of one extractor also hold at most `max_bytes` bytes in all, since YAML aliases can repeat a value, decoding can lengthen one, and an XML element's value holds the text of every element inside it: `//a` over 1000 nested elements around 30 MB would return 30 GB, and is refused. 100000 regex matches in 4.3 MB take 0.8 s and 45 MB |
 | documents in strings | `max_bytes` in all, and the nodes `max_bytes` allows | the documents an extractor's `embedded` steps parse out of strings count together, as one more file: their bytes against `max_bytes`, and the nodes each can hold, counted as for a file of its format at its bytes per node, against `max_bytes` too. A string YAML aliases repeat counts each time. The nodes YAML aliases add, the filter work and the values count over the file and its documents together, so a run reads at most twice `max_bytes` for one extractor. Over a set of files, the documents in the strings of every file count together against the set's `max_bytes`, as one more file of the set |
 | depth | 1000 | each key, each part of a dotted TOML key or table header, and each element is one level, and an array table's element one more. The deepest of 56 real files measured nests 25 |
 | YAML aliases and merge keys | 1000000 nodes, for every file of `files` together | each alias adds the nodes of its anchor, and so does each mapping a merge key names, counted for the whole file before anything is built from them. A key counts by its length too: each 64 bytes of a key that a merge key copies count as one node more, and an alias used as a key counts one node and one more for each 64 bytes of its anchor's text, so a file that merges or repeats long keys many times reaches the limit instead of taking minutes. errata keeps one copy of an anchor, so 5000 mappings that merge one of 99 keys, at the limit, take 0.15 s and 51 MB |
 | GitLab CI resolution | 150 included files, 11 levels of `extends`, 10 of `!reference`, 200 `parallel:matrix` jobs, 1000000 steps | GitLab's own limits on includes (its default), extends, `!reference` and matrices, and a step for each key a merge, an extends or a `!reference` touches, the bound YAML aliases have, since nested `!reference` lists repeat what they select without the file growing. Each is checked as the configuration is built (see [GitLab CI](#gitlab-ci)) |
 | GitHub Actions matrix | 256 jobs, 65536 combinations before `exclude:`, 1000000 steps | GitHub's own limit on a matrix's jobs, and a step for each key an `include:` or `exclude:` entry compares and for each 64 bytes of a value it compares, the bound YAML aliases have, since each entry is matched against every combination (see [GitHub Actions](#github-actions)) |
-| regex time | 10 s for each 32 MiB of `max_bytes`, and never less than 10 s; for `files`, one limit the searches of every file share | the search looks at the clock every 256 characters it reads, so one long search is stopped too. A pattern whose optional tail scans the rest of the line, such as `(\d)(?:.*x)?`, searches the line again after every match: 40 KB of one line took 27 s. One search that finds nothing costs the file times the pattern's width: `([0-9a-f]{40})` over 32 MiB of hex words took 28 s, and `([ab]{0,1000}c)` over 1 MiB 62 s; each is refused at 10 s. The slowest ordinary pattern measured over 32 MiB, `([A-Za-z0-9+/]{64,}={0,2})`, takes 4.7 s. A pattern that starts with a literal skips to each place the literal occurs and tries the pattern there. Where the next place is less than 64 bytes past the text the last try read, or a try reads more than 4 KiB, it searches every place from there on, as it does a pattern without a literal, so it reads at most 4 KiB more than a search of every place does. Over 32 MiB of this README, repeated, on the build node, `commit ([0-9a-f]{40})` takes 0.01 s, where a search of every place takes 0.82 s, and `(\d+\.\d+\.\d+)`, which starts with no literal, 1.2 s |
+| regex time | 10 s for each 32 MiB of `max_bytes`, and never less than 10 s; for `files`, one limit the searches of every file share; for a pattern that references values, one limit that checking every value and its search share; a `context`'s searches share the limit of the pattern's | the search looks at the clock every 256 characters it reads, so one long search is stopped too. A pattern whose optional tail scans the rest of the line, such as `(\d)(?:.*x)?`, searches the line again after every match: 40 KB of one line took 27 s. One search that finds nothing costs the file times the pattern's width: `([0-9a-f]{40})` over 32 MiB of hex words took 28 s, and `([ab]{0,1000}c)` over 1 MiB 62 s; each is refused at 10 s. The slowest ordinary pattern measured over 32 MiB, `([A-Za-z0-9+/]{64,}={0,2})`, takes 4.7 s. A pattern that starts with a literal skips to each place the literal occurs and tries the pattern there. Where the next place is less than 64 bytes past the text the last try read, or a try reads more than 4 KiB, it searches every place from there on, as it does a pattern without a literal, so it reads at most 4 KiB more than a search of every place does. Over 32 MiB of this README, repeated, on the build node, `commit ([0-9a-f]{40})` takes 0.01 s, where a search of every place takes 0.82 s, and `(\d+\.\d+\.\d+)`, which starts with no literal, 1.2 s |
+| a value a regex pattern references | 4096 bytes, and not empty | its pattern is compiled once for each file it searches, and up to twice more, and Go's size check does not stop a long literal: one value of 1 MiB took 1.4 s and 824 MiB of allocation, and one of 4 MiB 5.6 s and 3.8 GB. An empty value would let the pattern match its context alone. See [Values of another extractor](#values-of-another-extractor) |
 | regex capture groups | 32 | a search tracks every group for every thread it keeps alive; 100000 matches of a pattern of 32 groups take 0.5 s and 29 MB |
 | filter work | 4000000000 bytes for the filters of one path, over every file of `files` together | for each member tested, each comparison and each step after `@` counts 256, plus the bytes of each key it looks up and of the literal it compares, counted before the members are tested. A test that a path exists counts each step as it takes it, and a filter inside it counts its members as the outer one does, against the same total. At the limit, with 64 comparisons on each member, the worst shapes measured take 0.36 s to 1.42 s; on the build node, a test whose `[*]` steps fan out through shared nodes reaches the limit and is refused in 0.18 s |
 | filter depth | 4 | parsing a filter and testing a member each recurse once for each filter nested inside another; membership takes 2 |
@@ -2397,7 +2764,9 @@ that does not lex ([Jenkinsfiles](#jenkinsfiles)). A Markdown file parses whatev
 
 Stdout is the message. If stdout is a JSON object with a `message` string, errata uses that string.
 The program runs with the repository root as its working directory and receives `ERRATA_ROOT`,
-`ERRATA_CHECK_ID` and `ERRATA_SCOPE` in its environment.
+`ERRATA_CHECK_ID` and `ERRATA_SCOPE` in its environment. Its stdin is empty. A generated check's
+generator runs the same way, and its exit status is not a verdict
+([Generated files](#generated-files)).
 
 ### Scopes
 
@@ -2480,8 +2849,9 @@ Every value is the one the loader resolved, with these defaults written out:
 
 - `run` of a program check: the [default run](#a-default-run) when the check sets none, and the
   placeholders replaced by the check's id in either;
-- `timeout` of a program check: `30s` when the check sets none;
-- `max_bytes` of every extractor: 33554432 (32 MiB) when the extractor sets none;
+- `run` of a generated check's generator: the placeholders replaced by the check's id;
+- `timeout` of a program check and a generated check: `30s` when the check sets none;
+- `max_bytes` of every extractor and of a generated check: 33554432 (32 MiB) when it sets none;
 - `dialect` of an `ini` extractor: the one the file's name chooses when the extractor names none
   (see [INI files](#ini-files));
 - `compare` of an `agree` rule: `text` when the rule sets none;
@@ -2512,10 +2882,17 @@ checks:
       replicas: {yaml: {file: deploy.yaml, path: spec.replicas, max_bytes: 65536}}
       nodes: {regex: {file: README.md, pattern: '(\d+) nodes'}}
     assert: int(replicas[0]) <= int(nodes[0])
+  - id: api-docs-current
+    reason: docs/api.md is generated from the schema.
+    scope: repo
+    generated:
+      file: docs/api.md
+      run: [python3, scripts/api-docs.py]
 required:
   - lint-passes
   - version-agrees
   - replicas-fit
+  - api-docs-current
 ```
 
 `errata list --format json` prints one object:
@@ -2563,9 +2940,18 @@ required:
       "normalize": [],
       "allow_empty": [],
       "skip_not_literal": []
+    },
+    {
+      "id": "api-docs-current",
+      "reason": "docs/api.md is generated from the schema.",
+      "scope": "repo",
+      "at": {"file": "errata.yaml", "line": 22, "outside": false},
+      "type": "generated",
+      "generated": {"file": "docs/api.md", "run": ["python3", "scripts/api-docs.py"], "max_bytes": 33554432},
+      "timeout": "30s"
     }
   ],
-  "required": ["lint-passes", "version-agrees", "replicas-fit"]
+  "required": ["lint-passes", "version-agrees", "replicas-fit", "api-docs-current"]
 }
 ```
 
@@ -2578,9 +2964,13 @@ required:
 | `at.file` | the config's path relative to the root, or as given for a config outside the root |
 | `at.line` | the line the check starts on, counted from 1 |
 | `at.outside` | true for a config outside the root |
-| `type` | `program` or `rule` |
+| `type` | `program`, `rule` or `generated` |
 | `run` | program check: the command, as a list of arguments, placeholders replaced |
-| `timeout` | program check: a Go duration as Go prints it, so `2m` reads `2m0s` |
+| `timeout` | program check and generated check: a Go duration as Go prints it, so `2m` reads `2m0s` |
+| `generated` | generated check: the committed file and the generator errata will run |
+| `generated.file` | the committed file, as the config writes it |
+| `generated.run` | the generator, as a list of arguments, placeholders replaced |
+| `generated.max_bytes` | the bound on the file and on the generator's output |
 | `extract` | rule: each extractor under its name, as `errata.yaml` spells the entry, with the defaults above written out; a key at its zero value (false, 0, empty) that the defaults above do not name is left out |
 | `relation` | rule: what its values must satisfy, with exactly one of `agree` and `assert` |
 | `relation.agree` | the names, in the order `agree` lists them |

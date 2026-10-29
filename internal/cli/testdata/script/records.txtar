@@ -1,0 +1,283 @@
+# Three rules over records, after checks of a GitOps repository. The push
+# keys an app sends to Gatus must each be <group>_<name> of an endpoint in
+# the config a ConfigMap holds, read as records of two fields; every query
+# check against Loki or Mimir must open its alert with QUERY CHECK and its
+# source, read as records of three; and the tag of each image a regex
+# reads as a record must agree with the chart's. On the real tree all
+# three hold. Each planted break is an erratum: a renamed push key, a
+# query check whose description names the wrong source, and an image a
+# tag behind, whose message names the field at its own line.
+exec errata check
+stdout '^0 errata, 0 unknown. Coverage: ran 3, skipped 0.$'
+! stderr .
+
+cp renamed/monitoring.py app/monitoring.py
+! exec errata check
+stdout '^FALSE landingpage-push-keys-match-gatus \(repo\)$'
+stdout '^          pushed\[1\] = "external_page-queue" at app/monitoring.py:2$'
+stdout '^          gatus\[1\] = \{"group": "external", "name": "landingpage-queue"\} at gatus.yaml:9$'
+stdout '^1 erratum, 0 unknown. Coverage: ran 3, skipped 0.$'
+cp real/monitoring.py app/monitoring.py
+
+cp wrong/gatus.yaml gatus.yaml
+! exec errata check
+stdout '^FALSE gatus-query-checks-name-their-source \(repo\)$'
+stdout '^          endpoints\[3\] = \{"desc": "QUERY CHECK \(Loki\): disk", "name": "disk-full", "url": "http://mimir.observability.svc/q"\} at gatus.yaml:20$'
+stdout '^1 erratum, 0 unknown. Coverage: ran 3, skipped 0.$'
+cp real/gatus.yaml gatus.yaml
+
+cp behind/deploy.yaml deploy.yaml
+! exec errata check
+stdout '^FALSE image-tags-match-the-chart \(repo\)$'
+stdout '^          "1.2.3" at deploy.yaml:3 \(images.tag\), Chart.yaml:2 \(chart\)$'
+stdout '^          "1.2.2" at deploy.yaml:5 \(images.tag\)$'
+stdout '^1 erratum, 0 unknown. Coverage: ran 3, skipped 0.$'
+
+# A field whose path misses every record would let !has(e.url) hold on
+# each, so the rule is unknown, as agree is over such a field; allow_empty
+# on the extractor is the way to say no record may hold it. A path that
+# selects the ConfigMap's string, with no embedded step, holds none of the
+# fields, and is unknown at its line as under as: map.
+cp wrong/gatus.yaml gatus.yaml
+! exec errata check -c misses.yaml
+stdout '^UNKNOWN field-typo \(repo\)$'
+stdout '^  said: extractor "endpoints" found no record with field "url"$'
+stdout '^UNKNOWN no-embedded-step \(repo\)$'
+stdout 'gatus.yaml: path "data\[.config.yaml.\]" selects a scalar at line 4, which holds none of the fields url'
+! stdout field-allowed-empty
+stdout '^0 errata, 2 unknown. Coverage: ran 3, skipped 0.$'
+cp real/gatus.yaml gatus.yaml
+
+# A field may be optional: a mapping that holds none of the fields is an
+# empty record, which !has() passes under assert and agree leaves out
+# (the delta review's probes P1 and P7). Both rules hold.
+exec errata check -c optional.yaml
+stdout '^0 errata, 0 unknown. Coverage: ran 2, skipped 0.$'
+
+! exec errata check -c errors.yaml
+stderr 'yaml: as: record takes fields, a name for each path read from the element the path selects'
+stderr 'agree names "images", whose extractor returns records \(as: record\); agree compares flat values, so name one field, such as images.repo, or write an assert'
+stderr 'agree names "images.digest", but the records of extractor "images" have no field "digest"; their fields are repo, tag'
+! stdout .
+
+-- errata.yaml --
+checks:
+  - id: landingpage-push-keys-match-gatus
+    reason: A push to a key Gatus does not define 404s and is swallowed.
+    scope: repo
+    extract:
+      pushed: {regex: {file: app/monitoring.py, pattern: '^[A-Z_]+ = "([a-z0-9_-]+)"$'}}
+      gatus:
+        yaml:
+          file: gatus.yaml
+          path: "data['config.yaml']"
+          embedded: [{format: yaml, path: "external-endpoints[*]"}]
+          as: record
+          fields: {name: name, group: group}
+    assert: pushed.all(k, gatus.exists(e, e.group + '_' + e.name == k))
+
+  - id: gatus-query-checks-name-their-source
+    reason: A Gatus alert sends its fixed text whichever condition failed.
+    scope: repo
+    extract:
+      endpoints:
+        yaml:
+          file: gatus.yaml
+          path: "data['config.yaml']"
+          embedded: [{format: yaml, path: "endpoints[*]"}]
+          as: record
+          fields: {name: name, url: url, desc: "alerts[0].description"}
+    assert: |
+      ['loki', 'mimir'].all(s, endpoints.exists(e, e.name == s + '-answers-queries')) &&
+      endpoints.all(e, !has(e.url) || !e.url.matches('^http://(loki|mimir)[.]') ||
+        e.name == (e.url.startsWith('http://loki.') ? 'loki' : 'mimir') + '-answers-queries' ||
+        (has(e.desc) && e.desc.startsWith('QUERY CHECK (' + (e.url.startsWith('http://loki.') ? 'Loki' : 'Mimir') + '):')))
+
+  - id: image-tags-match-the-chart
+    reason: The chart's appVersion is the tag every image runs.
+    scope: repo
+    extract:
+      images: {regex: {file: deploy.yaml, pattern: 'image: (?P<repo>[^:\s]+):(?P<tag>\S+)', as: record}}
+      chart: {yaml: {file: Chart.yaml, path: appVersion}}
+    agree: [images.tag, chart]
+-- misses.yaml --
+checks:
+  - id: field-typo
+    reason: r
+    scope: repo
+    extract:
+      endpoints:
+        yaml:
+          file: gatus.yaml
+          path: "data['config.yaml']"
+          embedded: [{format: yaml, path: "endpoints[*]"}]
+          as: record
+          fields: {name: name, url: ulr, desc: "alerts[0].description"}
+    assert: |
+      endpoints.all(e, !has(e.url) || !e.url.matches('^http://(loki|mimir)[.]') ||
+        (has(e.desc) && e.desc.startsWith('QUERY CHECK (' + (e.url.startsWith('http://loki.') ? 'Loki' : 'Mimir') + '):')))
+  - id: no-embedded-step
+    reason: r
+    scope: repo
+    extract:
+      e: {yaml: {file: gatus.yaml, path: "data['config.yaml']", as: record, fields: {url: url}}}
+    assert: e.all(x, !has(x.url) || x.url == 'nope')
+  - id: field-allowed-empty
+    reason: r
+    scope: repo
+    extract:
+      endpoints:
+        yaml:
+          file: gatus.yaml
+          path: "data['config.yaml']"
+          embedded: [{format: yaml, path: "endpoints[*]"}]
+          as: record
+          fields: {name: name, url: ulr}
+    allow_empty: [endpoints]
+    assert: endpoints.all(e, !has(e.url))
+-- optional.yaml --
+checks:
+  - id: optional-field-under-assert
+    reason: r
+    scope: repo
+    extract:
+      e: {yaml: {file: optional/endpoints.yaml, path: "endpoints[*]", as: record, fields: {url: url}}}
+    assert: e.all(x, !has(x.url) || x.url.startsWith('http'))
+  - id: optional-field-under-agree
+    reason: r
+    scope: repo
+    extract:
+      e: {yaml: {file: optional/endpoints.yaml, path: "endpoints[*]", as: record, fields: {url: url}}}
+      f: {yaml: {file: optional/probe.yaml, path: url}}
+    agree: [e.url, f]
+-- optional/endpoints.yaml --
+endpoints:
+  - name: a
+    url: http://a
+  - name: b
+-- optional/probe.yaml --
+url: http://a
+-- errors.yaml --
+checks:
+  - id: no-fields
+    reason: r
+    scope: repo
+    extract:
+      e: {yaml: {file: gatus.yaml, path: "data", as: record}}
+    assert: size(e) > 0
+  - id: whole
+    reason: r
+    scope: repo
+    extract:
+      images: {regex: {file: deploy.yaml, pattern: 'image: (?P<repo>[^:\s]+):(?P<tag>\S+)', as: record}}
+      chart: {yaml: {file: Chart.yaml, path: appVersion}}
+    agree: [images, chart]
+  - id: no-such-field
+    reason: r
+    scope: repo
+    extract:
+      images: {regex: {file: deploy.yaml, pattern: 'image: (?P<repo>[^:\s]+):(?P<tag>\S+)', as: record}}
+      chart: {yaml: {file: Chart.yaml, path: appVersion}}
+    agree: [images.digest, chart]
+-- app/monitoring.py --
+REGISTERED = "external_landingpage-registered"
+QUEUE = "external_landingpage-queue"
+-- real/monitoring.py --
+REGISTERED = "external_landingpage-registered"
+QUEUE = "external_landingpage-queue"
+-- renamed/monitoring.py --
+REGISTERED = "external_landingpage-registered"
+QUEUE = "external_page-queue"
+-- gatus.yaml --
+apiVersion: v1
+kind: ConfigMap
+data:
+  config.yaml: |
+    external-endpoints:
+      - name: landingpage-registered
+        group: external
+        token: x
+      - name: landingpage-queue
+        group: external
+    endpoints:
+      - name: loki-answers-queries
+        url: "http://loki.observability.svc/q"
+      - name: mimir-answers-queries
+        url: "http://mimir.observability.svc/q"
+      - name: kernel-backtrace
+        url: "http://loki.observability.svc/q"
+        alerts:
+          - description: "QUERY CHECK (Loki): kernel"
+      - name: disk-full
+        url: "http://mimir.observability.svc/q"
+        alerts:
+          - description: "QUERY CHECK (Mimir): disk"
+      - name: landing
+        url: "https://example.org"
+-- real/gatus.yaml --
+apiVersion: v1
+kind: ConfigMap
+data:
+  config.yaml: |
+    external-endpoints:
+      - name: landingpage-registered
+        group: external
+        token: x
+      - name: landingpage-queue
+        group: external
+    endpoints:
+      - name: loki-answers-queries
+        url: "http://loki.observability.svc/q"
+      - name: mimir-answers-queries
+        url: "http://mimir.observability.svc/q"
+      - name: kernel-backtrace
+        url: "http://loki.observability.svc/q"
+        alerts:
+          - description: "QUERY CHECK (Loki): kernel"
+      - name: disk-full
+        url: "http://mimir.observability.svc/q"
+        alerts:
+          - description: "QUERY CHECK (Mimir): disk"
+      - name: landing
+        url: "https://example.org"
+-- wrong/gatus.yaml --
+apiVersion: v1
+kind: ConfigMap
+data:
+  config.yaml: |
+    external-endpoints:
+      - name: landingpage-registered
+        group: external
+        token: x
+      - name: landingpage-queue
+        group: external
+    endpoints:
+      - name: loki-answers-queries
+        url: "http://loki.observability.svc/q"
+      - name: mimir-answers-queries
+        url: "http://mimir.observability.svc/q"
+      - name: kernel-backtrace
+        url: "http://loki.observability.svc/q"
+        alerts:
+          - description: "QUERY CHECK (Loki): kernel"
+      - name: disk-full
+        url: "http://mimir.observability.svc/q"
+        alerts:
+          - description: "QUERY CHECK (Loki): disk"
+      - name: landing
+        url: "https://example.org"
+-- deploy.yaml --
+containers:
+  - name: app
+    image: registry.example/app:1.2.3
+  - name: worker
+    image: registry.example/worker:1.2.3
+-- behind/deploy.yaml --
+containers:
+  - name: app
+    image: registry.example/app:1.2.3
+  - name: worker
+    image: registry.example/worker:1.2.2
+-- Chart.yaml --
+name: app
+appVersion: 1.2.3

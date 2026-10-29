@@ -78,7 +78,9 @@ func BuildOneOrSet(kind, file string, files []string, maxBytes int64, build Buil
 // with the reader BuildOne builds, and returns their values in the files'
 // order, each with its own file as its location. The files hold at most
 // max_bytes in all, each read to what the files before it left, and their
-// values are held to MaxValues and to max_bytes in all, as one file's are.
+// values are held to MaxValues and to max_bytes in all, as one file's are,
+// a mapping handed over whole counting each of its nodes and the bytes of
+// its keys and scalars.
 // A regex search of every file shares one time limit, the one max_bytes
 // gives one file.
 type FileSet struct {
@@ -118,6 +120,7 @@ func (s FileSet) Extract(root string) ([]check.Value, error) {
 	out := []check.Value{}
 	left := s.limit                      // the bytes the files still to read may hold
 	var held int64                       // the bytes of the values so far
+	count := 0                           // the values so far, each node of a mapping one
 	spent := Spent{stringLimit: s.limit} // the budgets the files so far spent
 	read := map[string]bool{}            // where each file read so far resolves
 	for _, n := range named {
@@ -156,10 +159,14 @@ func (s FileSet) Extract(root string) ([]check.Value, error) {
 		}
 		left -= int64(len(data))
 		for _, v := range vs {
-			if len(out) == MaxValues {
-				return nil, fmt.Errorf("%s: the files hold more than %d values, the limit; narrow the path, the pattern or the files", s.kind, MaxValues)
+			nodes, bytes := 1, int64(len(v.Text))
+			if v.Data != nil {
+				nodes, bytes = v.Data.Size()
 			}
-			if held += int64(len(v.Text)); held > s.limit {
+			if count += nodes; count > MaxValues {
+				return nil, fmt.Errorf("%s: the files hold more than %d values, the limit, each node of a mapping one; narrow the path, the pattern or the files", s.kind, MaxValues)
+			}
+			if held += bytes; held > s.limit {
 				return nil, fmt.Errorf("%s: the values of the files hold more than %d bytes in all, the extractor's max_bytes; set max_bytes: higher", s.kind, s.limit)
 			}
 			out = append(out, v)

@@ -35,6 +35,12 @@ func validRule() Check {
 	}
 }
 
+// record makes the rule's extractor secret return records of the fields
+// name and group.
+func record(c *Check) {
+	c.Rule.Extractors[0].Maps, c.Rule.Extractors[0].Fields = true, []string{"name", "group"}
+}
+
 // Each case plants one break in an otherwise valid rule and names the refusal
 // it must produce.
 func TestValidateRule(t *testing.T) {
@@ -68,6 +74,52 @@ func TestValidateRule(t *testing.T) {
 		{"blank assert", func(c *Check) { c.Rule.Agree = nil; c.Rule.Assert = " \n" }, "a rule needs agree or assert"},
 		{"agree and assert", func(c *Check) { c.Rule.Assert = "true" }, "agree and assert are both set"},
 		{"agree names an undeclared extractor", func(c *Check) { c.Rule.Agree = append(c.Rule.Agree, "configmap") }, `agree names "configmap", which extract does not declare`},
+		{"agree names a map extractor", func(c *Check) { c.Rule.Extractors[0].Maps = true },
+			`agree names "secret", whose extractor hands assert each mapping whole (as: map); agree compares flat values, so write an assert, or leave as: map out`},
+		{"valid agree over a field of records", func(c *Check) { record(c); c.Rule.Agree = []string{"service", "secret.group"} }, ""},
+		{"valid agree over two fields of records", func(c *Check) {
+			record(c)
+			c.Rule.Extractors = c.Rule.Extractors[:1]
+			c.Rule.Agree = []string{"secret.name", "secret.group"}
+		}, ""},
+		{"agree names a record extractor whole", func(c *Check) { record(c) },
+			`agree names "secret", whose extractor returns records (as: record); agree compares flat values, so name one field, such as secret.name, or write an assert`},
+		{"agree names a field records lack", func(c *Check) { record(c); c.Rule.Agree = []string{"service", "secret.url"} },
+			`agree names "secret.url", but the records of extractor "secret" have no field "url"; their fields are name, group`},
+		{"agree names a field of a flat extractor", func(c *Check) { c.Rule.Agree = []string{"service", "secret.group"} },
+			`agree names "secret.group", but extractor "secret" returns no record, so it has no field "group"`},
+		{"agree names a field twice", func(c *Check) { record(c); c.Rule.Agree = []string{"service", "secret.name", "secret.name"} },
+			`agree names "secret.name" twice`},
+		{"an extractor's name with a dot that is no field wins", func(c *Check) {
+			record(c)
+			c.Rule.Extractors = append(c.Rule.Extractors, NamedExtractor{Name: "secret.url", Extractor: noValues{}})
+			c.Rule.Agree = []string{"service", "secret.url", "secret.group"}
+		}, ""},
+		{"an extractor's name that is also a field of records", func(c *Check) {
+			record(c)
+			c.Rule.Extractors = append(c.Rule.Extractors, NamedExtractor{Name: "secret.name", Extractor: noValues{}})
+			c.Rule.Agree = []string{"service", "secret.name", "secret.group"}
+		}, `agree names "secret.name", which is both an extractor and field "name" of the records of extractor "secret"; rename the extractor, so each entry names one`},
+		// A dot at the start of an entry still splits it: the extractor
+		// named "" that errata.yaml's key "" declares has the field.
+		{"a record extractor named the empty string", func(c *Check) {
+			record(c)
+			c.Rule.Extractors[0].Name = ""
+			c.Rule.Agree = []string{"service", ".group"}
+		}, ""},
+		{"an extractor's name that is also a field of records named the empty string", func(c *Check) {
+			record(c)
+			c.Rule.Extractors[0].Name = ""
+			c.Rule.Extractors = append(c.Rule.Extractors, NamedExtractor{Name: ".group", Extractor: noValues{}})
+			c.Rule.Agree = []string{"service", ".group", ".name"}
+		}, `agree names ".group", which is both an extractor and field "group" of the records of extractor ""`},
+		{"a record extractor's name with a dot splits at the last dot", func(c *Check) {
+			record(c)
+			c.Rule.Extractors[0].Name = "a.b"
+			c.Rule.Extractors[0].Fields = []string{"c"}
+			c.Rule.Agree = []string{"service", "a.b.c"}
+		}, ""},
+		{"valid assert over a map extractor", func(c *Check) { c.Rule.Extractors[0].Maps = true; c.Rule.Agree = nil; c.Rule.Assert = "x" }, ""},
 		{"extractor agree leaves out", func(c *Check) { c.Rule.Agree = []string{"service"} }, `extractor "secret" is declared but agree does not name it`},
 		{"valid compare semver", func(c *Check) { c.Rule.Compare = CompareSemver }, ""},
 		{"valid compare text", func(c *Check) { c.Rule.Compare = CompareText }, ""},

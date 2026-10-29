@@ -71,7 +71,7 @@ func TestStringsLeavesTheRestOut(t *testing.T) {
 		if !o.IsMemberFunction() {
 			expr = fmt.Sprintf("dyn(%s(v[0])) == 1", name)
 		}
-		if _, err := Compile(expr, []string{"v"}); err == nil || !strings.Contains(err.Error(), "undeclared reference to '"+name[strings.LastIndex(name, ".")+1:]+"'") {
+		if _, err := Compile(expr, []string{"v"}, Lists{}); err == nil || !strings.Contains(err.Error(), "undeclared reference to '"+name[strings.LastIndex(name, ".")+1:]+"'") {
 			t.Errorf("%s: load error = %v, want an undeclared reference", expr, err)
 		}
 	}
@@ -82,7 +82,7 @@ func TestStringsLeavesTheRestOut(t *testing.T) {
 
 // split, join and replace give what Go's strings package gives.
 func TestPropertyStringFunctionsAgreeWithGo(t *testing.T) {
-	a, err := Compile("v[0].split(v[1], int(v[2])) == w && w.join(v[1]) == v[3] && v[0].replace(v[1], v[4], int(v[2])) == v[5]", []string{"v", "w"})
+	a, err := Compile("v[0].split(v[1], int(v[2])) == w && w.join(v[1]) == v[3] && v[0].replace(v[1], v[4], int(v[2])) == v[5]", []string{"v", "w"}, Lists{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +96,7 @@ func TestPropertyStringFunctionsAgreeWithGo(t *testing.T) {
 			"v": {s, sep, strconv.Itoa(n), strings.Join(parts, sep), repl, strings.Replace(s, sep, repl, n)},
 			"w": parts,
 		}
-		if ok, err := a.Eval(context.Background(), values, nil); err != nil || !ok {
+		if ok, err := a.Eval(context.Background(), values, nil, nil); err != nil || !ok {
 			t.Fatalf("over %q: %v, %v", values, ok, err)
 		}
 		if got := splitParts(s, sep, int64(n)); got != int64(len(parts)) {
@@ -161,10 +161,10 @@ func TestStringFunctionsCountTowardTheCostLimit(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := a.Eval(context.Background(), map[string][]string{"v": {strings.Repeat("a,", 100)}}, nil); err == nil || err.Error() != "the evaluation exceeded the cost limit of 100" {
+		if _, err := a.Eval(context.Background(), map[string][]string{"v": {strings.Repeat("a,", 100)}}, nil, nil); err == nil || err.Error() != "the evaluation exceeded the cost limit of 100" {
 			t.Errorf("%s over 200 bytes under a limit of 100: error = %v", expr, err)
 		}
-		if ok, err := a.Eval(context.Background(), map[string][]string{"v": {"a,b"}}, nil); err != nil || !ok {
+		if ok, err := a.Eval(context.Background(), map[string][]string{"v": {"a,b"}}, nil, nil); err != nil || !ok {
 			t.Errorf("%s over 3 bytes under a limit of 100: %v, %v", expr, ok, err)
 		}
 	}

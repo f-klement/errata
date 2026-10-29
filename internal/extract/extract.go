@@ -16,6 +16,7 @@ package extract
 
 import (
 	"fmt"
+	"maps"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -206,7 +207,7 @@ func (s Spec) Place() Spec {
 		p.TOML = &t
 	}
 	if s.Regex != nil {
-		r := *s.Regex
+		r := regex.Place(*s.Regex)
 		r.File, r.Files = placeFiles(r.File, r.Files)
 		r.MaxBytes = 0
 		p.Regex = &r
@@ -319,7 +320,7 @@ func (s Spec) Resolved() Spec {
 		r.TOML = &t
 	}
 	if s.Regex != nil {
-		x := *s.Regex
+		x := regex.Resolve(*s.Regex)
 		x.Files = slices.Clone(x.Files)
 		x.MaxBytes = core.MaxBytes(x.MaxBytes)
 		r.Regex = &x
@@ -466,6 +467,50 @@ func (s Spec) kinds() []extractorKind {
 		{"exists", set[16], func() (check.Extractor, error) { return filestat.BuildExists(*s.Exists) }},
 		{"size", set[17], func() (check.Extractor, error) { return filestat.BuildSize(*s.Size) }},
 	}
+}
+
+// Maps reports whether s hands assert each value whole, as a mapping: a
+// yaml, json or toml extractor with as: map or as: record, or a regex
+// extractor with as: record. Any other spec, and one with an as errata does
+// not read, which Build refuses, returns flat values.
+func (s Spec) Maps() bool {
+	if s.Regex != nil {
+		return s.Regex.As == "record"
+	}
+	as, _ := s.as()
+	return as == "map" || as == "record"
+}
+
+// as is the as key of s and the fields under it, for the kinds that take
+// them. It asks each kind with if rather than switch: Go's coverage profile
+// leaves a case expression outside every block, so its mutants read as not
+// covered however the tests run them (ci/README.md, Floors per package).
+func (s Spec) as() (string, map[string]string) {
+	if s.YAML != nil {
+		return s.YAML.As, s.YAML.Fields
+	}
+	if s.JSON != nil {
+		return s.JSON.As, s.JSON.Fields
+	}
+	if s.TOML != nil {
+		return s.TOML.As, s.TOML.Fields
+	}
+	return "", nil
+}
+
+// Fields returns the field names of the records s returns, in the order of
+// a record's keys: a yaml, json or toml extractor's fields sorted by name,
+// or a regex pattern's named groups in the order it opens them. It is nil
+// for a spec that returns no record.
+func (s Spec) Fields() []string {
+	if s.Regex != nil && s.Regex.As == "record" {
+		return core.RegexFields(s.Regex.Pattern)
+	}
+	as, fields := s.as()
+	if as != "record" || len(fields) == 0 {
+		return nil
+	}
+	return slices.Sorted(maps.Keys(fields))
 }
 
 // Kind names the kind of extractor s sets, for a message: its key, and for

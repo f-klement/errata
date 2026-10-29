@@ -697,3 +697,24 @@ func FuzzSARIF(f *testing.F) {
 		}
 	})
 }
+
+// A value an extractor handed over whole (as: map) is named in a related
+// location as the rule's message shows it: its mapping after the rule's
+// normalize, not its text quoted a second time. A flat value beside it is
+// still quoted. SARIF's plain text doubles each brace. Planted breaks:
+// label quoting the text whatever the value, which wrote "{{\"a\": ...;
+// the mapping shown before normalize, which kept " X ".
+func TestSARIFNamesAWholeValueAsTheMessageShowsIt(t *testing.T) {
+	d := &check.Data{Kind: check.DataMap, Keys: []string{"a"}, Items: []*check.Data{{Kind: check.DataScalar, Text: " X "}}, At: check.Location{File: "r.json", Line: 3}}
+	whole := check.Value{Text: d.Show(check.ShownBytes), At: d.At, Data: d}
+	res := check.Result{
+		Check: check.Check{ID: "c", Reason: "r", Scope: check.ScopeRepo, Rule: &check.Rule{
+			Assert: "true", Normalize: []check.Normalization{check.NormalizeTrim, check.NormalizeLower}}},
+		Verdict: check.VerdictFalse, Message: "assert: the expression is false",
+		Extracted: []check.Extracted{{Extractor: "flat", Values: []check.Value{val("v", "f.yaml", 1)}}, {Extractor: "m", Values: []check.Value{whole}}},
+	}
+	out := decodeSARIF(t, writeSARIF(t, check.Report{Results: []check.Result{res}})).Runs[0].Results[0]
+	if len(out.Related) != 1 || out.Related[0].Message.Text != `{{"a": "x"}} (m)` {
+		t.Fatalf("related %+v", out.Related)
+	}
+}

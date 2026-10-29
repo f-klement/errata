@@ -281,6 +281,7 @@ func FuzzParse(f *testing.F) {
 	f.Add([]byte("checks:\n- {id: a, reason: r, scope: repo, run: [x]}\n\u2028---\u2028checks:\n- {id: b, reason: r, scope: repo, run: [x]}\n"))
 	f.Add([]byte("checks:\n- {id: a, reason: r, scope: repo, run: [x]}\n... {checks: [{id: b, reason: r, scope: repo, run: [x]}]}\n"))
 	f.Add([]byte("checks:\n- {id: a, reason: r, scope: repo, run: [x]}\n---\n"))
+	f.Add([]byte("checks:\n- {id: a, reason: r, scope: repo, generated: {file: a.md, run: [gen, <errata.id>], max_bytes: 9}}\n"))
 	f.Fuzz(func(t *testing.T, raw []byte) {
 		cfg, err := parseRaw(raw)
 		if err != nil {

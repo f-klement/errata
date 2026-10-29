@@ -42,8 +42,9 @@ func ListFormatNames() []string {
 
 // The kinds of check, as the JSON's type names them.
 const (
-	listProgramType = "program"
-	listRuleType    = "rule"
+	listProgramType   = "program"
+	listRuleType      = "rule"
+	listGeneratedType = "generated"
 )
 
 // ListJSON is the format a program reads: one object with the version of its
@@ -68,8 +69,12 @@ type listCheck struct {
 	At     listAt `json:"at"`
 	Type   string `json:"type"`
 	// Exactly one of these is set; encoding/json writes the keys of the one
-	// that is and skips the nil one.
+	// that is and skips the nil ones.
 	*listProgram
+	Generated *listGenerated `json:"generated,omitempty"`
+	// Timeout is a program check's and a generated check's, after run or
+	// generated; a rule has none, and leaves the key out.
+	Timeout string `json:"timeout,omitempty"`
 	*listRule
 }
 
@@ -80,8 +85,15 @@ type listAt struct {
 }
 
 type listProgram struct {
-	Run     []string `json:"run"`
-	Timeout string   `json:"timeout"`
+	Run []string `json:"run"`
+}
+
+// listGenerated is a generated check's committed file, its generator, and
+// the bound on both, the program errata starts written out as run is.
+type listGenerated struct {
+	File     string   `json:"file"`
+	Run      []string `json:"run"`
+	MaxBytes int64    `json:"max_bytes"`
 }
 
 type listRule struct {
@@ -126,9 +138,16 @@ func toListCheck(c check.Check) listCheck {
 		Scope:  string(c.Scope),
 		At:     listAt{File: c.At.File, Line: c.At.Line, Outside: c.At.Outside},
 	}
+	if g := c.Generated; g != nil {
+		out.Type = listGeneratedType
+		out.Generated = &listGenerated{File: g.File, Run: orEmpty(g.Run), MaxBytes: g.MaxBytes}
+		out.Timeout = c.Timeout.String()
+		return out
+	}
 	if !c.IsRule() {
 		out.Type = listProgramType
-		out.listProgram = &listProgram{Run: orEmpty(c.Run), Timeout: c.Timeout.String()}
+		out.listProgram = &listProgram{Run: orEmpty(c.Run)}
+		out.Timeout = c.Timeout.String()
 		return out
 	}
 	r := c.Rule
@@ -174,7 +193,7 @@ type ListText struct{}
 // says when the config requires every one of them.
 func (ListText) WriteList(w io.Writer, checks []check.Check, required []string) error {
 	var b strings.Builder
-	rules := 0
+	rules, generated := 0, 0
 	for _, c := range checks {
 		lc := toListCheck(c)
 		kind := "program check"
@@ -182,11 +201,23 @@ func (ListText) WriteList(w io.Writer, checks []check.Check, required []string) 
 			kind = "rule"
 			rules++
 		}
+		if lc.Generated != nil {
+			kind = "generated check"
+			generated++
+		}
 		fmt.Fprintf(&b, "%s (%s) %s\n", c.ID, c.Scope, kind)
 		writeField(&b, "why:", c.Reason)
 		if p := lc.listProgram; p != nil {
 			writeField(&b, "run:", textValues(p.Run, " "))
-			writeField(&b, "timeout:", p.Timeout)
+			writeField(&b, "timeout:", lc.Timeout)
+		}
+		if g := lc.Generated; g != nil {
+			// The generator is the program errata starts, so it prints
+			// as run does, under the same label.
+			writeField(&b, "file:", textValue(g.File))
+			writeField(&b, "run:", textValues(g.Run, " "))
+			writeField(&b, "max_bytes:", strconv.FormatInt(g.MaxBytes, 10))
+			writeField(&b, "timeout:", lc.Timeout)
 		}
 		if r := lc.listRule; r != nil {
 			var lines []string
@@ -211,7 +242,10 @@ func (ListText) WriteList(w io.Writer, checks []check.Check, required []string) 
 		b.WriteString("\n")
 	}
 	fmt.Fprintf(&b, "%s: %s, %s", plural(len(checks), "check", "checks"),
-		plural(rules, "rule", "rules"), plural(len(checks)-rules, "program check", "program checks"))
+		plural(rules, "rule", "rules"), plural(len(checks)-rules-generated, "program check", "program checks"))
+	if generated > 0 {
+		b.WriteString(", " + plural(generated, "generated check", "generated checks"))
+	}
 	if len(required) > 0 {
 		// The loader refuses a required list that is not the checks' ids.
 		b.WriteString("; required lists every one")

@@ -50,7 +50,9 @@ func count(n int, noun string) string {
 	return fmt.Sprintf("%d %ss", n, noun)
 }
 
-// extractAll runs the extractors names lists, in that order. It returns what
+// extractAll runs the extractors names lists, in the order r.Order gives
+// them: each after the extractors whose values it reads, and otherwise in
+// the order of names. It returns what
 // each one that did not fail returned, and a problem for each that failed,
 // returned a not literal value while skip_not_literal does not list it, or
 // found no value while allow_empty does not list it. An extractor that
@@ -62,11 +64,14 @@ func extractAll(ctx context.Context, root string, r check.Rule, names []string) 
 	for _, e := range r.Extractors {
 		byName[e.Name] = e.Extractor
 	}
-	for _, name := range names {
+	// The literal values each extractor that ran returned, for the
+	// extractors that read them; one that failed has no entry.
+	read := map[string][]check.Value{}
+	for _, name := range r.Order(names) {
 		if err := ctx.Err(); err != nil {
 			return extracted, problems, fmt.Sprintf("cancelled before extractor %q ran: %v", name, err)
 		}
-		values, err := byName[name].Extract(root)
+		values, err := extractOne(root, byName[name], read)
 		why := ""
 		if none := (*check.NoValue)(nil); errors.As(err, &none) {
 			values, err, why = nil, nil, ": "+none.Reason
@@ -92,6 +97,7 @@ func extractAll(ctx context.Context, root string, r check.Rule, names []string) 
 			problems = append(problems, notLiteral(name, values))
 		}
 		extracted = append(extracted, x)
+		read[name] = literal(x.Values)
 		if len(x.Values) == 0 && !slices.Contains(r.AllowEmpty, name) {
 			if len(x.LeftOut) > 0 {
 				// The count line at the end of the message says how many.
@@ -102,6 +108,37 @@ func extractAll(ctx context.Context, root string, r check.Rule, names []string) 
 		}
 	}
 	return extracted, problems, ""
+}
+
+// extractOne runs e: Extract, or for a check.Dependent ExtractWith the
+// values in read of each extractor it needs. One it needs that has no
+// entry in read failed, so e cannot run, and fails for it.
+func extractOne(root string, e check.Extractor, read map[string][]check.Value) ([]check.Value, error) {
+	d, ok := e.(check.Dependent)
+	if !ok {
+		return e.Extract(root)
+	}
+	values := map[string][]check.Value{}
+	for _, n := range d.Needs() {
+		got, ran := read[n]
+		if !ran {
+			return nil, fmt.Errorf("it reads the values of extractor %q, which could not be read", n)
+		}
+		values[n] = got
+	}
+	return d.ExtractWith(root, values)
+}
+
+// literal is values without the not literal ones, which a rule never
+// compares, so an extractor that reads values is not given them either.
+func literal(values []check.Value) []check.Value {
+	out := make([]check.Value, 0, len(values))
+	for _, v := range values {
+		if !v.NotLiteral {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // notLiteral is the problem of an extractor that returned not literal values
@@ -127,11 +164,13 @@ func notLiteral(name string, values []check.Value) string {
 	return b.String()
 }
 
-// assert runs every extractor in name order and evaluates the compiled
+// assert runs every extractor, in name order but each after the extractors
+// it reads (check.Rule.Order), and evaluates the compiled
 // expression over their normalised values. An extractor that fails, returns
 // a not literal value while skip_not_literal does not list it, or finds no
-// value while allow_empty does not list it, makes the rule unknown before
-// CEL runs; so does an evaluation that cannot decide.
+// value or a field no record holds while allow_empty does not list it,
+// makes the rule unknown before CEL runs; so does an evaluation that cannot
+// decide.
 func assert(ctx context.Context, root string, r check.Rule) (check.Verdict, string, []check.Extracted) {
 	if r.Compiled == nil {
 		return check.VerdictUnknown, "assert: the expression was not compiled at load, so it cannot run", nil
@@ -141,6 +180,7 @@ func assert(ctx context.Context, root string, r check.Rule) (check.Verdict, stri
 		names[i] = e.Name
 	}
 	extracted, problems, cancelled := extractAll(ctx, root, r, names)
+	problems = append(problems, fieldsNoneHolds(r, extracted)...)
 	switch {
 	case cancelled != "":
 		return check.VerdictUnknown, cancelled, extracted
@@ -150,15 +190,19 @@ func assert(ctx context.Context, root string, r check.Rule) (check.Verdict, stri
 
 	values := make(map[string][]string, len(extracted))
 	files := make(map[string][]string, len(extracted))
+	maps := map[string][]*check.Data{}
 	for _, x := range extracted {
 		texts := make([]string, len(x.Values))
 		where := make([]string, len(x.Values))
 		for i, v := range x.Values {
 			texts[i], where[i] = r.Normalized(v.Text), v.At.File
+			if v.Data != nil {
+				maps[x.Extractor] = append(maps[x.Extractor], normalizedData(r, v.Data))
+			}
 		}
 		values[x.Extractor], files[x.Extractor] = texts, where
 	}
-	holds, err := r.Compiled.Eval(ctx, values, files)
+	holds, err := r.Compiled.Eval(ctx, values, files, maps)
 	switch {
 	case err != nil:
 		return check.VerdictUnknown, "assert: " + err.Error() + "\n" + saw(r, extracted), extracted
@@ -167,6 +211,37 @@ func assert(ctx context.Context, root string, r check.Rule) (check.Verdict, stri
 	default:
 		return check.VerdictFalse, "assert: the expression is false\n" + saw(r, extracted), extracted
 	}
+}
+
+// fieldsNoneHolds is a problem for each field of a record extractor that
+// none of its records holds, unless allow_empty lists the extractor. The
+// config names the fields, so a field no record holds is a path that
+// misses, a key the file renamed or a group that never takes part, and
+// !has(e.f) || ... would hold on every record. An extractor that found no
+// record is extractAll's to decide.
+func fieldsNoneHolds(r check.Rule, extracted []check.Extracted) []string {
+	var problems []string
+	for _, e := range r.Extractors {
+		i := slices.IndexFunc(extracted, func(x check.Extracted) bool { return x.Extractor == e.Name })
+		if e.Fields == nil || i < 0 || len(extracted[i].Values) == 0 || slices.Contains(r.AllowEmpty, e.Name) {
+			continue
+		}
+		for _, field := range e.Fields {
+			if !slices.ContainsFunc(extracted[i].Values, func(v check.Value) bool { return v.Data != nil && v.Data.Field(field) != nil }) {
+				problems = append(problems, fmt.Sprintf("extractor %q found no record with field %q", e.Name, field))
+			}
+		}
+	}
+	return problems
+}
+
+// normalizedData is d with r's normalize applied to every scalar, or d
+// itself for a rule that normalizes nothing.
+func normalizedData(r check.Rule, d *check.Data) *check.Data {
+	if len(r.Normalize) == 0 {
+		return d
+	}
+	return d.Normalized(r.Normalized)
 }
 
 // maxQuoted is the most bytes of a value a message quotes. A longer value
@@ -306,7 +381,13 @@ func saw(r check.Rule, extracted []check.Extracted) string {
 			fmt.Fprintf(&b, "  %s = [] (allow_empty)\n", x.Extractor)
 		}
 		for i, v := range x.Values {
-			fmt.Fprintf(&b, "  %s[%d] = %s at %s%s\n", x.Extractor, i, q.quote(r.Normalized(v.Text)), v.At, v.Notes())
+			shown := q.quote(r.Normalized(v.Text))
+			if v.Data != nil {
+				// A mapping is shown as it is rendered, not quoted again,
+				// and in the form assert saw.
+				shown = normalizedData(r, v.Data).Show(check.ShownBytes)
+			}
+			fmt.Fprintf(&b, "  %s[%d] = %s at %s%s\n", x.Extractor, i, shown, v.At, v.Notes())
 		}
 	}
 	return strings.TrimSuffix(b.String(), "\n")
@@ -318,22 +399,25 @@ type found struct {
 	extractor string
 }
 
-// agree runs every extractor that r.Agree names, in that order, and compares
+// agree runs every extractor that r.Agree names, in that order but each
+// after the extractors it reads (check.Rule.Order), and compares
 // the normalised string form of every value they return, as text or, with
 // compare: semver, as versions and ranges. It also returns
 // what each extractor that did not fail returned, for the result, and a
 // note for a rule that held, which the text output prints.
 func agree(ctx context.Context, root string, r check.Rule) (check.Verdict, string, string, []check.Extracted) {
-	extracted, problems, cancelled := extractAll(ctx, root, r, r.Agree)
+	extracted, problems, cancelled := extractAll(ctx, root, r, agreed(r))
 	if cancelled != "" {
 		return check.VerdictUnknown, cancelled, "", extracted
 	}
+	extracted, problems = onFields(r, extracted, problems)
 	var (
 		all        []found
 		listedNone bool
 	)
 	for _, x := range extracted {
-		if len(x.Values) == 0 && slices.Contains(r.AllowEmpty, x.Extractor) {
+		// An entry name.field is allowed empty by its extractor's name.
+		if on, _, _ := r.AgreeOn(x.Extractor); len(x.Values) == 0 && slices.Contains(r.AllowEmpty, on.Name) {
 			listedNone = true
 		}
 		for _, v := range x.Values {
@@ -363,6 +447,59 @@ func agree(ctx context.Context, root string, r check.Rule) (check.Verdict, strin
 		return check.VerdictTrue, "", "", extracted
 	}
 	return check.VerdictFalse, differ(groups), "", extracted
+}
+
+// agreed is the extractors r.Agree reads, each once, in the order of the
+// first entry that names it or a field of its records.
+func agreed(r check.Rule) []string {
+	var names []string
+	for _, entry := range r.Agree {
+		if x, _, _ := r.AgreeOn(entry); !slices.Contains(names, x.Name) {
+			names = append(names, x.Name)
+		}
+	}
+	return names
+}
+
+// onFields is what agree compares, one entry for each of r.Agree: what an
+// extractor returned, or for name.field the field of each of its records,
+// as a flat value at the field's own place. A record without the field
+// adds nothing, and an entry that finds no field is one that found no
+// value, which allow_empty decides by the extractor's name. A field that
+// holds a mapping or a sequence is a problem, since agree compares flat
+// values. An extractor that failed has no entry, as before.
+func onFields(r check.Rule, extracted []check.Extracted, problems []string) ([]check.Extracted, []string) {
+	var out []check.Extracted
+	for _, entry := range r.Agree {
+		x, field, _ := r.AgreeOn(entry)
+		i := slices.IndexFunc(extracted, func(e check.Extracted) bool { return e.Extractor == x.Name })
+		if i < 0 {
+			continue
+		}
+		if field == "" {
+			out = append(out, extracted[i])
+			continue
+		}
+		on := check.Extracted{Extractor: entry}
+		for j, v := range extracted[i].Values {
+			if v.Data == nil {
+				continue
+			}
+			d := v.Data.Field(field)
+			switch {
+			case d == nil:
+			case d.Kind != check.DataScalar:
+				problems = append(problems, fmt.Sprintf("extractor %q: %s[%d] holds %s in field %q at %s, and agree compares flat values; write an assert", x.Name, x.Name, j, d.Show(check.ShownBytes), field, d.At))
+			default:
+				on.Values = append(on.Values, check.Value{Text: d.Text, At: d.At})
+			}
+		}
+		if len(on.Values) == 0 && len(extracted[i].Values) > 0 && !slices.Contains(r.AllowEmpty, x.Name) {
+			problems = append(problems, fmt.Sprintf("extractor %q found no record with field %q", x.Name, field))
+		}
+		out = append(out, on)
+	}
+	return out, problems
 }
 
 // distinct is one normalised value and every place it was found.

@@ -19,7 +19,10 @@ gap, not a reason.
 claim holds. It is not the same as an observation, which only says that a difference exists.
 
 **Unknown.** The verdict of a check that could not evaluate. A program check is unknown when its
-program crashed, did not finish in time, or could not be found. A rule is unknown when an extractor
+program crashed, did not finish in time, or could not be found. A generated check is unknown when
+its generator exited with any status but 0, did not finish in time, could not be found or wrote
+more than its bound, or when errata could not read its file (a file that is not there is no such
+case: the check is false). A rule is unknown when an extractor
 could not read its file (a file that is not there is no such case for `exists`, whose value it
 is: `false`), reached a limit such as the file size or the regex time, or found no value
 while `allow_empty` does not list it. A rule is also unknown when an extractor returned a not
@@ -92,7 +95,15 @@ stores these names in `metadata.managedFields`. Two managers can own one field.
 relate: all agree, as text or as versions, or a CEL expression that must hold.
 
 **Program check.** A check the user writes as a program, run through the check protocol. Every check
-is either a rule or a program check. Do not call it a script, an exec check or a command check.
+is a rule, a program check or a generated check. Do not call it a script, an exec check or a
+command check.
+
+**Generated check.** A check that names a committed file and its generator, runs the generator and
+holds when what the generator prints on stdout equals the file byte for byte. Its verdict comes
+from the comparison, never from the generator's exit status.
+
+**Generator.** The program a generated check runs, as a list of arguments and never through a
+shell, the way a program check's program runs. errata compares what it prints and never runs that.
 
 **Default run.** The `run` a program check without one of its own takes, from the top level
 `defaults` key, with the check's id put in for its placeholders. It is a program errata starts, as
@@ -104,6 +115,15 @@ Markdown prose, the versions of a tool in the files that pin it, the version a p
 itself in each of its manifests, one variable in every file a rule lists, whether a file is there and its size in bytes, an image
 digest, a field on a live object.
 
+**Reference.** A `(?{name})` in a `regex` pattern, which stands for the values of another
+extractor of the rule. The rule runs that extractor first, and the pattern is searched once for
+each value, with the value in the reference's place, quoted as text unless `values_as: pattern`
+reads it as RE2 syntax.
+
+**Context.** The lines around a `regex` match that decide whether the extractor keeps it: the
+match's own lines, `before` lines before and `after` lines after. A match is kept when `with`
+matches in one of those lines and `without` matches in none, each searched in each line alone.
+
 **Embedded document.** A document a string of another file holds, such as a runner's
 `config.toml` in a Helm value or a JSON list in an env var's value. A `yaml`, `json` or `toml`
 extractor reads one through its `embedded` steps, each naming the string's format and a path in
@@ -112,6 +132,17 @@ it.
 **File set.** The files an extractor's `files:` names: each entry a file, or a glob matched against
 the files git tracks, where `**` matches any number of path segments. The extractor reads each file
 as it would read one, and each value keeps its own file, which `by_file` groups by in an assert.
+
+**Whole mapping.** A mapping a `yaml`, `json` or `toml` extractor with `as: map` hands assert
+with every key and value under it, as a map in CEL, in file order. Its scalars are strings, as
+values are, and each of its nodes keeps the file and line where it starts. A message shows it close
+to JSON, cut at 256 bytes. Do not call it an object.
+
+**Record.** The fields of one element of a file kept together, as a whole mapping whose keys are
+the names a rule gives them: the paths of `fields` read from one node, with `as: record`, or the
+named groups of one regex match. A field the element lacks is left out, so its keys are some of a
+fixed set; a field no record holds makes the rule unknown unless `allow_empty` lists the extractor.
+`agree` names one field of each record as `name.field`.
 
 **Pin.** A file's statement of the version of a tool the repository uses, such as `20.11.1` in
 `.nvmrc` or `nodejs 20.11.1` in `.tool-versions`. The `tool_version` extractor reads every pin of

@@ -390,3 +390,93 @@ func TestResolvedINIDialect(t *testing.T) {
 		}
 	}
 }
+
+// Maps is true for a yaml, json or toml spec with as: map, and false for
+// each without it and for any other kind. Planted breaks: each of the three
+// tests negated (!= for ==), which turned that kind's answer over.
+func TestSpecMaps(t *testing.T) {
+	for name, c := range map[string]struct {
+		s    Spec
+		want bool
+	}{
+		"yaml map":  {Spec{YAML: &YAML{File: "a.yaml", Path: "x[*]", As: "map"}}, true},
+		"yaml flat": {Spec{YAML: &YAML{File: "a.yaml", Path: "x[*]"}}, false},
+		"json map":  {Spec{JSON: &JSON{File: "a.json", Path: "x[*]", As: "map"}}, true},
+		"json flat": {Spec{JSON: &JSON{File: "a.json", Path: "x[*]"}}, false},
+		"toml map":  {Spec{TOML: &TOML{File: "a.toml", Path: "x[*]", As: "map"}}, true},
+		"toml flat": {Spec{TOML: &TOML{File: "a.toml", Path: "x[*]"}}, false},
+		"regex":     {Spec{Regex: &Regex{File: "a", Pattern: "(x)"}}, false},
+		// A record is a map to assert, from a path or a regex alike.
+		"yaml record":  {Spec{YAML: &YAML{File: "a.yaml", Path: "x[*]", As: "record", Fields: map[string]string{"n": "n"}}}, true},
+		"json record":  {Spec{JSON: &JSON{File: "a.json", Path: "x[*]", As: "record", Fields: map[string]string{"n": "n"}}}, true},
+		"toml record":  {Spec{TOML: &TOML{File: "a.toml", Path: "x[*]", As: "record", Fields: map[string]string{"n": "n"}}}, true},
+		"regex record": {Spec{Regex: &Regex{File: "a", Pattern: "(?P<n>x)", As: "record"}}, true},
+		"ini":          {Spec{INI: &INI{File: "a.ini", Section: "s", Key: "k"}}, false},
+	} {
+		if got := c.s.Maps(); got != c.want {
+			t.Errorf("%s: Maps() = %t, want %t", name, got, c.want)
+		}
+	}
+}
+
+// Fields names the fields of the records a spec returns: a path record's
+// fields sorted by name, a regex record's named groups in the order the
+// pattern opens them, and nil for any spec that returns no record, a map
+// with fields and a record without any included. Planted breaks: each
+// condition of Spec.Fields and Spec.as negated.
+func TestSpecFields(t *testing.T) {
+	fields := map[string]string{"url": "u", "name": "n"}
+	for name, c := range map[string]struct {
+		s    Spec
+		want []string
+	}{
+		"yaml record":  {Spec{YAML: &YAML{File: "a.yaml", Path: "x[*]", As: "record", Fields: fields}}, []string{"name", "url"}},
+		"json record":  {Spec{JSON: &JSON{File: "a.json", Path: "x[*]", As: "record", Fields: fields}}, []string{"name", "url"}},
+		"toml record":  {Spec{TOML: &TOML{File: "a.toml", Path: "x[*]", As: "record", Fields: fields}}, []string{"name", "url"}},
+		"regex record": {Spec{Regex: &Regex{File: "a", Pattern: "(?P<url>x)(y)(?P<name>z)", As: "record"}}, []string{"url", "name"}},
+		"regex flat":   {Spec{Regex: &Regex{File: "a", Pattern: "(?P<url>x)"}}, nil},
+		"yaml map":     {Spec{YAML: &YAML{File: "a.yaml", Path: "x[*]", As: "map", Fields: fields}}, nil},
+		"json flat":    {Spec{JSON: &JSON{File: "a.json", Path: "x[*]", Fields: fields}}, nil},
+		"record, none": {Spec{TOML: &TOML{File: "a.toml", Path: "x[*]", As: "record"}}, nil},
+		"ini":          {Spec{INI: &INI{File: "a.ini", Section: "s", Key: "k"}}, nil},
+	} {
+		got := c.s.Fields()
+		if !reflect.DeepEqual(got, c.want) {
+			t.Errorf("%s: Fields() = %#v, want %#v", name, got, c.want)
+		}
+	}
+}
+
+// A regex that writes the default values_as out reads the place of one
+// that leaves it out, and Resolved writes it out for errata list. Planted
+// breaks: Place and Resolved copying the regex spec as it is.
+func TestRegexValuesAsPlace(t *testing.T) {
+	ref := func(valuesAs string) Spec {
+		return Spec{Regex: &Regex{File: "f", Pattern: `((?{a}))`, ValuesAs: valuesAs}}
+	}
+	if !reflect.DeepEqual(ref("literal").Place(), ref("").Place()) {
+		t.Errorf("values_as literal and none read two places: %+v, %+v", ref("literal").Place().Regex, ref("").Place().Regex)
+	}
+	if got := ref("").Resolved().Regex.ValuesAs; got != "literal" {
+		t.Errorf("Resolved gives values_as %q, want literal", got)
+	}
+}
+
+// A regex's context decides which matches it keeps, so two regexes that
+// differ only in it read two places, and agree compares them. Planted
+// break: Place leaving the context out.
+func TestRegexContextPlace(t *testing.T) {
+	with := func(c *core.Context) []byte {
+		key, err := encjson.Marshal(Spec{Regex: &Regex{File: "f", Pattern: `(v)`, Context: c}}.Place())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return key
+	}
+	if a, b := with(nil), with(&core.Context{Without: "#"}); string(a) == string(b) {
+		t.Errorf("a regex with a context and one without read one place, %s", a)
+	}
+	if a, b := with(&core.Context{With: "x"}), with(&core.Context{With: "x"}); string(a) != string(b) {
+		t.Errorf("one context read two places, %s and %s", a, b)
+	}
+}

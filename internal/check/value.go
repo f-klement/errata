@@ -63,6 +63,10 @@ type Value struct {
 	// quotes the file's text in it, so a report writes it as it is
 	// (OriginNote).
 	Origin string
+	// Data is the value whole, for an extractor that hands assert each
+	// mapping its path selects (as: map); nil for a flat value. Text is
+	// then Data's Show, cut at ShownBytes, for a message and a report.
+	Data *Data
 }
 
 // maxNote is the most bytes of a key or a condition a note quotes.
@@ -149,4 +153,29 @@ type NotLiteralReader interface {
 func MayReturnNotLiteral(e Extractor) bool {
 	r, ok := e.(NotLiteralReader)
 	return ok && r.MayReturnNotLiteral()
+}
+
+// Dependent is an extractor that reads the values of other extractors of
+// its rule, such as a regex whose pattern references another extractor's
+// values. A rule runs each extractor that Needs names before it, and a
+// rule whose extractors need each other in a cycle, or one that extract
+// does not declare, does not load (Rule.validate).
+type Dependent interface {
+	Extractor
+	// Needs names the extractors whose values it reads.
+	Needs() []string
+	// ExtractWith is Extract given the values of each extractor Needs
+	// names: its literal values, after skip_not_literal, in the order it
+	// found them, with the text the file holds, before normalize. A lowered
+	// value would miss the text it came from, so a search that should
+	// ignore case says so in its own pattern, with (?i).
+	ExtractWith(root string, values map[string][]Value) ([]Value, error)
+}
+
+// needs is what e needs: Needs for a Dependent, nothing for any other.
+func needs(e Extractor) []string {
+	if d, ok := e.(Dependent); ok {
+		return d.Needs()
+	}
+	return nil
 }
