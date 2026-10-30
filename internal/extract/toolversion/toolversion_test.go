@@ -600,15 +600,14 @@ func TestToolVersionPlace(t *testing.T) {
 	}
 }
 
-// The extractor declares that it can return a not literal value, so
+// The kind describes its values as possibly not literal, so
 // skip_not_literal loads over it.
-func TestToolVersionMayReturnNotLiteral(t *testing.T) {
-	e, err := build(Spec{Tool: "node"})
-	if err != nil {
+func TestToolVersionDescribedNotLiteral(t *testing.T) {
+	if _, err := build(Spec{Tool: "node"}); err != nil {
 		t.Fatal(err)
 	}
-	if !check.MayReturnNotLiteral(e) {
-		t.Error("MayReturnNotLiteral is false")
+	if !Describe(Spec{Tool: "node"}).NotLiteral {
+		t.Error("described as literal only")
 	}
 }
 

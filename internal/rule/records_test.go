@@ -18,7 +18,7 @@ func rec(line int, name, group string) *check.Data {
 // record with the fields name and group.
 func recordsOf(ds ...*check.Data) check.NamedExtractor {
 	x := mapsOf("gatus", ds...)
-	x.Fields = []string{"name", "group"}
+	x.Description = check.Description{Shape: check.ShapeRecord, Fields: []string{"name", "group"}}
 	return x
 }
 
@@ -61,7 +61,7 @@ func TestAgreeComparesAFieldOfEachRecord(t *testing.T) {
 func TestAgreeOverFieldsIsUnknownWithoutAFlatValue(t *testing.T) {
 	runs := 0
 	counted := countingExtractor{values: []check.Value{whole(rec(3, "x", "x"))}, runs: &runs}
-	c := agreeRule(check.NamedExtractor{Name: "gatus", Extractor: counted, Maps: true, Fields: []string{"name", "group"}})
+	c := agreeRule(check.NamedExtractor{Name: "gatus", Extractor: counted, Description: check.Description{Shape: check.ShapeRecord, Fields: []string{"name", "group"}}})
 	c.Rule().Agree = []string{"gatus.name", "gatus.group"}
 	if res := Run(context.Background(), "", c); res.Verdict != check.VerdictTrue || runs != 1 {
 		t.Fatalf("verdict %s after %d runs: %s", res.Verdict, runs, res.Message)
@@ -100,6 +100,10 @@ func (c countingExtractor) Extract(string) ([]check.Value, error) {
 	return c.values, nil
 }
 
+func (c countingExtractor) ExtractWith(root string, _ map[string][]check.Value) ([]check.Value, error) {
+	return c.Extract(root)
+}
+
 // assert reads a record as a map, a field by its name, and two fields of
 // one record together: the landingpage push keys, each <group>_<name> of a
 // Gatus endpoint. A key no record makes is an erratum whose message shows
@@ -107,7 +111,7 @@ func (c countingExtractor) Extract(string) ([]check.Value, error) {
 // which made r.group a type error.
 func TestAssertReadsAFieldOfEachRecord(t *testing.T) {
 	expr := "pushed.all(k, gatus.exists(r, r.group + '_' + r.name == k))"
-	a, err := Compile(expr, []string{"gatus", "pushed"}, Lists{Maps: []string{"gatus"}})
+	a, err := compileNamed(expr, []string{"gatus", "pushed"}, []string{"gatus"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +144,7 @@ func TestAssertReadsAFieldOfEachRecord(t *testing.T) {
 // sought in the first record only; allow_empty not read.
 func TestAssertIsUnknownOnAFieldNoRecordHolds(t *testing.T) {
 	expr := "gatus.all(r, !has(r.group) || r.group == 'external')"
-	a, err := Compile(expr, []string{"gatus"}, Lists{Maps: []string{"gatus"}})
+	a, err := compileNamed(expr, []string{"gatus"}, []string{"gatus"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,11 +172,11 @@ func TestAssertIsUnknownOnAFieldNoRecordHolds(t *testing.T) {
 // which let u == 1 load and never match. The refusal reads u's type, dyn,
 // so it holds without following the bind.
 func TestAssertBindsAFieldOfARecord(t *testing.T) {
-	if _, err := Compile("gatus.all(e, cel.bind(u, e.name, u == 1))", []string{"gatus"}, Lists{Maps: []string{"gatus"}}); err == nil || !strings.Contains(err.Error(), "is compared") {
+	if _, err := compileNamed("gatus.all(e, cel.bind(u, e.name, u == 1))", []string{"gatus"}, []string{"gatus"}); err == nil || !strings.Contains(err.Error(), "is compared") {
 		t.Errorf("a bound field compared with 1: %v", err)
 	}
 	expr := "gatus.all(e, cel.bind(u, e.name, u.startsWith('landingpage-')))"
-	a, err := Compile(expr, []string{"gatus"}, Lists{Maps: []string{"gatus"}})
+	a, err := compileNamed(expr, []string{"gatus"}, []string{"gatus"})
 	if err != nil {
 		t.Fatal(err)
 	}

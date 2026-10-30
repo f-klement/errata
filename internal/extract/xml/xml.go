@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"maps"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -28,10 +27,9 @@ import (
 // as a space (normalise), and text()'s the text as the file has it. Lines
 // end as XML ends them (xmlLines).
 type Spec struct {
-	File       string            `json:"file"`
+	core.OneFile
 	Path       string            `json:"path"`
 	Namespaces map[string]string `json:"namespaces,omitempty"`
-	MaxBytes   int64             `json:"max_bytes,omitempty"`
 }
 
 // Kind is the xml kind, which a rule writes under the key xml.
@@ -40,7 +38,7 @@ var Kind = core.Kind[Spec]{Key: "xml", Place: Place, Resolve: Resolve, Describe:
 // Place is x with only what decides where it reads: the file cleaned, and
 // no max_bytes, since a limit does not change what is read.
 func Place(x Spec) Spec {
-	x.File, x.MaxBytes = filepath.Clean(x.File), 0
+	x.OneFile = x.Place()
 	return x
 }
 
@@ -48,7 +46,7 @@ func Place(x Spec) Spec {
 // for errata list.
 func Resolve(x Spec) Spec {
 	x.Namespaces = maps.Clone(x.Namespaces)
-	x.MaxBytes = core.MaxBytes(x.MaxBytes)
+	x.OneFile = x.Resolved()
 	return x
 }
 
@@ -82,7 +80,7 @@ type xmlExtractor struct {
 
 // Build checks x and returns its extractor.
 func Build(x Spec) (check.Extractor, error) {
-	src, err := core.CheckSource("xml", x.File, x.MaxBytes)
+	src, err := x.Check(Kind.Key)
 	if err != nil {
 		return nil, err
 	}
@@ -99,13 +97,20 @@ func Build(x Spec) (check.Extractor, error) {
 	return xmlExtractor{Source: src, path: p}, nil
 }
 
+// ExtractWith is Extract: the extractor reads no other extractor's values.
+func (e xmlExtractor) ExtractWith(root string, _ map[string][]check.Value) ([]check.Value, error) {
+	return e.Extract(root)
+}
+
 // Extract reads the file under root and returns every value its path
 // selects.
 func (e xmlExtractor) Extract(root string) ([]check.Value, error) {
-	data, err := e.Read(root)
-	if err != nil {
-		return nil, err
-	}
+	return core.ExtractOne(root, e.Source, e)
+}
+
+// FromShared is FromData: a read of an XML file has its own node budget,
+// and spends none of a set's.
+func (e xmlExtractor) FromShared(data []byte, _ *core.Spent) ([]check.Value, error) {
 	return e.FromData(data)
 }
 

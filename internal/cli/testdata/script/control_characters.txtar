@@ -37,7 +37,7 @@ stderr '\\u2066\(\\x1b'
 exec errata list -c listed.yaml
 ! stdout '\x1b|\x{9b}|\x{202e}'
 stdout '^  why: \\x1b\[2Jok\\u009b31m$'
-stdout 'pattern "\\u202e\(\.\*\)", '
+stdout 'max_bytes 33554432, pattern "\\u202e\(\.\*\)"$'
 exec errata list -c listed.yaml -f json
 ! stdout '\x1b|\x{9b}|\x{202e}'
 stdout '"reason": "\\u001b\[2Jok\\u009b31m"'

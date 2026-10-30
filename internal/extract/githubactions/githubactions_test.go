@@ -526,14 +526,28 @@ func TestPlace(t *testing.T) {
 	}
 }
 
-// The extractor declares that it can return a not literal value, so a rule
-// may list it in skip_not_literal.
-func TestMayReturnNotLiteral(t *testing.T) {
-	x, err := build(spec("t", "", "V"))
-	if err != nil {
+// The kind describes its values as possibly not literal, so a rule may
+// list it in skip_not_literal.
+func TestDescribedNotLiteral(t *testing.T) {
+	if _, err := build(spec("t", "", "V")); err != nil {
 		t.Fatal(err)
 	}
-	if !check.MayReturnNotLiteral(x) {
-		t.Fatal("MayReturnNotLiteral is false")
+	if !Describe(spec("t", "", "V")).NotLiteral {
+		t.Fatal("described as literal only")
+	}
+}
+
+// The env kind reads a .yml or .yaml file in .github/workflows with
+// github-actions, and none below it, which GitHub does not run. Planted
+// breaks: a workflow below .github/workflows taken; a .yaml one not taken;
+// a .json one taken.
+func TestEnvChooses(t *testing.T) {
+	for file, want := range map[string]bool{
+		".github/workflows/ci.yml": true, ".github/workflows/ci.yaml": true,
+		".github/workflows/x/ci.yml": false, ".github/ci.yml": false, ".github/workflows/ci.json": false, "ci.yml": false,
+	} {
+		if got := Kind.Env.Chooses(file); got != want {
+			t.Errorf("%s: %t, want %t", file, got, want)
+		}
 	}
 }

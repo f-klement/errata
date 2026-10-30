@@ -90,16 +90,24 @@ var ruleKeys = []string{"extract", "agree", "compare", "assert", "allow_empty", 
 // Each check's location names the file relative to root, the repository
 // root, when the file is inside it, and as path, marked outside, otherwise.
 func Load(root, path string) (Config, error) {
-	return LoadWith(root, path, extract.Build)
+	return LoadWith(root, path, BuiltIn)
 }
 
-// Builder makes the extractor one entry under a rule's extract: describes.
-// extract.Build is the one errata runs with.
-type Builder func(extract.Spec) (check.Extractor, error)
+// Builder makes the extractor of one entry under a rule's extract:, and
+// tells what it returns. It gives the description even when the extractor
+// does not build. BuiltIn is the one errata runs with.
+type Builder func(extract.Spec) (check.Extractor, check.Description, error)
+
+// BuiltIn is the Builder of the kinds errata reads: extract.Build, and the
+// description the spec's kind gives (extract.Spec.Describe).
+func BuiltIn(s extract.Spec) (check.Extractor, check.Description, error) {
+	x, err := extract.Build(s)
+	return x, s.Describe(), err
+}
 
 // LoadWith is Load with the extractors made by build. The CLI's tests pass a
-// builder that wraps extract.Build in a reader of not literal values, which
-// no extractor errata has yet returns.
+// builder that wraps BuiltIn in a reader that marks values holding $( or
+// ${ not literal, and describes them so.
 func LoadWith(root, path string, build Builder) (Config, error) {
 	raw, err := readConfig(path)
 	if err != nil {
@@ -663,15 +671,10 @@ func buildRule(e checkEntry, newExtractor Builder) (*check.Rule, []error) {
 		r.Normalize = append(r.Normalize, check.Normalization(n))
 	}
 	var errs []error
-	var read []string // the extractors another extractor reads the values of
 	names := slices.Sorted(maps.Keys(e.Extract))
-	var whole []string // the extractors assert reads as lists of maps
 	errs = append(errs, samePlaces(e.Extract, names)...)
 	for _, name := range names {
-		x, err := newExtractor(e.Extract[name])
-		if d, ok := x.(check.Dependent); ok {
-			read = append(read, d.Needs()...)
-		}
+		x, d, err := newExtractor(e.Extract[name])
 		switch {
 		case err != nil:
 			errs = append(errs, fmt.Errorf("extractor %q: %w", name, err))
@@ -683,17 +686,13 @@ func buildRule(e checkEntry, newExtractor Builder) (*check.Rule, []error) {
 		// Declared even when it did not build, so validation does not also
 		// report agree naming an extractor that extract does not declare.
 		r.Extractors = append(r.Extractors, check.NamedExtractor{
-			Name: name, Kind: e.Extract[name].Kind(), Extractor: x, Spec: e.Extract[name].Resolved(),
-			Maps: e.Extract[name].Maps(), Fields: e.Extract[name].Fields(),
+			Name: name, Extractor: x, Spec: e.Extract[name].Resolved(), Description: d,
 		})
-		if e.Extract[name].Maps() {
-			whole = append(whole, name)
-		}
 	}
 	// A rule with agree beside assert is refused by validation, so its
 	// expression is not compiled into a second error.
 	if strings.TrimSpace(e.Assert) != "" && len(e.Agree) == 0 && len(names) > 0 {
-		a, err := rule.Compile(e.Assert, names, rule.Lists{Maps: whole, Read: read})
+		a, err := rule.Compile(e.Assert, r.Extractors)
 		if err != nil {
 			errs = append(errs, err)
 		}

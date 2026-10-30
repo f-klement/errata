@@ -675,3 +675,16 @@ func TestJenkinsDivisionInBrackets(t *testing.T) {
 		}
 	}
 }
+
+// The env kind reads a file named Jenkinsfile with jenkins, in any
+// directory. Planted break: Jenkinsfile.groovy taken.
+func TestEnvChooses(t *testing.T) {
+	for file, want := range map[string]bool{
+		"Jenkinsfile": true, "ci/Jenkinsfile": true,
+		"Jenkinsfile.groovy": false, "jenkinsfile": false,
+	} {
+		if got := Kind.Env.Chooses(file); got != want {
+			t.Errorf("%s: %t, want %t", file, got, want)
+		}
+	}
+}

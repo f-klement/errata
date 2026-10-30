@@ -13,6 +13,9 @@ import (
 type fixed []check.Value
 
 func (f fixed) Extract(string) ([]check.Value, error) { return f, nil }
+func (f fixed) ExtractWith(string, map[string][]check.Value) ([]check.Value, error) {
+	return f, nil
+}
 
 // An agree rule with compare: semver over 20, 20.11.1 and 18 is false
 // because of 18, and its SARIF result points there. The texts are three

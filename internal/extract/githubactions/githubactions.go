@@ -13,7 +13,7 @@ package githubactions
 import (
 	"errors"
 	"fmt"
-	"path/filepath"
+	"path"
 	"regexp"
 	"strings"
 
@@ -26,26 +26,45 @@ import (
 // and Key a key of the step, or of the job when Step is "", such as
 // runs-on, uses or with.node-version; exactly one of them is set.
 type Spec struct {
-	File     string `json:"file"`
+	core.OneFile
 	Job      string `json:"job"`
 	Step     string `json:"step,omitempty"`
 	Variable string `json:"variable,omitempty"`
 	Key      string `json:"key,omitempty"`
-	MaxBytes int64  `json:"max_bytes,omitempty"`
 }
 
+// kindKey is the kind's key, which Kind and Build both use. Build names
+// the constant rather than Kind.Key because an env reader's Read calls
+// Build, and Build reading Kind would make an initialization cycle.
+const kindKey = "github-actions"
+
 // Kind is the github-actions kind, which a rule writes under the key
-// github-actions.
-var Kind = core.Kind[Spec]{Key: "github-actions", Place: Place, Resolve: Resolve, Describe: Describe}
+// github-actions. It is an env reader, fourth in env's list.
+var Kind = core.Kind[Spec]{Key: kindKey, Place: Place, Resolve: Resolve, Describe: Describe,
+	Env: &core.EnvReader{Order: 40, Chooses: chooses, Read: envRead}}
+
+// chooses takes, for the env kind, a .yml or .yaml file in
+// .github/workflows, and none below it, which GitHub does not run.
+func chooses(file string) bool {
+	ext := path.Ext(file)
+	return path.Dir(file) == ".github/workflows" && (ext == ".yml" || ext == ".yaml")
+}
+
+// envRead is the env kind's reader of the variable name in file: Every's,
+// with the YAML parser the facade hands it.
+func envRead(file, name string, maxBytes int64, p core.Parsers) (check.Extractor, error) {
+	return Every(file, name, maxBytes, p.Noted)
+}
 
 // Resolve is s with its max_bytes written out, for errata list.
 func Resolve(s Spec) Spec {
-	s.MaxBytes = core.MaxBytes(s.MaxBytes)
+	s.OneFile = s.Resolved()
 	return s
 }
 
 // Describe is what the kind's extractor returns: flat values, some not
-// literal, as MayReturnNotLiteral says.
+// literal, since a ${{ }} expression and a number YAML retypes, such as
+// 3.10, are values GitHub computes.
 func Describe(Spec) check.Description {
 	return check.Description{Label: "github-actions", NotLiteral: true}
 }
@@ -69,7 +88,7 @@ var variableName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // Build checks s and returns its extractor.
 func Build(s Spec, parse Parser) (check.Extractor, error) {
-	src, err := core.CheckSource("github-actions", s.File, s.MaxBytes)
+	src, err := s.Check(kindKey)
 	if err != nil {
 		return nil, err
 	}
@@ -102,7 +121,7 @@ func Build(s Spec, parse Parser) (check.Extractor, error) {
 // values each sees, as Build's for that job or step, with the job, and the
 // step, as each value's origin. The env extractor builds it.
 func Every(file, variable string, maxBytes int64, parse Parser) (check.Extractor, error) {
-	src, err := core.CheckSource("github-actions", file, maxBytes)
+	src, err := core.OneFile{File: file, MaxBytes: maxBytes}.Check(kindKey)
 	if err != nil {
 		return nil, err
 	}
@@ -145,7 +164,7 @@ func checkKey(key string) ([]string, error) {
 // Place is s with only what decides where it reads: the file cleaned and
 // max_bytes left out.
 func Place(s Spec) Spec {
-	s.File, s.MaxBytes = filepath.Clean(s.File), 0
+	s.OneFile = s.Place()
 	return s
 }
 
@@ -162,10 +181,6 @@ type extractor struct {
 	valueLimit int
 }
 
-// MayReturnNotLiteral reports true: a ${{ }} expression, and a number YAML
-// retypes, such as 3.10, are values GitHub computes.
-func (extractor) MayReturnNotLiteral() bool { return true }
-
 // maxValues is the most values Every returns: core.MaxValues, or the
 // valueLimit a test sets.
 func (e extractor) maxValues() int {
@@ -175,12 +190,19 @@ func (e extractor) maxValues() int {
 	return e.valueLimit
 }
 
+// ExtractWith is Extract: the extractor reads no other extractor's values.
+func (e extractor) ExtractWith(root string, _ map[string][]check.Value) ([]check.Value, error) {
+	return e.Extract(root)
+}
+
 // Extract reads the workflow and returns the values the step, or the job,
 // sees.
 func (e extractor) Extract(root string) ([]check.Value, error) {
-	data, err := e.Read(root)
-	if err != nil {
-		return nil, err
-	}
+	return core.ExtractOne(root, e.Source, e)
+}
+
+// FromShared is fromData: a workflow read has its own bounds, and spends
+// none of a set's budget.
+func (e extractor) FromShared(data []byte, _ *core.Spent) ([]check.Value, error) {
 	return e.fromData(data)
 }

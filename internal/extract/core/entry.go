@@ -256,17 +256,20 @@ func (e EntryExtractor) ValuesAllowed() int {
 	return e.ValueLimit
 }
 
-// MayReturnNotLiteral reports whether the dialect's tool computes some
-// values of the file, which skip_not_literal can then leave out.
-func (e EntryExtractor) MayReturnNotLiteral() bool { return e.NotLiteral != nil }
+// ExtractWith is Extract: the extractor reads no other extractor's values.
+func (e EntryExtractor) ExtractWith(root string, _ map[string][]check.Value) ([]check.Value, error) {
+	return e.Extract(root)
+}
 
 // Extract reads the file under root and returns every value the query
 // selects, in file order.
 func (e EntryExtractor) Extract(root string) ([]check.Value, error) {
-	data, err := e.Source.Read(root)
-	if err != nil {
-		return nil, err
-	}
+	return ExtractOne(root, e.Source, e)
+}
+
+// FromShared is FromData: a read of entries has its own work budget, and
+// spends none of a set's.
+func (e EntryExtractor) FromShared(data []byte, _ *Spent) ([]check.Value, error) {
 	return e.FromData(data)
 }
 

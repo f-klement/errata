@@ -175,6 +175,12 @@ func stringFields(t reflect.Type, path []string) [][]string {
 		var out [][]string
 		for f := range t.Fields() {
 			name, _, _ := strings.Cut(f.Tag.Get("json"), ",")
+			if f.Anonymous && name == "" {
+				// encoding/json promotes the keys of a struct embedded
+				// with no name, such as a kind's core.Where.
+				out = append(out, stringFields(f.Type, path)...)
+				continue
+			}
 			out = append(out, stringFields(f.Type, at(name))...)
 		}
 		return out

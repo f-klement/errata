@@ -136,34 +136,34 @@ checks:
         "app": {
           "json": {
             "file": "package.json",
-            "path": "version",
-            "max_bytes": 33554432
+            "max_bytes": 33554432,
+            "path": "version"
           }
         },
         "chart": {
           "yaml": {
             "file": "deploy/Chart.yaml",
+            "max_bytes": 1024,
             "path": "entries[?@.name == \"app\"].version",
-            "kind": "Chart",
-            "max_bytes": 1024
+            "kind": "Chart"
           }
         },
         "deps": {
           "ini": {
             "file": "tox.ini",
+            "max_bytes": 33554432,
             "dialect": "tox",
             "section": "testenv",
-            "key": "deps",
-            "max_bytes": 33554432
+            "key": "deps"
           }
         },
         "php": {
           "ini": {
             "file": "php.ini",
+            "max_bytes": 33554432,
             "dialect": "php",
             "section": "PHP",
-            "key": "error_reporting",
-            "max_bytes": 33554432
+            "key": "error_reporting"
           }
         }
       },
@@ -223,15 +223,15 @@ checks:
         "cfg": {
           "toml": {
             "file": "cfg.toml",
-            "path": "server.port",
-            "max_bytes": 33554432
+            "max_bytes": 33554432,
+            "path": "server.port"
           }
         },
         "nodes": {
           "regex": {
             "file": "README.md",
-            "pattern": "(\\d+) nodes",
-            "max_bytes": 33554432
+            "max_bytes": 33554432,
+            "pattern": "(\\d+) nodes"
           }
         },
         "pkg": {
@@ -242,33 +242,33 @@ checks:
         "pom": {
           "xml": {
             "file": "pom.xml",
+            "max_bytes": 33554432,
             "path": "/m:project/m:version",
             "namespaces": {
               "m": "http://maven.apache.org/POM/4.0.0"
-            },
-            "max_bytes": 33554432
+            }
           }
         },
         "port": {
           "properties": {
             "file": "app.properties",
-            "key": "server.port",
-            "max_bytes": 33554432
+            "max_bytes": 33554432,
+            "key": "server.port"
           }
         },
         "prose": {
           "text": {
             "file": "README.md",
+            "max_bytes": 33554432,
             "pattern": "runs on (\\w+)",
-            "code": true,
-            "max_bytes": 33554432
+            "code": true
           }
         },
         "replicas": {
           "yaml": {
             "file": "deploy.yaml",
-            "path": "spec.replicas",
-            "max_bytes": 33554432
+            "max_bytes": 33554432,
+            "path": "spec.replicas"
           }
         }
       },
@@ -285,10 +285,10 @@ checks:
 -- agree.txt --
 version-agrees (repo) rule
   why: Every manifest names one version.
-  extract: app: json file package.json, path version, max_bytes 33554432
-           chart: yaml file deploy/Chart.yaml, path `entries[?@.name == "app"].version`, kind Chart, max_bytes 1024
-           deps: ini file tox.ini, dialect tox, section testenv, key deps, max_bytes 33554432
-           php: ini file php.ini, dialect php, section PHP, key error_reporting, max_bytes 33554432
+  extract: app: json file package.json, max_bytes 33554432, path version
+           chart: yaml file deploy/Chart.yaml, max_bytes 1024, path `entries[?@.name == "app"].version`, kind Chart
+           deps: ini file tox.ini, max_bytes 33554432, dialect tox, section testenv, key deps
+           php: ini file php.ini, max_bytes 33554432, dialect php, section PHP, key error_reporting
   agree: app, chart, deps, php (compare text)
   normalize: trim, lower
   allow_empty: deps

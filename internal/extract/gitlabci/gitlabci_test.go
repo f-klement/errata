@@ -433,3 +433,16 @@ b:
 	want(t, see(t, files, "b", "X"), "")
 	want(t, see(t, files, "b", "KEEP"), "base@.gitlab-ci.yml:3")
 }
+
+// The env kind reads a file named .gitlab-ci.yml with gitlab-ci, in any
+// directory. Planted break: a name that ends in .gitlab-ci.yml taken.
+func TestEnvChooses(t *testing.T) {
+	for file, want := range map[string]bool{
+		".gitlab-ci.yml": true, "sub/.gitlab-ci.yml": true,
+		"a.gitlab-ci.yml": false, ".gitlab-ci.yaml": false, "ci.yml": false,
+	} {
+		if got := Kind.Env.Chooses(file); got != want {
+			t.Errorf("%s: %t, want %t", file, got, want)
+		}
+	}
+}

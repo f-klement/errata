@@ -36,24 +36,31 @@ func TestScripts(t *testing.T) {
 
 // computedLoad is config.Load with each extractor behind computedReader.
 func computedLoad(root, path string) (config.Config, error) {
-	return config.LoadWith(root, path, func(s extract.Spec) (check.Extractor, error) {
-		x, err := extract.Build(s)
+	return config.LoadWith(root, path, func(s extract.Spec) (check.Extractor, check.Description, error) {
+		x, d, err := config.BuiltIn(s)
 		if err != nil {
-			return nil, err
+			return nil, d, err
 		}
-		return computedReader{x}, nil
+		d.NotLiteral = true
+		return computedReader{x}, d, nil
 	})
 }
 
 // computedReader marks each value of the extractor it wraps that holds $(
-// or ${ as not literal, and declares that it can, so a rule may list it in
-// skip_not_literal.
+// or ${ as not literal, which computedLoad describes it as returning, so a
+// rule may list it in skip_not_literal.
 type computedReader struct{ check.Extractor }
 
-func (computedReader) MayReturnNotLiteral() bool { return true }
+func (r computedReader) ExtractWith(root string, values map[string][]check.Value) ([]check.Value, error) {
+	return r.marked(r.Extractor.ExtractWith(root, values))
+}
 
 func (r computedReader) Extract(root string) ([]check.Value, error) {
-	values, err := r.Extractor.Extract(root)
+	return r.marked(r.Extractor.Extract(root))
+}
+
+// marked is values with each that holds $( or ${ marked not literal.
+func (computedReader) marked(values []check.Value, err error) ([]check.Value, error) {
 	for i, v := range values {
 		if strings.Contains(v.Text, "$(") || strings.Contains(v.Text, "${") {
 			values[i].NotLiteral = true

@@ -22,11 +22,9 @@ import (
 // string the path selects holds, and so on, step by step, as core.Embedded
 // says.
 type Spec struct {
-	File     string          `json:"file,omitempty"`
-	Files    []string        `json:"files,omitempty"`
+	core.Where
 	Path     string          `json:"path"`
 	Embedded []core.Embedded `json:"embedded,omitempty"`
-	MaxBytes int64           `json:"max_bytes,omitempty"`
 	// As is map to hand assert each mapping the path selects whole, or
 	// record to read Fields from each node it selects into one, as
 	// core.CheckAs says; "" for each scalar.
@@ -39,20 +37,18 @@ type Spec struct {
 // Kind is the toml kind, which a rule writes under the key toml.
 var Kind = core.Kind[Spec]{Key: "toml", Place: Place, Resolve: Resolve, Describe: Describe}
 
-// Place is s with only what decides where it reads: its file or files as
-// core.PlaceFiles writes them, and no max_bytes, since a limit does not
-// change what is read.
+// Place is s with only what decides where it reads: its where part as
+// core.Where.Place writes it.
 func Place(s Spec) Spec {
-	s.File, s.Files = core.PlaceFiles(s.File, s.Files)
-	s.MaxBytes = 0
+	s.Where = s.Place()
 	return s
 }
 
 // Resolve is s with its max_bytes written out, and its files, embedded
 // steps and fields copied, for errata list.
 func Resolve(s Spec) Spec {
-	s.Files, s.Embedded, s.Fields = slices.Clone(s.Files), slices.Clone(s.Embedded), maps.Clone(s.Fields)
-	s.MaxBytes = core.MaxBytes(s.MaxBytes)
+	s.Where = s.Resolved()
+	s.Embedded, s.Fields = slices.Clone(s.Embedded), maps.Clone(s.Fields)
 	return s
 }
 
@@ -66,7 +62,7 @@ func Describe(s Spec) check.Description {
 // Build checks s and returns its extractor, which reads the documents
 // embedded names with p.
 func Build(s Spec, p core.Parsers) (check.Extractor, error) {
-	return core.BuildTree("toml", core.Tree{File: s.File, Files: s.Files, Path: s.Path, Embedded: s.Embedded, MaxBytes: s.MaxBytes, As: s.As, Fields: s.Fields}, core.TOMLFormat, Parse, p)
+	return core.BuildTree(Kind.Key, core.Tree{Where: s.Where, Path: s.Path, Embedded: s.Embedded, As: s.As, Fields: s.Fields}, core.TOMLFormat, Parse, p)
 }
 
 // Parse reads a TOML file into a tree. go-toml's unstable parser gives

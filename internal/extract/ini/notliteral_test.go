@@ -5,7 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/f-klement/errata/internal/check"
 	"github.com/f-klement/errata/internal/extract/extracttest"
 )
 
@@ -132,7 +131,7 @@ func TestINIMarksWhatTheToolComputes(t *testing.T) {
 
 // An extractor may list in skip_not_literal only where its dialect's tool
 // computes values: php, tox, ansible, and plain for setup.cfg.
-func TestINIMayReturnNotLiteral(t *testing.T) {
+func TestINIDescribedNotLiteral(t *testing.T) {
 	for _, c := range []struct {
 		spec Spec
 		want bool
@@ -152,11 +151,10 @@ func TestINIMayReturnNotLiteral(t *testing.T) {
 		{Spec{File: "hosts", Section: "g"}, true},
 		{gitSpec(".gitconfig", "a", nil, "k"), false},
 	} {
-		e, err := Build(c.spec)
-		if err != nil {
+		if _, err := Build(c.spec); err != nil {
 			t.Fatal(err)
 		}
-		if got := check.MayReturnNotLiteral(e); got != c.want {
+		if got := Describe(c.spec).NotLiteral; got != c.want {
 			t.Errorf("%+v: %v, want %v", c.spec, got, c.want)
 		}
 	}

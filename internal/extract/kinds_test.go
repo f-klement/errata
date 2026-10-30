@@ -12,6 +12,7 @@ import (
 	"github.com/f-klement/errata/internal/check"
 	"github.com/f-klement/errata/internal/extract/core"
 	"github.com/f-klement/errata/internal/extract/extracttest"
+	"github.com/f-klement/errata/internal/extract/regex"
 	"github.com/f-klement/errata/internal/extract/text"
 	"github.com/f-klement/errata/internal/extract/yaml"
 )
@@ -313,12 +314,68 @@ var describes = []string{
 	`{"size": {"file": "a"}}`,
 }
 
-// Each kind's description tells what its built extractor does: it may
-// return a not literal value when the extractor says so, and it reads the
-// extractors the extractor needs. Every kind has a spec here. The planted
-// breaks: gitlab-ci described as literal only; regex's reference left out
-// of Reads. ini's Describe and Build share notLiteralIn, so its own test,
-// not this one, witnesses that function.
+// mayNotLiteral are the specs of describes whose built extractor may
+// return a not literal value and does not show it in its type: a reader
+// whose own tests show it marking such values. A core.EntryExtractor shows
+// it in its NotLiteral, so the test reads that instead and none is listed.
+var mayNotLiteral = map[string]bool{
+	`{"tool_version": {"tool": "node"}}`:                                    true,
+	`{"package_version": {}}`:                                               true,
+	`{"gitlab-ci": {"file": ".gitlab-ci.yml", "job": "j", "key": "image"}}`: true,
+	`{"github-actions": {"file": "ci.yml", "job": "j", "key": "runs-on"}}`:  true,
+	`{"env": {"name": "A", "files": [".env"]}}`:                             true,
+}
+
+// builtNotLiteral is whether x, built from raw, may return a not literal
+// value: for a core.EntryExtractor, whether it has a test for one; for any
+// other, what mayNotLiteral says of raw.
+func builtNotLiteral(t *testing.T, raw string, x check.Extractor) bool {
+	t.Helper()
+	e, ok := x.(core.EntryExtractor)
+	if !ok {
+		return mayNotLiteral[raw]
+	}
+	if _, listed := mayNotLiteral[raw]; listed {
+		t.Errorf("%s: listed in mayNotLiteral, but its extractor shows it", raw)
+	}
+	return e.NotLiteral != nil
+}
+
+// builtReads is the extractors x, built from raw, reads the values of:
+// none unless it is a regex.Reference, and for one, the name in d.Reads
+// whose values ExtractWith searches for, seen by handing it a value under
+// that name and under another. A file a, and b, hold the value.
+func builtReads(t *testing.T, raw string, x check.Extractor, d check.Description) []string {
+	t.Helper()
+	if _, ok := x.(regex.Reference); !ok {
+		return nil
+	}
+	if len(d.Reads) != 1 {
+		return []string{"one extractor, the one the pattern references"}
+	}
+	root := extracttest.Repo(t, map[string]string{"a": "v\n", "b": "v\n"})
+	found := func(name string) bool {
+		vs, err := x.ExtractWith(root, map[string][]check.Value{name: {{Text: "v"}}})
+		var none *check.NoValue
+		if err != nil && !errors.As(err, &none) {
+			t.Errorf("%s: %v", raw, err)
+		}
+		return len(vs) > 0
+	}
+	if !found(d.Reads[0]) || found(d.Reads[0]+"_other") {
+		return []string{"another extractor than " + d.Reads[0]}
+	}
+	return d.Reads
+}
+
+// Each kind's description, which is all that config and rule learn of an
+// extractor before it runs, tells what its built extractor does: it may
+// return a not literal value where the built extractor marks one, and it
+// reads the extractor whose values the built one searches for. Every kind
+// has a spec here that builds. The planted breaks, each in a kind's
+// Describe: gitlab-ci described as literal only; properties described as
+// literal only; regex's reference left out of Reads; regex reading an
+// extractor its pattern does not reference.
 func TestDescribeTellsWhatBuildReturns(t *testing.T) {
 	seen := map[string]bool{}
 	for _, raw := range describes {
@@ -330,15 +387,11 @@ func TestDescribeTellsWhatBuildReturns(t *testing.T) {
 		}
 		seen[s.set[0].kind.Key] = true
 		d := s.Describe()
-		if want := check.MayReturnNotLiteral(x); d.NotLiteral != want {
-			t.Errorf("%s: described as not literal %t, and its extractor says %t", raw, d.NotLiteral, want)
+		if want := builtNotLiteral(t, raw, x); d.NotLiteral != want {
+			t.Errorf("%s: described as not literal %t, and its extractor %t", raw, d.NotLiteral, want)
 		}
-		var needs []string
-		if dep, ok := x.(check.Dependent); ok {
-			needs = dep.Needs()
-		}
-		if !slices.Equal(d.Reads, needs) {
-			t.Errorf("%s: described as reading %q, and its extractor needs %q", raw, d.Reads, needs)
+		if want := builtReads(t, raw, x, d); !slices.Equal(d.Reads, want) {
+			t.Errorf("%s: described as reading %q, and its extractor reads %q", raw, d.Reads, want)
 		}
 		if label := strings.SplitN(d.Label, ",", 2)[0]; label != s.set[0].kind.Key {
 			t.Errorf("%s: labelled %q", raw, d.Label)
@@ -347,6 +400,41 @@ func TestDescribeTellsWhatBuildReturns(t *testing.T) {
 	for _, k := range Keys() {
 		if !seen[k] {
 			t.Errorf("no spec of %s is described here", k)
+		}
+	}
+}
+
+// Every kind that reads one file builds a core.FileReader, which reads the
+// bytes core hands it: the seam a file set and a plugin host build on. The
+// kinds that find their files by their own logic are the exceptions,
+// gitlab-ci among them since it reads the files a pipeline includes, and so
+// are a spec of files:, which builds a core.FileSet of FileReaders, and a
+// regex that searches for another extractor's values, which reads once
+// those values are known. Planted break: text's FromShared removed.
+func TestEveryOneFileReaderIsAFileReader(t *testing.T) {
+	ownFiles := map[string]bool{"tool_version": true, "package_version": true, "env": true, "exists": true, "size": true, "gitlab-ci": true}
+	seen := map[string]bool{}
+	// describes holds json only as a file set.
+	for _, raw := range append(slices.Clone(describes), `{"json": {"file": "a.json", "path": "a"}}`) {
+		s := decode(t, raw)
+		k := s.set[0].kind.Key
+		x, err := Build(s)
+		if err != nil {
+			t.Fatalf("%s: %v", raw, err)
+		}
+		dependent := len(s.Describe().Reads) > 0
+		_, set := x.(core.FileSet)
+		if ownFiles[k] || dependent || set {
+			continue
+		}
+		seen[k] = true
+		if _, ok := x.(core.FileReader); !ok {
+			t.Errorf("%s builds a %T, which is no core.FileReader", raw, x)
+		}
+	}
+	for _, k := range Keys() {
+		if !ownFiles[k] && !seen[k] {
+			t.Errorf("no spec of %s is checked here", k)
 		}
 	}
 }

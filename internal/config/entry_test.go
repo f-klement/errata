@@ -96,3 +96,36 @@ func TestAsWritten(t *testing.T) {
 		t.Errorf("checkEntry is written with %d fields, not %d", entry.NumField(), reflect.TypeFor[checkEntry]().NumField())
 	}
 }
+
+// jsonFields gives the keys of a struct embedded with no JSON name, or of a
+// pointer to one, as the struct's own, as encoding/json promotes them, and
+// a key the struct writes itself wins over a promoted one of that name.
+// Planted breaks: the embedded struct read as a key of its own name; a
+// promoted key written over the struct's own; the pointer not followed.
+func TestJSONFieldsPromotesAnEmbeddedStruct(t *testing.T) {
+	type inner struct {
+		File  int    `json:"file"`
+		Files []int  `json:"files"`
+		Path  string `json:"-"`
+	}
+	type outer struct {
+		inner
+		File string `json:"file"`
+		Key  string `json:"key"`
+	}
+	type pointer struct {
+		*inner
+		File string `json:"file"`
+		Key  string `json:"key"`
+	}
+	want := map[string]reflect.Type{
+		"file":  reflect.TypeFor[string](),
+		"files": reflect.TypeFor[[]int](),
+		"key":   reflect.TypeFor[string](),
+	}
+	for _, typ := range []reflect.Type{reflect.TypeFor[outer](), reflect.TypeFor[pointer]()} {
+		if got := jsonFields(typ); !reflect.DeepEqual(got, want) {
+			t.Errorf("jsonFields(%s) = %v, want %v", typ, got, want)
+		}
+	}
+}

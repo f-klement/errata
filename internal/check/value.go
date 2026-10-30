@@ -138,49 +138,16 @@ func (e *NoValue) Error() string { return e.Reason }
 // Extractor gets values from one place in the repository. An empty list is
 // not an error: the rule decides whether finding nothing is unknown. An error
 // means the extractor could not read its source, and the rule is unknown.
+// What it returns, and which extractors of its rule it reads, its kind
+// tells beforehand (Description).
 type Extractor interface {
 	Extract(root string) ([]Value, error)
-}
-
-// NotLiteralReader is an extractor whose kind declares whether it can return
-// a not literal value, as a reader for shell scripts or CI files does. An
-// extractor that does not implement it returns literal values only.
-type NotLiteralReader interface {
-	Extractor
-	// MayReturnNotLiteral reports whether the extractor can return a value
-	// marked NotLiteral.
-	MayReturnNotLiteral() bool
-}
-
-// MayReturnNotLiteral reports whether e declares that it can return a not
-// literal value. A rule may list only such an extractor in skip_not_literal:
-// for any other the key would load and do nothing.
-func MayReturnNotLiteral(e Extractor) bool {
-	r, ok := e.(NotLiteralReader)
-	return ok && r.MayReturnNotLiteral()
-}
-
-// Dependent is an extractor that reads the values of other extractors of
-// its rule, such as a regex whose pattern references another extractor's
-// values. A rule runs each extractor that Needs names before it, and a
-// rule whose extractors need each other in a cycle, or one that extract
-// does not declare, does not load (Rule.Validate).
-type Dependent interface {
-	Extractor
-	// Needs names the extractors whose values it reads.
-	Needs() []string
-	// ExtractWith is Extract given the values of each extractor Needs
-	// names: its literal values, after skip_not_literal, in the order it
-	// found them, with the text the file holds, before normalize. A lowered
-	// value would miss the text it came from, so a search that should
-	// ignore case says so in its own pattern, with (?i).
+	// ExtractWith is Extract given the values of each extractor its
+	// Description's Reads names, which is how a rule runs it: their literal
+	// values, after skip_not_literal, in the order they were found, with
+	// the text the file holds, before normalize. A lowered value would miss
+	// the text it came from, so a search that should ignore case says so
+	// in its own pattern, with (?i). An extractor that reads no other
+	// extractor's values ignores values and returns what Extract does.
 	ExtractWith(root string, values map[string][]Value) ([]Value, error)
-}
-
-// needs is what e needs: Needs for a Dependent, nothing for any other.
-func needs(e Extractor) []string {
-	if d, ok := e.(Dependent); ok {
-		return d.Needs()
-	}
-	return nil
 }

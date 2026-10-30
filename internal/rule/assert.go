@@ -130,28 +130,16 @@ func byFileMacro(extractors []string) cel.EnvOption {
 	}))
 }
 
-// Lists names the extractors of a rule that assert reads apart from the
-// rest. They are two lists of names with different meanings, so each has its
-// own field: a call cannot hand one where the other belongs.
-type Lists struct {
-	// Maps are read as lists of maps, list(map(string, dyn)), rather than as
-	// lists of strings.
-	Maps []string
-	// Read are the extractors another extractor of the rule reads the
-	// values of. The expression need not name them, since what reads them
-	// does.
-	Read []string
-}
-
-// Compile type checks expr over the named extractors, each a list(string)
-// but those l.Maps names, each a list(map(string, dyn)), and returns it ready
-// to evaluate. Each of these is a load error: a name that
-// is not an extractor, a type error, a result that is not a bool and a parse
-// error, each with the expression and a caret under the column; an extractor
-// the expression never uses, unless l.Read lists it; an extractor name CEL
-// cannot read.
-func Compile(expr string, extractors []string, l Lists) (check.Assertion, error) {
-	a, err := compileWith(expr, extractors, l, limits{cost: CostLimit, timeout: EvalTimeout, grace: stopGrace})
+// Compile type checks expr over the extractors of a rule, each a
+// list(string) but those whose Description gives each value whole, each a
+// list(map(string, dyn)), and returns it ready to evaluate. Each of these is
+// a load error: a name that is not an extractor, a type error, a result
+// that is not a bool and a parse error, each with the expression and a caret
+// under the column; an extractor the expression never uses, unless another
+// extractor that built reads its values (Description.Reads); an extractor
+// name CEL cannot read.
+func Compile(expr string, extractors []check.NamedExtractor) (check.Assertion, error) {
+	a, err := compileWith(expr, extractors, limits{cost: CostLimit, timeout: EvalTimeout, grace: stopGrace})
 	if err != nil {
 		// A nil *assertion in the interface would not compare equal to nil.
 		return nil, err
@@ -159,14 +147,31 @@ func Compile(expr string, extractors []string, l Lists) (check.Assertion, error)
 	return a, nil
 }
 
-// compile is Compile with the limits given, and with extra declarations,
-// which only tests pass.
-func compile(expr string, extractors []string, lim limits, extra ...cel.EnvOption) (*assertion, error) {
-	return compileWith(expr, extractors, Lists{}, lim, extra...)
+// compile is Compile over flat extractors of the names given, with the
+// limits given, and with extra declarations, which only tests pass.
+func compile(expr string, names []string, lim limits, extra ...cel.EnvOption) (*assertion, error) {
+	extractors := make([]check.NamedExtractor, len(names))
+	for i, name := range names {
+		extractors[i] = check.NamedExtractor{Name: name}
+	}
+	return compileWith(expr, extractors, lim, extra...)
 }
 
-// compileWith is compile with the extractors l names read apart.
-func compileWith(expr string, extractors []string, l Lists, lim limits, extra ...cel.EnvOption) (*assertion, error) {
+// compileWith is Compile with the limits given, and with extra
+// declarations.
+func compileWith(expr string, extractors []check.NamedExtractor, lim limits, extra ...cel.EnvOption) (*assertion, error) {
+	names := make([]string, len(extractors))
+	var whole, read []string // read as lists of maps; read by another extractor
+	for i, x := range extractors {
+		names[i] = x.Name
+		if x.Description.Whole() {
+			whole = append(whole, x.Name)
+		}
+		if x.Extractor != nil {
+			// One that did not build reads nothing: its own error says why.
+			read = append(read, x.Description.Reads...)
+		}
+	}
 	base, err := baseEnv()
 	if err != nil {
 		return nil, fmt.Errorf("assert: the CEL environment: %w", err)
@@ -175,12 +180,12 @@ func compileWith(expr string, extractors []string, l Lists, lim limits, extra ..
 		errs []error
 		vars = make([]cel.EnvOption, 0, len(extractors))
 	)
-	for _, name := range extractors {
+	for _, name := range names {
 		if !identifier.MatchString(name) || slices.Contains(reserved, name) {
 			errs = append(errs, fmt.Errorf("extractor %q: assert refers to an extractor by its name, so the name must be letters, digits and _, must not start with a digit and must not be one of CEL's reserved words", name))
 			continue
 		}
-		if slices.Contains(l.Maps, name) {
+		if slices.Contains(whole, name) {
 			vars = append(vars, cel.Variable(name, cel.ListType(mapType)), cel.Variable(byFilePrefix+name, byFileMapType))
 			continue
 		}
@@ -189,7 +194,7 @@ func compileWith(expr string, extractors []string, l Lists, lim limits, extra ..
 	if len(errs) > 0 {
 		return nil, errors.Join(errs...)
 	}
-	vars = append(vars, byFileMacro(extractors))
+	vars = append(vars, byFileMacro(names))
 	env, err := base.Extend(append(vars, extra...)...)
 	if err != nil {
 		return nil, fmt.Errorf("assert: the CEL environment: %w", err)
@@ -212,11 +217,11 @@ func compileWith(expr string, extractors []string, l Lists, lim limits, extra ..
 	}
 	used := free(ast.NativeRep())
 	var grouped []string
-	for _, name := range extractors {
+	for _, name := range names {
 		if used[byFilePrefix+name] {
 			grouped = append(grouped, name)
 		}
-		if !used[name] && !used[byFilePrefix+name] && !slices.Contains(l.Read, name) {
+		if !used[name] && !used[byFilePrefix+name] && !slices.Contains(read, name) {
 			// It would still run, but the relation would hold or fail without
 			// testing the place the author added it for.
 			errs = append(errs, fmt.Errorf("extractor %q is declared but assert does not use it", name))
@@ -236,12 +241,6 @@ func compileWith(expr string, extractors []string, l Lists, lim limits, extra ..
 	)
 	if err != nil {
 		return nil, fmt.Errorf("assert: %w", err)
-	}
-	var whole []string
-	for _, name := range extractors {
-		if slices.Contains(l.Maps, name) {
-			whole = append(whole, name)
-		}
 	}
 	return &assertion{program: program, limits: lim, grouped: grouped, maps: whole}, nil
 }
@@ -722,31 +721,38 @@ type outcome struct {
 // the grace, such as one in a call that does not return, keeps its goroutine
 // until it ends, and Eval returns without it; the run goes on. An error that
 // && or || absorbed is still the result.
-func (a *assertion) Eval(parent context.Context, values, files map[string][]string, maps map[string][]*check.Data) (bool, error) {
+func (a *assertion) Eval(parent context.Context, extracted []check.Extracted) (bool, error) {
 	log := &errorLog{}
 	vars := map[string]any{}
-	members := map[string][]ref.Val{}
-	for name, v := range values {
-		vars[name] = v
-		members[name] = celStrings(v)
-	}
+	members := make(map[string][]filed, len(extracted))
 	for _, name := range a.maps {
-		if len(maps[name]) != len(files[name]) {
-			return false, fmt.Errorf("extractor %q: %d maps came with %d files, so the values are not whole", name, len(maps[name]), len(files[name]))
+		// A list of maps none came for is empty.
+		vars[name] = types.NewRefValList(types.DefaultTypeAdapter, []ref.Val{})
+	}
+	for _, x := range extracted {
+		whole := slices.Contains(a.maps, x.Extractor)
+		if whole {
+			if n := countData(x.Values); n != len(x.Values) {
+				return false, fmt.Errorf("extractor %q: %d maps came with %d files, so the values are not whole", x.Extractor, n, len(x.Values))
+			}
 		}
-		list := make([]ref.Val, len(maps[name]))
-		for i, d := range maps[name] {
-			list[i] = toCEL(d)
+		texts := make([]string, len(x.Values))
+		list := make([]ref.Val, len(x.Values))
+		each := make([]filed, len(x.Values))
+		for i, v := range x.Values {
+			texts[i], list[i] = v.Text, types.String(v.Text)
+			if whole {
+				list[i] = toCEL(v.Data)
+			}
+			each[i] = filed{file: v.At.File, member: list[i]}
 		}
-		vars[name] = types.NewRefValList(types.DefaultTypeAdapter, list)
-		members[name] = list
+		vars[x.Extractor], members[x.Extractor] = texts, each
+		if whole {
+			vars[x.Extractor] = types.NewRefValList(types.DefaultTypeAdapter, list)
+		}
 	}
 	for _, name := range a.grouped {
-		groups, err := groupByFile(members[name], files[name])
-		if err != nil {
-			return false, fmt.Errorf("by_file(%s): %w", name, err)
-		}
-		vars[byFilePrefix+name] = groups
+		vars[byFilePrefix+name] = groupByFile(members[name])
 	}
 	vars[logVariable] = log
 	ctx, cancel := context.WithTimeout(parent, a.limits.timeout)
@@ -790,38 +796,43 @@ func (a *assertion) Eval(parent context.Context, values, files map[string][]stri
 	return result, nil
 }
 
-// groupByFile is values grouped by the file of each, files[i] the file of
-// values[i], as a CEL map whose keys come in the order of each file's
-// first value, so a comprehension over it, and the first error one meets,
-// is the same on every run. A count of files other than the values' is
-// refused, so a group never holds a value under a file that did not give
-// it.
-func groupByFile(values []ref.Val, files []string) (ref.Val, error) {
-	if len(files) != len(values) {
-		return nil, fmt.Errorf("%d values came with %d files, so they cannot be grouped", len(values), len(files))
+// filed is a member of an extractor's list in assert, with the file of
+// the value it came from.
+type filed struct {
+	file   string
+	member ref.Val
+}
+
+// countData is how many of values come whole, with their Data.
+func countData(values []check.Value) int {
+	n := 0
+	for _, v := range values {
+		if v.Data != nil {
+			n++
+		}
 	}
+	return n
+}
+
+// groupByFile is members grouped by the file of each, as a CEL map whose
+// keys come in the order of each file's first member, so a comprehension
+// over it, and the first error one meets, is the same on every run. Each
+// member carries its own file, so none is grouped under a file that did
+// not give it.
+func groupByFile(members []filed) ref.Val {
 	groups := map[string][]ref.Val{}
 	var order []string
-	for i, v := range values {
-		if _, ok := groups[files[i]]; !ok {
-			order = append(order, files[i])
+	for _, f := range members {
+		if _, ok := groups[f.file]; !ok {
+			order = append(order, f.file)
 		}
-		groups[files[i]] = append(groups[files[i]], v)
+		groups[f.file] = append(groups[f.file], f.member)
 	}
 	m := map[ref.Val]ref.Val{}
 	for file, group := range groups {
 		m[types.String(file)] = types.NewRefValList(types.DefaultTypeAdapter, group)
 	}
-	return orderedMap{Mapper: types.NewRefValMap(types.DefaultTypeAdapter, m), keys: order}, nil
-}
-
-// celStrings is values as CEL strings.
-func celStrings(values []string) []ref.Val {
-	out := make([]ref.Val, len(values))
-	for i, v := range values {
-		out[i] = types.String(v)
-	}
-	return out
+	return orderedMap{Mapper: types.NewRefValMap(types.DefaultTypeAdapter, m), keys: order}
 }
 
 // toCEL is d as CEL reads it: a scalar as a string, a sequence as a list,

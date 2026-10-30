@@ -256,10 +256,8 @@ var listedFields = map[reflect.Type]map[string]string{
 	},
 	reflect.TypeFor[check.NamedExtractor](): {
 		"Name": "extract", "Spec": "extract",
-		"Kind":      "left out: the kind as a message names it, made from Spec",
-		"Extractor": "left out: built from Spec",
-		"Maps":      "left out: made from Spec, whose as: map is printed",
-		"Fields":    "left out: made from Spec, whose as: record and fields, or regex pattern, are printed",
+		"Extractor":   "left out: built from Spec",
+		"Description": "left out: made from Spec, whose kind, as:, fields and pattern are printed",
 	},
 }
 

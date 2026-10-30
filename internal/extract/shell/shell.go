@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -24,18 +25,36 @@ import (
 // parsed in, bash, posix or mksh; left out, the shebang chooses it, then a
 // .bash, .mksh or .ksh name, and else bash.
 type Spec struct {
-	File     string `json:"file"`
+	core.OneFile
 	Name     string `json:"name"`
 	Language string `json:"language,omitempty"`
-	MaxBytes int64  `json:"max_bytes,omitempty"`
 }
 
-// Kind is the shell kind, which a rule writes under the key shell.
-var Kind = core.Kind[Spec]{Key: "shell", Place: Place, Resolve: Resolve, Describe: Describe}
+// kindKey is the kind's key, which Kind and Build both use. Build names
+// the constant rather than Kind.Key because an env reader's Read calls
+// Build, and Build reading Kind would make an initialization cycle.
+const kindKey = "shell"
+
+// Kind is the shell kind, which a rule writes under the key shell. It is
+// an env reader, second in env's list.
+var Kind = core.Kind[Spec]{Key: kindKey, Place: Place, Resolve: Resolve, Describe: Describe,
+	Env: &core.EnvReader{Order: 20, Chooses: chooses, Read: envRead, Sniffs: IsScript, SniffBytes: ShebangBytes}}
+
+// chooses takes, for the env kind, a name that ends in .sh, and .envrc,
+// direnv's shell script.
+func chooses(file string) bool {
+	base := path.Base(file)
+	return base == ".envrc" || strings.HasSuffix(base, ".sh")
+}
+
+// envRead is the env kind's reader of the variable name in file: Build's.
+func envRead(file, name string, maxBytes int64, _ core.Parsers) (check.Extractor, error) {
+	return Build(Spec{File: file, Name: name, MaxBytes: maxBytes})
+}
 
 // Resolve is s with its max_bytes written out, for errata list.
 func Resolve(s Spec) Spec {
-	s.MaxBytes = core.MaxBytes(s.MaxBytes)
+	s.OneFile = s.Resolved()
 	return s
 }
 
@@ -54,7 +73,7 @@ var languages = map[string]syntax.LangVariant{
 
 // Build checks s and returns its extractor.
 func Build(s Spec) (check.Extractor, error) {
-	src, err := core.CheckSource("shell", s.File, s.MaxBytes)
+	src, err := s.Check(kindKey)
 	if err != nil {
 		return nil, err
 	}
@@ -80,7 +99,7 @@ func computed(e *core.Entry) bool { return e.Computed }
 // max_bytes. The language stays as written, since a shebang the file holds
 // chooses one only when it is read.
 func Place(s Spec) Spec {
-	s.File, s.MaxBytes = filepath.Clean(s.File), 0
+	s.OneFile = s.Place()
 	return s
 }
 

@@ -122,7 +122,8 @@ assert: releases.all(r, r in tracked)
 
 `(?{name})` and `values_as` are part of the config's contract from v0.2.2. A rule's extractors no
 longer always run in name order, so a rule that references runs in an order of its own, which its
-report shows. An extractor that reads other extractors' values is a `check.Dependent`, and a
-later kind can be one in the same way. The regex extractor keeps one search per pattern in
+report shows. An extractor that reads other extractors' values names them in its description
+(`check.Description.Reads`, since v0.2.3), and a later kind, or a plugin, can read them in the
+same way. The regex extractor keeps one search per pattern in
 `core.Each`, so a change to what one search returns, such as a match with its context, is made
 in `Search` and reaches a referencing pattern with it.

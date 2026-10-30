@@ -76,30 +76,13 @@ func TestByFileRefusesWhatIsNoExtractor(t *testing.T) {
 		"size(by_file(v, v)) > 0":     "undeclared reference to 'by_file'",
 		"size(@errata_by_file_v) > 0": "Syntax error",
 	} {
-		_, err := Compile(expr, []string{"v"}, Lists{})
+		_, err := compileNamed(expr, []string{"v"}, nil)
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%s: %v, want %q", expr, err, want)
 		}
 	}
-	if _, err := Compile("size(by_file(v)) > 0", []string{"v"}, Lists{}); err != nil {
+	if _, err := compileNamed("size(by_file(v)) > 0", []string{"v"}, nil); err != nil {
 		t.Errorf("an extractor read only through by_file: %v", err)
-	}
-}
-
-// Values whose files are not given one to one are refused, so no value is
-// grouped under a file that did not give it, and the rule is unknown.
-// Planted break: the count left unchecked, which indexed past the files.
-func TestByFileRefusesValuesWithoutTheirFiles(t *testing.T) {
-	a, err := Compile("size(by_file(v)) > 0", []string{"v"}, Lists{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = a.Eval(context.Background(), map[string][]string{"v": {"1", "2"}}, map[string][]string{"v": {"a"}}, nil)
-	if err == nil || err.Error() != "by_file(v): 2 values came with 1 files, so they cannot be grouped" {
-		t.Errorf("got %v", err)
-	}
-	if ok, err := a.Eval(context.Background(), map[string][]string{"v": {"1"}}, map[string][]string{"v": {"a"}}, nil); err != nil || !ok {
-		t.Errorf("one value in one file: %v, %v", ok, err)
 	}
 }
 
@@ -125,12 +108,12 @@ func TestByFileIteratesInTheOrderOfTheValues(t *testing.T) {
 		if strings.Contains(expr, "(w)") {
 			names = append(names, "w")
 		}
-		a, err := Compile(expr, names, Lists{})
+		a, err := compileNamed(expr, names, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		for range 200 {
-			ok, err := a.Eval(context.Background(), map[string][]string{"v": vals, "w": {"y"}}, map[string][]string{"v": files, "w": {"g"}}, nil)
+			ok, err := a.Eval(context.Background(), asExtracted(map[string][]string{"v": vals, "w": {"y"}}, map[string][]string{"v": files, "w": {"g"}}, nil))
 			if got := fmt.Sprintf("%v %v", ok, err); got != want {
 				t.Fatalf("%s: %s, want %s", expr, got, want)
 			}

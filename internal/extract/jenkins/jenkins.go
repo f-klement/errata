@@ -14,7 +14,7 @@ package jenkins
 import (
 	"errors"
 	"fmt"
-	"path/filepath"
+	"path"
 	"regexp"
 	"strings"
 
@@ -25,18 +25,32 @@ import (
 // Spec reads the variable Variable of the Jenkinsfile File, as the stage
 // Stage sees it, or as the pipeline's top sees it when Stage is "".
 type Spec struct {
-	File     string `json:"file"`
+	core.OneFile
 	Variable string `json:"variable"`
 	Stage    string `json:"stage,omitempty"`
-	MaxBytes int64  `json:"max_bytes,omitempty"`
 }
 
-// Kind is the jenkins kind, which a rule writes under the key jenkins.
-var Kind = core.Kind[Spec]{Key: "jenkins", Place: Place, Resolve: Resolve, Describe: Describe}
+// kindKey is the kind's key, which Kind and Build both use. Build names
+// the constant rather than Kind.Key because an env reader's Read calls
+// Build, and Build reading Kind would make an initialization cycle.
+const kindKey = "jenkins"
+
+// Kind is the jenkins kind, which a rule writes under the key jenkins. It
+// is an env reader, fifth in env's list.
+var Kind = core.Kind[Spec]{Key: kindKey, Place: Place, Resolve: Resolve, Describe: Describe,
+	Env: &core.EnvReader{Order: 50, Chooses: chooses, Read: envRead}}
+
+// chooses takes, for the env kind, a file named Jenkinsfile.
+func chooses(file string) bool { return path.Base(file) == "Jenkinsfile" }
+
+// envRead is the env kind's reader of the variable name in file: Every's.
+func envRead(file, name string, maxBytes int64, _ core.Parsers) (check.Extractor, error) {
+	return Every(file, name, maxBytes)
+}
 
 // Resolve is s with its max_bytes written out, for errata list.
 func Resolve(s Spec) Spec {
-	s.MaxBytes = core.MaxBytes(s.MaxBytes)
+	s.OneFile = s.Resolved()
 	return s
 }
 
@@ -56,7 +70,7 @@ var variableName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // Build checks s and returns its extractor.
 func Build(s Spec) (check.Extractor, error) {
-	src, err := core.CheckSource("jenkins", s.File, s.MaxBytes)
+	src, err := s.Check(kindKey)
 	if err != nil {
 		return nil, err
 	}
@@ -125,7 +139,7 @@ func computed(e *core.Entry) bool { return e.Computed }
 // Place is s with what decides where it reads: its file cleaned and no
 // max_bytes. The stage stays as written, since Jenkins compares it whole.
 func Place(s Spec) Spec {
-	s.File, s.MaxBytes = filepath.Clean(s.File), 0
+	s.OneFile = s.Place()
 	return s
 }
 

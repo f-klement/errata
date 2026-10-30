@@ -14,7 +14,12 @@ func (r Rule) dependencyErrors(declared map[string]bool) []error {
 	var errs []error
 	reads := map[string][]string{}
 	for _, e := range r.Extractors {
-		for _, n := range needs(e.Extractor) {
+		if e.Extractor == nil {
+			// It did not build, which is reported where it failed, so what
+			// its description says it reads is not reported again.
+			continue
+		}
+		for _, n := range e.Description.Reads {
 			if !declared[n] {
 				errs = append(errs, fmt.Errorf("extractor %q reads the values of %q, which extract does not declare", e.Name, n))
 				continue
@@ -75,12 +80,12 @@ func quoteAll(names []string) []string {
 
 // Order is names in the order a rule runs their extractors: each one after
 // every extractor of names that it reads the values of, and otherwise in
-// the order names lists them, so a rule with no Dependent runs them as
-// names lists them. A name that names no extractor of r keeps its place.
+// the order names lists them, so a rule whose extractors read no other's
+// values runs them as names lists them. A name that names no extractor of r keeps its place.
 func (r Rule) Order(names []string) []string {
-	byName := make(map[string]Extractor, len(r.Extractors))
+	reads := make(map[string][]string, len(r.Extractors))
 	for _, e := range r.Extractors {
-		byName[e.Name] = e.Extractor
+		reads[e.Name] = e.Description.Reads
 	}
 	listed := make(map[string]bool, len(names))
 	for _, n := range names {
@@ -96,7 +101,7 @@ func (r Rule) Order(names []string) []string {
 		// Placed before what it reads, so a cycle, which validation
 		// refuses, ends here rather than recursing for ever.
 		placed[n] = true
-		for _, m := range needs(byName[n]) {
+		for _, m := range reads[n] {
 			place(m)
 		}
 		out = append(out, n)

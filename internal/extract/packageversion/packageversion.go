@@ -45,7 +45,8 @@ func Resolve(s Spec) Spec {
 }
 
 // Describe is what the kind's extractor returns: flat values, some not
-// literal, as MayReturnNotLiteral says.
+// literal, since a version the build computes names no version until the
+// build runs.
 func Describe(Spec) check.Description {
 	return check.Description{Label: "package_version", NotLiteral: true}
 }
@@ -120,9 +121,10 @@ type extractor struct {
 	parsers  Parsers
 }
 
-// MayReturnNotLiteral reports true: a version the build computes names no
-// version until the build runs.
-func (extractor) MayReturnNotLiteral() bool { return true }
+// ExtractWith is Extract: the extractor reads no other extractor's values.
+func (x extractor) ExtractWith(root string, _ map[string][]check.Value) ([]check.Value, error) {
+	return x.Extract(root)
+}
 
 // Extract reads each file under root and returns its versions, the files in
 // order and each file's in file order. Without files:, a file of the table

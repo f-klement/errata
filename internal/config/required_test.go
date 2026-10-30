@@ -6,8 +6,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-
-	"github.com/f-klement/errata/internal/extract"
 )
 
 // program is one program check of id, as a config writes it under checks.
@@ -19,14 +17,14 @@ func program(id string) string {
 // order, and returns the list as written. The planted break: parse
 // returning a Config without Required.
 func TestRequiredMatchingTheChecksLoads(t *testing.T) {
-	cfg, err := parse([]byte("required: [b, a]\nchecks:\n"+program("a")+program("b")), extract.Build)
+	cfg, err := parse([]byte("required: [b, a]\nchecks:\n"+program("a")+program("b")), BuiltIn)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !slices.Equal(cfg.Required, []string{"b", "a"}) || len(cfg.Checks) != 2 {
 		t.Errorf("loaded required %q and %d checks, want [b a] and 2", cfg.Required, len(cfg.Checks))
 	}
-	cfg, err = parse([]byte("checks:\n"+program("a")), extract.Build)
+	cfg, err = parse([]byte("checks:\n"+program("a")), BuiltIn)
 	if err != nil || cfg.Required != nil {
 		t.Errorf("a config without required: %v, required %q, want it to load with none", err, cfg.Required)
 	}
@@ -94,7 +92,7 @@ func TestRequiredRefusesAMissingOrAnExtraCheck(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg, err := parse([]byte(tc.config), extract.Build)
+			cfg, err := parse([]byte(tc.config), BuiltIn)
 			if err == nil {
 				t.Fatalf("loaded %d checks, want a refusal", len(cfg.Checks))
 			}
@@ -114,7 +112,7 @@ func TestRequiredRefusesAMissingOrAnExtraCheck(t *testing.T) {
 // the checks that loaded.
 func TestRequiredComparesEveryEntry(t *testing.T) {
 	bad := "  - id: a\n    reason: r\n    scope: nowhere\n    run: [x]\n"
-	_, err := parse([]byte("required: [a]\nchecks:\n"+bad+program("new")), extract.Build)
+	_, err := parse([]byte("required: [a]\nchecks:\n"+bad+program("new")), BuiltIn)
 	if err == nil {
 		t.Fatal("loaded a check of an unknown scope")
 	}
@@ -144,5 +142,5 @@ func TestLoadReturnsRequired(t *testing.T) {
 
 // parseRaw is parse with the extractors errata runs with.
 func parseRaw(raw []byte) (Config, error) {
-	return parse(raw, extract.Build)
+	return parse(raw, BuiltIn)
 }

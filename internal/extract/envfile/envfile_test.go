@@ -234,8 +234,7 @@ func TestEnvfileTemplate(t *testing.T) {
 			t.Errorf("%s %q: got %q, want %q", c.file, c.body, got, c.want)
 		}
 	}
-	x, _ := Build(Spec{File: ".env", Name: "A"})
-	if !check.MayReturnNotLiteral(x) {
+	if !Describe(Spec{File: ".env", Name: "A"}).NotLiteral {
 		t.Error("an envfile extractor declares no not literal value")
 	}
 }
@@ -313,5 +312,20 @@ func TestEnvfileTemplateAllocatesNoEntryAStatement(t *testing.T) {
 	}
 	if plain, tpl := allocs(".env"), allocs(".env.j2"); tpl > plain+100 {
 		t.Errorf("a template file allocates %v times for 1000 statements, a plain one %v", tpl, plain)
+	}
+}
+
+// The env kind reads a file with envfile when its name starts or ends with
+// .env, and leaves .envrc and a .sh script to the shell reader. Planted
+// breaks: .envrc taken; .env.sh taken; prod.env, which ends in .env, not
+// taken.
+func TestEnvChooses(t *testing.T) {
+	for file, want := range map[string]bool{
+		".env": true, ".env.local": true, "app/.env.production": true, "a.env": true, "config/prod.env": true,
+		".envrc": false, ".env.sh": false, "a.env.sh": false, "env": false, "a.envx": false, "deploy.sh": false,
+	} {
+		if got := Kind.Env.Chooses(file); got != want {
+			t.Errorf("%s: %t, want %t", file, got, want)
+		}
 	}
 }

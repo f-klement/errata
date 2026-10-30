@@ -16,18 +16,18 @@ func value(text, file string, line int) check.Value {
 	return check.Value{Text: text, At: check.Location{File: file, Line: line}}
 }
 
-// mustReference builds s, which must reference names.
-func mustReference(t *testing.T, s Spec) check.Dependent {
+// mustReference builds s, which must reference an extractor: its
+// description reads one.
+func mustReference(t *testing.T, s Spec) check.Extractor {
 	t.Helper()
 	e, err := Build(s)
 	if err != nil {
 		t.Fatal(err)
 	}
-	d, ok := e.(check.Dependent)
-	if !ok {
-		t.Fatalf("Build gave %T, want a check.Dependent", e)
+	if len(Describe(s).Reads) == 0 {
+		t.Fatalf("Build gave %T, described as reading no extractor", e)
 	}
-	return d
+	return e
 }
 
 // A pattern that references an extractor needs it, and searches for each
@@ -36,9 +36,10 @@ func mustReference(t *testing.T, s Spec) check.Dependent {
 // order of the file. Planted breaks: the value not quoted; no distinct.
 func TestReferenceQuotesEachValue(t *testing.T) {
 	root := extracttest.Repo(t, map[string]string{"renovate.json": "--install a.b x\n--install axb x\n--install argo-cd x\n"})
-	d := mustReference(t, Spec{File: "renovate.json", Pattern: `--install ((?{charts})) `})
-	if got := d.Needs(); !slices.Equal(got, []string{"charts"}) {
-		t.Fatalf("Needs = %q", got)
+	s := Spec{File: "renovate.json", Pattern: `--install ((?{charts})) `}
+	d := mustReference(t, s)
+	if got := Describe(s).Reads; !slices.Equal(got, []string{"charts"}) {
+		t.Fatalf("Reads = %q", got)
 	}
 	vs, err := d.ExtractWith(root, map[string][]check.Value{"charts": {
 		value("argo-cd", "a.sh", 3), value("a.b", "a.sh", 5), value("argo-cd", "b.sh", 1),
@@ -76,7 +77,7 @@ func TestReferenceOfNoValue(t *testing.T) {
 	}
 }
 
-// Extract, which no rule calls on a Dependent, refuses.
+// Extract, which no rule calls on an extractor that reads values, refuses.
 func TestReferenceExtractRefuses(t *testing.T) {
 	d := mustReference(t, Spec{File: "f", Pattern: `((?{charts}))`})
 	_, err := d.Extract(t.TempDir())

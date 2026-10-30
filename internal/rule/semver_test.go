@@ -65,7 +65,7 @@ func TestSemverErrors(t *testing.T) {
 		}
 	}
 	for _, expr := range []string{"semver(v[0]) < '2'", "int(semver(v[0])) == 1", "semver(v[0]) == '1'"} {
-		if _, err := Compile(expr, []string{"v"}, Lists{}); err == nil || !strings.Contains(err.Error(), "no matching overload") {
+		if _, err := compileNamed(expr, []string{"v"}, nil); err == nil || !strings.Contains(err.Error(), "no matching overload") {
 			t.Errorf("%s loads: %v", expr, err)
 		}
 	}
@@ -243,10 +243,10 @@ func TestSemverCountsTowardTheCostLimit(t *testing.T) {
 		for i := range long {
 			long[i] = "1.0.0" + strings.Repeat(" ", 600)
 		}
-		if _, err := a.Eval(context.Background(), map[string][]string{"v": long}, nil, nil); err == nil || err.Error() != "the evaluation exceeded the cost limit of 2000" {
+		if _, err := a.Eval(context.Background(), asExtracted(map[string][]string{"v": long}, nil, nil)); err == nil || err.Error() != "the evaluation exceeded the cost limit of 2000" {
 			t.Errorf("%s over four values of 605 bytes under a limit of 2000: %v", expr, err)
 		}
-		if ok, err := a.Eval(context.Background(), map[string][]string{"v": {"1.0.0", "1.0.0"}}, nil, nil); err != nil || !ok {
+		if ok, err := a.Eval(context.Background(), asExtracted(map[string][]string{"v": {"1.0.0", "1.0.0"}}, nil, nil)); err != nil || !ok {
 			t.Errorf("%s over two short values: %v, %v", expr, ok, err)
 		}
 	}

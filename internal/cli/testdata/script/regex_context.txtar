@@ -28,7 +28,7 @@ stdout '^1 erratum, 0 unknown.'
 
 # errata list writes the context out, before and after included.
 exec errata list
-stdout 'changes: regex file scripts/node-provisioning.sh, pattern .*, max_bytes 33554432, context \{before 0, after 0, without .*\}$'
+stdout 'changes: regex file scripts/node-provisioning.sh, max_bytes 33554432, pattern .*, context \{before 0, after 0, without .*\}$'
 
 # A context with no pattern does not load, and exits 2.
 exec sh -c 'errata check -c nopattern.yaml 2>/dev/null; echo code=$?'

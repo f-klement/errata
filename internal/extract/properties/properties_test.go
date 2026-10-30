@@ -178,11 +178,10 @@ func TestPropertiesMarksWhatATemplateComputes(t *testing.T) {
 		}
 	}
 	for file, want := range map[string]bool{"app.properties.tmpl": true, "a.properties": false} {
-		e, err := Build(Spec{File: file, Key: "a"})
-		if err != nil {
+		if _, err := Build(Spec{File: file, Key: "a"}); err != nil {
 			t.Fatal(err)
 		}
-		if got := check.MayReturnNotLiteral(e); got != want {
+		if got := Describe(Spec{File: file, Key: "a"}).NotLiteral; got != want {
 			t.Errorf("%s: may return not literal %v, want %v", file, got, want)
 		}
 	}
@@ -305,13 +304,12 @@ func TestBuildRefusesPropertiesFields(t *testing.T) {
 func TestDescribe(t *testing.T) {
 	for file, want := range map[string]bool{"a.properties": false, "a.properties.j2": true} {
 		s := Spec{File: file, Key: "k"}
-		x, err := Build(s)
-		if err != nil {
+		if _, err := Build(s); err != nil {
 			t.Fatal(err)
 		}
 		d := Describe(s)
-		if d.Label != "properties" || d.NotLiteral != want || check.MayReturnNotLiteral(x) != want {
-			t.Errorf("%s: %+v, and the extractor not literal %t; want %t", file, d, check.MayReturnNotLiteral(x), want)
+		if d.Label != "properties" || d.NotLiteral != want {
+			t.Errorf("%s: %+v; want not literal %t", file, d, want)
 		}
 	}
 }

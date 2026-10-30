@@ -44,7 +44,7 @@ stdout 'said: extractor "releases" found no value$'
 
 # errata list writes the default values_as out.
 exec errata list
-stdout 'tracked: regex file renovate.json, pattern `--install \(\(\?\{releases\}\)\) `, max_bytes 33554432, values_as literal$'
+stdout 'tracked: regex file renovate.json, max_bytes 33554432, pattern `--install \(\(\?\{releases\}\)\) `, values_as literal$'
 
 # values_as: pattern runs each value as RE2 syntax, here Renovate's own
 # matchString over the scripts, and the assert need not name the extractor

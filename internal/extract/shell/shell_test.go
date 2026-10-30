@@ -173,13 +173,12 @@ func TestShellNotLiteralValues(t *testing.T) {
 
 // Every extractor of the kind may return a not literal value, which is
 // what lets a rule list it in skip_not_literal.
-func TestShellMayReturnNotLiteral(t *testing.T) {
-	e, err := Build(spec("X"))
-	if err != nil {
+func TestShellDescribedNotLiteral(t *testing.T) {
+	if _, err := Build(spec("X")); err != nil {
 		t.Fatal(err)
 	}
-	if !check.MayReturnNotLiteral(e) {
-		t.Error("a shell extractor declares that it returns literal values only")
+	if !Describe(spec("X")).NotLiteral {
+		t.Error("the shell kind describes literal values only")
 	}
 }
 
@@ -346,6 +345,20 @@ func TestIsScript(t *testing.T) {
 	} {
 		if got := IsScript([]byte(data)); got != want {
 			t.Errorf("%q: %v, want %v", data, got, want)
+		}
+	}
+}
+
+// The env kind reads a file with shell when its name ends in .sh, and
+// .envrc. Planted breaks: .envrc not taken; a name that holds .sh but
+// does not end in it taken.
+func TestEnvChooses(t *testing.T) {
+	for file, want := range map[string]bool{
+		"deploy.sh": true, "bin/x.sh": true, ".env.sh": true, ".envrc": true,
+		"a.sh.bak": false, ".env": false, "bin/deploy": false, "sub/.envrc.d": false,
+	} {
+		if got := Kind.Env.Chooses(file); got != want {
+			t.Errorf("%s: %t, want %t", file, got, want)
 		}
 	}
 }

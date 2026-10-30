@@ -13,7 +13,7 @@ package gitlabci
 import (
 	"errors"
 	"fmt"
-	"path/filepath"
+	"path"
 	"regexp"
 	"strings"
 
@@ -25,24 +25,40 @@ import (
 // and Key a job keyword, such as image or script, or a key below one, such
 // as image.name; exactly one of them is set.
 type Spec struct {
-	File     string `json:"file"`
+	core.OneFile
 	Job      string `json:"job"`
 	Variable string `json:"variable,omitempty"`
 	Key      string `json:"key,omitempty"`
-	MaxBytes int64  `json:"max_bytes,omitempty"`
 }
 
+// kindKey is the kind's key, which Kind and Build both use. Build names
+// the constant rather than Kind.Key because an env reader's Read calls
+// Build, and Build reading Kind would make an initialization cycle.
+const kindKey = "gitlab-ci"
+
 // Kind is the gitlab-ci kind, which a rule writes under the key gitlab-ci.
-var Kind = core.Kind[Spec]{Key: "gitlab-ci", Place: Place, Resolve: Resolve, Describe: Describe}
+// It is an env reader, third in env's list.
+var Kind = core.Kind[Spec]{Key: kindKey, Place: Place, Resolve: Resolve, Describe: Describe,
+	Env: &core.EnvReader{Order: 30, Chooses: chooses, Read: envRead}}
+
+// chooses takes, for the env kind, a file named .gitlab-ci.yml.
+func chooses(file string) bool { return path.Base(file) == ".gitlab-ci.yml" }
+
+// envRead is the env kind's reader of the variable name in file: Every's,
+// with the YAML parser the facade hands it.
+func envRead(file, name string, maxBytes int64, p core.Parsers) (check.Extractor, error) {
+	return Every(file, name, maxBytes, p.Noted)
+}
 
 // Resolve is s with its max_bytes written out, for errata list.
 func Resolve(s Spec) Spec {
-	s.MaxBytes = core.MaxBytes(s.MaxBytes)
+	s.OneFile = s.Resolved()
 	return s
 }
 
 // Describe is what the kind's extractor returns: flat values, some not
-// literal, as MayReturnNotLiteral says.
+// literal, since a variable that names another, such as $CI_COMMIT_SHA,
+// and a number YAML retypes, such as 3.10, are values GitLab computes.
 func Describe(Spec) check.Description {
 	return check.Description{Label: "gitlab-ci", NotLiteral: true}
 }
@@ -75,7 +91,7 @@ var reserved = map[string]bool{
 
 // Build checks s and returns its extractor.
 func Build(s Spec, parse Parser) (check.Extractor, error) {
-	src, err := core.CheckSource("gitlab-ci", s.File, s.MaxBytes)
+	src, err := s.Check(kindKey)
 	if err != nil {
 		return nil, err
 	}
@@ -106,7 +122,7 @@ func Build(s Spec, parse Parser) (check.Extractor, error) {
 // trigger job gives the values it passes to its downstream pipeline, none
 // when its forward:yaml_variables is false. The env extractor builds it.
 func Every(file, variable string, maxBytes int64, parse Parser) (check.Extractor, error) {
-	src, err := core.CheckSource("gitlab-ci", file, maxBytes)
+	src, err := core.OneFile{File: file, MaxBytes: maxBytes}.Check(kindKey)
 	if err != nil {
 		return nil, err
 	}
@@ -163,7 +179,7 @@ func checkKey(key string) ([]string, error) {
 // Place is s with only what decides where it reads: the file cleaned and
 // max_bytes left out.
 func Place(s Spec) Spec {
-	s.File, s.MaxBytes = filepath.Clean(s.File), 0
+	s.OneFile = s.Place()
 	return s
 }
 
@@ -190,10 +206,10 @@ func (e extractor) maxValues() int {
 	return e.valueLimit
 }
 
-// MayReturnNotLiteral reports true: a variable that names another, such as
-// $CI_COMMIT_SHA, and a number YAML retypes, such as 3.10, are values GitLab
-// computes.
-func (extractor) MayReturnNotLiteral() bool { return true }
+// ExtractWith is Extract: the extractor reads no other extractor's values.
+func (e extractor) ExtractWith(root string, _ map[string][]check.Value) ([]check.Value, error) {
+	return e.Extract(root)
+}
 
 // Extract reads the file and the local files it includes under root, and
 // returns the values the job sees.

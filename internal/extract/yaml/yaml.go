@@ -22,13 +22,11 @@ import (
 // document each string the path selects holds, and so on, step by step, as
 // core.Embedded says.
 type Spec struct {
-	File     string          `json:"file,omitempty"`
-	Files    []string        `json:"files,omitempty"`
+	core.Where
 	Path     string          `json:"path"`
 	Kind     string          `json:"kind,omitempty"`
 	Name     string          `json:"name,omitempty"`
 	Embedded []core.Embedded `json:"embedded,omitempty"`
-	MaxBytes int64           `json:"max_bytes,omitempty"`
 	// As is map to hand assert each mapping the path selects whole, or
 	// record to read Fields from each node it selects into one, as
 	// core.CheckAs says; "" for each scalar.
@@ -41,20 +39,18 @@ type Spec struct {
 // Kind is the yaml kind, which a rule writes under the key yaml.
 var Kind = core.Kind[Spec]{Key: "yaml", Place: Place, Resolve: Resolve, Describe: Describe}
 
-// Place is y with only what decides where it reads: its file or files as
-// core.PlaceFiles writes them, and no max_bytes, since a limit does not
-// change what is read.
+// Place is y with only what decides where it reads: its where part as
+// core.Where.Place writes it.
 func Place(y Spec) Spec {
-	y.File, y.Files = core.PlaceFiles(y.File, y.Files)
-	y.MaxBytes = 0
+	y.Where = y.Place()
 	return y
 }
 
 // Resolve is y with its max_bytes written out, and its files, embedded
 // steps and fields copied, for errata list.
 func Resolve(y Spec) Spec {
-	y.Files, y.Embedded, y.Fields = slices.Clone(y.Files), slices.Clone(y.Embedded), maps.Clone(y.Fields)
-	y.MaxBytes = core.MaxBytes(y.MaxBytes)
+	y.Where = y.Resolved()
+	y.Embedded, y.Fields = slices.Clone(y.Embedded), maps.Clone(y.Fields)
 	return y
 }
 
@@ -83,11 +79,7 @@ type yamlExtractor struct {
 // embedded names with p: of File, or a core.FileSet of one for each file
 // Files names.
 func Build(y Spec, p core.Parsers) (check.Extractor, error) {
-	return core.BuildOneOrSet("yaml", y.File, y.Files, y.MaxBytes, func(file string, maxBytes int64, inSet bool) (core.FileReader, error) {
-		src, err := core.CheckSource("yaml", file, maxBytes)
-		if err != nil {
-			return nil, err
-		}
+	return core.BuildOneOrSet(Kind.Key, y.Where, func(src core.Source, inSet bool) (core.FileReader, error) {
 		path, err := core.CheckPath("yaml", y.Path)
 		if err != nil {
 			return nil, err
@@ -108,14 +100,15 @@ func Build(y Spec, p core.Parsers) (check.Extractor, error) {
 	})
 }
 
+// ExtractWith is Extract: the extractor reads no other extractor's values.
+func (e yamlExtractor) ExtractWith(root string, _ map[string][]check.Value) ([]check.Value, error) {
+	return e.Extract(root)
+}
+
 // Extract reads the file under root, selects its documents and returns every
 // scalar the path selects in them.
 func (e yamlExtractor) Extract(root string) ([]check.Value, error) {
-	data, err := e.Read(root)
-	if err != nil {
-		return nil, err
-	}
-	return e.FromData(data)
+	return core.ExtractOne(root, e.Source, e)
 }
 
 // FromData returns the values in data, the bytes of the file, as Extract

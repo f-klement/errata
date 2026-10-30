@@ -25,12 +25,15 @@ func (reader) Extract(string) ([]check.Value, error) {
 	return nil, errors.New("Extract called on an extractor that reads values")
 }
 
-func (r reader) Needs() []string { return r.needs }
-
 func (r reader) ExtractWith(_ string, values map[string][]check.Value) ([]check.Value, error) {
 	*r.got = values
 	*r.ran = append(*r.ran, r.name)
 	return r.values, nil
+}
+
+// reading is the extractor name, r, described as reading what r needs.
+func reading(name string, r reader) check.NamedExtractor {
+	return check.NamedExtractor{Name: name, Extractor: r, Description: check.Description{Reads: r.needs}}
 }
 
 // ranFake is fake that records that it ran.
@@ -45,13 +48,13 @@ func (f ranFake) Extract(root string) ([]check.Value, error) {
 	return f.fake.Extract(root)
 }
 
+func (f ranFake) ExtractWith(root string, _ map[string][]check.Value) ([]check.Value, error) {
+	return f.Extract(root)
+}
+
 func compiledRule(t *testing.T, expr string, extractors ...check.NamedExtractor) check.Check {
 	t.Helper()
-	var names []string
-	for _, e := range extractors {
-		names = append(names, e.Name)
-	}
-	a, err := Compile(expr, names, Lists{})
+	a, err := Compile(expr, extractors)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,16 +65,16 @@ func compiledRule(t *testing.T, expr string, extractors ...check.NamedExtractor)
 // An extractor that reads another's values runs after it, though its name
 // comes first, and is given the values the rule compares: the literal ones,
 // without what skip_not_literal leaves out.
-func TestDependentRunsAfterWhatItReads(t *testing.T) {
+func TestReaderRunsAfterWhatItReads(t *testing.T) {
 	var got map[string][]check.Value
 	var ran []string
 	names := at("argo-cd", "charts.yaml", 3)
 	computed := at("$(chart)", "charts.yaml", 4)
 	computed.NotLiteral = true
 	c := compiledRule(t, "a == ['argo-cd'] && z == ['argo-cd']",
-		check.NamedExtractor{Name: "a", Extractor: reader{
+		reading("a", reader{
 			needs: []string{"z"}, values: []check.Value{at("argo-cd", "renovate.json", 9)}, got: &got, ran: &ran, name: "a",
-		}},
+		}),
 		check.NamedExtractor{Name: "z", Extractor: ranFake{fake{values: []check.Value{names, computed}}, &ran, "z"}},
 	)
 	c.Rule().SkipNotLiteral = []string{"z"}
@@ -92,13 +95,13 @@ func TestDependentRunsAfterWhatItReads(t *testing.T) {
 
 // A not literal value that skip_not_literal does not leave out makes the
 // rule unknown, and the extractor that reads its values is not given it.
-func TestDependentIsNotGivenNotLiteralValues(t *testing.T) {
+func TestReaderIsNotGivenNotLiteralValues(t *testing.T) {
 	var got map[string][]check.Value
 	var ran []string
 	computed := at("$(chart)", "charts.yaml", 4)
 	computed.NotLiteral = true
 	c := compiledRule(t, "size(a) + size(z) > 0",
-		check.NamedExtractor{Name: "a", Extractor: reader{needs: []string{"z"}, values: []check.Value{at("x", "f", 1)}, got: &got, ran: &ran}},
+		reading("a", reader{needs: []string{"z"}, values: []check.Value{at("x", "f", 1)}, got: &got, ran: &ran}),
 		check.NamedExtractor{Name: "z", Extractor: fake{values: []check.Value{at("argo-cd", "charts.yaml", 3), computed}}},
 	)
 	res := Run(context.Background(), "/repo", c)
@@ -112,11 +115,11 @@ func TestDependentIsNotGivenNotLiteralValues(t *testing.T) {
 
 // An extractor whose values another reads fails, so that one cannot run:
 // the rule is unknown, naming both.
-func TestDependentOfAFailedExtractor(t *testing.T) {
+func TestReaderOfAFailedExtractor(t *testing.T) {
 	var got map[string][]check.Value
 	var ran []string
 	c := compiledRule(t, "size(a) + size(z) > 0",
-		check.NamedExtractor{Name: "a", Extractor: reader{needs: []string{"z"}, got: &got, ran: &ran}},
+		reading("a", reader{needs: []string{"z"}, got: &got, ran: &ran}),
 		check.NamedExtractor{Name: "z", Extractor: fake{err: errors.New("charts.yaml: no such file or directory")}},
 	)
 	res := Run(context.Background(), "/repo", c)
@@ -135,7 +138,7 @@ func TestAgreeRunsWhatIsReadFirst(t *testing.T) {
 	var got map[string][]check.Value
 	var ran []string
 	c := agreeRule(
-		check.NamedExtractor{Name: "b", Extractor: reader{needs: []string{"c"}, values: []check.Value{at("1", "b", 1)}, got: &got, ran: &ran, name: "b"}},
+		reading("b", reader{needs: []string{"c"}, values: []check.Value{at("1", "b", 1)}, got: &got, ran: &ran, name: "b"}),
 		check.NamedExtractor{Name: "c", Extractor: ranFake{fake{values: []check.Value{at("1", "c", 1)}}, &ran, "c"}},
 	)
 	res := Run(context.Background(), "/repo", c)
@@ -146,13 +149,23 @@ func TestAgreeRunsWhatIsReadFirst(t *testing.T) {
 
 // An extractor whose values another reads need not be named in the assert,
 // since what reads it shapes the verdict; any other unnamed one is still
-// refused. Planted break: read ignored.
+// refused, and so is one only an extractor that did not build reads, as
+// before the description said what it reads. Planted breaks: read ignored;
+// the reads of one that did not build counted.
 func TestCompileLetsAReadExtractorGoUnnamed(t *testing.T) {
-	if _, err := Compile("size(tracked) > 0", []string{"releases", "tracked"}, Lists{Read: []string{"releases"}}); err != nil {
+	tracked := check.NamedExtractor{Name: "tracked", Extractor: fake{}, Description: check.Description{Reads: []string{"releases"}}}
+	releases := check.NamedExtractor{Name: "releases", Extractor: fake{}}
+	if _, err := Compile("size(tracked) > 0", []check.NamedExtractor{releases, tracked}); err != nil {
 		t.Fatalf("Compile: %v", err)
 	}
-	_, err := Compile("size(tracked) > 0", []string{"releases", "tracked", "other"}, Lists{Read: []string{"releases"}})
+	other := check.NamedExtractor{Name: "other", Extractor: fake{}}
+	_, err := Compile("size(tracked) > 0", []check.NamedExtractor{releases, tracked, other})
 	if err == nil || err.Error() != `extractor "other" is declared but assert does not use it` {
 		t.Fatalf("Compile: %v, want other refused alone", err)
+	}
+	tracked.Extractor = nil
+	_, err = Compile("size(tracked) > 0", []check.NamedExtractor{releases, tracked})
+	if err == nil || err.Error() != `extractor "releases" is declared but assert does not use it` {
+		t.Fatalf("Compile: %v, want releases refused", err)
 	}
 }

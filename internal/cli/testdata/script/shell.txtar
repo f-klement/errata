@@ -28,7 +28,7 @@ stdout 'posix.sh: line 2: arrays parses only in bash and mksh and zsh, and the s
 
 # errata list prints the extractor with its max_bytes written out.
 exec errata list -c agree.yaml -f json
-stdout '"shell": \{\n\s+"file": "deploy.sh",\n\s+"name": "API_PORT",\n\s+"max_bytes": 33554432\n\s+\}'
+stdout '"shell": \{\n\s+"file": "deploy.sh",\n\s+"max_bytes": 33554432,\n\s+"name": "API_PORT"\n\s+\}'
 -- deploy.sh --
 #!/bin/sh
 # API_PORT=1 in a comment is not an assignment

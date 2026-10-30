@@ -7,8 +7,9 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"path/filepath"
+	"path"
 	"strconv"
+	"strings"
 	"unicode"
 	"unicode/utf8"
 
@@ -19,24 +20,47 @@ import (
 // Spec returns every value of Name in an env file, or every value of
 // every key when Name is left out, each at the line of its assignment.
 type Spec struct {
-	File     string `json:"file"`
-	Name     string `json:"name,omitempty"`
-	MaxBytes int64  `json:"max_bytes,omitempty"`
+	core.OneFile
+	Name string `json:"name,omitempty"`
 }
 
-// Kind is the envfile kind, which a rule writes under the key envfile.
-var Kind = core.Kind[Spec]{Key: "envfile", Place: Place, Resolve: Resolve, Describe: Describe}
+// kindKey is the kind's key, which Kind and Build both use. Build names
+// the constant rather than Kind.Key because an env reader's Read calls
+// Build, and Build reading Kind would make an initialization cycle.
+const kindKey = "envfile"
+
+// Kind is the envfile kind, which a rule writes under the key envfile. It
+// is an env reader, the first env lists.
+var Kind = core.Kind[Spec]{Key: kindKey, Place: Place, Resolve: Resolve, Describe: Describe,
+	Env: &core.EnvReader{Order: 10, Chooses: chooses, Read: envRead}}
+
+// chooses takes, for the env kind, a name that starts with .env or ends in
+// .env, such as prod.env, which compose's env_file: and systemd's
+// EnvironmentFile= name. It leaves .envrc, direnv's shell script, and a
+// name that ends in .sh to the shell reader.
+func chooses(file string) bool {
+	base := path.Base(file)
+	if base == ".envrc" || strings.HasSuffix(base, ".sh") {
+		return false
+	}
+	return strings.HasPrefix(base, ".env") || strings.HasSuffix(base, ".env")
+}
+
+// envRead is the env kind's reader of the variable name in file: Build's.
+func envRead(file, name string, maxBytes int64, _ core.Parsers) (check.Extractor, error) {
+	return Build(Spec{File: file, Name: name, MaxBytes: maxBytes})
+}
 
 // Place is s with only what decides where it reads: the file cleaned, and
 // no max_bytes, since a limit does not change what is read.
 func Place(s Spec) Spec {
-	s.File, s.MaxBytes = filepath.Clean(s.File), 0
+	s.OneFile = s.Place()
 	return s
 }
 
 // Resolve is s with its max_bytes written out, for errata list.
 func Resolve(s Spec) Spec {
-	s.MaxBytes = core.MaxBytes(s.MaxBytes)
+	s.OneFile = s.Resolved()
 	return s
 }
 
@@ -48,7 +72,7 @@ func Describe(Spec) check.Description {
 
 // Build checks s and returns its extractor.
 func Build(s Spec) (check.Extractor, error) {
-	src, err := core.CheckSource("envfile", s.File, s.MaxBytes)
+	src, err := s.Check(kindKey)
 	if err != nil {
 		return nil, err
 	}

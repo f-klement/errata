@@ -143,9 +143,6 @@ func TestEntryExtractorReturnsTheWantedValues(t *testing.T) {
 	}
 	_, err = refused.FromData([]byte("a\n"))
 	extracttest.WantError(t, err, "f: line 1: the host is refused")
-	if !x.MayReturnNotLiteral() || (EntryExtractor{}).MayReturnNotLiteral() {
-		t.Error("MayReturnNotLiteral does not follow the test")
-	}
 }
 
 // A template's values are not literal where its engine renders them: Jinja's

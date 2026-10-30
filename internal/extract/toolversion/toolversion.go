@@ -41,7 +41,8 @@ func Resolve(s Spec) Spec {
 }
 
 // Describe is what the kind's extractor returns: flat values, some not
-// literal, as MayReturnNotLiteral says.
+// literal, since a version such as lts/* or system names no version until
+// a tool resolves it.
 func Describe(Spec) check.Description {
 	return check.Description{Label: "tool_version", NotLiteral: true}
 }
@@ -163,9 +164,10 @@ type extractor struct {
 	paths    map[string][]core.Path // the paths a tree file is read at, by its name
 }
 
-// MayReturnNotLiteral reports true: a version such as lts/* or system names
-// no version until a tool resolves it.
-func (extractor) MayReturnNotLiteral() bool { return true }
+// ExtractWith is Extract: the extractor reads no other extractor's values.
+func (x extractor) ExtractWith(root string, _ map[string][]check.Value) ([]check.Value, error) {
+	return x.Extract(root)
+}
 
 // Extract reads each file under root and returns its versions of the tool,
 // the files in order and each file's in file order. Without files:, the

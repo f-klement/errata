@@ -7,7 +7,6 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"slices"
 	"strings"
 	"unicode"
@@ -29,13 +28,12 @@ import (
 // and a key repeated in a section has every one of its values, where a key
 // step of a path selects one node.
 type Spec struct {
-	File       string  `json:"file"`
+	core.OneFile
 	Dialect    string  `json:"dialect,omitempty"`
 	Section    string  `json:"section,omitempty"`
 	Subsection *string `json:"subsection,omitempty"`
 	Host       string  `json:"host,omitempty"`
 	Key        string  `json:"key,omitempty"`
-	MaxBytes   int64   `json:"max_bytes,omitempty"`
 }
 
 // The dialect seam. A dialect is a reader that visits a file's entries in
@@ -162,7 +160,7 @@ func hostMatches(host, want []byte, m *core.Meter) (bool, error) {
 // Build checks i and returns its extractor, in the dialect it names or the
 // file's name chooses.
 func Build(i Spec) (check.Extractor, error) {
-	src, err := core.CheckSource("ini", i.File, i.MaxBytes)
+	src, err := i.Check(Kind.Key)
 	if err != nil {
 		return nil, err
 	}
@@ -360,7 +358,7 @@ func Resolve(i Spec) Spec {
 		sub := *i.Subsection
 		i.Subsection = &sub
 	}
-	i.MaxBytes = core.MaxBytes(i.MaxBytes)
+	i.OneFile = i.Resolved()
 	return i
 }
 
@@ -368,7 +366,7 @@ func Resolve(i Spec) Spec {
 // says: the file cleaned, no max_bytes, the dialect the file reads in, and
 // the names in the form the dialect compares them in.
 func Place(i Spec) Spec {
-	i.File, i.MaxBytes = filepath.Clean(i.File), 0
+	i.OneFile = i.Place()
 	d, err := chooseDialect(i.Dialect, i.File)
 	if err != nil {
 		return i

@@ -26,4 +26,21 @@ type ExtractorKind struct {
 	Resolve func(spec any) any
 	// Describe is what the extractor a spec builds returns.
 	Describe func(spec any) Description
+	// Env, when set, is how the env kind reads one variable with the
+	// kind, which it lists under Key.
+	Env *EnvReader
+}
+
+// EnvReader is a kind's reader of one variable for the env kind: its
+// Order among env's readers, lowest first, its test of a file's name,
+// cleaned and with slashes, and the Read that builds its extractor of the
+// variable name in file, reading at most maxBytes. Sniffs, when set, is
+// its test of a file's first SniffBytes bytes, which env asks of a file
+// whose name no reader's test takes.
+type EnvReader struct {
+	Order      int
+	Chooses    func(file string) bool
+	Read       func(file, name string, maxBytes int64) (Extractor, error)
+	Sniffs     func(head []byte) bool
+	SniffBytes int
 }

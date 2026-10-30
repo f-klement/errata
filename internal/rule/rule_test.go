@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -28,6 +30,63 @@ func (f fake) Extract(root string) ([]check.Value, error) {
 		*f.root = root
 	}
 	return f.values, f.err
+}
+
+func (f fake) ExtractWith(root string, _ map[string][]check.Value) ([]check.Value, error) {
+	return f.Extract(root)
+}
+
+// described is a built extractor of each name, as Compile takes them: flat
+// but those whole names, which hand over each value whole.
+func described(names, whole []string) []check.NamedExtractor {
+	out := make([]check.NamedExtractor, len(names))
+	for i, name := range names {
+		out[i] = check.NamedExtractor{Name: name, Extractor: fake{}}
+		if slices.Contains(whole, name) {
+			out[i].Description.Shape = check.ShapeMap
+		}
+	}
+	return out
+}
+
+// compileNamed is Compile over described(names, whole).
+func compileNamed(expr string, names, whole []string) (check.Assertion, error) {
+	return Compile(expr, described(names, whole))
+}
+
+// asExtracted is what Eval takes, from each extractor's texts, the file of
+// each and the values whole, each by the extractor's name and the value's
+// index, in the order of the names: a value past the end of one of them
+// has none of it.
+func asExtracted(values, files map[string][]string, whole map[string][]*check.Data) []check.Extracted {
+	names := map[string]bool{}
+	for _, m := range []map[string][]string{values, files} {
+		for name := range m {
+			names[name] = true
+		}
+	}
+	for name := range whole {
+		names[name] = true
+	}
+	var out []check.Extracted
+	for _, name := range slices.Sorted(maps.Keys(names)) {
+		x := check.Extracted{Extractor: name}
+		for i := range max(len(values[name]), len(files[name]), len(whole[name])) {
+			var v check.Value
+			if i < len(values[name]) {
+				v.Text = values[name][i]
+			}
+			if i < len(files[name]) {
+				v.At.File = files[name][i]
+			}
+			if i < len(whole[name]) {
+				v.Data = whole[name][i]
+			}
+			x.Values = append(x.Values, v)
+		}
+		out = append(out, x)
+	}
+	return out
 }
 
 func at(text, file string, line int) check.Value {
@@ -65,6 +124,10 @@ type slow struct{}
 func (slow) Extract(string) ([]check.Value, error) {
 	time.Sleep(10 * time.Millisecond)
 	return []check.Value{at("x", "f", 1)}, nil
+}
+
+func (s slow) ExtractWith(root string, _ map[string][]check.Value) ([]check.Value, error) {
+	return s.Extract(root)
 }
 
 func TestRunRecordsDuration(t *testing.T) {

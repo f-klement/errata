@@ -109,7 +109,7 @@ func TestCompileRefuses(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			a, err := Compile(tc.expr, tc.extractors, Lists{})
+			a, err := compileNamed(tc.expr, tc.extractors, nil)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("error:\n%v\nwant it to contain:\n%s", err, tc.want)
 			}
@@ -132,7 +132,7 @@ func TestCompileAcceptsAnExtractorAMacroAlsoNames(t *testing.T) {
 		"v.exists(a, a in w)":              {"v", "w"},
 		"w.map(w, w + 'x').size() > 0":     {"w"},
 	} {
-		if _, err := Compile(expr, extractors, Lists{}); err != nil {
+		if _, err := compileNamed(expr, extractors, nil); err != nil {
 			t.Errorf("%s: %v", expr, err)
 		}
 	}
@@ -156,7 +156,7 @@ func TestCompileTimeIsBounded(t *testing.T) {
 	}
 	for _, expr := range refused {
 		start := time.Now()
-		if _, err := Compile(expr, []string{"v"}, Lists{}); err == nil || !strings.Contains(err.Error(), "deeper than 32 levels") && !strings.Contains(err.Error(), "limit 4096") {
+		if _, err := compileNamed(expr, []string{"v"}, nil); err == nil || !strings.Contains(err.Error(), "deeper than 32 levels") && !strings.Contains(err.Error(), "limit 4096") {
 			t.Errorf("%.40s...: error %v, want a limit named", expr, err)
 		}
 		if took := time.Since(start); took > time.Second {
@@ -168,7 +168,7 @@ func TestCompileTimeIsBounded(t *testing.T) {
 		worst += " && v.map(x, v.filter(y, v.exists(z, x+y == z))).size() > 0"
 	}
 	start := time.Now()
-	if _, err := Compile(worst, []string{"v"}, Lists{}); err != nil {
+	if _, err := compileNamed(worst, []string{"v"}, nil); err != nil {
 		t.Fatalf("an expression of %d code points within the limits: %v", len(worst), err)
 	}
 	// 0.3 s on the build machine; the bound catches a limit that stopped
@@ -181,7 +181,7 @@ func TestCompileTimeIsBounded(t *testing.T) {
 // Names CEL also uses for a type or a function are still extractor names.
 func TestCompileAcceptsNamesThatAreAlsoCELNames(t *testing.T) {
 	for _, name := range []string{"int", "string", "duration", "size", "_x", "Port2"} {
-		if _, err := Compile("size("+name+") > 0", []string{name}, Lists{}); err != nil {
+		if _, err := compileNamed("size("+name+") > 0", []string{name}, nil); err != nil {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
@@ -190,15 +190,7 @@ func TestCompileAcceptsNamesThatAreAlsoCELNames(t *testing.T) {
 // assertRule is a rule with an assert compiled over the extractors' names.
 func assertRule(t *testing.T, expr string, extractors ...check.NamedExtractor) check.Check {
 	t.Helper()
-	names := make([]string, len(extractors))
-	var maps []string
-	for i, e := range extractors {
-		names[i] = e.Name
-		if e.Maps {
-			maps = append(maps, e.Name)
-		}
-	}
-	a, err := Compile(expr, names, Lists{Maps: maps})
+	a, err := Compile(expr, extractors)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,7 +253,7 @@ func TestAssertStalenessThreshold(t *testing.T) {
 // counting is an Assertion that records whether it ran.
 type counting struct{ calls *int }
 
-func (c counting) Eval(context.Context, map[string][]string, map[string][]string, map[string][]*check.Data) (bool, error) {
+func (c counting) Eval(context.Context, []check.Extracted) (bool, error) {
 	*c.calls++
 	return true, nil
 }
@@ -419,7 +411,7 @@ func TestAssertTimeout(t *testing.T) {
 		values[i] = strconv.Itoa(i)
 	}
 	start := time.Now()
-	_, err = a.Eval(context.Background(), map[string][]string{"v": values}, nil, nil)
+	_, err = a.Eval(context.Background(), asExtracted(map[string][]string{"v": values}, nil, nil))
 	if err == nil || err.Error() != "the evaluation did not finish within the timeout of 1ms" {
 		t.Fatalf("error = %v, want the timeout named", err)
 	}
@@ -432,7 +424,7 @@ func TestAssertTimeout(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := a.Eval(ctx, map[string][]string{"v": values}, nil, nil); err == nil || !strings.HasPrefix(err.Error(), "cancelled: context canceled") {
+	if _, err := a.Eval(ctx, asExtracted(map[string][]string{"v": values}, nil, nil)); err == nil || !strings.HasPrefix(err.Error(), "cancelled: context canceled") {
 		t.Fatalf("cancelled: error = %v", err)
 	}
 }
@@ -452,7 +444,7 @@ func TestAssertTimeoutInsideAHelper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = a.Eval(context.Background(), map[string][]string{"v": {"x"}}, nil, nil)
+	_, err = a.Eval(context.Background(), asExtracted(map[string][]string{"v": {"x"}}, nil, nil))
 	if err == nil || err.Error() != "the evaluation did not finish within the timeout of 1ms" {
 		t.Fatalf("error = %v, want the timeout named", err)
 	}
@@ -478,7 +470,7 @@ func TestAssertTimeoutInsideAHelper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.Eval(context.Background(), map[string][]string{"v": {"x"}}, nil, nil); err == nil || err.Error() != "the evaluation did not finish within the timeout of 1ms" {
+	if _, err := a.Eval(context.Background(), asExtracted(map[string][]string{"v": {"x"}}, nil, nil)); err == nil || err.Error() != "the evaluation did not finish within the timeout of 1ms" {
 		t.Fatalf("a helper that ended in the grace: error = %v, want the timeout named", err)
 	}
 }
@@ -500,7 +492,7 @@ func TestAssertTimeoutLooksEveryStep(t *testing.T) {
 	for i := range values {
 		values[i] = strconv.Itoa(i)
 	}
-	_, err = a.Eval(context.Background(), map[string][]string{"v": values}, nil, nil)
+	_, err = a.Eval(context.Background(), asExtracted(map[string][]string{"v": values}, nil, nil))
 	if err == nil || err.Error() != "the evaluation did not finish within the timeout of 1ms" || !errors.Is(err, interpreter.InterruptError{}) {
 		t.Fatalf("error = %v, want the timeout, with CEL stopping in the grace", err)
 	}
@@ -582,7 +574,7 @@ func TestAssertSeesNormalisedValues(t *testing.T) {
 		t.Fatalf("extracted = %+v, want %+v", res.Extracted, want)
 	}
 	c.Rule().Assert = "v[0] == 'x'"
-	c.Rule().Compiled, _ = Compile(c.Rule().Assert, []string{"v"}, Lists{})
+	c.Rule().Compiled, _ = compileNamed(c.Rule().Assert, []string{"v"}, nil)
 	if res := Run(context.Background(), "", c); !strings.Contains(res.Message, `v[0] = "90s" at a.yaml:3`) {
 		t.Fatalf("message %q does not show the normalised value", res.Message)
 	}
@@ -745,7 +737,7 @@ func TestAssertPanicAfterAbsorbedError(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := a.Eval(context.Background(), map[string][]string{"v": {"a"}}, nil, nil); err == nil || !strings.Contains(err.Error(), "internal error") {
+		if _, err := a.Eval(context.Background(), asExtracted(map[string][]string{"v": {"a"}}, nil, nil)); err == nil || !strings.Contains(err.Error(), "internal error") {
 			t.Errorf("%s: error %v, want the panic's internal error", expr, err)
 		}
 	}

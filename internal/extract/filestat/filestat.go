@@ -81,6 +81,11 @@ func checkSpec(kind string, s Spec) (core.Source, error) {
 
 type exists struct{ src core.Source }
 
+// ExtractWith is Extract: the extractor reads no other extractor's values.
+func (e exists) ExtractWith(root string, _ map[string][]check.Value) ([]check.Value, error) {
+	return e.Extract(root)
+}
+
 func (e exists) Extract(root string) ([]check.Value, error) {
 	info, err := e.src.Stat(root)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -100,6 +105,11 @@ func (e exists) value(text string) []check.Value {
 }
 
 type size struct{ src core.Source }
+
+// ExtractWith is Extract: the extractor reads no other extractor's values.
+func (e size) ExtractWith(root string, _ map[string][]check.Value) ([]check.Value, error) {
+	return e.Extract(root)
+}
 
 func (e size) Extract(root string) ([]check.Value, error) {
 	info, err := e.src.Stat(root)

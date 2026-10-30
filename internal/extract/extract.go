@@ -5,12 +5,12 @@
 // ini, properties, toolversion, packageversion, envfile, gitlabci, shell,
 // githubactions, jenkins, and filestat for exists and size), and the
 // readers share internal/extract/core; no reader imports another. The env
-// kind asks five of them for one variable across several files, through
-// the functions this package hands it. Below, a kind is always an
+// kind asks those that declare themselves env readers for one variable
+// across several files, through the functions this package hands it. Below, a kind is always an
 // extractor kind, never a check's.
 //
 // Each reader declares its extractor kind beside its Spec, as a core.Kind:
-// its key and its Place, Resolve and Describe. This package lists every
+// its key, its Place, Resolve and Describe, and for an env reader its Env. This package lists every
 // kind once, in kinds, each with its Build and the parsers and readers it
 // wires, as a check.ExtractorKind, and holds the Spec a rule's extract:
 // entry decodes into, which finds its kind by key.
@@ -69,32 +69,47 @@ var kinds = registry(
 	register(shell.Kind, shell.Build),
 	register(githubactions.Kind, with(githubactions.Build, yaml.ParseNoted)),
 	register(jenkins.Kind, jenkins.Build),
-	register(env.Kind, with(env.Build, envReaders)),
+	// env asks the kinds above that declare themselves env readers;
+	// envReaders is filled from kinds once kinds is, so env's Build reads it
+	// when it is called.
+	register(env.Kind, func(s env.Spec) (check.Extractor, error) { return env.Build(s, envReaders) }),
 	register(filestat.ExistsKind, filestat.BuildExists),
 	register(filestat.SizeKind, filestat.BuildSize),
 )
 
 // envReaders are the readers the env kind asks, each for one variable in
-// one file: envfile and shell as their own Build reads it, and the CI
-// readers in every job, step or stage, as their Every reads it.
-var envReaders = env.Readers{
-	ByName: map[string]env.Reader{
-		"envfile": func(file, name string, maxBytes int64) (check.Extractor, error) {
-			return envfile.Build(envfile.Spec{File: file, Name: name, MaxBytes: maxBytes})
-		},
-		"shell": func(file, name string, maxBytes int64) (check.Extractor, error) {
-			return shell.Build(shell.Spec{File: file, Name: name, MaxBytes: maxBytes})
-		},
-		"gitlab-ci": func(file, name string, maxBytes int64) (check.Extractor, error) {
-			return gitlabci.Every(file, name, maxBytes, yaml.ParseNoted)
-		},
-		"github-actions": func(file, name string, maxBytes int64) (check.Extractor, error) {
-			return githubactions.Every(file, name, maxBytes, yaml.ParseNoted)
-		},
-		"jenkins": jenkins.Every,
-	},
-	IsScript:    shell.IsScript,
-	ScriptBytes: shell.ShebangBytes,
+// one file: every kind of kinds that declares itself an env reader
+// (core.EnvReader), and the shell reader's test of a shebang, which
+// chooses it for a script its name does not.
+var envReaders env.Readers
+
+func init() { envReaders = readersOf(kinds) }
+
+// readersOf are the env readers of t's kinds. Two at one Order, one with
+// no Chooses or no Read, or one that sniffs no bytes, is a bug in a reader's declaration, so it
+// panics when the program starts and every test fails: two at one Order
+// would leave env's messages, and the reader of a name both take, to the
+// order of kinds.
+func readersOf(t table) env.Readers {
+	var r env.Readers
+	at := map[int]string{}
+	for _, k := range t.order {
+		if k.Env == nil {
+			continue
+		}
+		if k.Env.Chooses == nil || k.Env.Read == nil {
+			panic(fmt.Sprintf("extract: the env reader %q has no Chooses or no Read", k.Key))
+		}
+		if k.Env.Sniffs != nil && k.Env.SniffBytes <= 0 {
+			panic(fmt.Sprintf("extract: the env reader %q sniffs no bytes: its SniffBytes is %d", k.Key, k.Env.SniffBytes))
+		}
+		if other, dup := at[k.Env.Order]; dup {
+			panic(fmt.Sprintf("extract: the env readers %q and %q are both at order %d", other, k.Key, k.Env.Order))
+		}
+		at[k.Env.Order] = k.Key
+		r.List = append(r.List, env.Reader{Name: k.Key, EnvReader: *k.Env})
+	}
+	return r
 }
 
 // parsers are the yaml, json and toml readers' parsers, which tool_version
@@ -104,8 +119,9 @@ var parsers = core.Parsers{
 	YAML: func(data []byte, expanded int) ([]*core.Node, int, error) {
 		return yaml.ParseNoted(data, expanded, nil)
 	},
-	JSON: ejson.Parse,
-	TOML: toml.Parse,
+	JSON:  ejson.Parse,
+	TOML:  toml.Parse,
+	Noted: yaml.ParseNoted,
 }
 
 // with is build given w, the parsers or readers it takes beside its spec.
@@ -132,6 +148,14 @@ func register[S any](k core.Kind[S], build func(S) (check.Extractor, error)) *ki
 	}
 	if k.Describe != nil {
 		r.Describe = func(s any) check.Description { return k.Describe(s.(S)) }
+	}
+	if e := k.Env; e != nil {
+		r.Env = &check.EnvReader{Order: e.Order, Chooses: e.Chooses, Sniffs: e.Sniffs, SniffBytes: e.SniffBytes}
+		if e.Read != nil {
+			r.Env.Read = func(file, name string, maxBytes int64) (check.Extractor, error) {
+				return e.Read(file, name, maxBytes, parsers)
+			}
+		}
 	}
 	return r
 }
@@ -384,22 +408,3 @@ func (s Spec) Describe() check.Description {
 	}
 	return s.set[0].kind.Describe(s.set[0].spec)
 }
-
-// Maps reports whether s hands assert each value whole, as a mapping: a
-// yaml, json or toml extractor with as: map or as: record, or a regex
-// extractor with as: record. Any other spec, and one with an as errata does
-// not read, which Build refuses, returns flat values.
-func (s Spec) Maps() bool { return s.Describe().Shape != check.ShapeFlat }
-
-// Fields returns the field names of the records s returns, in the order of
-// a record's keys: a yaml, json or toml extractor's fields sorted by name,
-// or a regex pattern's named groups in the order it opens them. It is nil
-// for a spec that returns no record.
-func (s Spec) Fields() []string { return s.Describe().Fields }
-
-// Kind names the kind of extractor s sets, for a message: its key, and for
-// ini the dialect it reads in and the file's name, since what a dialect's
-// tool computes can hang on the file: "ini, plain dialect on pytest.ini".
-// It is "" when s sets no kind or more than one, or names no dialect errata
-// reads.
-func (s Spec) Kind() string { return s.Describe().Label }

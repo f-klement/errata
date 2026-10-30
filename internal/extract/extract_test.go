@@ -129,10 +129,10 @@ func TestEmbeddedPlace(t *testing.T) {
 		},
 	} {
 		if !reflect.DeepEqual(c.a.Place(), c.b.Place()) {
-			t.Errorf("one place reads as two: %s", c.a.Kind())
+			t.Errorf("one place reads as two: %s", c.a.Describe().Label)
 		}
 		if reflect.DeepEqual(c.a.Place(), c.other.Place()) {
-			t.Errorf("another place reads as one: %s", c.a.Kind())
+			t.Errorf("another place reads as one: %s", c.a.Describe().Label)
 		}
 	}
 }
@@ -168,9 +168,9 @@ func TestINIPlace(t *testing.T) {
 	}
 }
 
-// Kind names the kind a spec sets for a load error, with an ini spec's
+// The description labels the kind a spec sets for a load error, with an ini spec's
 // dialect, chosen by the file's name or named.
-func TestSpecKind(t *testing.T) {
+func TestDescribeLabel(t *testing.T) {
 	for _, c := range []struct {
 		spec Spec
 		want string
@@ -197,7 +197,7 @@ func TestSpecKind(t *testing.T) {
 		{Spec{}, ""},
 		{decode(t, `{"json": {"file": "a.json", "path": "$"}, "text": {"file": "a"}}`), ""},
 	} {
-		if got := c.spec.Kind(); got != c.want {
+		if got := c.spec.Describe().Label; got != c.want {
 			t.Errorf("%+v: %q, want %q", c.spec, got, c.want)
 		}
 	}
@@ -236,10 +236,11 @@ func TestResolvedINIDialect(t *testing.T) {
 	}
 }
 
-// Maps is true for a yaml, json or toml spec with as: map, and false for
-// each without it and for any other kind. Planted breaks: each of the three
-// tests negated (!= for ==), which turned that kind's answer over.
-func TestSpecMaps(t *testing.T) {
+// The description gives each value whole for a yaml, json or toml spec with
+// as: map, and for a record, and flat for each without it and for any other
+// kind. Planted breaks: each of the three tests negated (!= for ==), which
+// turned that kind's answer over.
+func TestDescribeWhole(t *testing.T) {
 	for name, c := range map[string]struct {
 		s    Spec
 		want bool
@@ -258,18 +259,18 @@ func TestSpecMaps(t *testing.T) {
 		"regex record": {Of(regex.Kind, regex.Spec{File: "a", Pattern: "(?P<n>x)", As: "record"}), true},
 		"ini":          {Of(ini.Kind, ini.Spec{File: "a.ini", Section: "s", Key: "k"}), false},
 	} {
-		if got := c.s.Maps(); got != c.want {
-			t.Errorf("%s: Maps() = %t, want %t", name, got, c.want)
+		if got := c.s.Describe().Whole(); got != c.want {
+			t.Errorf("%s: Whole() = %t, want %t", name, got, c.want)
 		}
 	}
 }
 
-// Fields names the fields of the records a spec returns: a path record's
+// The description names the fields of the records a spec returns: a path record's
 // fields sorted by name, a regex record's named groups in the order the
 // pattern opens them, and nil for any spec that returns no record, a map
 // with fields and a record without any included. Planted breaks: each
-// condition of Spec.Fields and Spec.as negated.
-func TestSpecFields(t *testing.T) {
+// condition of the readers' Describe negated.
+func TestDescribeFields(t *testing.T) {
 	fields := map[string]string{"url": "u", "name": "n"}
 	for name, c := range map[string]struct {
 		s    Spec
@@ -285,9 +286,9 @@ func TestSpecFields(t *testing.T) {
 		"record, none": {Of(toml.Kind, toml.Spec{File: "a.toml", Path: "x[*]", As: "record"}), nil},
 		"ini":          {Of(ini.Kind, ini.Spec{File: "a.ini", Section: "s", Key: "k"}), nil},
 	} {
-		got := c.s.Fields()
+		got := c.s.Describe().Fields
 		if !reflect.DeepEqual(got, c.want) {
-			t.Errorf("%s: Fields() = %#v, want %#v", name, got, c.want)
+			t.Errorf("%s: Fields = %#v, want %#v", name, got, c.want)
 		}
 	}
 }

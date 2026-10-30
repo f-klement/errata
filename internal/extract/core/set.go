@@ -50,28 +50,32 @@ func (s *Spent) SharedAliases(err error) error {
 	return err
 }
 
-// BuildOne builds the reader of one file, which reads at most maxBytes:
-// the extractor a spec builds with that file in file:. inSet is true for a
-// file of a set, where a reader that would refuse a file for holding
-// nothing it selects returns no value for it: a yaml file with no document
-// of the kind.
-type BuildOne func(file string, maxBytes int64, inSet bool) (FileReader, error)
+// BuildOne builds the reader of one file from its Source, which core has
+// checked as CheckSource checks it: the extractor a spec builds with that
+// file in file:. inSet is true for a file of a set, where a reader that
+// would refuse a file for holding nothing it selects returns no value for
+// it: a yaml file with no document of the kind.
+type BuildOne func(src Source, inSet bool) (FileReader, error)
 
-// BuildOneOrSet builds the extractor of a spec of kind that names file or
-// files: build's for file, or a FileSet over files that reads each with
-// build's. A spec that sets both is refused.
-func BuildOneOrSet(kind, file string, files []string, maxBytes int64, build BuildOne) (check.Extractor, error) {
-	if files == nil {
-		e, err := build(file, maxBytes, false)
+// BuildOneOrSet builds the extractor of a spec of kind that reads where w
+// says: build's for its file, or a FileSet over its files that reads each
+// with build's. A spec that sets both is refused.
+func BuildOneOrSet(kind string, w Where, build BuildOne) (check.Extractor, error) {
+	if w.Files == nil {
+		src, err := CheckSource(kind, w.File, w.MaxBytes)
+		if err != nil {
+			return nil, err
+		}
+		e, err := build(src, false)
 		if err != nil {
 			return nil, err
 		}
 		return e, nil
 	}
-	if file != "" {
+	if w.File != "" {
 		return nil, fmt.Errorf("%s: file and files are both set; write file for one file, or files for the files a list or a glob names", kind)
 	}
-	return BuildFileSet(kind, files, maxBytes, build)
+	return BuildFileSet(kind, w.Files, w.MaxBytes, build)
 }
 
 // FileSet is an extractor that reads every file a files: key names, each
@@ -104,10 +108,26 @@ func BuildFileSet(kind string, files []string, maxBytes int64, build BuildOne) (
 		return FileSet{}, err
 	}
 	limit := MaxBytes(maxBytes)
-	if _, err := build(f.Entries[0].Clean, limit, true); err != nil {
+	s := FileSet{Files: f, limit: limit, build: build, timeLimit: regexTime(limit)}
+	if _, err := s.one(f.Entries[0].Clean, limit); err != nil {
 		return FileSet{}, err
 	}
-	return FileSet{Files: f, limit: limit, build: build, timeLimit: regexTime(limit)}, nil
+	return s, nil
+}
+
+// one is the reader of file, a file of the set, which reads at most
+// maxBytes of it.
+func (s FileSet) one(file string, maxBytes int64) (FileReader, error) {
+	src, err := CheckSource(s.kind, file, maxBytes)
+	if err != nil {
+		return nil, err
+	}
+	return s.build(src, true)
+}
+
+// ExtractWith is Extract: the extractor reads no other extractor's values.
+func (s FileSet) ExtractWith(root string, _ map[string][]check.Value) ([]check.Value, error) {
+	return s.Extract(root)
 }
 
 // Extract reads every file the entries name and returns their values.
@@ -143,7 +163,7 @@ func (s FileSet) Extract(root string) ([]check.Value, error) {
 			return nil, err
 		}
 		// At least 1, since a reader's 0 is the default of 32 MiB.
-		r, err := s.build(n.File, max(left, 1), true)
+		r, err := s.one(n.File, max(left, 1))
 		if err != nil {
 			return nil, err
 		}

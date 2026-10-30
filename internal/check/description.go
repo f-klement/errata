@@ -36,3 +36,8 @@ const (
 	// ShapeRecord is a mapping of the fields a rule names (as: record).
 	ShapeRecord
 )
+
+// Whole reports whether the extractor hands assert each value whole, as a
+// map or a record, rather than as its text: assert reads it as a list of
+// maps, and agree, which compares flat values, does not take it.
+func (d Description) Whole() bool { return d.Shape != ShapeFlat }

@@ -64,6 +64,12 @@ func CompileSearch(kind, file, pattern string, maxBytes int64) (Search, error) {
 	if err != nil {
 		return Search{}, err
 	}
+	return CompileSearchAt(kind, src, pattern)
+}
+
+// CompileSearchAt is CompileSearch of the file src names, which core has
+// checked: the search of pattern in it, at most src.Limit bytes of it.
+func CompileSearchAt(kind string, src Source, pattern string) (Search, error) {
 	e, err := compilePattern(kind, pattern)
 	if err != nil {
 		return Search{}, err
@@ -215,15 +221,16 @@ func wrap(head, pattern string) (*regexp.Regexp, error) {
 	return nil, err
 }
 
+// ExtractWith is Extract: the extractor reads no other extractor's values.
+func (e Search) ExtractWith(root string, _ map[string][]check.Value) ([]check.Value, error) {
+	return e.Extract(root)
+}
+
 // Extract returns group 1 of every match in the file under root, at the line
 // where the match starts. A match in which group 1 took no part, such as
 // (a)?b matching b, gives no value.
 func (e Search) Extract(root string) ([]check.Value, error) {
-	data, err := e.Read(root)
-	if err != nil {
-		return nil, err
-	}
-	return e.FromData(data)
+	return ExtractOne(root, e.Source, e)
 }
 
 // FromShared is FromData: a search's time is shared through its deadline,

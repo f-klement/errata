@@ -1,11 +1,12 @@
 // Package env is the env extractor: one variable across every file a rule
 // lists that sets it, each file read by the reader its name chooses. It asks
-// the envfile, shell, gitlab-ci, github-actions and jenkins readers, which
-// the facade hands it, since no reader imports another, and lists the files
-// a glob names from git's index (core.TrackedFiles), running nothing.
+// every kind that declares itself an env reader (core.EnvReader), which the
+// facade hands it, since no reader imports another. env lists the files a
+// glob names from git's index (core.TrackedFiles), running nothing.
 package env
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"path"
@@ -31,23 +32,21 @@ type Spec struct {
 	MaxBytes int64             `json:"max_bytes,omitempty"`
 }
 
-// Reader builds a reader's extractor of the variable name in file, which
-// reads at most maxBytes: Build's for envfile and shell, Every's for the CI
-// readers, whose values each name the job, step or stage they hold for.
-type Reader func(file, name string, maxBytes int64) (check.Extractor, error)
-
-// Readers are the readers env asks, by the key a rule writes for each
-// under extract:, and the shell reader's test of a file's first bytes,
-// IsScript, which reads at most ScriptBytes of them.
-type Readers struct {
-	ByName      map[string]Reader
-	IsScript    func([]byte) bool
-	ScriptBytes int
+// Reader is one reader env asks: Name is the kind's key, which a rule
+// writes for it under readers:, and the rest is what the kind declares
+// (check.EnvReader). Its Read is Build's for envfile and shell, Every's for
+// the CI readers, whose values each name the job, step or stage they hold
+// for.
+type Reader struct {
+	Name string
+	check.EnvReader
 }
 
-// readerNames are the readers env chooses among, in the order a message
-// lists them.
-var readerNames = []string{"envfile", "shell", "gitlab-ci", "github-actions", "jenkins"}
+// Readers are the readers env asks, in any order, since each carries its
+// Order.
+type Readers struct {
+	List []Reader
+}
 
 // maxName is the longest name that loads, in bytes, as the CI readers'.
 const maxName = 1024
@@ -64,34 +63,70 @@ const (
 // variable. envfile and GitLab accept more, which the others do not.
 var variableName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
-// Choose is the reader a file's name chooses, "" for a name that chooses
-// none, which a shell shebang may still choose: envfile for a name that
-// starts with .env, but .envrc, direnv's shell script, or ends in .env,
-// such as prod.env, which compose's env_file: and systemd's
-// EnvironmentFile= name; shell for a name
-// that ends in .sh, and .envrc; gitlab-ci for .gitlab-ci.yml; github-actions
-// for a .yml or .yaml file in .github/workflows; jenkins for Jenkinsfile.
-// A local include of a GitLab CI file is read with the file that includes
-// it.
-func Choose(file string) string {
+// Choose is the reader a file's name chooses: of the readers whose
+// Chooses takes the name, cleaned and with slashes, the one of lowest
+// Order. It is "" for a name that chooses none, which a shell shebang may
+// still choose. Each reader's Chooses says which names it takes; a local
+// include of a GitLab CI file is read with the file that includes it.
+func (r Readers) Choose(file string) string {
 	p := path.Clean(filepath.ToSlash(file))
-	base := path.Base(p)
-	if base == ".envrc" || strings.HasSuffix(base, ".sh") {
-		return "shell"
+	return r.first(func(c Reader) bool { return c.Chooses(p) })
+}
+
+// sniffBytes is the most bytes of a file a reader's Sniffs reads, 0 when
+// none sniffs.
+func (r Readers) sniffBytes() int {
+	n := 0
+	for _, c := range r.List {
+		if c.Sniffs != nil {
+			n = max(n, c.SniffBytes)
+		}
 	}
-	if strings.HasPrefix(base, ".env") || strings.HasSuffix(base, ".env") {
-		return "envfile"
-	}
-	if base == ".gitlab-ci.yml" {
-		return "gitlab-ci"
-	}
-	if base == "Jenkinsfile" {
-		return "jenkins"
-	}
-	if path.Dir(p) == ".github/workflows" && (path.Ext(base) == ".yml" || path.Ext(base) == ".yaml") {
-		return "github-actions"
+	return n
+}
+
+// Sniff is the reader whose Sniffs takes a file's first bytes, each shown
+// at most its SniffBytes of them, the one of lowest Order when two would;
+// "" when none does.
+func (r Readers) Sniff(head []byte) string {
+	return r.first(func(c Reader) bool { return c.Sniffs != nil && c.Sniffs(head[:min(len(head), c.SniffBytes)]) })
+}
+
+// first is the name of the reader of lowest Order for which takes holds,
+// or "" when it holds for none. It asks the readers in Order rather than
+// comparing two Orders: readersOf refuses two readers at one Order, so a
+// comparison's < would be a <= that no input tells apart.
+func (r Readers) first(takes func(Reader) bool) string {
+	for _, c := range r.byOrder() {
+		if takes(c) {
+			return c.Name
+		}
 	}
 	return ""
+}
+
+// byOrder is the readers, lowest Order first.
+func (r Readers) byOrder() []Reader {
+	return slices.SortedStableFunc(slices.Values(r.List), func(a, b Reader) int { return cmp.Compare(a.Order, b.Order) })
+}
+
+// find is the reader named name, nil for none.
+func (r Readers) find(name string) *Reader {
+	i := slices.IndexFunc(r.List, func(c Reader) bool { return c.Name == name })
+	if i < 0 {
+		return nil
+	}
+	return &r.List[i]
+}
+
+// names are the readers' names by their Order, as a message lists them.
+func (r Readers) names() string {
+	sorted := r.byOrder()
+	out := make([]string, len(sorted))
+	for i, c := range sorted {
+		out[i] = c.Name
+	}
+	return strings.Join(out, ", ")
 }
 
 // Build checks s and returns its extractor.
@@ -119,8 +154,8 @@ func Build(s Spec, r Readers) (check.Extractor, error) {
 		if i < 0 {
 			return nil, fmt.Errorf("env: readers names %s, which files does not list", core.Quote(f))
 		}
-		if !slices.Contains(readerNames, reader) {
-			return nil, fmt.Errorf("env: readers gives %s the reader %s; write one of %s", core.Quote(f), core.Quote(reader), strings.Join(readerNames, ", "))
+		if r.find(reader) == nil {
+			return nil, fmt.Errorf("env: readers gives %s the reader %s; write one of %s", core.Quote(f), core.Quote(reader), r.names())
 		}
 		x.by[i] = reader
 	}
@@ -130,12 +165,12 @@ func Build(s Spec, r Readers) (check.Extractor, error) {
 	for i, e := range files.Entries {
 		reader := x.by[i]
 		if reader == "" {
-			reader = Choose(e.Clean)
+			reader = r.Choose(e.Clean)
 		}
 		if reader == "" {
 			continue
 		}
-		if _, err := r.ByName[reader](e.Clean, s.Name, s.MaxBytes); err != nil {
+		if _, err := r.find(reader).Read(e.Clean, s.Name, s.MaxBytes); err != nil {
 			return nil, fmt.Errorf("env: %w", err)
 		}
 	}
@@ -196,14 +231,15 @@ type extractor struct {
 	readers Readers
 }
 
-// MayReturnNotLiteral reports true: every reader env asks returns a value
-// its file computes, such as $(cmd) or ${{ expr }}, marked not literal.
-func (extractor) MayReturnNotLiteral() bool { return true }
-
 // target is a file to read and the reader its entry gives, "" for the one
 // its name or its shebang chooses.
 type target struct {
 	file, reader string
+}
+
+// ExtractWith is Extract: the extractor reads no other extractor's values.
+func (x extractor) ExtractWith(root string, _ map[string][]check.Value) ([]check.Value, error) {
+	return x.Extract(root)
 }
 
 // Extract reads each file the entries name, in their order, a glob's in
@@ -218,7 +254,7 @@ func (x extractor) Extract(root string) ([]check.Value, error) {
 	left := x.limit // the bytes the files read may still hold
 	var held int64  // the bytes of the values so far
 	for _, t := range targets {
-		head, size, err := core.Source{File: t.file, Limit: left}.Head(root, x.readers.ScriptBytes)
+		head, size, err := core.Source{File: t.file, Limit: left}.Head(root, x.readers.sniffBytes())
 		if err != nil && errors.Is(err, core.ErrTooLarge) {
 			// The limit the message names is what the files before left,
 			// or max_bytes for the first.
@@ -229,13 +265,13 @@ func (x extractor) Extract(root string) ([]check.Value, error) {
 		}
 		reader := t.reader
 		if reader == "" {
-			reader = Choose(t.file)
-		}
-		if reader == "" && x.readers.IsScript(head) {
-			reader = "shell"
+			reader = x.readers.Choose(t.file)
 		}
 		if reader == "" {
-			return nil, fmt.Errorf("env: no reader reads %s: its name is none the readers' are, and it starts with no #! line of a shell; give it one under readers:, one of %s", core.Quote(t.file), strings.Join(readerNames, ", "))
+			reader = x.readers.Sniff(head)
+		}
+		if reader == "" {
+			return nil, fmt.Errorf("env: no reader reads %s: its name is none the readers' are, and it starts with no #! line of a shell; give it one under readers:, one of %s", core.Quote(t.file), x.readers.names())
 		}
 		// At least 1, since a reader's 0 is the default of 32 MiB: a file
 		// that grows past what Head saw is then refused as grown.
@@ -264,7 +300,7 @@ func (x extractor) Extract(root string) ([]check.Value, error) {
 // it read, for a reader that reads more files than the one, as gitlab-ci
 // reads its includes (BytesReader), else 0.
 func (x extractor) read(root, file, reader string, maxBytes int64) ([]check.Value, int64, error) {
-	r, err := x.readers.ByName[reader](file, x.name, maxBytes)
+	r, err := x.readers.find(reader).Read(file, x.name, maxBytes)
 	if err != nil {
 		return nil, 0, fmt.Errorf("env: %w", err)
 	}

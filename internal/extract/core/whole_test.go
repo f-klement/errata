@@ -58,24 +58,24 @@ func TestAsMapReturnsEachMappingWhole(t *testing.T) {
 	} {
 		got := mustRun(t, c.spec, root)
 		if len(got) != 2 {
-			t.Fatalf("%s: %d values", c.spec.Kind(), len(got))
+			t.Fatalf("%s: %d values", c.spec.Describe().Label, len(got))
 		}
 		want := []string{`{"matchPackageNames": ["a", "b"], "automerge": "false"}`, `{"prPriority": "5", "x": {"y": "null"}}`}
 		for i, v := range got {
 			if v.Data == nil || v.Text != want[i] || v.Data.Show(1000) != want[i] || v.At != v.Data.At {
-				t.Errorf("%s: value %d is %q at %s, Data %v", c.spec.Kind(), i, v.Text, v.At, v.Data)
+				t.Errorf("%s: value %d is %q at %s, Data %v", c.spec.Describe().Label, i, v.Text, v.At, v.Data)
 				continue
 			}
 			if l := lines(v.Data); l != c.lines[i] {
-				t.Errorf("%s: value %d at %s, want %s", c.spec.Kind(), i, l, c.lines[i])
+				t.Errorf("%s: value %d at %s, want %s", c.spec.Describe().Label, i, l, c.lines[i])
 			}
 		}
-		if !c.spec.Maps() {
-			t.Errorf("%s: Maps is false", c.spec.Kind())
+		if !c.spec.Describe().Whole() {
+			t.Errorf("%s: Maps is false", c.spec.Describe().Label)
 		}
 	}
 	flat := extract.Of(json.Kind, json.Spec{File: "r.json", Path: "packageRules[*].automerge"})
-	if got := mustRun(t, flat, root); flat.Maps() || len(got) != 1 || got[0].Data != nil || got[0].Text != "false" {
+	if got := mustRun(t, flat, root); flat.Describe().Whole() || len(got) != 1 || got[0].Data != nil || got[0].Text != "false" {
 		t.Errorf("without as: %v", got)
 	}
 }
@@ -103,12 +103,12 @@ func TestAsMapRefusesWhatIsNoMapping(t *testing.T) {
 		extract.Of(toml.Kind, toml.Spec{File: "r.toml", Path: "a", As: "list"}),
 	} {
 		_, err := extract.Build(s)
-		want := s.Kind() + `: as "list" is not one errata reads; write map to hand assert each mapping the path selects whole, record to read the fields of each element it selects into one, or leave the key out for its scalars`
+		want := s.Describe().Label + `: as "list" is not one errata reads; write map to hand assert each mapping the path selects whole, record to read the fields of each element it selects into one, or leave the key out for its scalars`
 		if err == nil || err.Error() != want {
-			t.Errorf("%s: %v", s.Kind(), err)
+			t.Errorf("%s: %v", s.Describe().Label, err)
 		}
-		if s.Maps() {
-			t.Errorf("%s: as list counts as map", s.Kind())
+		if s.Describe().Whole() {
+			t.Errorf("%s: as list counts as map", s.Describe().Label)
 		}
 	}
 	root := extracttest.Repo(t, map[string]string{"r.yaml": "a: x\nb:\n  - 1\n"})

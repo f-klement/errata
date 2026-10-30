@@ -83,6 +83,10 @@ func (v value) Extract(string) ([]check.Value, error) {
 	return []check.Value{{Text: string(v), At: check.Location{File: "f.yaml", Line: 1}}}, nil
 }
 
+func (v value) ExtractWith(root string, _ map[string][]check.Value) ([]check.Value, error) {
+	return v.Extract(root)
+}
+
 func agreeing(id string, a, b value) check.Check {
 	return check.Check{ID: id, Scope: check.ScopeRepo, Kind: &check.Rule{
 		Extractors: []check.NamedExtractor{{Name: "a", Extractor: a}, {Name: "b", Extractor: b}},

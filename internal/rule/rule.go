@@ -76,9 +76,9 @@ func count(n int, noun string) string {
 // every value was left out found no value. cancelled is set when the context
 // ended before an extractor ran.
 func extractAll(ctx context.Context, root string, r check.Rule, names []string) (extracted []check.Extracted, problems []string, cancelled string) {
-	byName := make(map[string]check.Extractor, len(r.Extractors))
+	byName := make(map[string]check.NamedExtractor, len(r.Extractors))
 	for _, e := range r.Extractors {
-		byName[e.Name] = e.Extractor
+		byName[e.Name] = e
 	}
 	// The literal values each extractor that ran returned, for the
 	// extractors that read them; one that failed has no entry.
@@ -144,23 +144,19 @@ func shown(r check.Rule, values []check.Value) []check.Value {
 	return out
 }
 
-// extractOne runs e: Extract, or for a check.Dependent ExtractWith the
-// values in read of each extractor it needs. One it needs that has no
-// entry in read failed, so e cannot run, and fails for it.
-func extractOne(root string, e check.Extractor, read map[string][]check.Value) ([]check.Value, error) {
-	d, ok := e.(check.Dependent)
-	if !ok {
-		return e.Extract(root)
-	}
-	values := map[string][]check.Value{}
-	for _, n := range d.Needs() {
+// extractOne runs e with the values in read of each extractor its
+// Description reads. One it reads that has no entry in read failed, so e
+// cannot run, and fails for it.
+func extractOne(root string, e check.NamedExtractor, read map[string][]check.Value) ([]check.Value, error) {
+	values := make(map[string][]check.Value, len(e.Description.Reads))
+	for _, n := range e.Description.Reads {
 		got, ran := read[n]
 		if !ran {
 			return nil, fmt.Errorf("it reads the values of extractor %q, which could not be read", n)
 		}
 		values[n] = got
 	}
-	return d.ExtractWith(root, values)
+	return e.Extractor.ExtractWith(root, values)
 }
 
 // literal is values without the not literal ones, which a rule never
@@ -222,21 +218,7 @@ func assert(ctx context.Context, root string, r check.Rule) (check.Verdict, stri
 		return check.VerdictUnknown, strings.Join(problems, "\n"), extracted
 	}
 
-	values := make(map[string][]string, len(extracted))
-	files := make(map[string][]string, len(extracted))
-	maps := map[string][]*check.Data{}
-	for _, x := range extracted {
-		texts := make([]string, len(x.Values))
-		where := make([]string, len(x.Values))
-		for i, v := range x.Values {
-			texts[i], where[i] = r.Normalized(v.Text), v.At.File
-			if v.Data != nil {
-				maps[x.Extractor] = append(maps[x.Extractor], normalizedData(r, v.Data))
-			}
-		}
-		values[x.Extractor], files[x.Extractor] = texts, where
-	}
-	holds, err := r.Compiled.Eval(ctx, values, files, maps)
+	holds, err := r.Compiled.Eval(ctx, normalized(r, extracted))
 	switch {
 	case err != nil:
 		return check.VerdictUnknown, "assert: " + err.Error() + "\n" + saw(r, extracted), extracted
@@ -245,6 +227,25 @@ func assert(ctx context.Context, root string, r check.Rule) (check.Verdict, stri
 	default:
 		return check.VerdictFalse, "assert: the expression is false\n" + saw(r, extracted), extracted
 	}
+}
+
+// normalized is extracted with r's normalize applied to each value's text
+// and to every scalar of a value handed over whole, as assert evaluates
+// them. extracted is not changed.
+func normalized(r check.Rule, extracted []check.Extracted) []check.Extracted {
+	out := make([]check.Extracted, len(extracted))
+	for i, x := range extracted {
+		values := make([]check.Value, len(x.Values))
+		for j, v := range x.Values {
+			v.Text = r.Normalized(v.Text)
+			if v.Data != nil {
+				v.Data = normalizedData(r, v.Data)
+			}
+			values[j] = v
+		}
+		out[i] = check.Extracted{Extractor: x.Extractor, Values: values, LeftOut: x.LeftOut}
+	}
+	return out
 }
 
 // fieldsNoneHolds is a problem for each field of a record extractor that
@@ -257,10 +258,10 @@ func fieldsNoneHolds(r check.Rule, extracted []check.Extracted) []string {
 	var problems []string
 	for _, e := range r.Extractors {
 		i := slices.IndexFunc(extracted, func(x check.Extracted) bool { return x.Extractor == e.Name })
-		if e.Fields == nil || i < 0 || len(extracted[i].Values) == 0 || slices.Contains(r.AllowEmpty, e.Name) {
+		if e.Description.Fields == nil || i < 0 || len(extracted[i].Values) == 0 || slices.Contains(r.AllowEmpty, e.Name) {
 			continue
 		}
-		for _, field := range e.Fields {
+		for _, field := range e.Description.Fields {
 			if !slices.ContainsFunc(extracted[i].Values, func(v check.Value) bool { return v.Data != nil && v.Data.Field(field) != nil }) {
 				problems = append(problems, fmt.Sprintf("extractor %q found no record with field %q", e.Name, field))
 			}

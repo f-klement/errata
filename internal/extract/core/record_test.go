@@ -44,8 +44,8 @@ func TestRegexRecordReturnsEachMatchsNamedGroups(t *testing.T) {
 				t.Errorf("%s: record %d at %s, want %s", file, i, l, want[i].lines)
 			}
 		}
-		if !s.Maps() || !slices.Equal(s.Fields(), []string{"name", "note", "group"}) {
-			t.Errorf("Maps %v, Fields %v", s.Maps(), s.Fields())
+		if !s.Describe().Whole() || !slices.Equal(s.Describe().Fields, []string{"name", "note", "group"}) {
+			t.Errorf("Maps %v, Fields %v", s.Describe().Whole(), s.Describe().Fields)
 		}
 	}
 	// A pattern that looks back, ^ or \b, is searched after a match from
@@ -56,7 +56,7 @@ func TestRegexRecordReturnsEachMatchsNamedGroups(t *testing.T) {
 		t.Errorf("a pattern that looks back: %v", back)
 	}
 	flat := extract.Of(regex.Kind, regex.Spec{File: "g.yaml", Pattern: pattern})
-	if got := mustRun(t, flat, root); flat.Maps() || flat.Fields() != nil || len(got) != 2 || got[0].Data != nil || got[0].Text != "a" {
+	if got := mustRun(t, flat, root); flat.Describe().Whole() || flat.Describe().Fields != nil || len(got) != 2 || got[0].Data != nil || got[0].Text != "a" {
 		t.Errorf("without as: %v", got)
 	}
 }
@@ -81,8 +81,8 @@ func TestRegexRecordRefusesWhatIsNoRecord(t *testing.T) {
 		s := extract.Of(regex.Kind, regex.Spec{File: "f", Pattern: `(?P<x>a)`, As: as})
 		_, err := extract.Build(s)
 		extracttest.WantError(t, err, fmt.Sprintf("regex: as %q is not one errata reads; write record to read each match's named groups into one record, or leave the key out for group 1", as))
-		if s.Maps() || s.Fields() != nil {
-			t.Errorf("as %s: Maps %v, Fields %v", as, s.Maps(), s.Fields())
+		if s.Describe().Whole() || s.Describe().Fields != nil {
+			t.Errorf("as %s: Maps %v, Fields %v", as, s.Describe().Whole(), s.Describe().Fields)
 		}
 	}
 }
@@ -146,22 +146,22 @@ func TestRecordReadsTheFieldsOfEachElement(t *testing.T) {
 		got := mustRun(t, c.spec, root)
 		want := []string{`{"desc": "QUERY", "name": "a", "tags": ["x", "y"], "url": "http://loki"}`, `{"name": "b"}`}
 		if len(got) != len(want) {
-			t.Fatalf("%s: %d records: %v", c.spec.Kind(), len(got), got)
+			t.Fatalf("%s: %d records: %v", c.spec.Describe().Label, len(got), got)
 		}
 		for i, v := range got {
 			if v.Data == nil || v.Text != want[i] || v.At != v.Data.At {
-				t.Errorf("%s: record %d is %q at %s", c.spec.Kind(), i, v.Text, v.At)
+				t.Errorf("%s: record %d is %q at %s", c.spec.Describe().Label, i, v.Text, v.At)
 			} else if l := lines(v.Data); l != c.lines[i] {
-				t.Errorf("%s: record %d at %s, want %s", c.spec.Kind(), i, l, c.lines[i])
+				t.Errorf("%s: record %d at %s, want %s", c.spec.Describe().Label, i, l, c.lines[i])
 			}
 		}
-		if !c.spec.Maps() || !slices.Equal(c.spec.Fields(), []string{"desc", "missing", "name", "tags", "url"}) {
-			t.Errorf("%s: Maps %v, Fields %v", c.spec.Kind(), c.spec.Maps(), c.spec.Fields())
+		if !c.spec.Describe().Whole() || !slices.Equal(c.spec.Describe().Fields, []string{"desc", "missing", "name", "tags", "url"}) {
+			t.Errorf("%s: Maps %v, Fields %v", c.spec.Describe().Label, c.spec.Describe().Whole(), c.spec.Describe().Fields)
 		}
 	}
 	m := extract.Of(yaml.Kind, yaml.Spec{File: "e.yaml", Path: "endpoints[*]", As: "map"})
-	if m.Fields() != nil {
-		t.Errorf("as: map has fields %v", m.Fields())
+	if m.Describe().Fields != nil {
+		t.Errorf("as: map has fields %v", m.Describe().Fields)
 	}
 }
 

@@ -6,12 +6,18 @@ import (
 	"os"
 	"os/exec"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/f-klement/errata/internal/check"
 	"github.com/f-klement/errata/internal/extract/core"
+	"github.com/f-klement/errata/internal/extract/envfile"
 	"github.com/f-klement/errata/internal/extract/extracttest"
+	"github.com/f-klement/errata/internal/extract/githubactions"
+	"github.com/f-klement/errata/internal/extract/gitlabci"
+	"github.com/f-klement/errata/internal/extract/jenkins"
+	"github.com/f-klement/errata/internal/extract/shell"
 )
 
 // call is one build of a fake reader.
@@ -20,7 +26,22 @@ type call struct {
 	maxBytes     int64
 }
 
-// fakes are readers that read each line NAME=value of a file, in any
+// declared are the env readers the reader packages declare, in the order
+// of the facade's kinds, which is not env's: Readers takes them in any
+// order.
+var declared = []struct {
+	name string
+	env  *core.EnvReader
+}{
+	{envfile.Kind.Key, envfile.Kind.Env},
+	{gitlabci.Kind.Key, gitlabci.Kind.Env},
+	{shell.Kind.Key, shell.Kind.Env},
+	{githubactions.Kind.Key, githubactions.Kind.Env},
+	{jenkins.Kind.Key, jenkins.Kind.Env},
+}
+
+// fakes are the declared readers, each choosing files by its own name
+// test, that read each line NAME=value of a file, in any
 // format, as a value of NAME, with the reader's name and the line as its
 // origin for a CI reader, and record each build. A reader refuses the name
 // BAD, and github-actions also GITHUB_X, as the real one does; a file that
@@ -28,9 +49,10 @@ type call struct {
 // repeats the first value ten times, as a CI reader repeats a value for
 // each job.
 func fakes(calls *[]call) Readers {
-	r := Readers{ByName: map[string]Reader{}, IsScript: func(b []byte) bool { return strings.HasPrefix(string(b), "#!/bin/sh") }, ScriptBytes: 9}
-	for _, name := range readerNames {
-		r.ByName[name] = func(file, variable string, maxBytes int64) (check.Extractor, error) {
+	var r Readers
+	for _, d := range declared {
+		name := d.name
+		read := func(file, variable string, maxBytes int64) (check.Extractor, error) {
 			src, err := core.CheckSource(name, file, maxBytes)
 			if err != nil {
 				return nil, err
@@ -45,6 +67,11 @@ func fakes(calls *[]call) Readers {
 			}
 			return f, nil
 		}
+		e := check.EnvReader{Order: d.env.Order, Chooses: d.env.Chooses, Read: read}
+		if name == "shell" {
+			e.Sniffs, e.SniffBytes = func(b []byte) bool { return string(b) == "#!/bin/sh" }, 9
+		}
+		r.List = append(r.List, Reader{Name: name, EnvReader: e})
 	}
 	return r
 }
@@ -53,6 +80,10 @@ type fake struct {
 	src  core.Source
 	name string
 	ci   bool
+}
+
+func (f fake) ExtractWith(root string, _ map[string][]check.Value) ([]check.Value, error) {
+	return f.Extract(root)
 }
 
 func (f fake) Extract(root string) ([]check.Value, error) {
@@ -138,25 +169,55 @@ func tracked(t *testing.T, files map[string]string, add ...string) string {
 	return root
 }
 
-// The name chooses the reader, and a name that chooses none is "". Planted
-// breaks: .envrc read as an env file; a workflow in a directory below
-// .github/workflows taken, which GitHub does not run; prod.env not read as
-// an env file.
-func TestChoose(t *testing.T) {
-	for file, want := range map[string]string{
-		".env": "envfile", ".env.local": "envfile", "app/.env.production": "envfile", "./.env": "envfile",
-		".envrc": "shell", "deploy.sh": "shell", "bin/x.sh": "shell",
-		".gitlab-ci.yml": "gitlab-ci", "sub/.gitlab-ci.yml": "gitlab-ci",
-		".github/workflows/ci.yml": "github-actions", ".github/workflows/ci.yaml": "github-actions",
-		"./.github/workflows/a.yml":  "github-actions",
-		".github/workflows/x/ci.yml": "", ".github/ci.yml": "", ".github/workflows/ci.json": "",
-		"Jenkinsfile": "jenkins", "ci/Jenkinsfile": "jenkins",
-		"a.env": "envfile", "config/prod.env": "envfile",
-		"env": "", "bin/deploy": "", "a.envx": "", "Jenkinsfile.groovy": "",
-	} {
-		if got := Choose(file); got != want {
-			t.Errorf("%s: %q, want %q", file, got, want)
-		}
+// Of the readers a name chooses, the one of lowest Order reads it, in
+// whatever order Readers lists them, and each Chooses sees the name
+// cleaned, with slashes; a message lists the readers by Order. Planted
+// breaks: the highest Order taken; the first reader that takes a name
+// taken; the name not cleaned; the names listed as Readers lists them.
+func TestChooseTakesTheLowestOrder(t *testing.T) {
+	var seen []string
+	all := func(file string) bool { seen = append(seen, file); return true }
+	only := func(file string) bool { return file == "x.c" }
+	r := Readers{List: []Reader{
+		{Name: "b", EnvReader: check.EnvReader{Order: 2, Chooses: all}},
+		{Name: "c", EnvReader: check.EnvReader{Order: 3, Chooses: only}},
+		{Name: "a", EnvReader: check.EnvReader{Order: 1, Chooses: all}},
+	}}
+	if got := r.Choose("./sub/../x.c"); got != "a" {
+		t.Errorf("chose %q, want a", got)
+	}
+	if len(seen) == 0 || slices.ContainsFunc(seen, func(f string) bool { return f != "x.c" }) {
+		t.Errorf("Chooses saw %q, want x.c, cleaned", seen)
+	}
+	if got := r.names(); got != "a, b, c" {
+		t.Errorf("names %q, want a, b, c", got)
+	}
+	if got := (Readers{List: r.List[1:2]}).Choose("y"); got != "" {
+		t.Errorf("chose %q for a name no reader takes", got)
+	}
+}
+
+// Of the readers whose Sniffs takes a file's first bytes, the one of
+// lowest Order reads it, in whatever order Readers lists them; each Sniffs
+// sees at most its own SniffBytes, and a reader that declares none is not
+// asked. Planted breaks: the sniffer of highest Order taken; the readers
+// asked in List's order.
+func TestSniffTakesTheLowestOrder(t *testing.T) {
+	var seen []string
+	hash := func(head []byte) bool { seen = append(seen, string(head)); return strings.HasPrefix(string(head), "#") }
+	r := Readers{List: []Reader{
+		{Name: "c", EnvReader: check.EnvReader{Order: 3, Sniffs: hash, SniffBytes: 1}},
+		{Name: "none", EnvReader: check.EnvReader{Order: 0}},
+		{Name: "b", EnvReader: check.EnvReader{Order: 2, Sniffs: hash, SniffBytes: 3}},
+	}}
+	if got := r.Sniff([]byte("#!/bin/sh")); got != "b" {
+		t.Errorf("sniffed %q, want b", got)
+	}
+	if !slices.Contains(seen, "#!/") {
+		t.Errorf("Sniffs saw %q, want #!/, cut at b's SniffBytes", seen)
+	}
+	if got := r.Sniff([]byte("x")); got != "" {
+		t.Errorf("sniffed %q for bytes no reader takes", got)
 	}
 }
 
@@ -448,8 +509,7 @@ func TestPlaceAndResolve(t *testing.T) {
 		t.Errorf("Resolve made readers %v from none", got.Readers)
 	}
 	var calls []call
-	x, err := Build(b, fakes(&calls))
-	if err != nil || !check.MayReturnNotLiteral(x) {
+	if _, err := Build(b, fakes(&calls)); err != nil || !Describe(b).NotLiteral {
 		t.Errorf("Build: %v, or no not literal value", err)
 	}
 }

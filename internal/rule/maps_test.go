@@ -41,7 +41,7 @@ func mapsOf(name string, ds ...*check.Data) check.NamedExtractor {
 	for i, d := range ds {
 		values[i] = whole(d)
 	}
-	return check.NamedExtractor{Name: name, Extractor: fake{values: values}, Maps: true}
+	return check.NamedExtractor{Name: name, Extractor: fake{values: values}, Description: check.Description{Shape: check.ShapeMap}}
 }
 
 // blastRadius is k3s's blast_radius_charts_never_automerge as a rule: the
@@ -79,10 +79,10 @@ func TestMapsBindAnIntermediateValue(t *testing.T) {
 	if res := Run(context.Background(), ".", assertRule(t, blastRadiusBound, mapsOf("rules", early, blast, late))); res.Verdict != check.VerdictFalse {
 		t.Errorf("a later rule turns automerge on for cert-manager: %v %s", res.Verdict, res.Message)
 	}
-	if _, err := Compile("cel.bind(first, m[0], has(first.z))", []string{"m"}, Lists{Maps: []string{"m"}}); err != nil {
+	if _, err := compileNamed("cel.bind(first, m[0], has(first.z))", []string{"m"}, []string{"m"}); err != nil {
 		t.Errorf("m read only in the bound value: %v", err)
 	}
-	if _, err := Compile("cel.bind(z, m[0].z, z != true)", []string{"m"}, Lists{Maps: []string{"m"}}); err == nil || !strings.Contains(err.Error(), "the bool true is compared") {
+	if _, err := compileNamed("cel.bind(z, m[0].z, z != true)", []string{"m"}, []string{"m"}); err == nil || !strings.Contains(err.Error(), "the bool true is compared") {
 		t.Errorf("a bound value of a map compared with true: %v", err)
 	}
 }
@@ -160,13 +160,13 @@ func TestMapsTypeTheirMembers(t *testing.T) {
 // extractor beside it stays a list(string). Planted break: every extractor
 // declared a list of maps, which loaded v.startsWith('a').
 func TestMapsAreTypedAtLoad(t *testing.T) {
-	if _, err := Compile("m[0].startsWith('a')", []string{"m"}, Lists{Maps: []string{"m"}}); err == nil || !strings.Contains(err.Error(), "found no matching overload for 'startsWith'") {
+	if _, err := compileNamed("m[0].startsWith('a')", []string{"m"}, []string{"m"}); err == nil || !strings.Contains(err.Error(), "found no matching overload for 'startsWith'") {
 		t.Errorf("a map read as a string: %v", err)
 	}
-	if _, err := Compile("m[0].a == v[0] && v[0].startsWith('a')", []string{"m", "v"}, Lists{Maps: []string{"m"}}); err != nil {
+	if _, err := compileNamed("m[0].a == v[0] && v[0].startsWith('a')", []string{"m", "v"}, []string{"m"}); err != nil {
 		t.Errorf("a flat extractor beside a map extractor: %v", err)
 	}
-	if _, err := Compile("v[0].a == 'x'", []string{"v"}, Lists{}); err == nil {
+	if _, err := compileNamed("v[0].a == 'x'", []string{"v"}, nil); err == nil {
 		t.Error("a flat extractor read as a map loaded")
 	}
 }
@@ -201,15 +201,15 @@ func TestMapsAreNormalized(t *testing.T) {
 // rule is unknown rather than reading a value under the wrong file.
 // Planted break: the count left unchecked, which read a list one map short.
 func TestMapsRefuseValuesWithoutTheirFiles(t *testing.T) {
-	a, err := Compile("size(m) == 1", []string{"m"}, Lists{Maps: []string{"m"}})
+	a, err := compileNamed("size(m) == 1", []string{"m"}, []string{"m"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = a.Eval(context.Background(), map[string][]string{"m": {"x", "y"}}, map[string][]string{"m": {"a", "a"}}, map[string][]*check.Data{"m": {str("x", 1)}})
+	_, err = a.Eval(context.Background(), asExtracted(map[string][]string{"m": {"x", "y"}}, map[string][]string{"m": {"a", "a"}}, map[string][]*check.Data{"m": {str("x", 1)}}))
 	if err == nil || err.Error() != `extractor "m": 1 maps came with 2 files, so the values are not whole` {
 		t.Errorf("got %v", err)
 	}
-	if ok, err := a.Eval(context.Background(), nil, nil, nil); err != nil || ok {
+	if ok, err := a.Eval(context.Background(), asExtracted(nil, nil, nil)); err != nil || ok {
 		t.Errorf("no map and no file: %v %v", ok, err)
 	}
 }
@@ -231,12 +231,12 @@ func TestMapsOfALargeListStayInsideTheCostLimit(t *testing.T) {
 	if res := Run(context.Background(), ".", assertRule(t, "size(m) == 50000 && m[49999].n == '49999'", mapsOf("m", ds...))); res.Verdict != check.VerdictTrue {
 		t.Fatalf("100000 nodes: %v %.200s", res.Verdict, res.Message)
 	}
-	a, err := compileWith("m.all(x, m.exists(y, y.n == x.n))", []string{"m"}, Lists{Maps: []string{"m"}}, limits{cost: 10000, timeout: EvalTimeout, grace: stopGrace})
+	a, err := compileWith("m.all(x, m.exists(y, y.n == x.n))", described([]string{"m"}, []string{"m"}), limits{cost: 10000, timeout: EvalTimeout, grace: stopGrace})
 	if err != nil {
 		t.Fatal(err)
 	}
 	files := make([]string, 300)
-	_, err = a.Eval(context.Background(), nil, map[string][]string{"m": files}, map[string][]*check.Data{"m": ds[:300]})
+	_, err = a.Eval(context.Background(), asExtracted(nil, map[string][]string{"m": files}, map[string][]*check.Data{"m": ds[:300]}))
 	if err == nil || err.Error() != "the evaluation exceeded the cost limit of 10000" {
 		t.Errorf("a comprehension inside another: %v", err)
 	}
@@ -333,15 +333,15 @@ func TestMapsRefuseComparisonsTheyNeverEqual(t *testing.T) {
 		"cel.bind(mixed, [1, 'a'], m[0].z in mixed)":                                     "the number 1 is compared",
 	} {
 		// The refusal comes before the test that each extractor is used.
-		_, err := Compile(expr, []string{"m", "v"}, Lists{Maps: []string{"m"}})
+		_, err := compileNamed(expr, []string{"m", "v"}, []string{"m"})
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%s: %v, want %q", expr, err, want)
 		}
 	}
-	if _, err := Compile("m[0].z == false || m[0].z == 1", []string{"m"}, Lists{Maps: []string{"m"}}); err == nil || strings.Count(err.Error(), "is compared") != 2 {
+	if _, err := compileNamed("m[0].z == false || m[0].z == 1", []string{"m"}, []string{"m"}); err == nil || strings.Count(err.Error(), "is compared") != 2 {
 		t.Errorf("each literal refused: %v", err)
 	}
-	if _, err := Compile("cel.bind(want, {'automerge': true}, m.exists(r, r == want) && m.all(r, r != want))", []string{"m"}, Lists{Maps: []string{"m"}}); err == nil || strings.Count(err.Error(), "is compared") != 1 {
+	if _, err := compileNamed("cel.bind(want, {'automerge': true}, m.exists(r, r == want) && m.all(r, r != want))", []string{"m"}, []string{"m"}); err == nil || strings.Count(err.Error(), "is compared") != 1 {
 		t.Errorf("a bound member reached twice is refused once: %v", err)
 	}
 	for _, expr := range []string{
@@ -361,7 +361,7 @@ func TestMapsRefuseComparisonsTheyNeverEqual(t *testing.T) {
 		"m.exists(r, r.z in ['1', '2'].map(x, x))",
 		"type(m[0].z) == int && 'f' in by_file(m) && by_file(m).size() == 1 && m[0].z == string(5)",
 	} {
-		if _, err := Compile(expr+" && size(m) + size(v) >= 0", []string{"m", "v"}, Lists{Maps: []string{"m"}}); err != nil {
+		if _, err := compileNamed(expr+" && size(m) + size(v) >= 0", []string{"m", "v"}, []string{"m"}); err != nil {
 			t.Errorf("%s: %v", expr, err)
 		}
 	}
@@ -437,12 +437,12 @@ func TestMapsRefusalVisitsEachNodeOnce(t *testing.T) {
 // out: dyn() around it loads. Planted break: the message without its
 // escape, which fails the wording.
 func TestDynThatIsNoMapsValueIsRefusedWithItsWayOut(t *testing.T) {
-	_, err := Compile("[1, 'a'][0] == 1 && size(v) >= 0", []string{"v"}, Lists{})
+	_, err := compileNamed("[1, 'a'][0] == 1 && size(v) >= 0", []string{"v"}, nil)
 	if err == nil || !strings.Contains(err.Error(), "the number 1 is compared with a value CEL types dyn, such as one from a map;") || !strings.Contains(err.Error(), "; if the other side does not come from a map, wrap it in dyn()") {
 		t.Errorf("a dyn of a list literal: %v", err)
 	}
 	for _, expr := range []string{"dyn([1, 'a'][0]) == 1", "1 in dyn([1, 'a'])"} {
-		if _, err := Compile(expr+" && size(v) >= 0", []string{"v"}, Lists{}); err != nil {
+		if _, err := compileNamed(expr+" && size(v) >= 0", []string{"v"}, nil); err != nil {
 			t.Errorf("%s: %v", expr, err)
 		}
 	}

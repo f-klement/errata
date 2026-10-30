@@ -6,7 +6,6 @@ package properties
 import (
 	"bytes"
 	"errors"
-	"path/filepath"
 	"unicode/utf16"
 	"unicode/utf8"
 
@@ -19,9 +18,8 @@ import (
 // path, so server.port is the key server.port: the dots the yaml extractor
 // reads as steps are characters of the key here.
 type Spec struct {
-	File     string `json:"file"`
-	Key      string `json:"key"`
-	MaxBytes int64  `json:"max_bytes,omitempty"`
+	core.OneFile
+	Key string `json:"key"`
 }
 
 // Kind is the properties kind, which a rule writes under the key properties.
@@ -30,13 +28,13 @@ var Kind = core.Kind[Spec]{Key: "properties", Place: Place, Resolve: Resolve, De
 // Place is p with only what decides where it reads: the file cleaned, and
 // no max_bytes, since a limit does not change what is read.
 func Place(p Spec) Spec {
-	p.File, p.MaxBytes = filepath.Clean(p.File), 0
+	p.OneFile = p.Place()
 	return p
 }
 
 // Resolve is p with its max_bytes written out, for errata list.
 func Resolve(p Spec) Spec {
-	p.MaxBytes = core.MaxBytes(p.MaxBytes)
+	p.OneFile = p.Resolved()
 	return p
 }
 
@@ -48,7 +46,7 @@ func Describe(p Spec) check.Description {
 
 // Build checks p and returns its extractor.
 func Build(p Spec) (check.Extractor, error) {
-	src, err := core.CheckSource("properties", p.File, p.MaxBytes)
+	src, err := p.Check(Kind.Key)
 	if err != nil {
 		return nil, err
 	}

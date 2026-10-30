@@ -22,6 +22,9 @@ type fakeReader struct {
 }
 
 func (r fakeReader) Extract(string) ([]check.Value, error) { return nil, errors.New("not read whole") }
+func (r fakeReader) ExtractWith(root string, _ map[string][]check.Value) ([]check.Value, error) {
+	return r.Extract(root)
+}
 func (r fakeReader) FromShared(data []byte, _ *Spent) ([]check.Value, error) {
 	var out []check.Value
 	for i, line := range strings.Split(strings.TrimSuffix(string(data), "\n"), "\n") {
@@ -35,11 +38,11 @@ func (r fakeReader) FromShared(data []byte, _ *Spent) ([]check.Value, error) {
 // built records each reader a set builds.
 type built struct{ readers []fakeReader }
 
-func (b *built) build(file string, maxBytes int64, inSet bool) (FileReader, error) {
-	if strings.Contains(file, "refused") {
-		return nil, errors.New("fake: refused " + file)
+func (b *built) build(src Source, inSet bool) (FileReader, error) {
+	if strings.Contains(src.File, "refused") {
+		return nil, errors.New("fake: refused " + src.File)
 	}
-	r := fakeReader{file: file, limit: maxBytes, inSet: inSet}
+	r := fakeReader{file: src.File, limit: src.Limit, inSet: inSet}
 	b.readers = append(b.readers, r)
 	return r, nil
 }
@@ -119,8 +122,8 @@ func TestFileSetBounds(t *testing.T) {
 
 	// The values of a.txt and b.txt hold 8 bytes, which a fake reader can
 	// make more of than the files hold.
-	long := func(file string, _ int64, _ bool) (FileReader, error) {
-		return doubled{fakeReader{file: file}}, nil
+	long := func(src Source, _ bool) (FileReader, error) {
+		return doubled{fakeReader{file: src.File}}, nil
 	}
 	s, _ = BuildFileSet("fake", []string{"*.txt"}, 16, long)
 	if _, err := s.Extract(root); err != nil {
@@ -174,8 +177,8 @@ func TestFileSetSharesTheRegexTime(t *testing.T) {
 	}
 
 	root := repo(t, map[string]string{"a.txt": "a\n"})
-	set, err := BuildFileSet("regex", []string{"*.txt"}, 0, func(file string, maxBytes int64, _ bool) (FileReader, error) {
-		return CompileSearch("regex", file, "(a)", maxBytes)
+	set, err := BuildFileSet("regex", []string{"*.txt"}, 0, func(src Source, _ bool) (FileReader, error) {
+		return CompileSearchAt("regex", src, "(a)")
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -190,16 +193,16 @@ func TestFileSetSharesTheRegexTime(t *testing.T) {
 // refusal of both dropped; a file read as a file of a set.
 func TestBuildOneOrSet(t *testing.T) {
 	b := &built{}
-	x, err := BuildOneOrSet("fake", "a.txt", nil, 0, b.build)
+	x, err := BuildOneOrSet("fake", Where{File: "a.txt"}, b.build)
 	if r, ok := x.(fakeReader); err != nil || !ok || r.inSet || r.file != "a.txt" {
 		t.Errorf("one file: %#v, %v", x, err)
 	}
-	if x, err := BuildOneOrSet("fake", "refused.txt", nil, 0, b.build); err == nil || x != nil {
+	if x, err := BuildOneOrSet("fake", Where{File: "refused.txt"}, b.build); err == nil || x != nil {
 		t.Errorf("a refused file: %#v, %v; want nil and the error", x, err)
 	}
-	_, err = BuildOneOrSet("fake", "a.txt", []string{"*.txt"}, 0, b.build)
+	_, err = BuildOneOrSet("fake", Where{File: "a.txt", Files: []string{"*.txt"}}, b.build)
 	extracttest.WantError(t, err, "fake: file and files are both set")
-	x, err = BuildOneOrSet("fake", "", []string{"*.txt"}, 0, b.build)
+	x, err = BuildOneOrSet("fake", Where{Files: []string{"*.txt"}}, b.build)
 	if _, ok := x.(FileSet); err != nil || !ok {
 		t.Errorf("a set: %#v, %v", x, err)
 	}
@@ -231,6 +234,9 @@ type spending struct {
 }
 
 func (r spending) Extract(string) ([]check.Value, error) { return nil, errors.New("not read whole") }
+func (r spending) ExtractWith(root string, _ map[string][]check.Value) ([]check.Value, error) {
+	return r.Extract(root)
+}
 func (r spending) FromShared(_ []byte, spent *Spent) ([]check.Value, error) {
 	*r.saw = append(*r.saw, *spent)
 	spent.Expanded++
@@ -252,7 +258,7 @@ func (r spending) FromShared(_ []byte, spent *Spent) ([]check.Value, error) {
 func TestFileSetSharesTheBudgets(t *testing.T) {
 	root := repo(t, map[string]string{"a.txt": "12", "b.txt": "3", "c.txt": ""})
 	var saw []Spent
-	build := func(file string, _ int64, _ bool) (FileReader, error) { return spending{file: file, saw: &saw}, nil }
+	build := func(src Source, _ bool) (FileReader, error) { return spending{file: src.File, saw: &saw}, nil }
 	s, _ := BuildFileSet("fake", []string{"*.txt"}, 100, build)
 	if _, err := s.Extract(root); err != nil {
 		t.Fatal(err)

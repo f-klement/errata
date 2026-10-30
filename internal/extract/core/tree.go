@@ -200,15 +200,13 @@ type treeExtractor struct {
 }
 
 // Tree is what a JSON or TOML spec says of where it reads: its file or its
-// files, its path and its embedded steps, with its max_bytes, and what it
-// hands over: each scalar, with As map each mapping whole, or with As
-// record a record of Fields for each node.
+// files with its max_bytes (Where), its path and its embedded steps, and
+// what it hands over: each scalar, with As map each mapping whole, or with
+// As record a record of Fields for each node.
 type Tree struct {
-	File     string
-	Files    []string
+	Where
 	Path     string
 	Embedded []Embedded
-	MaxBytes int64
 	As       string
 	Fields   map[string]string
 }
@@ -219,11 +217,7 @@ type Tree struct {
 // embedded step, in the format it names, with parsers, for the file or for
 // each of the files (BuildOneOrSet).
 func BuildTree(kind string, t Tree, f *Format, parse func([]byte) (*Node, error), parsers Parsers) (check.Extractor, error) {
-	return BuildOneOrSet(kind, t.File, t.Files, t.MaxBytes, func(file string, maxBytes int64, _ bool) (FileReader, error) {
-		src, err := CheckSource(kind, file, maxBytes)
-		if err != nil {
-			return nil, err
-		}
+	return BuildOneOrSet(kind, t.Where, func(src Source, _ bool) (FileReader, error) {
 		parsed, err := CheckPath(kind, t.Path)
 		if err != nil {
 			return nil, err
@@ -244,13 +238,14 @@ func BuildTree(kind string, t Tree, f *Format, parse func([]byte) (*Node, error)
 	})
 }
 
+// ExtractWith is Extract: the extractor reads no other extractor's values.
+func (e treeExtractor) ExtractWith(root string, _ map[string][]check.Value) ([]check.Value, error) {
+	return e.Extract(root)
+}
+
 // Extract reads the file under root and returns every scalar its path selects.
 func (e treeExtractor) Extract(root string) ([]check.Value, error) {
-	data, err := e.Read(root)
-	if err != nil {
-		return nil, err
-	}
-	return e.FromData(data)
+	return ExtractOne(root, e.Source, e)
 }
 
 // FromData returns the values in data, the bytes of the file, as Extract

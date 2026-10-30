@@ -6,16 +6,14 @@ import (
 	"testing"
 )
 
-// reads is an extractor that reads the values of the extractors it names.
+// reads describes an extractor that reads the values of the extractors it
+// names.
 type reads []string
 
-func (reads) Extract(string) ([]Value, error) { return nil, nil }
-func (r reads) Needs() []string               { return r }
-func (reads) ExtractWith(string, map[string][]Value) ([]Value, error) {
-	return nil, nil
+// ne is the extractor name, built, which reads what r names.
+func ne(name string, r reads) NamedExtractor {
+	return NamedExtractor{Name: name, Extractor: noValues{}, Description: Description{Reads: r}}
 }
-
-func ne(name string, x Extractor) NamedExtractor { return NamedExtractor{Name: name, Extractor: x} }
 
 // ruleOf is an assert rule whose extractors, in name order, are given as
 // name and extractor pairs.
@@ -32,12 +30,14 @@ func TestValidateDependencies(t *testing.T) {
 		extractors []NamedExtractor
 		wantErr    string
 	}{
-		{"one reads another", []NamedExtractor{ne("a", noValues{}), ne("b", reads{"a"})}, ""},
+		{"one reads another", []NamedExtractor{ne("a", nil), ne("b", reads{"a"})}, ""},
 		{"a diamond is no cycle", []NamedExtractor{
-			ne("a", reads{"b", "c"}), ne("b", reads{"c"}), ne("c", noValues{}), ne("d", reads{"a", "c"}),
+			ne("a", reads{"b", "c"}), ne("b", reads{"c"}), ne("c", nil), ne("d", reads{"a", "c"}),
 		}, ""},
-		{"an extractor that did not build reads nothing", []NamedExtractor{ne("a", nil), ne("b", reads{"a"})}, ""},
-		{"reads an undeclared extractor", []NamedExtractor{ne("a", noValues{}), ne("b", reads{"charts"})},
+		{"an extractor that did not build reads nothing", []NamedExtractor{
+			{Name: "a", Description: Description{Reads: []string{"charts"}}}, ne("b", reads{"a"}),
+		}, ""},
+		{"reads an undeclared extractor", []NamedExtractor{ne("a", nil), ne("b", reads{"charts"})},
 			`extractor "b" reads the values of "charts", which extract does not declare`},
 		{"reads itself", []NamedExtractor{ne("a", reads{"a"})},
 			`extractors read each other's values in a cycle, so none of them can run first: "a" reads "a"`},
@@ -73,8 +73,8 @@ func TestValidateNamesACycleOnce(t *testing.T) {
 
 func TestOrder(t *testing.T) {
 	r := ruleOf(
-		ne("a", reads{"c"}), ne("b", noValues{}),
-		ne("c", reads{"d"}), ne("d", noValues{}),
+		ne("a", reads{"c"}), ne("b", nil),
+		ne("c", reads{"d"}), ne("d", nil),
 	).Rule()
 	cases := []struct {
 		name  string

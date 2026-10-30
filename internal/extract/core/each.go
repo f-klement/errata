@@ -102,17 +102,24 @@ func (e Each) At(kind, file string, maxBytes int64) (Each, error) {
 	if err != nil {
 		return Each{}, err
 	}
+	return e.In(src), nil
+}
+
+// In is e reading the file src names, which core has checked, with the
+// deadline e has, as At gives it.
+func (e Each) In(src Source) Each {
 	e.Source = src
-	return e, nil
+	return e
+}
+
+// ExtractWith is Extract: the extractor reads no other extractor's values.
+func (e Each) ExtractWith(root string, _ map[string][]check.Value) ([]check.Value, error) {
+	return e.Extract(root)
 }
 
 // Extract returns the values of every pattern in the file under root.
 func (e Each) Extract(root string) ([]check.Value, error) {
-	data, err := e.Read(root)
-	if err != nil {
-		return nil, err
-	}
-	return e.FromData(data)
+	return ExtractOne(root, e.Source, e)
 }
 
 // FromShared is FromData: the searches share their time through the

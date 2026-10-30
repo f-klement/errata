@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"regexp"
 	"regexp/syntax"
-	"slices"
 	"strings"
 
 	"github.com/f-klement/errata/internal/check"
@@ -24,11 +23,9 @@ import (
 // values reads each value as ValuesAs says. With a Context, a match counts
 // only where the lines around it have it.
 type Spec struct {
-	File     string   `json:"file,omitempty"`
-	Files    []string `json:"files,omitempty"`
-	Pattern  string   `json:"pattern"`
-	MaxBytes int64    `json:"max_bytes,omitempty"`
-	As       string   `json:"as,omitempty"`
+	core.Where
+	Pattern string `json:"pattern"`
+	As      string `json:"as,omitempty"`
 	// ValuesAs is how a pattern that references an extractor's values
 	// reads each one: Literal, the default, quoted with regexp.QuoteMeta,
 	// or AsPattern, as RE2 syntax.
@@ -71,8 +68,8 @@ func Build(r Spec) (check.Extractor, error) {
 		if r.ValuesAs != "" {
 			return nil, errors.New("regex: values_as applies to a pattern that references an extractor's values, as (?{name}) does, and this pattern references none")
 		}
-		return core.BuildOneOrSet("regex", r.File, r.Files, r.MaxBytes, func(file string, maxBytes int64, _ bool) (core.FileReader, error) {
-			e, err := core.CompileSearch("regex", file, r.Pattern, maxBytes)
+		return core.BuildOneOrSet(Kind.Key, r.Where, func(src core.Source, _ bool) (core.FileReader, error) {
+			e, err := core.CompileSearchAt(Kind.Key, src, r.Pattern)
 			if err != nil {
 				return nil, err
 			}
@@ -137,11 +134,8 @@ func buildReference(r Spec, ref reference, around *core.Around) (check.Extractor
 		return nil, fmt.Errorf("regex: values_as %s must be %s or %s", core.Quote(r.ValuesAs), Literal, AsPattern)
 	}
 	asPattern := r.ValuesAs == AsPattern
-	_, err := core.BuildOneOrSet("regex", r.File, r.Files, r.MaxBytes, func(file string, maxBytes int64, _ bool) (core.FileReader, error) {
-		if _, err := core.CheckSource("regex", file, maxBytes); err != nil {
-			return nil, err
-		}
-		e, err := core.CompileSearch("regex", file, ref.with(""), maxBytes)
+	_, err := core.BuildOneOrSet(Kind.Key, r.Where, func(src core.Source, _ bool) (core.FileReader, error) {
+		e, err := core.CompileSearchAt(Kind.Key, src, ref.with(""))
 		if err != nil {
 			return nil, fmt.Errorf("%w (read with %s as an empty value)", err, ref.text())
 		}
@@ -195,18 +189,16 @@ func groupNamed(re *syntax.Regexp, name string) int {
 }
 
 // Reference is the regex extractor of a pattern that references the values
-// of another extractor of its rule. It is a check.Dependent: its rule runs
-// that extractor first, and it searches the file once for each value, with
-// the value in the reference's place.
+// of another extractor of its rule. Its description reads that extractor
+// (Describe), so its rule runs that extractor first and hands over its
+// values, and it searches the file once for each value, with the value in
+// the reference's place.
 type Reference struct {
 	spec      Spec
 	ref       reference
 	asPattern bool
 	around    *core.Around
 }
-
-// Needs is the extractor the pattern references.
-func (e Reference) Needs() []string { return []string{e.ref.name} }
 
 // Extract refuses: the values the pattern needs come from its rule.
 func (e Reference) Extract(string) ([]check.Value, error) {
@@ -231,8 +223,8 @@ func (e Reference) ExtractWith(root string, values map[string][]check.Value) ([]
 		}
 	}
 	searches = searches.Around(e.around)
-	x, err := core.BuildOneOrSet("regex", e.spec.File, e.spec.Files, e.spec.MaxBytes, func(file string, maxBytes int64, _ bool) (core.FileReader, error) {
-		return searches.At("regex", file, maxBytes)
+	x, err := core.BuildOneOrSet(Kind.Key, e.spec.Where, func(src core.Source, _ bool) (core.FileReader, error) {
+		return searches.In(src), nil
 	})
 	if err != nil {
 		return nil, err
@@ -294,15 +286,14 @@ func distinct(values []check.Value) []check.Value {
 // Kind is the regex kind, which a rule writes under the key regex.
 var Kind = core.Kind[Spec]{Key: "regex", Place: Place, Resolve: Resolve, Describe: Describe}
 
-// Place is r with only what decides what it reads: its file or files as
-// core.PlaceFiles writes them, no max_bytes, and values_as written out as
-// literal, the default, read as left out.
+// Place is r with only what decides what it reads: its where part as
+// core.Where.Place writes it, and values_as written out as literal, the
+// default, read as left out.
 func Place(r Spec) Spec {
 	if r.ValuesAs == Literal {
 		r.ValuesAs = ""
 	}
-	r.File, r.Files = core.PlaceFiles(r.File, r.Files)
-	r.MaxBytes = 0
+	r.Where = r.Place()
 	return r
 }
 
@@ -313,12 +304,11 @@ func Resolve(r Spec) Spec {
 	if r.ValuesAs == "" && strings.Contains(r.Pattern, "(?{") {
 		r.ValuesAs = Literal
 	}
-	r.Files = slices.Clone(r.Files)
+	r.Where = r.Resolved()
 	if r.Context != nil {
 		c := *r.Context
 		r.Context = &c
 	}
-	r.MaxBytes = core.MaxBytes(r.MaxBytes)
 	return r
 }
 

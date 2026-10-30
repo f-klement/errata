@@ -2917,9 +2917,9 @@ required:
       "at": {"file": "errata.yaml", "line": 6, "outside": false},
       "type": "rule",
       "extract": {
-        "app": {"json": {"file": "package.json", "path": "version", "max_bytes": 33554432}},
-        "deps": {"ini": {"file": "tox.ini", "dialect": "tox", "section": "testenv", "key": "deps",
-                         "max_bytes": 33554432}}
+        "app": {"json": {"file": "package.json", "max_bytes": 33554432, "path": "version"}},
+        "deps": {"ini": {"file": "tox.ini", "max_bytes": 33554432, "dialect": "tox", "section": "testenv",
+                         "key": "deps"}}
       },
       "relation": {"agree": ["app", "deps"], "compare": "text"},
       "normalize": ["trim"],
@@ -2933,8 +2933,8 @@ required:
       "at": {"file": "errata.yaml", "line": 15, "outside": false},
       "type": "rule",
       "extract": {
-        "nodes": {"regex": {"file": "README.md", "pattern": "(\\d+) nodes", "max_bytes": 33554432}},
-        "replicas": {"yaml": {"file": "deploy.yaml", "path": "spec.replicas", "max_bytes": 65536}}
+        "nodes": {"regex": {"file": "README.md", "max_bytes": 33554432, "pattern": "(\\d+) nodes"}},
+        "replicas": {"yaml": {"file": "deploy.yaml", "max_bytes": 65536, "path": "spec.replicas"}}
       },
       "relation": {"assert": "int(replicas[0]) <= int(nodes[0])"},
       "normalize": [],

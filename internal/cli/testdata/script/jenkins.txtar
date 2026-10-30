@@ -30,7 +30,7 @@ stdout 'library.groovy: line 1: the shared library of the @Library may set REGIO
 
 # errata list prints the extractor with its max_bytes written out.
 exec errata list -c agree.yaml -f json
-stdout '"jenkins": \{\n\s+"file": "Jenkinsfile",\n\s+"variable": "TAG",\n\s+"stage": "deploy",\n\s+"max_bytes": 33554432\n\s+\}'
+stdout '"jenkins": \{\n\s+"file": "Jenkinsfile",\n\s+"max_bytes": 33554432,\n\s+"variable": "TAG",\n\s+"stage": "deploy"\n\s+\}'
 -- Jenkinsfile --
 pipeline {
     agent any

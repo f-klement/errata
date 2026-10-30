@@ -5,7 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/f-klement/errata/internal/check"
 	"github.com/f-klement/errata/internal/extract/core"
 	"github.com/f-klement/errata/internal/extract/extracttest"
 )
@@ -141,9 +140,9 @@ func TestBuildRefusals(t *testing.T) {
 		_, err := build(c.spec)
 		extracttest.WantError(t, err, c.want)
 	}
-	x, err := build(Spec{File: "c.yml", Job: "j", Key: "image"})
-	if err != nil || !check.MayReturnNotLiteral(x) {
-		t.Fatalf("Build: %v, or the extractor does not declare its not literal values", err)
+	s := Spec{File: "c.yml", Job: "j", Key: "image"}
+	if _, err := build(s); err != nil || !Describe(s).NotLiteral {
+		t.Fatalf("Build: %v, or the kind does not describe its not literal values", err)
 	}
 }
 

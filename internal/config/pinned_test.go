@@ -4,8 +4,6 @@ import (
 	"slices"
 	"testing"
 	"time"
-
-	"github.com/f-klement/errata/internal/extract"
 )
 
 // pinnedV020 is a config in the shape a repository adopting v0.2.0 writes:
@@ -67,7 +65,7 @@ checks:
 // The planted break for the pin itself: apply giving every program check the
 // default, own run or not.
 func TestDefaultsAndRequiredLoadAsV020Did(t *testing.T) {
-	cfg, err := parse([]byte(pinnedV020), extract.Build)
+	cfg, err := parse([]byte(pinnedV020), BuiltIn)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -288,14 +288,26 @@ func exactKeys(raw json.RawMessage, t reflect.Type, path string) []error {
 // jsonFields maps each JSON key of struct t to the field's type. An
 // extract.Spec has the fields of extract.Schema: each kind's key, with the
 // kind's spec type, so a key and a string inside an extractor are checked
-// as any other key and string of a check.
+// as any other key and string of a check. A struct embedded with no JSON
+// name, such as the core.Where of a kind's spec, or a pointer to one, gives
+// its keys as encoding/json promotes them, and a key of t's own wins over
+// one of them.
 func jsonFields(t reflect.Type) map[string]reflect.Type {
 	if t == specType {
 		t = extract.Schema()
 	}
 	fields := make(map[string]reflect.Type, t.NumField())
+	promoted := map[string]reflect.Type{}
 	for f := range t.Fields() {
 		name, _, _ := strings.Cut(f.Tag.Get("json"), ",")
+		embedded := f.Type
+		if embedded.Kind() == reflect.Pointer {
+			embedded = embedded.Elem()
+		}
+		if f.Anonymous && name == "" && embedded.Kind() == reflect.Struct {
+			maps.Copy(promoted, jsonFields(embedded))
+			continue
+		}
 		if name == "-" || !f.IsExported() {
 			continue
 		}
@@ -303,6 +315,11 @@ func jsonFields(t reflect.Type) map[string]reflect.Type {
 			name = f.Name
 		}
 		fields[name] = f.Type
+	}
+	for k, ft := range promoted {
+		if _, own := fields[k]; !own {
+			fields[k] = ft
+		}
 	}
 	return fields
 }

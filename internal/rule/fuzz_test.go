@@ -53,7 +53,7 @@ func FuzzAssert(f *testing.F) {
 	}
 	f.Fuzz(func(t *testing.T, expr, value string) {
 		for _, h := range helpers {
-			if _, err := h.Eval(context.Background(), map[string][]string{"v": {value}}, nil, nil); err != nil && strings.Contains(err.Error(), "internal error") {
+			if _, err := h.Eval(context.Background(), asExtracted(map[string][]string{"v": {value}}, nil, nil)); err != nil && strings.Contains(err.Error(), "internal error") {
 				t.Fatalf("a helper over %q: %v", value, err)
 			}
 		}
@@ -74,7 +74,7 @@ func FuzzAssert(f *testing.F) {
 			}
 			return
 		}
-		if _, err := a.Eval(context.Background(), map[string][]string{"v": {value, value}}, nil, nil); err != nil && strings.Contains(err.Error(), "internal error") {
+		if _, err := a.Eval(context.Background(), asExtracted(map[string][]string{"v": {value, value}}, nil, nil)); err != nil && strings.Contains(err.Error(), "internal error") {
 			t.Fatalf("%s over %q: %v", expr, value, err)
 		}
 	})

@@ -125,7 +125,9 @@ func TestParseAssertRule(t *testing.T) {
 		t.Fatal("assert loaded without being compiled")
 	}
 	for values, want := range map[[2]string]bool{{"x", "x"}: true, {"x", "y"}: false} {
-		got, err := r.Compiled.Eval(context.Background(), map[string][]string{"v": {values[0]}, "w": {values[1]}}, nil, nil)
+		got, err := r.Compiled.Eval(context.Background(), []check.Extracted{
+			{Extractor: "v", Values: []check.Value{{Text: values[0]}}}, {Extractor: "w", Values: []check.Value{{Text: values[1]}}},
+		})
 		if err != nil || got != want {
 			t.Errorf("%v: %v, %v; want %v", values, got, err, want)
 		}
@@ -372,6 +374,15 @@ func TestParseRejectsRules(t *testing.T) {
 		},
 		"extractor field in another case": {
 			head + "  extract: {v: {yaml: {File: f, path: a}}}\n  agree: [v]\n", `extract.v.yaml: key "File" must be spelled "file"`,
+		},
+		"where field of a file set kind in another case": {
+			head + "  extract: {v: {json: {file: f, path: a, Max_Bytes: 9}}}\n  agree: [v]\n", `extract.v.json: key "Max_Bytes" must be spelled "max_bytes"`,
+		},
+		"where field of a one file kind in another case": {
+			head + "  extract: {v: {xml: {File: f, path: /a}}}\n  agree: [v]\n", `extract.v.xml: key "File" must be spelled "file"`,
+		},
+		"files on a kind that reads one file": {
+			head + "  extract: {v: {xml: {file: f, files: [g], path: /a}}}\n  agree: [v]\n", `json: unknown field "files"`,
 		},
 		"type error": {
 			head + ex + "  agree: {v: w}\n", "decode: json: cannot unmarshal",
@@ -651,18 +662,12 @@ func TestParseAcceptsOneDocument(t *testing.T) {
 	}
 }
 
-// computes wraps an extractor that extract.Build made and declares that it
-// can return a not literal value, as a shell or CI reader will.
-type computes struct{ check.Extractor }
-
-func (computes) MayReturnNotLiteral() bool { return true }
-
-func buildComputing(s extract.Spec) (check.Extractor, error) {
-	x, err := extract.Build(s)
-	if err != nil {
-		return nil, err
-	}
-	return computes{x}, nil
+// buildComputing is BuiltIn with each extractor described as one that can
+// return a not literal value, as a shell or CI reader's is.
+func buildComputing(s extract.Spec) (check.Extractor, check.Description, error) {
+	x, d, err := BuiltIn(s)
+	d.NotLiteral = true
+	return x, d, err
 }
 
 // skip_not_literal loads over extractors whose kind can return a not
@@ -717,7 +722,7 @@ checks:
     agree: [shell]
     skip_not_literal: [shell]
 `
-	_, err := parse([]byte(yaml), func(extract.Spec) (check.Extractor, error) { return nil, nil })
+	_, err := parse([]byte(yaml), func(extract.Spec) (check.Extractor, check.Description, error) { return nil, check.Description{}, nil })
 	if want := `extractor "shell": built nothing, and gave no error`; err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("error = %v, want it to contain %q", err, want)
 	}
@@ -771,5 +776,19 @@ func TestManyExtractorsLoadInLinearMemory(t *testing.T) {
 	}
 	if _, err := parseRaw(manyExtractors(5000, 0)); err != nil {
 		t.Errorf("5000 extractors over 5000 places: %v", err)
+	}
+}
+
+// An extractor that does not build is still described, so an assert that
+// reads it as a list of maps compiles over it, and the load reports the
+// build error alone. Planted break: BuiltIn's description left zero on a
+// failed build, which added a CEL error about m[0].a on a list of strings.
+func TestParseDescribesAnExtractorThatDidNotBuild(t *testing.T) {
+	const raw = "checks:\n- id: a\n  reason: r\n  scope: repo\n" +
+		"  extract: {m: {yaml: {file: a.yaml, path: 'a[', as: map}}}\n" +
+		"  assert: m[0].a == 'x'\n"
+	const want = `checks[0]: check "a": extractor "m": yaml: path "a[": column 3: expected a quoted key, an index or * after [ but the path ends`
+	if _, err := parseRaw([]byte(raw)); err == nil || err.Error() != want {
+		t.Fatalf("error = %v, want the build error alone: %s", err, want)
 	}
 }

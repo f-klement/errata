@@ -296,13 +296,13 @@ func TestPackageVersionWithoutParsers(t *testing.T) {
 	}
 }
 
-// The extractor may return a not literal value, so a rule asks.
-func TestPackageVersionMayReturnNotLiteral(t *testing.T) {
-	e, err := build(Spec{})
-	if err != nil {
+// The kind describes its values as possibly not literal, so a rule may
+// list it in skip_not_literal.
+func TestPackageVersionDescribedNotLiteral(t *testing.T) {
+	if _, err := build(Spec{}); err != nil {
 		t.Fatal(err)
 	}
-	if !e.(interface{ MayReturnNotLiteral() bool }).MayReturnNotLiteral() {
-		t.Error("MayReturnNotLiteral is false")
+	if !Describe(Spec{}).NotLiteral {
+		t.Error("described as literal only")
 	}
 }

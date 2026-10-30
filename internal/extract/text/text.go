@@ -4,7 +4,6 @@ package text
 
 import (
 	"fmt"
-	"path/filepath"
 	"time"
 
 	"github.com/f-klement/errata/internal/check"
@@ -22,10 +21,9 @@ import (
 // out, but for the text after an HTML block's end on its line, unless Code is
 // set, which reads their lines instead.
 type Spec struct {
-	File     string `json:"file"`
-	Pattern  string `json:"pattern"`
-	Code     bool   `json:"code,omitempty"`
-	MaxBytes int64  `json:"max_bytes,omitempty"`
+	core.OneFile
+	Pattern string `json:"pattern"`
+	Code    bool   `json:"code,omitempty"`
 }
 
 // Kind is the text kind, which a rule writes under the key text.
@@ -34,13 +32,13 @@ var Kind = core.Kind[Spec]{Key: "text", Place: Place, Resolve: Resolve, Describe
 // Place is t with only what decides where it reads: the file cleaned, and
 // no max_bytes, since a limit does not change what is read.
 func Place(t Spec) Spec {
-	t.File, t.MaxBytes = filepath.Clean(t.File), 0
+	t.OneFile = t.Place()
 	return t
 }
 
 // Resolve is t with its max_bytes written out, for errata list.
 func Resolve(t Spec) Spec {
-	t.MaxBytes = core.MaxBytes(t.MaxBytes)
+	t.OneFile = t.Resolved()
 	return t
 }
 
@@ -70,21 +68,32 @@ type textExtractor struct {
 
 // Build refuses what the regex extractor refuses, under the name text.
 func Build(t Spec) (check.Extractor, error) {
-	search, err := core.CompileSearch("text", t.File, t.Pattern, t.MaxBytes)
+	src, err := t.Check(Kind.Key)
+	if err != nil {
+		return nil, err
+	}
+	search, err := core.CompileSearchAt(Kind.Key, src, t.Pattern)
 	if err != nil {
 		return nil, err
 	}
 	return textExtractor{search: search, code: t.Code, parseTime: markdownTime(search.Limit)}, nil
 }
 
+// ExtractWith is Extract: the extractor reads no other extractor's values.
+func (e textExtractor) ExtractWith(root string, _ map[string][]check.Value) ([]check.Value, error) {
+	return e.Extract(root)
+}
+
 // Extract returns group 1 of every match in the prose of the file under
 // root. Its line is the line of the file where the match starts, and its
 // text is the prose's.
 func (e textExtractor) Extract(root string) ([]check.Value, error) {
-	data, err := e.search.Read(root)
-	if err != nil {
-		return nil, err
-	}
+	return core.ExtractOne(root, e.search.Source, e)
+}
+
+// FromShared is FromData: a text read has its own time limits, and spends
+// none of a set's budget.
+func (e textExtractor) FromShared(data []byte, _ *core.Spent) ([]check.Value, error) {
 	return e.FromData(data)
 }
 

@@ -27,6 +27,33 @@ type Kind[S any] struct {
 	// Describe is what the extractor the spec builds returns, told from
 	// the spec alone (check.Description).
 	Describe func(S) check.Description
+	// Env, when set, makes the kind a reader the env kind asks: env reads
+	// a file with it when the file's name chooses it, or when a rule's
+	// readers: names its Key.
+	Env *EnvReader
+}
+
+// EnvReader is how a kind reads one variable for the env kind. Read is
+// given the parsers extract wires, since no reader imports another: the
+// gitlab-ci and github-actions readers read their YAML with the yaml
+// reader's.
+type EnvReader struct {
+	// Order is the reader's place among env's readers, lowest first: in
+	// the list a message gives, and the one Chooses decides a file's
+	// reader when two would.
+	Order int
+	// Chooses reports whether a file's name chooses the reader. file is
+	// cleaned, with slashes.
+	Chooses func(file string) bool
+	// Read builds the reader's extractor of the variable name in file,
+	// which reads at most maxBytes.
+	Read func(file, name string, maxBytes int64, p Parsers) (check.Extractor, error)
+	// Sniffs, when set, reports whether a file's first bytes choose the
+	// reader, at most SniffBytes of them, which is then above 0. env asks
+	// it of a file whose name no reader's Chooses takes, the readers that
+	// sniff in Order, as shell takes a file that starts with a #! line.
+	Sniffs     func(head []byte) bool
+	SniffBytes int
 }
 
 // PlaceFiles is the file or the files of a spec that takes either, as a
