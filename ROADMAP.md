@@ -111,7 +111,35 @@ releases and the plugins of v0.3.0 are added in one place.
   the measure and fewer packages keep a lowered floor.
 - CI's own tests sit beside each script, under one shared harness.
 
-## v0.2.4: docs claims
+The reviews of this release left smaller items it closes too:
+
+- Case coverage fails when its root holds none of the profile's files, instead of skipping them
+  all, and says which shapes it does not judge: a clause entered through `fallthrough` and a
+  `//line` directive.
+- The selector scanner dispatches on a byte with a switch.
+- CI reports the memory a run holds, which is how a run is judged, beside its peak.
+- An env reader is declared in one type.
+- Two wrappers that only tests call are gone.
+- The location check accepts Windows reserved file names, as it does on every other system, and
+  refuses a path holding a newline, which could forge a line of the text report.
+
+## v0.2.4: CI and supply chain
+
+No new features. The pipeline that builds and releases errata is held to what errata asks of a
+repository.
+
+- Each credential reaches only the jobs that use it, and no job that runs repository or dependency
+  code holds one.
+- Job images are mirrored into the project's registry at their pinned digests, so an image the
+  upstream registry deletes no longer breaks the pipeline.
+- Pinned tool archives are verified against their release's checksums and signature, so a bump of
+  those tools merges without a person.
+- The README says that a program check is code errata runs with the job's environment, and how to
+  run errata safely on a merge request from a fork.
+- The cluster runner reuses the node's caches for the full local CI run, measures its run time,
+  and states how it retries a run the memory limit killed.
+
+## v0.2.5: docs claims
 
 The claims documentation makes, read by its structure.
 
@@ -121,8 +149,27 @@ The claims documentation makes, read by its structure.
   family's comment and string syntax.
 - Markers: a claim tagged inline in a document or a comment, found anywhere in the repository and
   bound to the rule with the same id. A marker that no rule checks is an erratum.
+- Attested facts: a documented convention for a value no tool can read, such as a setting in a
+  device's web interface, recorded with its source and date, and an example check that fails
+  once the fact is older than its stated lifetime.
 
-## v0.2.5: literals and dependencies
+It also closes findings the reviews of v0.2.1 to v0.2.3 left:
+
+- A file set in a sparse checkout is unknown, instead of passing on the files the checkout holds.
+- A program check's output is held up to a bound and the rest is dropped; its exit code stays the
+  verdict. A check's process group is killed once its direct child exits.
+- `--output` refuses the config file through a symbolic link too.
+- A record field or a bound literal's member that an assert misspells or cannot match is refused
+  at load, and an extractor's name must be a CEL identifier.
+- A regex's context and its search agree on a file's last line.
+- Under `compare: semver`, ranges that no release satisfies blame the range where the overlap
+  ends.
+- The mutation floors follow a renamed or split package, and a lowering line excuses a drop for
+  one release only.
+- Fuzzing checks that an embedded value's text is on its reported line, and a size test pins the
+  YAML walker's single pass.
+
+## v0.2.6: literals and dependencies
 
 Values written in code, and one version pinned in many places.
 
@@ -133,9 +180,14 @@ Values written in code, and one version pinned in many places.
   Composer, Maven, Gradle, NuGet), so one rule checks that a package pinned in several places
   agrees.
 - A package's version read from the git tag on HEAD, and unknown on a checkout with no tags.
-- A TOML date written as a version is refused, as Cargo and the Python tools refuse it.
+- A TOML date written as a version is refused, as Cargo and the Python tools refuse it. A TOML
+  date, a YAML timestamp or a binary value is not parsed as an embedded document.
+- The rest of CEL's strings extension, each function with a guard on the size it builds or the
+  work it does, bounded by the cost limit the rule runs under.
+- Smaller items: an embedded step with no parser is refused, fuzzing covers file sets with
+  embedded steps, and CI derives its list of slow tests from the tree.
 
-## v0.2.6: host config and formats
+## v0.2.7: host config and formats
 
 The files a host is configured with, and the formats the earlier readers left open.
 
@@ -146,6 +198,8 @@ The files a host is configured with, and the formats the earlier readers left op
 - INI and properties values read closer to their tools: fewer values marked not literal that a
   tool reads as written, template blocks that decide whether a key exists, and values the
   consuming tool computes marked as not literal.
+- A SARIF result for a file that does not exist points at its check in errata.yaml, and a check
+  with an empty `run` is refused by the check's own validation.
 
 ## v0.3.0: the plugin system
 
@@ -158,6 +212,8 @@ errata stays one small binary, and further integrations install on demand.
   lets CI run offline.
 - Every plugin is checked against the checksums published with its release before it runs.
 - A rule that needs a plugin that is not installed is unknown, naming the plugin.
+- The plugin host decides which environment variables a plugin sees, and tells a run the caller
+  cancelled apart from one that timed out.
 - The CSV and HCL (Terraform, Packer, Nomad) extractors are the first two plugins.
 
 ## v0.4.0: container and manifest readers

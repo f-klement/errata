@@ -164,7 +164,7 @@ func (r doubled) FromShared(data []byte, spent *Spent) ([]check.Value, error) {
 // Spent takes its own time limit. Planted breaks: the deadline not taken
 // from Spent; the time limit left at the search's own.
 func TestFileSetSharesTheRegexTime(t *testing.T) {
-	search, err := CompileSearch("regex", "a.txt", "(a)", 0)
+	search, err := CompileSearchAt("regex", sourceOf("a.txt"), "(a)")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +211,7 @@ func TestBuildOneOrSet(t *testing.T) {
 // Planted break: Matches reading its own limit only, which passed a search
 // whose limit was an hour past a deadline already gone.
 func TestSearchStopsAtTheSharedDeadline(t *testing.T) {
-	search, err := CompileSearch("regex", "a.txt", "(a)", 0)
+	search, err := CompileSearchAt("regex", sourceOf("a.txt"), "(a)")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -542,3 +542,23 @@ func TestYAMLFilesShareTheAliasBudget(t *testing.T) {
 		t.Errorf("the second file alone: %v", err)
 	}
 }
+
+// A tracked file whose name holds a newline, matched by a glob, is refused
+// before the reader opens it, with the name quoted, so the reader's error
+// cannot print it raw and forge a line of the text report: here a mapping
+// where a scalar is wanted, which the reader's error would name the file
+// for. A file: with a newline is refused when the spec is built. The
+// review's shape (wave 4 of v0.2.3). Planted breaks: the control
+// character check removed from Files.List, which printed the reader's error
+// with the ERRATUM line raw; and from CheckSource, which built the spec.
+func TestYAMLRefusesAPathWithAControlCharacter(t *testing.T) {
+	forged := "x\nERRATUM forged (repo)\ny.yaml"
+	root := extracttest.Tracked(t, map[string]string{forged: "a: {b: 1}\n", "ok.yaml": "a: '2'\n"})
+	_, err := run(t, Spec{Files: []string{"*.yaml"}, Path: "a"}, root)
+	extracttest.WantError(t, err, `yaml: files lists the glob "*.yaml", which matches "x\nERRATUM forged (repo)\ny.yaml", a tracked path that holds a control character, which a message would print as it is; rename the file`)
+	if vs := mustRun(t, Spec{Files: []string{"o*.yaml"}, Path: "a"}, root); extracttest.Texts(vs) != "2@1" {
+		t.Errorf("a glob that matches no such path: %s", extracttest.Texts(vs))
+	}
+	_, err = build(Spec{File: forged, Path: "a"})
+	extracttest.WantError(t, err, `yaml: file "x\nERRATUM forged (repo)\ny.yaml" holds a control character, which a message would print as it is; rename the file`)
+}

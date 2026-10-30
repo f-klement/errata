@@ -214,21 +214,18 @@ func scanBracket(s string, i, depth int) (selector, int, error) {
 // scanSelector reads what a bracket holds, from byte i, which is in the
 // path.
 func scanSelector(s string, i, depth int) (selector, int, error) {
-	c := s[i]
-	if c == '*' {
+	switch s[i] {
+	case '*':
 		return selector{kind: selWild}, i + 1, nil
-	}
-	if c == '\'' || c == '"' {
+	case '\'', '"':
 		name, j, err := scanQuoted(s, i, "key")
 		return selector{name: name}, j, err
-	}
-	if c == '-' || isDigit(c) {
+	case '-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
 		return scanIndex(s, i)
-	}
-	if c == '?' && depth == MaxFilterDepth {
-		return selector{}, i, PathError(s, i, "filters nest more than %d deep, the limit", MaxFilterDepth)
-	}
-	if c == '?' {
+	case '?':
+		if depth == MaxFilterDepth {
+			return selector{}, i, PathError(s, i, "filters nest more than %d deep, the limit", MaxFilterDepth)
+		}
 		return scanFilter(s, i+1, depth+1)
 	}
 	return selector{}, i, PathError(s, i, "expected a quoted key, an index or * after [ but found %q", firstRune(s[i:]))
@@ -498,36 +495,32 @@ func scanOperand(s string, i, depth int) (operand, int, error) {
 	if i == len(s) {
 		return operand{}, i, PathError(s, i, "expected @ or a literal in the filter but the path ends")
 	}
-	c := s[i]
-	if c == '@' {
+	switch c := s[i]; c {
+	case '@':
 		sels, many, j, err := scanCurrent(s, i+1, depth)
 		return operand{current: true, sels: sels, many: many}, j, err
-	}
-	if c == '\'' || c == '"' {
+	case '\'', '"':
 		str, j, err := scanQuoted(s, i, "string")
 		if err == nil && len(str) > MaxLiteral {
 			err = PathError(s, i, "a string in a filter holds more than %d bytes, the limit", MaxLiteral)
 		}
 		return operand{lit: literal{typ: TypeString, str: str}}, j, err
-	}
-	if c == '-' || isDigit(c) {
+	case '-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
 		lit, j, err := scanNumber(s, i)
 		if err == nil && j-i > MaxLiteral {
 			err = PathError(s, i, "a number in a filter is written in more than %d bytes, the limit", MaxLiteral)
 		}
 		return operand{lit: lit}, j, err
-	}
-	if c == '$' {
+	case '$':
 		return operand{}, i, PathError(s, i, "$ is not supported in a filter; a comparison starts its path from the member, @")
-	}
-	if c == '!' {
+	case '!':
 		return operand{}, i, PathError(s, i, "! is not supported in a comparison; it stands only before a path from @ that a term tests, such as !@.key")
-	}
-	if c == '(' {
+	case '(':
 		return operand{}, i, PathError(s, i, "parentheses are not supported in a filter; join terms with &&")
-	}
-	if 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' {
-		return scanWord(s, i)
+	default:
+		if 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' {
+			return scanWord(s, i)
+		}
 	}
 	return operand{}, i, PathError(s, i, "expected @ or a literal in the filter but found %q", firstRune(s[i:]))
 }

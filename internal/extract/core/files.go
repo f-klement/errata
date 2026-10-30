@@ -5,6 +5,8 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+
+	"github.com/f-klement/errata/internal/check"
 )
 
 // A files: key lists entries, each a file or a glob. A glob is matched
@@ -217,7 +219,10 @@ type Named struct {
 // List is the files the entries name, each once, in the entries' order: a
 // file, which need not exist until it is read, or the files git tracks that
 // a glob matches, in git's order. The index is read once, and only when an
-// entry is a glob. A glob that matches no file names none.
+// entry is a glob. A glob that matches no file names none. A glob that
+// matches a path holding a control character is refused, so no reader opens
+// the file or names it in an error (check.HoldsControl); a file: entry was
+// checked at load (CheckSource).
 func (f Files) List(root string) ([]Named, error) {
 	var tracked []string     // nil until read; TrackedFiles never returns nil
 	seen := map[string]int{} // each file's index in out
@@ -236,9 +241,13 @@ func (f Files) List(root string) ([]Named, error) {
 			}
 			files = nil
 			for _, t := range tracked {
-				if matchGlob(e.segs, t) {
-					files = append(files, t)
+				if !matchGlob(e.segs, t) {
+					continue
 				}
+				if check.HoldsControl(t) {
+					return nil, fmt.Errorf("%s: files lists the glob %s, which matches %s, a tracked path that holds a control character, which a message would print as it is; rename the file", f.kind, Quote(e.Clean), Quote(t))
+				}
+				files = append(files, t)
 			}
 		}
 		for _, file := range files {

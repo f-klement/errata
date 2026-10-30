@@ -26,21 +26,32 @@ type ExtractorKind struct {
 	Resolve func(spec any) any
 	// Describe is what the extractor a spec builds returns.
 	Describe func(spec any) Description
-	// Env, when set, is how the env kind reads one variable with the
-	// kind, which it lists under Key.
+	// Env, when set, is how the env kind chooses the kind as the reader of
+	// a file, which it lists under Key. It is the declaration the kind
+	// writes, not a copy of it.
 	Env *EnvReader
+	// EnvRead, set with Env, builds the kind's extractor of the variable
+	// name in file, reading at most maxBytes.
+	EnvRead func(file, name string, maxBytes int64) (Extractor, error)
 }
 
-// EnvReader is a kind's reader of one variable for the env kind: its
-// Order among env's readers, lowest first, its test of a file's name,
-// cleaned and with slashes, and the Read that builds its extractor of the
-// variable name in file, reading at most maxBytes. Sniffs, when set, is
-// its test of a file's first SniffBytes bytes, which env asks of a file
-// whose name no reader's test takes.
+// EnvReader is how a kind declares itself a reader the env kind asks for
+// one variable. A kind writes it once, and the registry hands the same
+// value on, so a field added here reaches env with nothing to copy. The
+// kind's Read sits beside it on the kind, since a reader package's Read
+// takes the parsers extract wires and the registry's takes none.
 type EnvReader struct {
-	Order      int
-	Chooses    func(file string) bool
-	Read       func(file, name string, maxBytes int64) (Extractor, error)
+	// Order is the reader's place among env's readers, lowest first: in
+	// the list a message gives, and the one Chooses decides a file's
+	// reader when two would.
+	Order int
+	// Chooses reports whether a file's name chooses the reader. file is
+	// cleaned, with slashes.
+	Chooses func(file string) bool
+	// Sniffs, when set, reports whether a file's first bytes choose the
+	// reader, at most SniffBytes of them, which is then above 0. env asks
+	// it of a file whose name no reader's Chooses takes, the readers that
+	// sniff in Order, as shell takes a file that starts with a #! line.
 	Sniffs     func(head []byte) bool
 	SniffBytes int
 }

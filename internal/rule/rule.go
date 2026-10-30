@@ -162,12 +162,22 @@ func extractOne(ctx context.Context, root string, e check.NamedExtractor, read m
 // bounded refuses values past the bounds of ADR 0003 on what one extractor
 // returns: more than check.MaxValues of them, each node of a value handed
 // over whole counting one; more bytes in all than d's max_bytes; a value at
-// a location that names no path inside the repository; a value handed over
+// a location that names no path inside the repository (check.Location.Inside);
+// a value at a path that holds a control character; a value handed over
 // whole whose Text, which a message quotes, holds more than check.MaxShown
 // bytes; or a value whose Shown the extractor set, which only the rule
 // sets and a report writes as it is. Each reader checks the first two as it
 // reads, and stops early; this is the check every extractor's values meet,
 // a plugin's too, whatever its reader did.
+//
+// git allows a newline in a file's path, and the text report prints a
+// location as it is, so a file named in a pull request could print a line
+// that reads as an erratum or a verdict of its own. Such a path is refused,
+// not quoted in every report, in three places: core.CheckSource refuses it
+// in a config's file: at load, core's Files.List refuses a tracked path
+// that a glob matches before any reader opens it or names it in an error,
+// and this check refuses it in a value's location, whatever reader or
+// plugin returned the value.
 func bounded(d check.Description, values []check.Value) error {
 	limit := d.Bytes()
 	nodes, bytes := 0, int64(0)
@@ -179,8 +189,14 @@ func bounded(d check.Description, values []check.Value) error {
 		if bytes += b; bytes > limit {
 			return fmt.Errorf("its values hold more than %d bytes in all, the extractor's max_bytes; set max_bytes: higher", limit)
 		}
+		if v.At.OutsideOnWindows() {
+			return fmt.Errorf("it returned a value at %s, which is absolute, names a drive or climbs out where a backslash separates names, as on Windows, so it is refused on every OS", newQuoter(nil).quote(v.At.File))
+		}
 		if !v.At.Inside() {
 			return fmt.Errorf("it returned a value at %s, which is no path inside the repository", newQuoter(nil).quote(v.At.File))
+		}
+		if check.HoldsControl(v.At.File) {
+			return fmt.Errorf("it returned a value at %s, a path that holds a control character, which a text report would print as it is", newQuoter(nil).quote(v.At.File))
 		}
 		if v.Data != nil && len(v.Text) > check.MaxShown {
 			return fmt.Errorf("it returned a value handed over whole at %s whose text holds %d bytes, over the %d a whole value shows", newQuoter(nil).quote(v.At.String()), len(v.Text), check.MaxShown)

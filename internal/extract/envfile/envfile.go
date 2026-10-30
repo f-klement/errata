@@ -32,7 +32,7 @@ const kindKey = "envfile"
 // Kind is the envfile kind, which a rule writes under the key envfile. It
 // is an env reader, the first env lists.
 var Kind = core.Kind[Spec]{Key: kindKey, Place: Place, Resolve: Resolve, Describe: Describe,
-	Env: &core.EnvReader{Order: 10, Chooses: chooses, Read: envRead}}
+	Env: &check.EnvReader{Order: 10, Chooses: chooses}, EnvRead: envRead}
 
 // chooses takes, for the env kind, a name that starts with .env or ends in
 // .env, such as prod.env, which compose's env_file: and systemd's

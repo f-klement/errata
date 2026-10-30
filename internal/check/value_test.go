@@ -95,3 +95,90 @@ func TestLocationString(t *testing.T) {
 		}
 	}
 }
+
+// Inside reads a path as text under two readings, Linux's and Windows's,
+// and refuses one outside under either; OutsideOnWindows marks the paths
+// only Windows's reading refuses. Each case names what it pins: the empty
+// path; a leading slash or backslash; . passed over, so ./../x climbs out;
+// a .. at depth 1 that ends at the root (a/..), and one below it; a drive
+// as the first name, after . or .., and as a later name; each end of both
+// letter ranges and the byte just past it; a one byte name; a device name.
+// Planted breaks, each in local or isDrive: a backslash not a separator
+// under Windows's reading; . read as a name; depth < 0 as <= 0; .. counted
+// up, a name counted down; the drive refused at any depth; a drive's
+// letter not tested; each bound of the letter ranges moved by one; a one
+// byte name read as a drive.
+func TestLocationInside(t *testing.T) {
+	for _, c := range []struct {
+		file             string
+		inside, onlyWins bool
+	}{
+		{"", false, false},
+		{"/x", false, false},
+		{`\x`, false, true},
+		{`\\host\share\x`, false, true},
+		{"a/b.yaml", true, false},
+		{".", true, false},
+		{"./c", true, false},
+		{"a/..", true, false},
+		{"a/../b", true, false},
+		{"a/b/../..", true, false},
+		{"..", false, false},
+		{"../x", false, false},
+		{"./../x", false, false},
+		{"a/./../../x", false, false},
+		{`a\..\b`, true, false},
+		{`a\..\..\x`, false, true},
+		{`..\x`, false, true},
+		{`a\b/../..`, false, false},
+		{"C:x", false, true},
+		{`C:\x`, false, true},
+		{"C:", false, true},
+		{"./C:x", false, true},
+		{"a/../C:x", false, true},
+		{"a/b/../../C:", false, true},
+		{`a\..\c:\x`, false, true},
+		{"b/c:d", true, false},
+		{"a:x", false, true},
+		{"z:x", false, true},
+		{"A:x", false, true},
+		{"Z:x", false, true},
+		{"`:x", true, false},
+		{"{:x", true, false},
+		{"@:x", true, false},
+		{"[:x", true, false},
+		{"1:x", true, false},
+		{"c", true, false},
+		{":", true, false},
+		{"aux.yaml", true, false},
+		{"dir/con.txt", true, false},
+	} {
+		l := Location{File: c.file}
+		if got := l.Inside(); got != c.inside {
+			t.Errorf("Inside(%q) = %v, want %v", c.file, got, c.inside)
+		}
+		if got := l.OutsideOnWindows(); got != c.onlyWins {
+			t.Errorf("OutsideOnWindows(%q) = %v, want %v", c.file, got, c.onlyWins)
+		}
+	}
+	marked := Location{File: "a.yaml", Outside: true}
+	if marked.Inside() || marked.OutsideOnWindows() {
+		t.Errorf("a location marked outside: Inside %v, OutsideOnWindows %v, want both false", marked.Inside(), marked.OutsideOnWindows())
+	}
+}
+
+// HoldsControl finds a C0 control, DEL and a C1 control such as NEL
+// (U+0085) anywhere in a string, and nothing else: a space, a backslash, a
+// letter outside ASCII, U+00A0 just past the C1 range, and a line
+// separator, which the text report escapes. Planted break: the check
+// reduced to a newline alone, which passed the rest.
+func TestHoldsControl(t *testing.T) {
+	for s, want := range map[string]bool{
+		"a\nb": true, "\r": true, "a\x1b[2J": true, "\t": true, "\x00": true, "a\x7f": true, "a\u0085b": true, "\u009f": true,
+		"": false, "a b.yaml": false, `a\nb`: false, "é.yaml": false, "\u00a0": false, "\u2028": false,
+	} {
+		if got := HoldsControl(s); got != want {
+			t.Errorf("HoldsControl(%q) = %v, want %v", s, got, want)
+		}
+	}
+}

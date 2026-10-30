@@ -2,8 +2,9 @@ package check
 
 import (
 	"context"
-	"path/filepath"
 	"strconv"
+	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -21,10 +22,73 @@ type Location struct {
 }
 
 // Inside reports whether l is a path inside the repository, as every
-// value's location must be: relative, not empty, and with no .. that
-// leaves the root. It reads no file, so a link is not followed.
+// value's location must be: not empty, not absolute, and with no .. that
+// leaves the root, as Linux reads it and as Windows does (local). It reads
+// no file, so a link is not followed.
 func (l Location) Inside() bool {
-	return !l.Outside && filepath.IsLocal(l.File)
+	return !l.Outside && local(l.File, false) && local(l.File, true)
+}
+
+// OutsideOnWindows reports whether l is outside the repository only as
+// Windows reads it: where a slash alone separates names and a drive means
+// nothing, as on Linux, it is inside, but a backslash that climbs out or a
+// drive such as C: puts it outside. Inside refuses it on every OS, and a
+// message says why, since on Linux the file is in the repository.
+func (l Location) OutsideOnWindows() bool {
+	return !l.Outside && local(l.File, false) && !local(l.File, true)
+}
+
+// local reports whether p is a path that stays inside the root, read as
+// text and the same on every OS. Without windows it reads p as Linux does: a
+// slash separates two names, and a path that starts with one is absolute.
+// With windows it reads p as Windows does: a backslash separates two names
+// too, and a path is absolute when it starts with either, or when its first
+// name, once . and .. are resolved, is a drive such as C: (C:x, ./C:x and
+// a/../C:x alike). Both readings refuse a .. that leaves the root. Inside
+// asks both, so a path that is absolute or climbs out under either is
+// refused on every OS: a\b/../.. climbs out on Linux, and a\..\..\x on
+// Windows. Nothing else is refused.
+//
+// It is not filepath.IsLocal, which on Windows also refuses the names
+// Windows keeps for devices (NUL, CON, PRN, AUX, COM1 and the like, with
+// any extension), so a repository's aux.yaml would be outside it on Windows
+// alone. A location is a name a report prints, and the rule never opens it;
+// a reader that opens a file checks that file when it opens it.
+func local(p string, windows bool) bool {
+	sep := func(r rune) bool { return r == '/' || windows && r == '\\' }
+	if p == "" || sep(rune(p[0])) {
+		return false
+	}
+	depth := 0
+	for _, n := range strings.FieldsFunc(p, sep) {
+		switch {
+		case n == ".":
+		case n == "..":
+			if depth--; depth < 0 {
+				return false
+			}
+		case windows && depth == 0 && isDrive(n):
+			return false
+		default:
+			depth++
+		}
+	}
+	return true
+}
+
+// isDrive reports whether the name n starts with a drive, an ASCII letter
+// and a colon, as C:x does.
+func isDrive(n string) bool {
+	return len(n) > 1 && n[1] == ':' && ('a' <= n[0] && n[0] <= 'z' || 'A' <= n[0] && n[0] <= 'Z')
+}
+
+// HoldsControl reports whether s holds a control character, such as a
+// newline. A path that holds one is refused wherever errata meets it, in a
+// config's file:, a glob's match and a value's location, since a message or
+// the text report would print it as it is, and a newline in a file's name
+// would print a line that reads as an erratum or a verdict of its own.
+func HoldsControl(s string) bool {
+	return strings.ContainsFunc(s, unicode.IsControl)
 }
 
 // String is l as a message names it: the file and the line, as f.yaml:3, or

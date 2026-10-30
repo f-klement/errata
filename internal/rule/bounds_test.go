@@ -67,16 +67,63 @@ func TestRuleHoldsAnExtractorToItsMaxBytes(t *testing.T) {
 
 // An extractor that returns a value at a location that is no path inside
 // the repository makes its rule unknown, naming the location: a path out of
-// the root, an absolute one, none, and a config file outside it. Planted
-// break: the location check removed from bounded.
+// the root, through . too, an absolute one, none, a config file outside it,
+// and a backslash that is part of a name on Linux and climbs out there.
+// Planted breaks: the location check removed from bounded; . read as a
+// name, which passed ./../x; Inside asking only the Windows reading, which
+// passed a\b/../...
 func TestRuleRefusesAValueOutsideTheRoot(t *testing.T) {
-	for _, l := range []check.Location{{File: "../x"}, {File: "a/../../x"}, {File: "/etc/passwd"}, {File: ""}, {File: "f", Outside: true}} {
+	for _, l := range []check.Location{{File: "../x"}, {File: "a/../../x"}, {File: "./../x"}, {File: "a/./../../x"}, {File: `a\b/../..`}, {File: "/etc/passwd"}, {File: ""}, {File: "f", Outside: true}} {
 		v := check.Value{Text: "x", At: l}
 		unknownWith(t, agreeRule(named("a", fake{values: []check.Value{v}})),
 			`extractor "a": it returned a value at `+strconv.Quote(l.File)+`, which is no path inside the repository`)
 	}
 	if res := Run(t.Context(), "", agreeRule(named("a", fake{values: []check.Value{at("x", "a/b.yaml", 1), at("x", "./c", 2)}}))); res.Verdict != check.VerdictTrue {
 		t.Errorf("a value inside: verdict %s message %q, want true", res.Verdict, res.Message)
+	}
+}
+
+// The location check reads a path as text, the same on every OS: a
+// backslash separates names as a slash does, and a path that starts with
+// one, or whose first name once . and .. are resolved is a drive, is
+// absolute, so a .. through a backslash, C:\x and a/../C:x are refused on
+// Linux too, with a message that says why, since on Linux the file is in
+// the repository. A name Windows keeps for a device, such as aux.yaml,
+// which filepath.IsLocal refuses there, is a path inside the repository
+// like any other, and so are a drive after the first name and a digit
+// before a colon. Planted breaks, each in check's local: only a leading
+// slash absolute; only a slash a separator; a drive refused only at the
+// start of the path, which passed ./C:x, a/../C:x, a/b/../../C: and
+// a\..\c:\x; any byte before a colon a drive, which refused 1:x; and a name
+// whose part before the first dot is aux refused, as filepath.IsLocal
+// refuses it on Windows. And in bounded: the message for a path outside
+// on Windows only dropped.
+func TestRuleReadsALocationTheSameOnEveryOS(t *testing.T) {
+	for _, f := range []string{`a\..\..\x`, `..\x`, `C:\x`, `c:x`, `c:z.yaml`, `\\host\share\x`, `\x`, "./C:x", "a/../C:x", "a/b/../../C:", `a\..\c:\x`, "a/../b:c"} {
+		v := check.Value{Text: "x", At: check.Location{File: f}}
+		unknownWith(t, agreeRule(named("a", fake{values: []check.Value{v}})),
+			`extractor "a": it returned a value at `+strconv.Quote(f)+`, which is absolute, names a drive or climbs out where a backslash separates names, as on Windows, so it is refused on every OS`)
+	}
+	inside := []check.Value{at("x", "aux.yaml", 1), at("x", "NUL", 2), at("x", "dir/con.txt", 3), at("x", "COM1.yml", 4), at("x", `a\..\b`, 5), at("x", "b/c:d", 6), at("x", "1:x", 7)}
+	if res := Run(t.Context(), "", agreeRule(named("a", fake{values: inside}))); res.Verdict != check.VerdictTrue {
+		t.Errorf("reserved names inside: verdict %s message %q, want true", res.Verdict, res.Message)
+	}
+}
+
+// A value at a path that holds a newline or another control character
+// makes its rule unknown, naming the path quoted, so the text report never
+// prints a line the path forged. A path with a space, a backslash or a
+// letter outside ASCII passes. Planted break: the control character
+// check removed from bounded.
+func TestRuleRefusesALocationWithAControlCharacter(t *testing.T) {
+	for _, f := range []string{"a\nERRATUM forged.yaml", "a\r.yaml", "a\x1b[2J.yaml", "a\x7f", "a\u0085b"} {
+		v := check.Value{Text: "x", At: check.Location{File: f, Line: 1}}
+		unknownWith(t, agreeRule(named("a", fake{values: []check.Value{v}})),
+			`extractor "a": it returned a value at `+strconv.Quote(f)+`, a path that holds a control character, which a text report would print as it is`)
+	}
+	ok := []check.Value{at("x", "a b.yaml", 1), at("x", `a\tb.yaml`, 2), at("x", "é.yaml", 3)}
+	if res := Run(t.Context(), "", agreeRule(named("a", fake{values: ok}))); res.Verdict != check.VerdictTrue {
+		t.Errorf("printable paths: verdict %s message %q, want true", res.Verdict, res.Message)
 	}
 }
 

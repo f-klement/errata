@@ -26,14 +26,16 @@ func (fakeSpec) Bound() int64 { return 0 }
 // with #!, declared as a reader package declares one: its value of a
 // variable names the variable, the file, and whether the facade handed it
 // the YAML parser it hands the CI readers.
-var fakeEnv = core.EnvReader{
+var fakeEnv = check.EnvReader{
 	Order:      60,
 	Chooses:    func(file string) bool { return path.Ext(file) == ".fake" },
 	Sniffs:     func(head []byte) bool { return string(head) == "#!" },
 	SniffBytes: 2,
-	Read: func(file, name string, _ int64, p core.Parsers) (check.Extractor, error) {
-		return fakeRead{text: fmt.Sprintf("%s in %s, parsed %t", name, file, p.Noted != nil), file: file}, nil
-	},
+}
+
+// fakeEnvRead is the fake env reader's Read.
+func fakeEnvRead(file, name string, _ int64, p core.Parsers) (check.Extractor, error) {
+	return fakeRead{text: fmt.Sprintf("%s in %s, parsed %t", name, file, p.Noted != nil), file: file}, nil
 }
 
 type fakeRead struct{ text, file string }
@@ -46,9 +48,10 @@ func (f fakeRead) ExtractWith(ctx context.Context, root string, _ map[string][]c
 	return f.Extract(ctx, root)
 }
 
-// fakeKinds are kinds with the fake env reader registered after them.
-func fakeKinds(e *core.EnvReader) table {
-	k := core.Kind[fakeSpec]{Key: "fake", Env: e}
+// fakeKinds are kinds with a fake kind registered after them, which
+// declares e and read as its env reader.
+func fakeKinds(e *check.EnvReader, read func(string, string, int64, core.Parsers) (check.Extractor, error)) table {
+	k := core.Kind[fakeSpec]{Key: "fake", Env: e, EnvRead: read}
 	return registry(append(slices.Clone(kinds.order), register(k, nil))...)
 }
 
@@ -63,7 +66,7 @@ func fakeKinds(e *core.EnvReader) table {
 // not handed to Read; the sniffing dropped; the sniffer of higher Order
 // taken; the sniff asked before the name test.
 func TestEnvAsksARegisteredReader(t *testing.T) {
-	rs := readersOf(fakeKinds(&fakeEnv))
+	rs := readersOf(fakeKinds(&fakeEnv, fakeEnvRead))
 	if got := rs.Choose("conf/app.fake"); got != "fake" {
 		t.Errorf("conf/app.fake chose %q, want fake", got)
 	}
@@ -126,21 +129,23 @@ func TestEnvListsItsReadersInOrder(t *testing.T) {
 }
 
 // readersOf refuses two env readers at one Order, one with no Chooses or
-// no Read, and one that sniffs no bytes, by its panic. Planted breaks: each check dropped.
+// no EnvRead, an EnvRead with no Env, and one that sniffs no bytes, by its
+// panic. Planted breaks: each check dropped.
 func TestReadersOfRefuses(t *testing.T) {
-	same, noChooses, noRead, noBytes := fakeEnv, fakeEnv, fakeEnv, fakeEnv
+	same, noChooses, noBytes := fakeEnv, fakeEnv, fakeEnv
 	same.Order = shell.Kind.Env.Order
 	noChooses.Chooses = nil
-	noRead.Read = nil
 	noBytes.SniffBytes = 0
 	for name, c := range map[string]struct {
-		e    *core.EnvReader
+		e    *check.EnvReader
+		read func(string, string, int64, core.Parsers) (check.Extractor, error)
 		want string
 	}{
-		"order":   {&same, `extract: the env readers "shell" and "fake" are both at order 20`},
-		"chooses": {&noChooses, `extract: the env reader "fake" has no Chooses or no Read`},
-		"read":    {&noRead, `extract: the env reader "fake" has no Chooses or no Read`},
-		"sniff":   {&noBytes, `extract: the env reader "fake" sniffs no bytes: its SniffBytes is 0`},
+		"order":   {&same, fakeEnvRead, `extract: the env readers "shell" and "fake" are both at order 20`},
+		"chooses": {&noChooses, fakeEnvRead, `extract: the env reader "fake" has no Chooses or no EnvRead`},
+		"read":    {&fakeEnv, nil, `extract: the env reader "fake" has no Chooses or no EnvRead`},
+		"no env":  {nil, fakeEnvRead, `extract: the kind "fake" has an EnvRead and no Env`},
+		"sniff":   {&noBytes, fakeEnvRead, `extract: the env reader "fake" sniffs no bytes: its SniffBytes is 0`},
 	} {
 		func() {
 			defer func() {
@@ -148,7 +153,17 @@ func TestReadersOfRefuses(t *testing.T) {
 					t.Errorf("%s: recovered %v, want %s", name, r, c.want)
 				}
 			}()
-			readersOf(fakeKinds(c.e))
+			readersOf(fakeKinds(c.e, c.read))
 		}()
+	}
+}
+
+// register hands on a kind's env reader declaration as the kind wrote it,
+// the same value and not a copy of its fields, so a field added to
+// check.EnvReader reaches env with no copy to extend. Planted break:
+// register copying the declaration field by field.
+func TestRegisterHandsOnTheEnvDeclaration(t *testing.T) {
+	if got := fakeKinds(&fakeEnv, fakeEnvRead).byKey["fake"].Env; got != &fakeEnv {
+		t.Errorf("the registry holds %p, not the declaration %p", got, &fakeEnv)
 	}
 }

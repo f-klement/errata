@@ -65,7 +65,7 @@ func (e *PatternError) Unwrap() error { return e.Err }
 
 // NewEach is the search of an extractor of kind, which reads at most
 // maxBytes, between before and after, with no value yet, which Add puts
-// in, and no file, which At gives it. Its time limit, the regex time of
+// in, and no file, which In gives it. Its time limit, the regex time of
 // maxBytes, runs from now, so preparing the values counts against it as
 // their searches do. A pattern that does not compile is refused when its
 // search is due, with a *PatternError.
@@ -96,18 +96,9 @@ func (e *Each) Add(value func() (string, error)) error {
 	return nil
 }
 
-// At is e reading file, at most maxBytes of it, with the deadline e has: a
-// file set gives each of its files the same Each, so they share the limit.
-func (e Each) At(kind, file string, maxBytes int64) (Each, error) {
-	src, err := CheckSource(kind, file, maxBytes)
-	if err != nil {
-		return Each{}, err
-	}
-	return e.In(src), nil
-}
-
-// In is e reading the file src names, which core has checked, with the
-// deadline e has, as At gives it.
+// In is e reading the file src names, which core has checked, at most
+// src.Limit bytes of it, with the deadline e has: a file set gives each of
+// its files the same Each, so they share the limit.
 func (e Each) In(src Source) Each {
 	e.Source = src
 	return e

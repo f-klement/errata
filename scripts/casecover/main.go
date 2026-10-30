@@ -22,8 +22,25 @@
 //
 // Positions are the file's own lines, not those a //line directive gives,
 // because the profile counts lines that way too (go test -cover, Go 1.27.2). A
-// directive that names another file makes the profile name a file that does
-// not exist; that name is skipped, since gremlins mutates only files that do.
+// directive that names another file makes the profile name that file. When no
+// file under the root has the name, casecover skips it, since gremlins mutates
+// only files that exist; when one does, it is the second shape below.
+//
+// It fails rather than add nothing when the root is not the tree the tests ran
+// in: when the profile names files and none is under the root's module, and
+// when no in-module name that a test ran has a file under the root.
+//
+// Two shapes it does not judge, and no file that gremlins mutates uses either:
+//
+//   - A clause entered only through the fallthrough at the end of the clause
+//     before it. Its body runs without its case expression being evaluated,
+//     so casecover credits the expression, and a mutant in it reads as lived
+//     where no test reached it.
+//   - A //line directive that names a file which does exist under the module.
+//     The profile takes the file name from the directive and keeps the
+//     original line numbers, so casecover reads the named file at those lines
+//     and may credit a case clause in it that no test ran. Gremlins already
+//     misplaces its mutants after such a directive.
 package main
 
 import (
@@ -70,6 +87,10 @@ func run(root, profile string) error {
 		}
 		return os.ReadFile(filepath.Join(root, filepath.FromSlash(rel))) //nolint:gosec // a local path under the root, checked above
 	})
+	var wrong notThisTree
+	if errors.As(err, &wrong) {
+		return fmt.Errorf("%s is not the tree the tests ran in: %w", root, err)
+	}
 	if err != nil || len(lines) == 0 {
 		return err
 	}
@@ -144,13 +165,21 @@ func coveredStarts(profile []byte) (map[string][]pos, error) {
 	return starts, sc.Err()
 }
 
+// notThisTree is caseBlocks' refusal of a profile that shows the module root
+// is not the tree the tests ran in. run adds the root to it.
+type notThisTree string
+
+func (e notThisTree) Error() string { return string(e) }
+
 // caseBlocks is the profile lines to add: one covered block from the case
 // keyword to the colon of each case clause whose body block is covered. A
 // clause's body block starts after its colon and no later than its first
 // statement: Go 1.27 starts it at the first statement, and an empty body's at
 // the column after the colon. read gives a file's source by its path relative
 // to the module root. Files outside the module, and names in it that no file
-// has, are left alone.
+// has, are left alone. It fails with notThisTree when the profile names files
+// and none is under mod, and when it read names and found a file for none.
+// It reads only the in-module names a test ran a block of.
 func caseBlocks(profile []byte, mod string, read func(rel string) ([]byte, error)) ([]string, error) {
 	starts, err := coveredStarts(profile)
 	if err != nil {
@@ -162,17 +191,21 @@ func caseBlocks(profile []byte, mod string, read func(rel string) ([]byte, error
 	}
 	sort.Strings(names)
 	var out []string
+	inModule, named, skipped := 0, 0, 0
 	for _, name := range names {
-		covered := starts[name]
-		if len(covered) == 0 {
-			continue
-		}
 		rel, ok := strings.CutPrefix(name, mod+"/")
 		if !ok {
 			continue
 		}
+		inModule++
+		covered := starts[name]
+		if len(covered) == 0 {
+			continue
+		}
+		named++
 		src, err := read(rel)
 		if errors.Is(err, fs.ErrNotExist) {
+			skipped++
 			continue
 		}
 		if err != nil {
@@ -205,7 +238,21 @@ func caseBlocks(profile []byte, mod string, read func(rel string) ([]byte, error
 			return true
 		})
 	}
+	if len(names) > 0 && inModule == 0 {
+		return nil, notThisTree(fmt.Sprintf("the profile names %s and none is under %s, the root's module", files(len(names)), mod))
+	}
+	if named > 0 && skipped == named {
+		return nil, notThisTree(fmt.Sprintf("the profile names %s under %s that the tests ran, and none is under the root", files(named), mod))
+	}
 	return out, nil
+}
+
+// files counts n files in words, so a count of one reads "1 file".
+func files(n int) string {
+	if n == 1 {
+		return "1 file"
+	}
+	return fmt.Sprintf("%d files", n)
 }
 
 // clause gives a case clause's or a select arm's case keyword, colon and body;

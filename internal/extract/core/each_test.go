@@ -14,11 +14,11 @@ func mustEach(t *testing.T, file string, maxBytes int64, before, after string, v
 	t.Helper()
 	e := NewEach("regex", before, after, maxBytes)
 	add(t, &e, values...)
-	e, err := e.At("regex", file, maxBytes)
+	src, err := CheckSource("regex", file, maxBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return e
+	return e.In(src)
 }
 
 func add(t *testing.T, e *Each, values ...string) {
@@ -72,8 +72,6 @@ func TestEachReadsAsASearch(t *testing.T) {
 	extracttest.WantError(t, err, "missing")
 	_, err = mustEach(t, "f", 2, "(", ")", `a`).Extract(t.Context(), root)
 	extracttest.WantError(t, err, "over the limit")
-	_, err = (Each{}).At("regex", "../f", 0)
-	extracttest.WantError(t, err, "regex: file \"../f\" is outside the repository")
 }
 
 // Two patterns can match the same text, so the values of all of them are
@@ -106,15 +104,12 @@ func TestEachHoldsMatchesToMaxValues(t *testing.T) {
 func TestEachSharesOneTimeLimit(t *testing.T) {
 	e := newEach("regex", "(", ")", time.Hour)
 	add(t, &e, `a`, `b`)
-	e, err := e.At("regex", "f", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	e = e.In(sourceOf("f"))
 	if _, err := e.FromData([]byte("ab")); err != nil {
 		t.Fatalf("within the limit: %v", err)
 	}
 	e.deadline = time.Now().Add(-time.Second)
-	_, err = e.FromData([]byte("ab"))
+	_, err := e.FromData([]byte("ab"))
 	extracttest.WantError(t, err, "f: matching took more than 1h0m0s, "+eachLimit+", and stopped after 0 matches")
 }
 

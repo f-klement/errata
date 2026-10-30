@@ -16,6 +16,8 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+
+	"github.com/f-klement/errata/internal/check"
 )
 
 // CheckPath parses a path, refusing an empty one by the field's name.
@@ -39,9 +41,14 @@ type Source struct {
 // CheckSource refuses a file outside the repository: an absolute path, or
 // one whose .. leaves the root. A repository's config must not read files
 // that are not in the repository. A symlink that leads out is refused when
-// the file is read, since only the file system knows where it points. A
-// max_bytes of zero is the default limit, and one below zero or over
-// maxMaxBytes is refused.
+// the file is read, since only the file system knows where it points. It
+// refuses on every OS a path that Windows reads as absolute or climbing
+// out, such as C:x, as the rule refuses such a value's location
+// (check.Location.Inside), so the config fails at load and not each run.
+// It refuses a path that holds a control character, such as a newline,
+// which a message would print as it is (check.HoldsControl). A max_bytes
+// of zero is the default limit, and one below zero or over maxMaxBytes is
+// refused.
 func CheckSource(kind, file string, maxBytes int64) (Source, error) {
 	if file == "" {
 		return Source{}, fmt.Errorf("%s: file is required", kind)
@@ -51,6 +58,12 @@ func CheckSource(kind, file string, maxBytes int64) (Source, error) {
 	}
 	if !filepath.IsLocal(file) {
 		return Source{}, fmt.Errorf("%s: file %s is outside the repository: write a path relative to the repository root that does not leave it", kind, Quote(file))
+	}
+	if (check.Location{File: file}).OutsideOnWindows() {
+		return Source{}, fmt.Errorf("%s: file %s is absolute, names a drive or climbs out where a backslash separates names, as on Windows, so it is refused on every OS: write a path relative to the repository root that does not leave it", kind, Quote(file))
+	}
+	if check.HoldsControl(file) {
+		return Source{}, fmt.Errorf("%s: file %s holds a control character, which a message would print as it is; rename the file", kind, Quote(file))
 	}
 	if maxBytes < 0 || maxBytes > MaxMaxBytes {
 		return Source{}, fmt.Errorf("%s: max_bytes is %d; write a number of bytes from 1 to %d, or leave it out for %d",

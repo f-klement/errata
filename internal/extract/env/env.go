@@ -1,6 +1,6 @@
 // Package env is the env extractor: one variable across every file a rule
 // lists that sets it, each file read by the reader its name chooses. It asks
-// every kind that declares itself an env reader (core.EnvReader), which the
+// every kind that declares itself an env reader (check.EnvReader), which the
 // facade hands it, since no reader imports another. env lists the files a
 // glob names from git's index (core.TrackedFiles), running nothing.
 package env
@@ -34,13 +34,15 @@ type Spec struct {
 }
 
 // Reader is one reader env asks: Name is the kind's key, which a rule
-// writes for it under readers:, and the rest is what the kind declares
-// (check.EnvReader). Its Read is Build's for envfile and shell, Every's for
-// the CI readers, whose values each name the job, step or stage they hold
-// for.
+// writes for it under readers:, EnvReader is what the kind declares, and
+// Read is the kind's EnvRead (check.ExtractorKind), which builds its
+// extractor of the variable name in file, reading at most maxBytes. Read
+// is Build's for envfile and shell, Every's for the CI readers, whose
+// values each name the job, step or stage they hold for.
 type Reader struct {
 	Name string
 	check.EnvReader
+	Read func(file, name string, maxBytes int64) (check.Extractor, error)
 }
 
 // Readers are the readers env asks, in any order, since each carries its

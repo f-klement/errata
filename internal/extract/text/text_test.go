@@ -32,7 +32,11 @@ func slowOnly(t *testing.T) {
 
 // rawSearch is the regex extractor of pattern over the raw README.md.
 func rawSearch(pattern string) (check.Extractor, error) {
-	return core.CompileSearch("regex", "README.md", pattern, 0)
+	src, err := core.CheckSource("regex", "README.md", 0)
+	if err != nil {
+		return nil, err
+	}
+	return core.CompileSearchAt("regex", src, pattern)
 }
 
 func textSpec(pattern string) Spec { return Spec{File: "README.md", Pattern: pattern} }

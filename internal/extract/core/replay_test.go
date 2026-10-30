@@ -65,7 +65,7 @@ var replays = []extracttest.Replay[string]{
 
 // searchIn is the regex extractor of pattern over the file f.
 func searchIn(pattern string) (check.Extractor, error) {
-	return CompileSearch("regex", "f", pattern, 0)
+	return CompileSearchAt("regex", sourceOf("f"), pattern)
 }
 
 func TestReplayMeasuredInputs(t *testing.T) {

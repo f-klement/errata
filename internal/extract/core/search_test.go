@@ -58,7 +58,7 @@ func FuzzRegex(f *testing.F) {
 	f.Add(`x(?:\A|y)(\d)`, "xy x xy1\nxy2")
 	f.Add(`(?-m)\Ax(\d)`, "x x x\nx1")
 	f.Fuzz(func(t *testing.T, pattern, data string) {
-		r, err := CompileSearch("regex", "f", pattern, 0)
+		r, err := CompileSearchAt("regex", sourceOf("f"), pattern)
 		if err != nil {
 			return
 		}
@@ -92,6 +92,16 @@ func FuzzRegex(f *testing.F) {
 	})
 }
 
+// sourceOf is file as CheckSource gives it with no max_bytes. It panics on
+// a refusal, since its callers pass a file of their own.
+func sourceOf(file string) Source {
+	src, err := CheckSource("regex", file, 0)
+	if err != nil {
+		panic(err)
+	}
+	return src
+}
+
 // tooDeepToAnchor nests as deeply as RE2 allows inside a group, which
 // anchoring would nest one level deeper. It does not look back, so no
 // after refuses it first.
@@ -101,7 +111,7 @@ var tooDeepToAnchor = "(x" + strings.Repeat("(?:a", 499) + strings.Repeat(")*", 
 // and finds what FindAll finds. The planted break, anchors without their
 // programs, panics.
 func TestRegexTooDeepToAnchorSearchesWithoutTries(t *testing.T) {
-	e, err := CompileSearch("regex", "f", tooDeepToAnchor, 0)
+	e, err := CompileSearchAt("regex", sourceOf("f"), tooDeepToAnchor)
 	if err != nil || e.prefix == nil || e.anchored() != nil {
 		t.Fatalf("prefix %q, anchors %v, error %v; want the prefix x, no anchors, no error", e.prefix, e.anchored(), err)
 	}
@@ -153,7 +163,7 @@ func TestRegexTriesReadTheFileAboutOnce(t *testing.T) {
 		{`x(\d)`, sparse(512) + "x x5" + sparse(8192), 1<<16 - 8704<<7 - 4},
 		{`x\B(a*b)`, strings.Repeat("x"+strings.Repeat("a", 1000)+strings.Repeat(" ", 70), 3) + "x xab\nx" + strings.Repeat("a", 20000) + "\n", maxTry + 64},
 	} {
-		e, err := CompileSearch("regex", "f", c.pattern, 0)
+		e, err := CompileSearchAt("regex", sourceOf("f"), c.pattern)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -184,7 +194,7 @@ func TestRegexFirstSearchAfterTriesStartsAtTheLine(t *testing.T) {
 		{`x\b(\d)`, strings.Repeat("x\n"+gap[1:], 100), 2},
 		{`(?-m)\Ax(\d)`, strings.Repeat("x"+gap+"\n", 100), 0},
 	} {
-		e, err := CompileSearch("regex", "f", c.pattern, 0)
+		e, err := CompileSearchAt("regex", sourceOf("f"), c.pattern)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -199,7 +209,7 @@ func TestRegexFirstSearchAfterTriesStartsAtTheLine(t *testing.T) {
 }
 
 // A pattern compiles its anchored form on its first try, so one whose
-// prefix never occurs costs no third program: CompileSearch compiles the
+// prefix never occurs costs no third program: CompileSearchAt compiles the
 // pattern twice, once as written to check it and once with the m flag, and
 // the planted break, the anchors compiled with them, three times.
 func TestRegexAnchorsCompileOnTheFirstTry(t *testing.T) {
@@ -207,9 +217,9 @@ func TestRegexAnchorsCompileOnTheFirstTry(t *testing.T) {
 	alone := extracttest.Allocated(func() { regexp.MustCompile("(?m)" + pattern) })
 	var e Search
 	var err error
-	n := extracttest.Allocated(func() { e, err = CompileSearch("regex", "f", pattern, 0) })
+	n := extracttest.Allocated(func() { e, err = CompileSearchAt("regex", sourceOf("f"), pattern) })
 	if err != nil || n > alone*5/2 {
-		t.Errorf("CompileSearch allocated %d bytes, %d for the pattern alone; error %v", n, alone, err)
+		t.Errorf("CompileSearchAt allocated %d bytes, %d for the pattern alone; error %v", n, alone, err)
 	}
 	if got, err := e.Matches([]byte(strings.Repeat("a", 1000))); len(got) != 0 || err != nil {
 		t.Fatal(got, err)
@@ -233,7 +243,7 @@ LABEL version="0.2.0"
 // TestJSONLinesCostNoMemoryForEachNewline is the same for JSON.
 func TestRegexLinesCostNoMemoryForEachNewline(t *testing.T) {
 	data := []byte("1" + strings.Repeat("\n", 1<<18) + "x")
-	e, err := CompileSearch("regex", "f", "(x)", 0)
+	e, err := CompileSearchAt("regex", sourceOf("f"), "(x)")
 	if err != nil {
 		t.Fatal(err)
 	}

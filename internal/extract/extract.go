@@ -79,26 +79,28 @@ var kinds = registry(
 
 // envReaders are the readers the env kind asks, each for one variable in
 // one file: every kind of kinds that declares itself an env reader
-// (core.EnvReader), and the shell reader's test of a shebang, which
-// chooses it for a script its name does not.
+// (check.EnvReader), with the Read beside it.
 var envReaders env.Readers
 
 func init() { envReaders = readersOf(kinds) }
 
 // readersOf are the env readers of t's kinds. Two at one Order, one with
-// no Chooses or no Read, or one that sniffs no bytes, is a bug in a reader's declaration, so it
-// panics when the program starts and every test fails: two at one Order
-// would leave env's messages, and the reader of a name both take, to the
-// order of kinds.
+// no Chooses or no EnvRead, an EnvRead with no Env, or one that sniffs no
+// bytes, is a bug in a reader's declaration, so it panics when the program
+// starts and every test fails: two at one Order would leave env's
+// messages, and the reader of a name both take, to the order of kinds.
 func readersOf(t table) env.Readers {
 	var r env.Readers
 	at := map[int]string{}
 	for _, k := range t.order {
 		if k.Env == nil {
+			if k.EnvRead != nil {
+				panic(fmt.Sprintf("extract: the kind %q has an EnvRead and no Env", k.Key))
+			}
 			continue
 		}
-		if k.Env.Chooses == nil || k.Env.Read == nil {
-			panic(fmt.Sprintf("extract: the env reader %q has no Chooses or no Read", k.Key))
+		if k.Env.Chooses == nil || k.EnvRead == nil {
+			panic(fmt.Sprintf("extract: the env reader %q has no Chooses or no EnvRead", k.Key))
 		}
 		if k.Env.Sniffs != nil && k.Env.SniffBytes <= 0 {
 			panic(fmt.Sprintf("extract: the env reader %q sniffs no bytes: its SniffBytes is %d", k.Key, k.Env.SniffBytes))
@@ -107,7 +109,7 @@ func readersOf(t table) env.Readers {
 			panic(fmt.Sprintf("extract: the env readers %q and %q are both at order %d", other, k.Key, k.Env.Order))
 		}
 		at[k.Env.Order] = k.Key
-		r.List = append(r.List, env.Reader{Name: k.Key, EnvReader: *k.Env})
+		r.List = append(r.List, env.Reader{Name: k.Key, EnvReader: *k.Env, Read: k.EnvRead})
 	}
 	return r
 }
@@ -155,12 +157,12 @@ func register[S core.Bounded](k core.Kind[S], build func(S) (check.Extractor, er
 			return d
 		}
 	}
-	if e := k.Env; e != nil {
-		r.Env = &check.EnvReader{Order: e.Order, Chooses: e.Chooses, Sniffs: e.Sniffs, SniffBytes: e.SniffBytes}
-		if e.Read != nil {
-			r.Env.Read = func(file, name string, maxBytes int64) (check.Extractor, error) {
-				return e.Read(file, name, maxBytes, parsers)
-			}
+	// Env is the kind's own declaration, handed on and not copied, so no
+	// field of it can be left behind; only the Read beside it is bound.
+	r.Env = k.Env
+	if read := k.EnvRead; read != nil {
+		r.EnvRead = func(file, name string, maxBytes int64) (check.Extractor, error) {
+			return read(file, name, maxBytes, parsers)
 		}
 	}
 	return r

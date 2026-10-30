@@ -32,7 +32,7 @@ type call struct {
 // order.
 var declared = []struct {
 	name string
-	env  *core.EnvReader
+	env  *check.EnvReader
 }{
 	{envfile.Kind.Key, envfile.Kind.Env},
 	{gitlabci.Kind.Key, gitlabci.Kind.Env},
@@ -68,11 +68,11 @@ func fakes(calls *[]call) Readers {
 			}
 			return f, nil
 		}
-		e := check.EnvReader{Order: d.env.Order, Chooses: d.env.Chooses, Read: read}
+		e := *d.env
 		if name == "shell" {
 			e.Sniffs, e.SniffBytes = func(b []byte) bool { return string(b) == "#!/bin/sh" }, 9
 		}
-		r.List = append(r.List, Reader{Name: name, EnvReader: e})
+		r.List = append(r.List, Reader{Name: name, EnvReader: e, Read: read})
 	}
 	return r
 }

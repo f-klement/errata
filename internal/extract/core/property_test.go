@@ -20,7 +20,7 @@ func TestPropertyRegexValuesSitAtTheirLine(t *testing.T) {
 			t.Fatal(err)
 		}
 		pattern := rapid.SampledFrom([]string{`([a-z]+)`, `^([a-z]*)`, `([a-z]*)$`, `= *(\w*)`}).Draw(t, "pattern")
-		got := extracttest.MustExtract(t, func(p string) (check.Extractor, error) { return CompileSearch("regex", "f.txt", p, 0) }, pattern, root)
+		got := extracttest.MustExtract(t, func(p string) (check.Extractor, error) { return CompileSearchAt("regex", sourceOf("f.txt"), p) }, pattern, root)
 		fileLines := strings.Split(string(data), "\n")
 		for _, v := range got {
 			extracttest.CheckLine(t, v, fileLines, data)

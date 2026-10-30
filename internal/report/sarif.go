@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/url"
-	"path"
-	"regexp"
 	"strings"
 	"unicode/utf8"
 
@@ -791,16 +789,21 @@ func blamed(res check.Result) int {
 }
 
 // physical places at under %SRCROOT%. It reports false for a location
-// marked outside, whose path is not from the root, and for a path that is
-// absolute, names a host or climbs out with "..": its URI would resolve
-// outside the checkout. The extractors refuse such a path already; this
-// keeps the reporter from writing one if a value ever carries it.
+// marked outside, whose path is not from the root, and for one that
+// check.Location.Inside refuses: absolute, naming a host or a drive, or
+// climbing out with "..", with a backslash read as part of a name and read
+// as a separator. relativeURI encodes a backslash as %5C inside one
+// segment, and a consumer on Windows decodes it and takes it as a
+// separator; upload-sarif opens the file to fingerprint it, so a name that
+// climbs out under either reading would hash a line of a file outside the
+// checkout. The rule refuses such a value's location already; this keeps
+// the reporter from writing one if a value ever carries it.
 func physical(at check.Location) (*sarifPhysical, bool) {
 	file := at.File
 	if file == "" {
 		file = configFile
 	}
-	if at.Outside || !local(file) {
+	if !(check.Location{File: file, Outside: at.Outside}).Inside() {
 		return nil, false
 	}
 	p := &sarifPhysical{Artifact: sarifArtifact{URI: relativeURI(file), URIBaseID: srcRoot}}
@@ -808,33 +811,6 @@ func physical(at check.Location) (*sarifPhysical, bool) {
 		p.Region = &sarifRegion{StartLine: at.Line}
 	}
 	return p, true
-}
-
-// local reports whether p stays inside the checkout under both readings of
-// its URI: as a URI, where relativeURI encodes a backslash as %5C inside one
-// segment, and as a consumer on Windows reads it, decoding %5C to a
-// backslash and taking a backslash as a separator. upload-sarif decodes the
-// URI and opens the file to fingerprint it, so a name that climbs out under
-// the second reading would hash a line of a file outside the checkout. Under
-// both, no component may be "..", and the path may not be absolute, start
-// with a UNC "\\" or name a drive, before or after its .. are resolved:
-// a/../d: is the drive d: on Windows.
-func local(p string) bool {
-	slashed := strings.ReplaceAll(p, `\`, "/")
-	return inside(p) && inside(slashed) && !drive.MatchString(path.Clean(slashed))
-}
-
-// drive matches a Windows drive prefix such as "C:".
-var drive = regexp.MustCompile(`^[A-Za-z]:`)
-
-// inside reports whether the slash separated path p stays inside the
-// directory it is relative to.
-func inside(p string) bool {
-	if strings.HasPrefix(p, "/") {
-		return false
-	}
-	c := path.Clean(p)
-	return c != ".." && !strings.HasPrefix(c, "../")
 }
 
 // relativeURI turns a repository relative path into a relative URI reference.

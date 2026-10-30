@@ -38,7 +38,7 @@ const kindKey = "jenkins"
 // Kind is the jenkins kind, which a rule writes under the key jenkins. It
 // is an env reader, fifth in env's list.
 var Kind = core.Kind[Spec]{Key: kindKey, Place: Place, Resolve: Resolve, Describe: Describe,
-	Env: &core.EnvReader{Order: 50, Chooses: chooses, Read: envRead}}
+	Env: &check.EnvReader{Order: 50, Chooses: chooses}, EnvRead: envRead}
 
 // chooses takes, for the env kind, a file named Jenkinsfile.
 func chooses(file string) bool { return path.Base(file) == "Jenkinsfile" }

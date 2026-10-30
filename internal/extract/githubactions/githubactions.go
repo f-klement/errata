@@ -42,7 +42,7 @@ const kindKey = "github-actions"
 // Kind is the github-actions kind, which a rule writes under the key
 // github-actions. It is an env reader, fourth in env's list.
 var Kind = core.Kind[Spec]{Key: kindKey, Place: Place, Resolve: Resolve, Describe: Describe,
-	Env: &core.EnvReader{Order: 40, Chooses: chooses, Read: envRead}}
+	Env: &check.EnvReader{Order: 40, Chooses: chooses}, EnvRead: envRead}
 
 // chooses takes, for the env kind, a .yml or .yaml file in
 // .github/workflows, and none below it, which GitHub does not run.

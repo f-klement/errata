@@ -106,6 +106,16 @@ func TestCheckFiles(t *testing.T) {
 		{[]string{`a\/b*`}, `yaml: files entry "a\\/b*" is no glob`},
 		{[]string{"../a.yaml"}, `yaml: file "../a.yaml" is outside the repository`},
 		{[]string{"/etc/**"}, `yaml: file "/etc/**" is outside the repository`},
+		// Each is a drive or climbs out as Windows reads it, refused at load
+		// on every OS, as the rule refuses such a location. Planted break:
+		// the check of check.Location.OutsideOnWindows removed from
+		// CheckSource.
+		{[]string{"C:x"}, `yaml: file "C:x" is absolute, names a drive or climbs out where a backslash separates names, as on Windows, so it is refused on every OS`},
+		{[]string{"./c:/*.yaml"}, `yaml: file "./c:/*.yaml" is absolute, names a drive`},
+		{[]string{`a\..\..\x`}, `yaml: file "a\\..\\..\\x" is absolute, names a drive or climbs out`},
+		{[]string{`\*.yaml`}, `yaml: file "\\*.yaml" is absolute, names a drive or climbs out`},
+		// Planted break: the control character check removed from CheckSource.
+		{[]string{"a\tb.yaml"}, `yaml: file "a\tb.yaml" holds a control character, which a message would print as it is; rename the file`},
 		{make([]string, MaxEntries+1), fmt.Sprintf("yaml: files lists %d entries, over the limit of %d", MaxEntries+1, MaxEntries)},
 	} {
 		_, err := CheckFiles("yaml", c.files, 0)

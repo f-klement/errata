@@ -218,13 +218,68 @@ func TestALineDirectiveLeavesPositionsAsWritten(t *testing.T) {
 }
 
 // A profile name that no file has, as a //line directive naming another file
-// gives, is skipped, not an error that fails gremlins' coverage pass. The
-// planted break, the skip removed, fails here.
+// gives, is skipped, not an error that fails gremlins' coverage pass, while
+// another name in the profile has its file. The planted break, the skip
+// removed, fails here.
 func TestAProfileNameNoFileHasIsSkipped(t *testing.T) {
-	profile := "mode: set\nexample.com/p/other.go:15.2,15.9 1 1\n"
+	profile := pickProfile + "example.com/p/other.go:15.2,15.9 1 1\n"
 	lines, err := caseBlocks([]byte(profile), "example.com/p", readPick)
-	if err != nil || len(lines) != 0 {
-		t.Errorf("caseBlocks gave %q, %v; want nothing and no error", lines, err)
+	if err != nil || !reflect.DeepEqual(lines, pickBlocks(t)) {
+		t.Errorf("caseBlocks gave %q, %v; want pick's blocks and no error", lines, err)
+	}
+}
+
+// runOnRoot writes go.mod with module mod and the profile to a root that
+// holds no source, runs casecover on it, and gives the root and run's error.
+func runOnRoot(t *testing.T, mod, profile string) (string, error) {
+	t.Helper()
+	dir := t.TempDir()
+	for name, data := range map[string]string{
+		"go.mod":      "module " + mod + "\n\ngo 1.21\n",
+		"profile.out": profile,
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(data), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir, run(dir, filepath.Join(dir, "profile.out"))
+}
+
+// A root that holds none of the profile's in-module files is not the tree the
+// tests ran in, and run fails with the count and the root rather than add
+// nothing and exit 0. The count is of the in-module names a test ran:
+// signProfile's p.go and q.go, not z.go, whose block never ran, nor r.go,
+// outside the module. The planted break, that check in caseBlocks removed,
+// fails here.
+func TestARootHoldingNoneOfTheProfilesFilesFails(t *testing.T) {
+	dir, err := runOnRoot(t, "example.com/p", signProfile+
+		"example.com/p/q.go:3.2,3.9 1 1\nexample.com/p/z.go:1.1,2.2 1 0\nother.org/r/r.go:1.1,2.2 1 1\n")
+	want := dir + " is not the tree the tests ran in: the profile names 2 files under example.com/p that the tests ran, and none is under the root"
+	if err == nil || err.Error() != want {
+		t.Errorf("run gave %v, want %q", err, want)
+	}
+}
+
+// A root whose go.mod names another module, a sibling checkout or a module
+// nested in the one the tests ran in, holds none of the profile's names, ran
+// or not, and run fails rather than add nothing and exit 0. The planted
+// break, the in-module check in caseBlocks removed, fails here.
+func TestARootOfAnotherModuleFails(t *testing.T) {
+	profile := signProfile + "example.com/p/z.go:1.1,2.2 1 0\n"
+	for _, mod := range []string{"example.org/other", "example.com/p/sub"} {
+		dir, err := runOnRoot(t, mod, profile)
+		want := dir + " is not the tree the tests ran in: the profile names 2 files and none is under " + mod + ", the root's module"
+		if err == nil || err.Error() != want {
+			t.Errorf("module %s: run gave %v, want %q", mod, err, want)
+		}
+	}
+}
+
+// A profile of only the mode line names no file, and run accepts it and adds
+// nothing, whatever the root holds.
+func TestAProfileNamingNoFileIsAccepted(t *testing.T) {
+	if _, err := runOnRoot(t, "example.org/other", "mode: set\n"); err != nil {
+		t.Errorf("run gave %v, want no error", err)
 	}
 }
 

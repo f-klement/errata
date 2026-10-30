@@ -32,7 +32,7 @@ type Search struct {
 	prefix   []byte
 	anchored func() *anchors
 	atStart  bool
-	// TimeLimit bounds the matching. CompileSearch sets it from the limit
+	// TimeLimit bounds the matching. CompileSearchAt sets it from the limit
 	// (regexTime); a test shortens it, so a refusal on time comes fast.
 	TimeLimit time.Duration
 	// shared is the deadline the searches of a file set share, which
@@ -57,19 +57,10 @@ func (e Search) Around(a *Around) Search {
 	return e
 }
 
-// CompileSearch checks the file and the pattern of an extractor of kind that
-// searches with a regular expression, and returns the search. Every refusal
-// starts with kind.
-func CompileSearch(kind, file, pattern string, maxBytes int64) (Search, error) {
-	src, err := CheckSource(kind, file, maxBytes)
-	if err != nil {
-		return Search{}, err
-	}
-	return CompileSearchAt(kind, src, pattern)
-}
-
-// CompileSearchAt is CompileSearch of the file src names, which core has
-// checked: the search of pattern in it, at most src.Limit bytes of it.
+// CompileSearchAt checks the pattern of an extractor of kind that searches
+// with a regular expression, and returns the search of it in the file src
+// names, which core has checked, at most src.Limit bytes of it. Every
+// refusal starts with kind.
 func CompileSearchAt(kind string, src Source, pattern string) (Search, error) {
 	e, err := compilePattern(kind, pattern)
 	if err != nil {
@@ -79,7 +70,7 @@ func CompileSearchAt(kind string, src Source, pattern string) (Search, error) {
 	return e, nil
 }
 
-// compilePattern is CompileSearch without the file: the search of pattern,
+// compilePattern is CompileSearchAt without the file: the search of pattern,
 // with no Source and no TimeLimit.
 func compilePattern(kind, pattern string) (Search, error) {
 	if pattern == "" {
