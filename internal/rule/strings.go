@@ -107,8 +107,6 @@ func guarded(name string, guard func([]ref.Val) error, f *functions.Overload) fu
 		if err := guard(args); err != nil {
 			return types.NewErr("%s: %v", name, err)
 		}
-		// Ifs, not a switch: coverage counts an if's condition, and not a
-		// case's, so mutation testing could not see these tested.
 		if len(args) == 1 && f.Unary != nil {
 			return f.Unary(args[0])
 		}

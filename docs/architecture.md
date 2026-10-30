@@ -173,8 +173,10 @@ which bounds each goroutine's stack; Gremlins counts that failure as the mutant 
 
 `make mutation` judges each package alone, the facade, `core` and every reader each in a pass of
 its own, so a mutant of a reader counts as killed only when that reader's own tests fail. The
-thresholds are 85% efficacy and 85% mutant coverage. The coverage figure is not 100% because Go's
-coverage profile starts a `switch` case's block after its colon, so Gremlins reports a mutant in a
-case expression as not covered even when a test runs that arm. Where such mutants cap a package,
-`ini`, `properties` and `xml` among them, its floor is the figure it reaches;
+thresholds are 85% efficacy and 85% mutant coverage. Go's coverage profile has no block for a case
+expression, only for its clause's body, so `scripts/mutation.sh` runs `scripts/casecover` on
+Gremlins' coverage profile: a case expression whose clause body a test ran gets a covered block,
+and Gremlins mutates it like any other line. The coverage figure is still not 100%, because the
+profile also leaves package-level declarations and code after a statement's first func literal
+outside every block. Where such mutants cap a package, its floor is the figure it reaches;
 `scripts/mutation-floors.txt` has each package's floors and the count behind a lowered one.

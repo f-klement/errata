@@ -128,8 +128,6 @@ func (w *workflow) jobMatrix(name string, job *core.Node) (*jobMatrix, error) {
 	m := &jobMatrix{job: name, node: job}
 	var expr *expressionError
 	var err error
-	// ifs, not a switch's cases, which Go's coverage profile leaves outside
-	// every block.
 	m.combos, err = w.matrix(name, job)
 	if errors.As(err, &expr) {
 		m.unknown = err

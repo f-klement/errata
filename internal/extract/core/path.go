@@ -212,9 +212,7 @@ func scanBracket(s string, i, depth int) (selector, int, error) {
 }
 
 // scanSelector reads what a bracket holds, from byte i, which is in the
-// path. It tests with ifs, not a switch: Go's coverage counts an if's
-// condition and not a case expression, and mutation testing reads that
-// coverage.
+// path.
 func scanSelector(s string, i, depth int) (selector, int, error) {
 	c := s[i]
 	if c == '*' {
@@ -500,7 +498,6 @@ func scanOperand(s string, i, depth int) (operand, int, error) {
 	if i == len(s) {
 		return operand{}, i, PathError(s, i, "expected @ or a literal in the filter but the path ends")
 	}
-	// An if chain, for coverage, as in scanSelector.
 	c := s[i]
 	if c == '@' {
 		sels, many, j, err := scanCurrent(s, i+1, depth)

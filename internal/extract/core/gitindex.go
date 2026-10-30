@@ -56,8 +56,6 @@ func TrackedFiles(root string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	// The checks are ifs, not a switch's cases, which Go's coverage
-	// profile leaves outside every block, here and in gitDir.
 	data, err := readCapped(filepath.Join(dir, "index"), maxIndex)
 	if errors.Is(err, fs.ErrNotExist) {
 		return []string{}, nil // a repository that has never added a file

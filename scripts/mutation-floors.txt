@@ -22,11 +22,14 @@
 #
 # A figure at or below its floor fails. Efficacy is 85 for every package.
 # Mutant coverage is 85 but where Go's coverage profile cannot see a test reach
-# a mutant: it leaves case expressions, package-level declarations and code
-# after a statement's first func literal outside every block, so their mutants
-# always read as not covered, however the tests run them. Such a package's
-# floor is its measured figure rounded down, and one under it when the figure
-# is whole.
+# a mutant: it leaves package-level declarations and code after a statement's
+# first func literal outside every block, so their mutants always read as not
+# covered, however the tests run them. Such a package's floor is its measured
+# figure rounded down, and one under it when the figure is whole. Case
+# expressions no longer count against a package: since #209 scripts/mutation.sh
+# covers one whose clause body ran (scripts/casecover), so a measurement before
+# 2026-10-30 counts case expressions among its mutants not covered, and one
+# from that day on runs them.
 #
 # The least coefficient is .gremlins.yaml's 5 but where a package's tests wait
 # longer than the limit floor of 10 s per mutant allows for; the comment above
@@ -41,9 +44,10 @@
 #
 # package                          efficacy  mcover  coefficient
 #
-# check: 72.73%, 9 of its 33 mutants not covered, case expressions in Validate
-# and LeftOutCount, counted at e43c2ef.
-internal/check                     85        72      5
+# check: 94.26%, 7 of its 122 not covered, efficacy 98.26%, on 2026-10-30
+# with case expressions covered. It had the floor 72 at 72.73% (9 of 33 not
+# covered, case expressions in Validate and LeftOutCount) until then.
+internal/check                     85        85      5
 internal/cli                       85        85      5
 internal/config                    85        85      5
 internal/engine                    85        85      5
@@ -54,40 +58,47 @@ internal/engine                    85        85      5
 # per reader (#105), extract as one package had the floor 83 (83.49% against a
 # ceiling of 83.74%, #107).
 internal/extract                   85        85      5
-# core: 85.08%, 111 of 744 not covered (110 case expressions, 1 package level),
-# efficacy 95.73%, on 2026-10-25 with env's reader in, one mutant over. It had
-# the floor 82 at 82.57% (111 of 637) until env's reader added code its tests
-# reach.
+# core: 85.08%, 111 of 744 not covered, efficacy 95.73%, on 2026-10-25 with
+# env's reader in, before case expressions were covered; #209 did not measure
+# it again. 110 of those 111 were case expressions, which no longer count as not
+# covered when their clause runs, and 1 is package level. It had the floor 82 at
+# 82.57% (111 of 637) until env's reader added code its tests reach.
 internal/extract/core              85        85      5
 # env: 100%, efficacy 100%, on 2026-10-25.
 internal/extract/env               85        85      5
 # envfile: 100% on a dry run.
 internal/extract/envfile           85        85      5
 internal/extract/filestat          85        85      5
-# githubactions: 87.25%, 52 case expressions of 408, efficacy 95.79%, on
-# 2026-10-25.
+# githubactions: 87.25%, 52 of 408 not covered, efficacy 95.79%, on 2026-10-25,
+# before case expressions were covered; #209 did not measure it again. The 52
+# were case expressions, which no longer count as not covered when their clause
+# runs.
 internal/extract/githubactions     85        85      5
 # gitlabci: 90.00%, 38 of 380, efficacy 92.69%, on 2026-10-25.
 internal/extract/gitlabci          85        85      5
-# ini: 82.87%, 253 of its 1500 not covered (178 case expressions, 75 package
-# level) and 4 in dead code (php.go 544, 548, 550, 624), rule arms another rule
-# always wins first; efficacy 86.97%, on 2026-10-25. Its first scoped run read
-# 79.76%; 24 of its 166 lived mutants are equivalent
-# (internal/extract/ini/efficacy_test.go). Applied by hand one at a time on
-# 2026-10-22, two mutants were killed only after 11 s (ansible_values.go:1046),
-# past the limit floor; its pass takes 1.0 to 1.4 s, so 10 gives 10 to 14 s.
-internal/extract/ini               85        82      10
-# jenkins: 79.33%, 86 of its 416 not covered (84 case expressions, 2 package
-# level), efficacy 98.79%, on 2026-10-25.
-internal/extract/jenkins           85        79      5
+# ini: 94.46%, 83 of its 1498 not covered, efficacy 86.64% (189 lived, 18
+# timed out), on 2026-10-30 with case expressions covered. It had the floor 82
+# at 82.87% (253 of 1500 not covered, 178 of them case expressions) until then.
+# On 2026-10-25 four mutants were in dead code (php.go 544, 548, 550, 624), rule
+# arms another rule always wins first, and 24 of its 166 lived mutants then
+# were equivalent (internal/extract/ini/efficacy_test.go). Applied by hand one
+# at a time on 2026-10-22, two mutants were killed only after 11 s
+# (ansible_values.go:1046), past the limit floor; its pass takes 1.0 to 1.4 s,
+# so 10 gives 10 to 14 s.
+internal/extract/ini               85        85      10
+# jenkins: 99.52%, 2 of its 416 not covered, efficacy 96.86%, on 2026-10-30
+# with case expressions covered. It had the floor 79 at 79.33% (84 case
+# expressions, 2 package level) until then.
+internal/extract/jenkins           85        85      5
 # json: 100%, efficacy 100%, on 2026-10-22.
 internal/extract/json              85        85      5
-# packageversion: 84.29%, 11 of its 70 not covered, case expressions in
-# describe and readPyproject, every arm tested, on 2026-10-27.
-internal/extract/packageversion    85        84      5
-# properties: 79.64%, 34 of its 167 not covered, case expressions, efficacy
-# 87.22%, on 2026-10-22.
-internal/extract/properties        85        79      5
+# packageversion: 100%, efficacy 98.57%, on 2026-10-30 with case expressions
+# covered. It had the floor 84 at 84.29% (11 case expressions of 70) until then.
+internal/extract/packageversion    85        85      5
+# properties: 100%, efficacy 86.31% (23 of 168 lived), on 2026-10-30 with
+# case expressions covered. It had the floor 79 at 79.64% (34 case expressions
+# of 167) until then.
+internal/extract/properties        85        85      5
 # regex: 100%, efficacy 100%, on 2026-10-22.
 internal/extract/regex             85        85      5
 # shell: 99.59% on a dry run, 1 not covered.
@@ -98,24 +109,27 @@ internal/extract/text              85        85      5
 internal/extract/toml              85        85      5
 # toolversion: 92.31%, 9 of 117 not covered, efficacy 99.07%, on 2026-10-23.
 internal/extract/toolversion       85        85      5
-# xml: 82.16%, 94 of its 527 not covered, case expressions, efficacy 89.15%, on
-# 2026-10-22.
-internal/extract/xml               85        82      5
+# xml: 99.43%, 3 of its 527 not covered, efficacy 90.46%, on 2026-10-30 with
+# case expressions covered. It had the floor 82 at 82.16% (94 case expressions
+# of 527) until then.
+internal/extract/xml               85        85      5
 # yaml: 100%, efficacy 96.70%, on 2026-10-22.
 internal/extract/yaml              85        85      5
 internal/program                   85        85      5
-# protocol: 78.57%, 3 of its 14 mutants not covered, counted at e43c2ef.
-# TestRunTimeout runs `sleep 5` under a 50 ms check timeout, and the mutants
-# that broke the timeout (then exec.go:38, proc_unix.go:16) were killed only
-# when the sleep ended, 5 to 6 s after they started, against a coverage pass of
-# 0.7 s. Pinned to two cores on 2026-10-18, all three timed out at coefficients
-# 2, 3 and 5 and were killed at 10, with 1.5 s to spare. Since #200 the timeout
+# protocol: 98.25%, 1 of its 57 not covered, efficacy 89.29%, on 2026-10-30
+# with case expressions covered. It had the floor 78 at 78.57% (3 of 14 not
+# covered) until then. TestRunTimeout runs `sleep 5` under a 50 ms check
+# timeout, and the mutants that broke the timeout (then exec.go:38,
+# proc_unix.go:16) were killed only when the sleep ended, 5 to 6 s after
+# they started, against a coverage pass of 0.7 s. Pinned to two cores on
+# 2026-10-18, all three timed out at coefficients 2, 3 and 5 and were killed at
+# 10, with 1.5 s to spare. Since #200 the timeout
 # and the group kill are in internal/program, whose tests sleep at most 4 s and
 # need no coefficient of their own. No protocol mutant drops the timeout now;
 # the 20 stays until the gate's next mutation run measures the package. It gave
 # about 14 s, room the limit floor's 10 s does not leave on a loaded node, and
 # costs nothing: a killed mutant ends when its test fails, not at the timeout.
-internal/protocol                  85        78      20
+internal/protocol                  85        85      20
 internal/provider                  85        85      5
 internal/report                    85        85      5
 internal/rule                      85        85      5

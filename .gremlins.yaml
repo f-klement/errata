@@ -10,6 +10,8 @@ unleash:
     # Mutants reached by any test, percent. Not 100: Go's coverage profile
     # starts a switch case's block after the colon, so a mutant in a case
     # expression always reads as not covered even when tests run that arm.
+    # make mutation covers such a mutant when its arm runs (scripts/casecover);
+    # gremlins run by hand does not.
     mutant-coverage: 85
   integration: false
   # Built with this tag, a test too slow to rerun for every mutant skips, and

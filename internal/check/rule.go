@@ -374,9 +374,6 @@ func (r *Rule) Validate(c Check) []error {
 		}
 	}
 
-	// Ifs rather than a switch: Go's coverage profile leaves case
-	// expressions outside every block, so their mutants would read as not
-	// covered and pull the package under its mutant coverage floor.
 	if r.Compare != "" && hasAssert {
 		// assert compares in its expression, so compare would load and do
 		// nothing.

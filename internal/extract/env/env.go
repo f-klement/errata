@@ -76,8 +76,6 @@ var variableName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 func Choose(file string) string {
 	p := path.Clean(filepath.ToSlash(file))
 	base := path.Base(p)
-	// ifs, not a switch's cases, which Go's coverage profile leaves
-	// outside every block; so in Build.
 	if base == ".envrc" || strings.HasSuffix(base, ".sh") {
 		return "shell"
 	}

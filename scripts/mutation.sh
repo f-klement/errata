@@ -184,6 +184,34 @@ if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
 else
     echo "==> mutation: not a git checkout, so gremlins runs in the project directory"
 fi
+
+# Case expressions. Go's coverage profile has a block for a case clause's body and none for its
+# expressions, so gremlins read every mutant in a case expression as not covered and never ran
+# it, however the tests ran the arm; seven packages held a lowered mutant coverage floor for it,
+# and code chose if over switch to be measured (#209). So the `go` gremlins finds first on PATH
+# is a shim, scripts/goshim.sh: on a `go test` with -coverprofile, gremlins' coverage pass, it
+# runs go and then scripts/casecover on the profile, which adds a covered block for the
+# expressions of each case clause, and the statement of each select arm, whose body the tests
+# ran. Gremlins then runs those mutants and
+# judges them killed or lived like any other; a clause whose body no test ran stays not covered.
+# Every other call goes to go unchanged, a mutant's go test among them. The helper is in
+# scripts/, not ci/, because the public tree has no ci/ and make mutation runs there too. The
+# script's own go test runs (measure_pass, measure_mutant) call go itself, not the shim. The
+# paths the shim takes are written into the `go` that calls it, not passed in the environment,
+# for the reason the git shim gives below.
+[ -f scripts/casecover/main.go ] || refuse "scripts/casecover is missing; it covers case expressions for gremlins"
+[ -f scripts/goshim.sh ] || refuse "scripts/goshim.sh is missing; it runs scripts/casecover for gremlins"
+mkdir "$work/goshim" "$work/bin"
+go build -o "$work/bin/casecover" ./scripts/casecover || refuse "could not build scripts/casecover"
+# quote <text>: the text as one single quoted word for sh.
+quote() {
+    printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+{
+    echo '#!/bin/sh'
+    echo "exec /bin/sh $(quote "$(pwd)/scripts/goshim.sh") $(quote "$(command -v go)") $(quote "$work/bin/casecover") $(quote "$(pwd)") \"\$@\""
+} >"$work/goshim/go"
+chmod +x "$work/goshim/go"
 # Gremlins' own working copies go under the same directory, and leave with it.
 TMPDIR=$work
 export TMPDIR
@@ -218,8 +246,9 @@ export GOFLAGS
 # figures are those of the new code alone, over a denominator that may be a handful: one lived
 # mutant of six is 83.33% efficacy, under 85, and fails the run until a test kills it. That is
 # the intent: new code meets the bar the package meets. The other side of a small denominator:
-# a mutant in a case expression always reads as not covered (below), so a change made only of
-# such lines can fall under its package's mutant coverage floor with every arm tested. So a diff
+# a mutant in a package level declaration, or after a statement's first func literal, always
+# reads as not covered, so a change made only of such lines can fall under its package's mutant
+# coverage floor with every line tested. So a diff
 # run judges mutant coverage only from MCOVER_MIN_DIFF mutants on its changed lines, and
 # efficacy always (owner decision 2026-10-24); a whole run judges both at any count. Efficacy
 # needs a mutant some test reaches, so a diff run whose changed lines hold mutants and no test
@@ -478,17 +507,17 @@ bounded() {
     fi
 }
 
-# run_gremlins <diff file> <arguments...>: gremlins with those arguments, bounded, with --diff
-# and the shim first on PATH when there is a diff file.
+# run_gremlins <diff file> <arguments...>: gremlins with those arguments, bounded, with the go
+# shim first on PATH, and with --diff and the git shim when there is a diff file.
 run_gremlins() {
     d=$1
     shift
     if [ -n "$d" ]; then
-        PATH="$work/shim:$PATH" ERRATA_MUTATION_BASE=$diff_base ERRATA_MUTATION_DIFF=$d \
+        PATH="$work/goshim:$work/shim:$PATH" ERRATA_MUTATION_BASE=$diff_base ERRATA_MUTATION_DIFF=$d \
             ERRATA_MUTATION_ASKED="$work/asked" \
             bounded "$GREMLINS" unleash --config "$work/gremlins.yaml" --diff "$diff_base" "$@"
     else
-        bounded "$GREMLINS" unleash --config "$work/gremlins.yaml" "$@"
+        PATH="$work/goshim:$PATH" bounded "$GREMLINS" unleash --config "$work/gremlins.yaml" "$@"
     fi
 }
 

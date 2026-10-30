@@ -41,8 +41,6 @@ var typedTarget = asWritten(reflect.TypeFor[typedFile]())
 // such as its own UnmarshalJSON, stay. A struct that holds one is rebuilt
 // from its exported fields, the only ones a decode reads.
 func asWritten(t reflect.Type) reflect.Type {
-	// Ifs rather than a switch: Go's coverage profile leaves case
-	// expressions outside every block.
 	if t == specType {
 		return extract.Schema()
 	}

@@ -78,9 +78,6 @@ func (c *config) everyJob(name string, limit int) ([]check.Value, error) {
 		if err != nil {
 			return nil, err
 		}
-		// The checks of everyJob, variable's trigger and forwards are ifs,
-		// not a switch's cases, which Go's coverage profile leaves outside
-		// every block.
 		vs, err := c.values(cands, true, true, name)
 		var none *check.NoValue
 		if errors.As(err, &none) {
