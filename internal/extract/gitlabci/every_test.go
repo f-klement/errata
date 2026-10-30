@@ -19,7 +19,7 @@ func every(t *testing.T, files map[string]string, name string) (string, error) {
 	if err != nil {
 		t.Fatalf("Every: %v", err)
 	}
-	vs, err := x.Extract(extracttest.Repo(t, files))
+	vs, err := x.Extract(t.Context(), extracttest.Repo(t, files))
 	var out []string
 	for _, v := range vs {
 		out = append(out, values([]check.Value{v})+" "+v.Origin)
@@ -105,11 +105,11 @@ func TestEveryJobBounds(t *testing.T) {
 	limited := small.(extractor)
 	limited.valueLimit = 100
 	root := extracttest.Repo(t, map[string]string{".gitlab-ci.yml": b.String()})
-	if vs, err := limited.Extract(root); err != nil || len(vs) != 100 {
+	if vs, err := limited.Extract(t.Context(), root); err != nil || len(vs) != 100 {
 		t.Errorf("100 values under a limit of 100: %d, %v", len(vs), err)
 	}
 	b.WriteString("j100: {script: [x]}\n")
-	_, err = limited.Extract(extracttest.Repo(t, map[string]string{".gitlab-ci.yml": b.String()}))
+	_, err = limited.Extract(t.Context(), extracttest.Repo(t, map[string]string{".gitlab-ci.yml": b.String()}))
 	extracttest.WantError(t, err, "more than "+strconv.Itoa(core.MaxValues)+" values")
 
 	two := "variables: {PORT: \"" + strings.Repeat("8", 1000) + "\"}\na: {}\nb: {}\n"
@@ -117,10 +117,10 @@ func TestEveryJobBounds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := x.Extract(extracttest.Repo(t, map[string]string{".gitlab-ci.yml": two})); err != nil {
+	if _, err := x.Extract(t.Context(), extracttest.Repo(t, map[string]string{".gitlab-ci.yml": two})); err != nil {
 		t.Errorf("values of exactly max_bytes: %v", err)
 	}
-	_, err = x.Extract(extracttest.Repo(t, map[string]string{".gitlab-ci.yml": two + "c: {}\n"}))
+	_, err = x.Extract(t.Context(), extracttest.Repo(t, map[string]string{".gitlab-ci.yml": two + "c: {}\n"}))
 	extracttest.WantError(t, err, "the values of every job hold more than 2000 bytes in all")
 }
 
@@ -200,7 +200,7 @@ func TestExtractReadCountsIncludes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, read, err := x.(extractor).ExtractRead(extracttest.Repo(t, files))
+	_, read, err := x.(extractor).ExtractRead(t.Context(), extracttest.Repo(t, files))
 	if want := int64(len(files[".gitlab-ci.yml"]) + len(files["ci.yml"])); err != nil || read != want {
 		t.Errorf("read %d, %v; want %d", read, err, want)
 	}

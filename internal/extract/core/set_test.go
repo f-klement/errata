@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -21,9 +22,11 @@ type fakeReader struct {
 	inSet bool
 }
 
-func (r fakeReader) Extract(string) ([]check.Value, error) { return nil, errors.New("not read whole") }
-func (r fakeReader) ExtractWith(root string, _ map[string][]check.Value) ([]check.Value, error) {
-	return r.Extract(root)
+func (r fakeReader) Extract(context.Context, string) ([]check.Value, error) {
+	return nil, errors.New("not read whole")
+}
+func (r fakeReader) ExtractWith(ctx context.Context, root string, _ map[string][]check.Value) ([]check.Value, error) {
+	return r.Extract(ctx, root)
 }
 func (r fakeReader) FromShared(data []byte, _ *Spent) ([]check.Value, error) {
 	var out []check.Value
@@ -63,7 +66,7 @@ func TestFileSet(t *testing.T) {
 		t.Errorf("the probe at load: %+v", b.readers)
 	}
 	b.readers = nil
-	vs, err := s.Extract(root)
+	vs, err := s.Extract(t.Context(), root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,14 +97,14 @@ func TestFileSetEmptyAndRefused(t *testing.T) {
 	root := repo(t, map[string]string{"a.txt": "1\n", "refused.txt": "2\n"})
 	b := &built{}
 	s, _ := BuildFileSet("fake", []string{"*.none"}, 0, b.build)
-	if vs, err := s.Extract(root); err != nil || len(vs) != 0 || vs == nil {
+	if vs, err := s.Extract(t.Context(), root); err != nil || len(vs) != 0 || vs == nil {
 		t.Errorf("a glob that matches none: %v, %v; want an empty list", vs, err)
 	}
 	s, _ = BuildFileSet("fake", []string{"missing.txt"}, 0, b.build)
-	_, err := s.Extract(root)
+	_, err := s.Extract(t.Context(), root)
 	extracttest.WantError(t, err, "read missing.txt")
 	s, _ = BuildFileSet("fake", []string{"*.txt"}, 0, b.build)
-	_, err = s.Extract(root)
+	_, err = s.Extract(t.Context(), root)
 	extracttest.WantError(t, err, "fake: refused refused.txt")
 }
 
@@ -113,11 +116,11 @@ func TestFileSetBounds(t *testing.T) {
 	root := repo(t, map[string]string{"a.txt": "1234\n", "b.txt": "5678\n"})
 	b := &built{}
 	s, _ := BuildFileSet("fake", []string{"*.txt"}, 10, b.build)
-	if _, err := s.Extract(root); err != nil {
+	if _, err := s.Extract(t.Context(), root); err != nil {
 		t.Errorf("10 bytes under 10: %v", err)
 	}
 	s, _ = BuildFileSet("fake", []string{"*.txt"}, 9, b.build)
-	_, err := s.Extract(root)
+	_, err := s.Extract(t.Context(), root)
 	extracttest.WantError(t, err, "fake: read b.txt: the file is 5 bytes, over the limit of 4 bytes; set max_bytes: on the extractor to read a larger file; the files the extractor reads hold at most max_bytes, 9, in all")
 
 	// The values of a.txt and b.txt hold 8 bytes, which a fake reader can
@@ -126,21 +129,21 @@ func TestFileSetBounds(t *testing.T) {
 		return doubled{fakeReader{file: src.File}}, nil
 	}
 	s, _ = BuildFileSet("fake", []string{"*.txt"}, 16, long)
-	if _, err := s.Extract(root); err != nil {
+	if _, err := s.Extract(t.Context(), root); err != nil {
 		t.Errorf("16 bytes of values under 16: %v", err)
 	}
 	s, _ = BuildFileSet("fake", []string{"*.txt"}, 15, long)
-	_, err = s.Extract(root)
+	_, err = s.Extract(t.Context(), root)
 	extracttest.WantError(t, err, "fake: the values of the files hold more than 15 bytes in all, the extractor's max_bytes")
 
 	many := repo(t, map[string]string{"a.txt": strings.Repeat("x\n", MaxValues/2), "b.txt": strings.Repeat("y\n", MaxValues/2)})
 	s, _ = BuildFileSet("fake", []string{"*.txt"}, 0, b.build)
-	if vs, err := s.Extract(many); err != nil || len(vs) != MaxValues {
+	if vs, err := s.Extract(t.Context(), many); err != nil || len(vs) != MaxValues {
 		t.Errorf("%d values: %d, %v", MaxValues, len(vs), err)
 	}
 	writeFile(t, many, "c.txt", "z\n")
 	git(t, many, "add", "c.txt")
-	_, err = s.Extract(many)
+	_, err = s.Extract(t.Context(), many)
 	extracttest.WantError(t, err, fmt.Sprintf("fake: the files hold more than %d values, the limit", MaxValues))
 }
 
@@ -155,25 +158,21 @@ func (r doubled) FromShared(data []byte, spent *Spent) ([]check.Value, error) {
 	return vs, err
 }
 
-// A regex search of a file of a set takes the set's time limit and
-// deadline, so the files share one; another reader is left as it is; and
-// a search past the deadline says the limit is the files'. Planted breaks:
-// the deadline not handed to the search; the time limit left at the
-// search's own.
+// A regex search of a file of a set takes the deadline and the time limit
+// of the set's Spent, so the files share one, and a search past the
+// deadline says the limit is the files'; a search with no deadline in its
+// Spent takes its own time limit. Planted breaks: the deadline not taken
+// from Spent; the time limit left at the search's own.
 func TestFileSetSharesTheRegexTime(t *testing.T) {
-	s := FileSet{timeLimit: 3 * time.Second}
-	deadline := time.Now().Add(time.Hour)
 	search, err := CompileSearch("regex", "a.txt", "(a)", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, ok := s.sharing(search, deadline).(Search)
-	if !ok || !got.shared.Equal(deadline) || got.TimeLimit != 3*time.Second {
-		t.Errorf("sharing: %v, %v", got.shared, got.TimeLimit)
-	}
-	other := fakeReader{file: "x"}
-	if s.sharing(other, deadline) != FileReader(other) {
-		t.Error("sharing changed a reader that is no search")
+	gone := Spent{deadline: time.Now().Add(-time.Second), timeLimit: 3 * time.Second}
+	_, err = search.FromShared([]byte("a\n"), &gone)
+	extracttest.WantError(t, err, "a.txt: matching took more than 3s, the limit of the files the extractor reads, together")
+	if vs, err := search.FromShared([]byte("a\n"), &Spent{}); err != nil || len(vs) != 1 {
+		t.Errorf("a search of one file: %v, %v", vs, err)
 	}
 
 	root := repo(t, map[string]string{"a.txt": "a\n"})
@@ -184,7 +183,7 @@ func TestFileSetSharesTheRegexTime(t *testing.T) {
 		t.Fatal(err)
 	}
 	set.timeLimit = -time.Second
-	_, err = set.Extract(root)
+	_, err = set.Extract(t.Context(), root)
 	extracttest.WantError(t, err, "a.txt: matching took more than -1s, the limit of the files the extractor reads, together")
 }
 
@@ -233,9 +232,11 @@ type spending struct {
 	saw  *[]Spent
 }
 
-func (r spending) Extract(string) ([]check.Value, error) { return nil, errors.New("not read whole") }
-func (r spending) ExtractWith(root string, _ map[string][]check.Value) ([]check.Value, error) {
-	return r.Extract(root)
+func (r spending) Extract(context.Context, string) ([]check.Value, error) {
+	return nil, errors.New("not read whole")
+}
+func (r spending) ExtractWith(ctx context.Context, root string, _ map[string][]check.Value) ([]check.Value, error) {
+	return r.Extract(ctx, root)
 }
 func (r spending) FromShared(_ []byte, spent *Spent) ([]check.Value, error) {
 	*r.saw = append(*r.saw, *spent)
@@ -254,24 +255,33 @@ func (r spending) FromShared(_ []byte, spent *Spent) ([]check.Value, error) {
 // reader starting at what the files before it spent, and a refusal on the
 // node limit names the bytes the earlier files left, on filter work that
 // the files share it. Planted breaks: a budget for each file, which every
-// reader saw empty; the node refusal passed through bare.
+// reader saw empty; the node refusal passed through bare; a deadline for
+// each file.
 func TestFileSetSharesTheBudgets(t *testing.T) {
 	root := repo(t, map[string]string{"a.txt": "12", "b.txt": "3", "c.txt": ""})
 	var saw []Spent
 	build := func(src Source, _ bool) (FileReader, error) { return spending{file: src.File, saw: &saw}, nil }
 	s, _ := BuildFileSet("fake", []string{"*.txt"}, 100, build)
-	if _, err := s.Extract(root); err != nil {
+	if _, err := s.Extract(t.Context(), root); err != nil {
 		t.Fatal(err)
+	}
+	// Every file sees the one deadline the set set, with its time limit.
+	deadline := saw[0].deadline
+	for i := range saw {
+		if saw[i].deadline.IsZero() || !saw[i].deadline.Equal(deadline) || saw[i].timeLimit != s.timeLimit {
+			t.Errorf("file %d saw the deadline %v and the time limit %v, want %v and %v", i, saw[i].deadline, saw[i].timeLimit, deadline, s.timeLimit)
+		}
+		saw[i].deadline, saw[i].timeLimit = time.Time{}, 0
 	}
 	if want := []Spent{{stringLimit: 100}, {Expanded: 1, Filter: 1, stringLimit: 100}, {Expanded: 2, Filter: 2, stringLimit: 100}}; fmt.Sprint(saw) != fmt.Sprint(want) {
 		t.Errorf("each file saw %v spent before it, want %v", saw, want)
 	}
 	dense := repo(t, map[string]string{"a.txt": "1234", "dense.txt": "x"})
 	s, _ = BuildFileSet("fake", []string{"*.txt"}, 100, build)
-	_, err := s.Extract(dense)
+	_, err := s.Extract(t.Context(), dense)
 	extracttest.WantError(t, err, "fake: dense.txt: the file can hold up to 9 nodes, over the limit of 1; in a set, max_bytes is what the files before it left, 96 of 100")
 	work := repo(t, map[string]string{"work.txt": "x"})
-	_, err = s.Extract(work)
+	_, err = s.Extract(t.Context(), work)
 	extracttest.WantError(t, err, "its filters would hash and compare more than 4000000000 bytes, the limit; narrow the path before the filter, or compare fewer or shorter keys and literals; the files of a set share the limit")
 }
 
@@ -309,7 +319,7 @@ func TestFileSetRefusesALinkOutOfTheRepository(t *testing.T) {
 	git(t, root, "add", "-A")
 	b := &built{}
 	s, _ := BuildFileSet("fake", []string{"d/*.txt"}, 0, b.build)
-	_, err := s.Extract(root)
+	_, err := s.Extract(t.Context(), root)
 	extracttest.WantError(t, err, "read d/x.txt: a symlink leads outside the repository")
 }
 
@@ -326,7 +336,7 @@ func TestFileSetReadsALinkAndItsTargetOnce(t *testing.T) {
 	git(t, root, "add", "-A")
 	b := &built{}
 	s, _ := BuildFileSet("fake", []string{"d/*.txt"}, 0, b.build)
-	vs, err := s.Extract(root)
+	vs, err := s.Extract(t.Context(), root)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -11,6 +11,7 @@
 package githubactions
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"path"
@@ -191,13 +192,13 @@ func (e extractor) maxValues() int {
 }
 
 // ExtractWith is Extract: the extractor reads no other extractor's values.
-func (e extractor) ExtractWith(root string, _ map[string][]check.Value) ([]check.Value, error) {
-	return e.Extract(root)
+func (e extractor) ExtractWith(ctx context.Context, root string, _ map[string][]check.Value) ([]check.Value, error) {
+	return e.Extract(ctx, root)
 }
 
 // Extract reads the workflow and returns the values the step, or the job,
 // sees.
-func (e extractor) Extract(root string) ([]check.Value, error) {
+func (e extractor) Extract(_ context.Context, root string) ([]check.Value, error) {
 	return core.ExtractOne(root, e.Source, e)
 }
 

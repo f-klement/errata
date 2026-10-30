@@ -2,6 +2,7 @@ package core
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -34,9 +35,9 @@ type Search struct {
 	// TimeLimit bounds the matching. CompileSearch sets it from the limit
 	// (regexTime); a test shortens it, so a refusal on time comes fast.
 	TimeLimit time.Duration
-	// shared is the deadline the searches of a file set share, which a
-	// FileSet sets in place of TimeLimit from now, or the searches of an
-	// Each; zero for a search of one file.
+	// shared is the deadline the searches of a file set share, which
+	// FromShared takes from the set's Spent in place of TimeLimit from now,
+	// or the searches of an Each; zero for a search of one file.
 	shared time.Time
 	// whose is what a refusal on time calls the limit of shared, "" for
 	// the limit of a file set's searches.
@@ -222,20 +223,23 @@ func wrap(head, pattern string) (*regexp.Regexp, error) {
 }
 
 // ExtractWith is Extract: the extractor reads no other extractor's values.
-func (e Search) ExtractWith(root string, _ map[string][]check.Value) ([]check.Value, error) {
-	return e.Extract(root)
+func (e Search) ExtractWith(ctx context.Context, root string, _ map[string][]check.Value) ([]check.Value, error) {
+	return e.Extract(ctx, root)
 }
 
 // Extract returns group 1 of every match in the file under root, at the line
 // where the match starts. A match in which group 1 took no part, such as
 // (a)?b matching b, gives no value.
-func (e Search) Extract(root string) ([]check.Value, error) {
+func (e Search) Extract(_ context.Context, root string) ([]check.Value, error) {
 	return ExtractOne(root, e.Source, e)
 }
 
-// FromShared is FromData: a search's time is shared through its deadline,
-// and it spends no other budget of a set.
-func (e Search) FromShared(data []byte, _ *Spent) ([]check.Value, error) {
+// FromShared is FromData under the deadline the searches of a set share,
+// when spent has one; it spends no other budget of a set.
+func (e Search) FromShared(data []byte, spent *Spent) ([]check.Value, error) {
+	if !spent.deadline.IsZero() {
+		e.TimeLimit, e.shared = spent.timeLimit, spent.deadline
+	}
 	return e.FromData(data)
 }
 

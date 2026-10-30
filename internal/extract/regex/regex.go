@@ -6,6 +6,7 @@
 package regex
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"regexp"
@@ -201,7 +202,7 @@ type Reference struct {
 }
 
 // Extract refuses: the values the pattern needs come from its rule.
-func (e Reference) Extract(string) ([]check.Value, error) {
+func (e Reference) Extract(context.Context, string) ([]check.Value, error) {
 	return nil, fmt.Errorf("regex: the pattern references the values of extractor %q, which only its rule gives it", e.ref.name)
 }
 
@@ -209,7 +210,7 @@ func (e Reference) Extract(string) ([]check.Value, error) {
 // value of the extractor the pattern references, in the order that
 // extractor found them. That extractor having found none, the pattern has
 // nothing to search for, and allow_empty decides (check.NoValue).
-func (e Reference) ExtractWith(root string, values map[string][]check.Value) ([]check.Value, error) {
+func (e Reference) ExtractWith(ctx context.Context, root string, values map[string][]check.Value) ([]check.Value, error) {
 	each := distinct(values[e.ref.name])
 	if len(each) == 0 {
 		return nil, &check.NoValue{Reason: fmt.Sprintf("extractor %q gave no value to search for", e.ref.name)}
@@ -229,7 +230,7 @@ func (e Reference) ExtractWith(root string, values map[string][]check.Value) ([]
 	if err != nil {
 		return nil, err
 	}
-	vs, err := x.Extract(root)
+	vs, err := x.Extract(ctx, root)
 	var bad *core.PatternError
 	if errors.As(err, &bad) {
 		v := each[bad.Index]

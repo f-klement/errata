@@ -22,6 +22,30 @@ type Description struct {
 	// Reads names the extractors of the rule whose values the extractor
 	// reads, which the rule runs before it.
 	Reads []string
+	// MaxBytes is the spec's max_bytes, 0 for DefaultMaxBytes: the most
+	// bytes the extractor's values hold in all, which the rule holds them
+	// to where they reach it, beside MaxValues.
+	MaxBytes int64
+}
+
+// The bounds of ADR 0003 on what one extractor returns, which the rule
+// holds every extractor's values to where they reach it, whatever its
+// reader checked. internal/extract/core names them too, beside the
+// measurements that chose them.
+const (
+	// MaxValues is the most values one extractor returns, each node of a
+	// value handed over whole counting one (Value.Size).
+	MaxValues = 100_000
+	// DefaultMaxBytes is the max_bytes of a spec that sets none.
+	DefaultMaxBytes = 32 << 20
+)
+
+// Bytes is d's MaxBytes, with DefaultMaxBytes for 0.
+func (d Description) Bytes() int64 {
+	if d.MaxBytes == 0 {
+		return DefaultMaxBytes
+	}
+	return d.MaxBytes
 }
 
 // Shape is how assert reads each value an extractor returns.

@@ -1,6 +1,7 @@
 package extracttest
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -63,7 +64,7 @@ func CheckLeaves[S any](t *rapid.T, build func(S) (check.Extractor, error), root
 		if err != nil {
 			t.Fatalf("Build %s: %v", path, err)
 		}
-		got, err := e.Extract(root)
+		got, err := e.Extract(context.Background(), root)
 		if err != nil {
 			t.Fatalf("%s: %v\n%s", path, err, data)
 		}
@@ -91,7 +92,7 @@ func MustExtract[S any](t *rapid.T, build func(S) (check.Extractor, error), s S,
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := e.Extract(root)
+	got, err := e.Extract(context.Background(), root)
 	if err != nil {
 		t.Fatal(err)
 	}

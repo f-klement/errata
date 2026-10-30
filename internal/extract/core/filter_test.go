@@ -429,7 +429,7 @@ egress = [
 			if err != nil {
 				t.Fatalf("%s %s: %v", file, c.path, err)
 			}
-			values, err := e.Extract(root)
+			values, err := e.Extract(t.Context(), root)
 			if err != nil {
 				t.Fatalf("%s %s: %v", file, c.path, err)
 			}

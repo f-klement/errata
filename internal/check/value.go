@@ -1,6 +1,8 @@
 package check
 
 import (
+	"context"
+	"path/filepath"
 	"strconv"
 	"unicode/utf8"
 )
@@ -16,6 +18,13 @@ type Location struct {
 	// it, which is no path from the root, so a report names the file and
 	// places nothing in the repository.
 	Outside bool
+}
+
+// Inside reports whether l is a path inside the repository, as every
+// value's location must be: relative, not empty, and with no .. that
+// leaves the root. It reads no file, so a link is not followed.
+func (l Location) Inside() bool {
+	return !l.Outside && filepath.IsLocal(l.File)
 }
 
 // String is l as a message names it: the file and the line, as f.yaml:3, or
@@ -72,6 +81,16 @@ type Value struct {
 	// The rule sets it in its result; an extractor leaves it "", and so
 	// does the rule for a flat value, whose text a report quotes.
 	Shown string
+}
+
+// Size is what v counts against the bounds on an extractor's values: one
+// node and the bytes of its text, or for a value handed over whole the
+// nodes and bytes of its Data.
+func (v Value) Size() (nodes int, bytes int64) {
+	if v.Data != nil {
+		return v.Data.Size()
+	}
+	return 1, int64(len(v.Text))
 }
 
 // maxNote is the most bytes of a key or a condition a note quotes.
@@ -139,9 +158,12 @@ func (e *NoValue) Error() string { return e.Reason }
 // not an error: the rule decides whether finding nothing is unknown. An error
 // means the extractor could not read its source, and the rule is unknown.
 // What it returns, and which extractors of its rule it reads, its kind
-// tells beforehand (Description).
+// tells beforehand (Description). ctx is the run's: an extractor that waits
+// on something outside errata, as a plugin's process will, stops when it
+// ends. A built in reader reads files in process under ADR 0003's bounds
+// and does not read it.
 type Extractor interface {
-	Extract(root string) ([]Value, error)
+	Extract(ctx context.Context, root string) ([]Value, error)
 	// ExtractWith is Extract given the values of each extractor its
 	// Description's Reads names, which is how a rule runs it: their literal
 	// values, after skip_not_literal, in the order they were found, with
@@ -149,5 +171,5 @@ type Extractor interface {
 	// the text it came from, so a search that should ignore case says so
 	// in its own pattern, with (?i). An extractor that reads no other
 	// extractor's values ignores values and returns what Extract does.
-	ExtractWith(root string, values map[string][]Value) ([]Value, error)
+	ExtractWith(ctx context.Context, root string, values map[string][]Value) ([]Value, error)
 }

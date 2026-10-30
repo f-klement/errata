@@ -9,6 +9,7 @@
 package packageversion
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -31,6 +32,9 @@ type Spec struct {
 	Files    []string `json:"files,omitempty"`
 	MaxBytes int64    `json:"max_bytes,omitempty"`
 }
+
+// Bound is the max_bytes s sets, 0 for the default (core.Bounded).
+func (s Spec) Bound() int64 { return s.MaxBytes }
 
 // Kind is the package_version kind, which a rule writes under the key
 // package_version.
@@ -122,8 +126,8 @@ type extractor struct {
 }
 
 // ExtractWith is Extract: the extractor reads no other extractor's values.
-func (x extractor) ExtractWith(root string, _ map[string][]check.Value) ([]check.Value, error) {
-	return x.Extract(root)
+func (x extractor) ExtractWith(ctx context.Context, root string, _ map[string][]check.Value) ([]check.Value, error) {
+	return x.Extract(ctx, root)
 }
 
 // Extract reads each file under root and returns its versions, the files in
@@ -132,7 +136,7 @@ func (x extractor) ExtractWith(root string, _ map[string][]check.Value) ([]check
 // dangles inside the repository, and a directory there are passed over. A
 // file that files: names must exist. The files hold at most max_bytes in
 // all, as one file does.
-func (x extractor) Extract(root string) ([]check.Value, error) {
+func (x extractor) Extract(_ context.Context, root string) ([]check.Value, error) {
 	out := []check.Value{}
 	var present map[string]bool
 	if !x.explicit {

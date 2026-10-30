@@ -78,7 +78,7 @@ func TestParseRule(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "config", "client.yaml"), []byte("endpoint: \"minio:9000\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	vals, err := r.Extractors[0].Extractor.Extract(root)
+	vals, err := r.Extractors[0].Extractor.Extract(t.Context(), root)
 	if err != nil {
 		t.Fatalf("extract: %v", err)
 	}

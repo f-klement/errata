@@ -51,12 +51,12 @@ func computedLoad(root, path string) (config.Config, error) {
 // rule may list it in skip_not_literal.
 type computedReader struct{ check.Extractor }
 
-func (r computedReader) ExtractWith(root string, values map[string][]check.Value) ([]check.Value, error) {
-	return r.marked(r.Extractor.ExtractWith(root, values))
+func (r computedReader) ExtractWith(ctx context.Context, root string, values map[string][]check.Value) ([]check.Value, error) {
+	return r.marked(r.Extractor.ExtractWith(ctx, root, values))
 }
 
-func (r computedReader) Extract(root string) ([]check.Value, error) {
-	return r.marked(r.Extractor.Extract(root))
+func (r computedReader) Extract(ctx context.Context, root string) ([]check.Value, error) {
+	return r.marked(r.Extractor.Extract(ctx, root))
 }
 
 // marked is values with each that holds $( or ${ marked not literal.

@@ -20,7 +20,7 @@ func every(t *testing.T, body string) string {
 	if err != nil {
 		t.Fatalf("Every: %v", err)
 	}
-	values, err := x.Extract(extracttest.Repo(t, map[string]string{"Jenkinsfile": body}))
+	values, err := x.Extract(t.Context(), extracttest.Repo(t, map[string]string{"Jenkinsfile": body}))
 	if err != nil {
 		return "error: " + err.Error()
 	}

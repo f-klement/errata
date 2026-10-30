@@ -1,6 +1,7 @@
 package extracttest
 
 import (
+	"context"
 	"fmt"
 	"reflect"
 	"strings"
@@ -91,7 +92,7 @@ func tookLine(took, bound time.Duration) string {
 func timed(e check.Extractor, root string) func() ([]check.Value, time.Duration, error) {
 	return func() ([]check.Value, time.Duration, error) {
 		start := time.Now()
-		got, err := e.Extract(root)
+		got, err := e.Extract(context.Background(), root)
 		return got, time.Since(start), err
 	}
 }

@@ -1,6 +1,7 @@
 package extract
 
 import (
+	"context"
 	"fmt"
 	"path"
 	"slices"
@@ -19,6 +20,8 @@ type fakeSpec struct {
 	File string `json:"file"`
 }
 
+func (fakeSpec) Bound() int64 { return 0 }
+
 // fakeEnv is an env reader of a file named *.fake, or of one that starts
 // with #!, declared as a reader package declares one: its value of a
 // variable names the variable, the file, and whether the facade handed it
@@ -35,12 +38,12 @@ var fakeEnv = core.EnvReader{
 
 type fakeRead struct{ text, file string }
 
-func (f fakeRead) Extract(string) ([]check.Value, error) {
+func (f fakeRead) Extract(context.Context, string) ([]check.Value, error) {
 	return []check.Value{{Text: f.text, At: check.Location{File: f.file, Line: 1}}}, nil
 }
 
-func (f fakeRead) ExtractWith(root string, _ map[string][]check.Value) ([]check.Value, error) {
-	return f.Extract(root)
+func (f fakeRead) ExtractWith(ctx context.Context, root string, _ map[string][]check.Value) ([]check.Value, error) {
+	return f.Extract(ctx, root)
 }
 
 // fakeKinds are kinds with the fake env reader registered after them.
@@ -69,7 +72,7 @@ func TestEnvAsksARegisteredReader(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	vs, err := x.Extract(root)
+	vs, err := x.Extract(t.Context(), root)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -87,7 +87,7 @@ func extractAll(ctx context.Context, root string, r check.Rule, names []string) 
 		if err := ctx.Err(); err != nil {
 			return extracted, problems, fmt.Sprintf("cancelled before extractor %q ran: %v", name, err)
 		}
-		values, err := extractOne(root, byName[name], read)
+		values, err := extractOne(ctx, root, byName[name], read)
 		why := ""
 		if none := (*check.NoValue)(nil); errors.As(err, &none) {
 			values, err, why = nil, nil, ": "+none.Reason
@@ -145,9 +145,56 @@ func shown(r check.Rule, values []check.Value) []check.Value {
 }
 
 // extractOne runs e with the values in read of each extractor its
-// Description reads. One it reads that has no entry in read failed, so e
-// cannot run, and fails for it.
-func extractOne(root string, e check.NamedExtractor, read map[string][]check.Value) ([]check.Value, error) {
+// Description reads, and holds what it returns to the bounds (bounded).
+// One it reads that has no entry in read failed, so e cannot run, and
+// fails for it.
+func extractOne(ctx context.Context, root string, e check.NamedExtractor, read map[string][]check.Value) ([]check.Value, error) {
+	values, err := extractWith(ctx, root, e, read)
+	if err != nil {
+		return nil, err
+	}
+	if err := bounded(e.Description, values); err != nil {
+		return nil, err
+	}
+	return values, nil
+}
+
+// bounded refuses values past the bounds of ADR 0003 on what one extractor
+// returns: more than check.MaxValues of them, each node of a value handed
+// over whole counting one; more bytes in all than d's max_bytes; a value at
+// a location that names no path inside the repository; a value handed over
+// whole whose Text, which a message quotes, holds more than check.MaxShown
+// bytes; or a value whose Shown the extractor set, which only the rule
+// sets and a report writes as it is. Each reader checks the first two as it
+// reads, and stops early; this is the check every extractor's values meet,
+// a plugin's too, whatever its reader did.
+func bounded(d check.Description, values []check.Value) error {
+	limit := d.Bytes()
+	nodes, bytes := 0, int64(0)
+	for _, v := range values {
+		n, b := v.Size()
+		if nodes += n; nodes > check.MaxValues {
+			return fmt.Errorf("it returned more than %d values, the limit on an extractor's values, each node of a mapping one", check.MaxValues)
+		}
+		if bytes += b; bytes > limit {
+			return fmt.Errorf("its values hold more than %d bytes in all, the extractor's max_bytes; set max_bytes: higher", limit)
+		}
+		if !v.At.Inside() {
+			return fmt.Errorf("it returned a value at %s, which is no path inside the repository", newQuoter(nil).quote(v.At.File))
+		}
+		if v.Data != nil && len(v.Text) > check.MaxShown {
+			return fmt.Errorf("it returned a value handed over whole at %s whose text holds %d bytes, over the %d a whole value shows", newQuoter(nil).quote(v.At.String()), len(v.Text), check.MaxShown)
+		}
+		if v.Shown != "" {
+			return fmt.Errorf("it returned a value at %s with its shown form set, which only the rule sets", newQuoter(nil).quote(v.At.String()))
+		}
+	}
+	return nil
+}
+
+// extractWith is what e returns given the values in read of each extractor its
+// Description reads.
+func extractWith(ctx context.Context, root string, e check.NamedExtractor, read map[string][]check.Value) ([]check.Value, error) {
 	values := make(map[string][]check.Value, len(e.Description.Reads))
 	for _, n := range e.Description.Reads {
 		got, ran := read[n]
@@ -156,7 +203,7 @@ func extractOne(root string, e check.NamedExtractor, read map[string][]check.Val
 		}
 		values[n] = got
 	}
-	return e.Extractor.ExtractWith(root, values)
+	return e.Extractor.ExtractWith(ctx, root, values)
 }
 
 // literal is values without the not literal ones, which a rule never

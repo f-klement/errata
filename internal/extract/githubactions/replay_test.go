@@ -201,7 +201,7 @@ func read(t *testing.T, s Spec, body string, limit time.Duration) (time.Duration
 	var got string
 	for i := range 3 {
 		start := time.Now()
-		vs, err := e.Extract(root)
+		vs, err := e.Extract(t.Context(), root)
 		took := time.Since(start)
 		if i == 0 {
 			got = values(vs)

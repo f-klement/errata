@@ -1,6 +1,7 @@
 package env
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -82,11 +83,11 @@ type fake struct {
 	ci   bool
 }
 
-func (f fake) ExtractWith(root string, _ map[string][]check.Value) ([]check.Value, error) {
-	return f.Extract(root)
+func (f fake) ExtractWith(ctx context.Context, root string, _ map[string][]check.Value) ([]check.Value, error) {
+	return f.Extract(ctx, root)
 }
 
-func (f fake) Extract(root string) ([]check.Value, error) {
+func (f fake) Extract(_ context.Context, root string) ([]check.Value, error) {
 	data, err := f.src.Read(root)
 	if err != nil {
 		return nil, err
@@ -118,8 +119,8 @@ func (f fake) Extract(root string) ([]check.Value, error) {
 // included them, twice its bytes more, all within its max_bytes.
 type includer struct{ fake }
 
-func (f includer) ExtractRead(root string) ([]check.Value, int64, error) {
-	vs, err := f.Extract(root)
+func (f includer) ExtractRead(ctx context.Context, root string) ([]check.Value, int64, error) {
+	vs, err := f.Extract(ctx, root)
 	data, _ := f.src.Read(root)
 	read := 3 * int64(len(data))
 	if read > f.src.Limit {
@@ -138,7 +139,7 @@ func run(t *testing.T, s Spec, root string) (string, []call, error) {
 		t.Fatalf("Build: %v", err)
 	}
 	calls = nil
-	vs, err := x.Extract(root)
+	vs, err := x.Extract(t.Context(), root)
 	var out []string
 	for _, v := range vs {
 		if v.HasKey || v.Key != "" {
@@ -335,7 +336,7 @@ func TestGlob(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	vs, err := x.Extract(root)
+	vs, err := x.Extract(t.Context(), root)
 	if err != nil || vs == nil || len(vs) != 0 {
 		t.Errorf("a glob that matches none: %v, %v; want an empty list", vs, err)
 	}
@@ -425,11 +426,11 @@ func TestFileBounds(t *testing.T) {
 	}
 	limited := x.(extractor)
 	limited.files.FileLimit = 3
-	if _, err := limited.Extract(root); err != nil {
+	if _, err := limited.Extract(t.Context(), root); err != nil {
 		t.Errorf("3 files under a limit of 3: %v", err)
 	}
 	limited.files.FileLimit = 2
-	_, err = limited.Extract(root)
+	_, err = limited.Extract(t.Context(), root)
 	extracttest.WantError(t, err, `env: files names more than 10000 files, the limit, at "*.sh"`)
 }
 
@@ -451,12 +452,12 @@ func TestMatchBound(t *testing.T) {
 	}
 	limited := x.(extractor)
 	limited.files.MatchLimit = 48
-	if _, err := limited.Extract(root); err != nil {
+	if _, err := limited.Extract(t.Context(), root); err != nil {
 		t.Errorf("48 bytes matched under a limit of 48: %v", err)
 	}
 	limited.files.MatchLimit = 47
 	limited.files.FileLimit = 1
-	_, err = limited.Extract(root)
+	_, err = limited.Extract(t.Context(), root)
 	extracttest.WantError(t, err, fmt.Sprintf(`env: files lists 3 globs, and matching each against the 16 bytes of path git tracks takes more than %d bytes, the limit; list fewer globs`, maxMatchBytes))
 }
 

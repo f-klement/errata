@@ -79,12 +79,12 @@ func TestNewUsesTheCheckProtocol(t *testing.T) {
 
 type value string
 
-func (v value) Extract(string) ([]check.Value, error) {
+func (v value) Extract(context.Context, string) ([]check.Value, error) {
 	return []check.Value{{Text: string(v), At: check.Location{File: "f.yaml", Line: 1}}}, nil
 }
 
-func (v value) ExtractWith(root string, _ map[string][]check.Value) ([]check.Value, error) {
-	return v.Extract(root)
+func (v value) ExtractWith(ctx context.Context, root string, _ map[string][]check.Value) ([]check.Value, error) {
+	return v.Extract(ctx, root)
 }
 
 func agreeing(id string, a, b value) check.Check {

@@ -123,7 +123,10 @@ own, and errata enforces named bounds: the file size (`max_bytes`), a node count
 the nodes YAML aliases add, the values per extractor, the depth, the capture groups, the regex
 time, the work of a path's filters, the Markdown parse's time and counts, the work of an INI,
 properties or env file read, the lines and tokens of a go.mod, and the entries and depth of a walk of
-the repository. A file or a walk past a bound makes the rule unknown. Peak memory is not promised, since it depends on a file's shape; a
+the repository. A file or a walk past a bound makes the rule unknown. Each reader checks its bounds as
+it reads and stops early; the rule checks every extractor's values again where they reach it, against
+the values per extractor, `max_bytes` bytes in all, and locations that name a path inside the repository, so a
+reader that misses a bound, or a plugin, cannot pass one. Peak memory is not promised, since it depends on a file's shape; a
 file that exhausts it ends the process, which fails the job. ADR
 [0003](adr/0003-extractors-bound-time-and-size-and-let-memory-fail-closed.md) has the reasons.
 

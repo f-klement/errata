@@ -18,7 +18,7 @@ func every(t *testing.T, workflow string, maxBytes int64) (string, error) {
 	if err != nil {
 		t.Fatalf("Every: %v", err)
 	}
-	vs, err := x.Extract(extracttest.Repo(t, map[string]string{wf: workflow}))
+	vs, err := x.Extract(t.Context(), extracttest.Repo(t, map[string]string{wf: workflow}))
 	var out []string
 	for _, v := range vs {
 		out = append(out, values([]check.Value{v})+" "+v.Origin)
@@ -220,11 +220,11 @@ func TestEveryBounds(t *testing.T) {
 	}
 	limited := x.(extractor)
 	limited.valueLimit = 100
-	if vs, err := limited.Extract(extracttest.Repo(t, map[string]string{wf: b.String()})); err != nil || len(vs) != 100 {
+	if vs, err := limited.Extract(t.Context(), extracttest.Repo(t, map[string]string{wf: b.String()})); err != nil || len(vs) != 100 {
 		t.Errorf("100 values under a limit of 100: %d, %v", len(vs), err)
 	}
 	b.WriteString("  j100: {}\n")
-	_, err = limited.Extract(extracttest.Repo(t, map[string]string{wf: b.String()}))
+	_, err = limited.Extract(t.Context(), extracttest.Repo(t, map[string]string{wf: b.String()}))
 	extracttest.WantError(t, err, fmt.Sprintf("more than %d values", core.MaxValues))
 
 	long := "on: push\nenv: {PORT: \"" + strings.Repeat("8", 1000) + "\"}\njobs:\n  a: {}\n  b: {}\n"

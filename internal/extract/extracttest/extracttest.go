@@ -57,7 +57,7 @@ func Run[S any](t *testing.T, build func(S) (check.Extractor, error), s S, root 
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	return e.Extract(root)
+	return e.Extract(t.Context(), root)
 }
 
 // MustRun is Run for an extraction that must succeed.

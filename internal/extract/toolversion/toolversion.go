@@ -6,6 +6,7 @@
 package toolversion
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -28,6 +29,9 @@ type Spec struct {
 	Files    []string `json:"files,omitempty"`
 	MaxBytes int64    `json:"max_bytes,omitempty"`
 }
+
+// Bound is the max_bytes s sets, 0 for the default (core.Bounded).
+func (s Spec) Bound() int64 { return s.MaxBytes }
 
 // Kind is the tool_version kind, which a rule writes under the key tool_version.
 var Kind = core.Kind[Spec]{Key: "tool_version", Place: Place, Resolve: Resolve, Describe: Describe}
@@ -165,8 +169,8 @@ type extractor struct {
 }
 
 // ExtractWith is Extract: the extractor reads no other extractor's values.
-func (x extractor) ExtractWith(root string, _ map[string][]check.Value) ([]check.Value, error) {
-	return x.Extract(root)
+func (x extractor) ExtractWith(ctx context.Context, root string, _ map[string][]check.Value) ([]check.Value, error) {
+	return x.Extract(ctx, root)
 }
 
 // Extract reads each file under root and returns its versions of the tool,
@@ -175,7 +179,7 @@ func (x extractor) ExtractWith(root string, _ map[string][]check.Value) ([]check
 // table's order before its subdirectories'; a symlink among them that
 // dangles inside the repository is passed over, as a file that is not
 // there. A file that files: names must exist.
-func (x extractor) Extract(root string) ([]check.Value, error) {
+func (x extractor) Extract(_ context.Context, root string) ([]check.Value, error) {
 	r := reading{x: x, root: root, out: []check.Value{}, read: map[string][]check.Value{}}
 	if x.explicit {
 		for _, f := range x.files {

@@ -4,6 +4,7 @@ package xml
 
 import (
 	"bytes"
+	"context"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -98,13 +99,13 @@ func Build(x Spec) (check.Extractor, error) {
 }
 
 // ExtractWith is Extract: the extractor reads no other extractor's values.
-func (e xmlExtractor) ExtractWith(root string, _ map[string][]check.Value) ([]check.Value, error) {
-	return e.Extract(root)
+func (e xmlExtractor) ExtractWith(ctx context.Context, root string, _ map[string][]check.Value) ([]check.Value, error) {
+	return e.Extract(ctx, root)
 }
 
 // Extract reads the file under root and returns every value its path
 // selects.
-func (e xmlExtractor) Extract(root string) ([]check.Value, error) {
+func (e xmlExtractor) Extract(_ context.Context, root string) ([]check.Value, error) {
 	return core.ExtractOne(root, e.Source, e)
 }
 

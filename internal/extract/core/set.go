@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -21,12 +22,17 @@ type FileReader interface {
 // Spent is the work of a budget that the readers of a set share, carried
 // from one file to the next as the bytes are: the nodes YAML aliases and
 // merge keys added (MaxExpanded), the bytes a path's filters hashed and
-// compared (MaxFilterBytes), and what the documents embedded steps parsed
-// out of strings hold. A regex search's time is shared through its
-// deadline instead.
+// compared (MaxFilterBytes), what the documents embedded steps parsed
+// out of strings hold, and the time of the regex searches.
 type Spent struct {
 	Expanded int
 	Filter   int64
+	// deadline is when the regex searches of every file of a set must
+	// end, timeLimit from when the set started reading, which a refusal
+	// on time names; zero outside a set, where a search takes its own
+	// time limit from when it starts.
+	deadline  time.Time
+	timeLimit time.Duration
 	// stringBytes and stringNodes are the bytes of the documents in
 	// strings and the nodes they can hold, each counted at its format's
 	// bytes per node. One file's strings count against its max_bytes as
@@ -126,23 +132,23 @@ func (s FileSet) one(file string, maxBytes int64) (FileReader, error) {
 }
 
 // ExtractWith is Extract: the extractor reads no other extractor's values.
-func (s FileSet) ExtractWith(root string, _ map[string][]check.Value) ([]check.Value, error) {
-	return s.Extract(root)
+func (s FileSet) ExtractWith(ctx context.Context, root string, _ map[string][]check.Value) ([]check.Value, error) {
+	return s.Extract(ctx, root)
 }
 
 // Extract reads every file the entries name and returns their values.
-func (s FileSet) Extract(root string) ([]check.Value, error) {
+func (s FileSet) Extract(_ context.Context, root string) ([]check.Value, error) {
 	named, err := s.List(root)
 	if err != nil {
 		return nil, err
 	}
-	shared := time.Now().Add(s.timeLimit)
 	out := []check.Value{}
-	left := s.limit                      // the bytes the files still to read may hold
-	var held int64                       // the bytes of the values so far
-	count := 0                           // the values so far, each node of a mapping one
-	spent := Spent{stringLimit: s.limit} // the budgets the files so far spent
-	read := map[string]bool{}            // where each file read so far resolves
+	left := s.limit // the bytes the files still to read may hold
+	var held int64  // the bytes of the values so far
+	count := 0      // the values so far, each node of a mapping one
+	// The budgets the files so far spent.
+	spent := Spent{stringLimit: s.limit, deadline: time.Now().Add(s.timeLimit), timeLimit: s.timeLimit}
+	read := map[string]bool{} // where each file read so far resolves
 	for _, n := range named {
 		// Two names that resolve to one file, a link and its target, are
 		// one file, read at the first; a name that does not resolve is
@@ -167,7 +173,7 @@ func (s FileSet) Extract(root string) ([]check.Value, error) {
 		if err != nil {
 			return nil, err
 		}
-		vs, err := s.sharing(r, shared).FromShared(data, &spent)
+		vs, err := r.FromShared(data, &spent)
 		if errors.Is(err, ErrTooDense) {
 			return nil, fmt.Errorf("%s: %w; in a set, max_bytes is what the files before it left, %d of %d", s.kind, err, left, s.limit)
 		}
@@ -179,10 +185,7 @@ func (s FileSet) Extract(root string) ([]check.Value, error) {
 		}
 		left -= int64(len(data))
 		for _, v := range vs {
-			nodes, bytes := 1, int64(len(v.Text))
-			if v.Data != nil {
-				nodes, bytes = v.Data.Size()
-			}
+			nodes, bytes := v.Size()
 			if count += nodes; count > MaxValues {
 				return nil, fmt.Errorf("%s: the files hold more than %d values, the limit, each node of a mapping one; narrow the path, the pattern or the files", s.kind, MaxValues)
 			}
@@ -193,14 +196,4 @@ func (s FileSet) Extract(root string) ([]check.Value, error) {
 		}
 	}
 	return out, nil
-}
-
-// sharing is r with the deadline of the set when it is a regex search, so
-// the searches of every file share one time limit; any other r as it is.
-func (s FileSet) sharing(r FileReader, shared time.Time) FileReader {
-	if search, ok := r.(Search); ok {
-		search.TimeLimit, search.shared = s.timeLimit, shared
-		return search
-	}
-	return r
 }

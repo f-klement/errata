@@ -198,8 +198,9 @@ func (r Rule) Normalized(text string) string {
 	return text
 }
 
-// ErrRuleTimeout refuses a timeout on a rule. An extractor reads files in
-// process and takes no context, so a timeout on a rule would be a key that
+// ErrRuleTimeout refuses a timeout on a rule. A built in extractor reads
+// files in process, bounded by ADR 0003's limits, and its context only
+// carries the run's cancellation, so a timeout on a rule would be a key that
 // does nothing.
 var ErrRuleTimeout = errors.New("timeout applies to a program check and a generated check: a rule's extractors take no timeout")
 

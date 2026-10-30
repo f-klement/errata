@@ -12,8 +12,8 @@ import (
 // fixed is an extractor that returns its values.
 type fixed []check.Value
 
-func (f fixed) Extract(string) ([]check.Value, error) { return f, nil }
-func (f fixed) ExtractWith(string, map[string][]check.Value) ([]check.Value, error) {
+func (f fixed) Extract(context.Context, string) ([]check.Value, error) { return f, nil }
+func (f fixed) ExtractWith(context.Context, string, map[string][]check.Value) ([]check.Value, error) {
 	return f, nil
 }
 

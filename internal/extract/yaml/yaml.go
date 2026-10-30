@@ -4,6 +4,7 @@ package yaml
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -101,13 +102,13 @@ func Build(y Spec, p core.Parsers) (check.Extractor, error) {
 }
 
 // ExtractWith is Extract: the extractor reads no other extractor's values.
-func (e yamlExtractor) ExtractWith(root string, _ map[string][]check.Value) ([]check.Value, error) {
-	return e.Extract(root)
+func (e yamlExtractor) ExtractWith(ctx context.Context, root string, _ map[string][]check.Value) ([]check.Value, error) {
+	return e.Extract(ctx, root)
 }
 
 // Extract reads the file under root, selects its documents and returns every
 // scalar the path selects in them.
-func (e yamlExtractor) Extract(root string) ([]check.Value, error) {
+func (e yamlExtractor) Extract(_ context.Context, root string) ([]check.Value, error) {
 	return core.ExtractOne(root, e.Source, e)
 }
 

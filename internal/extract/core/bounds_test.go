@@ -160,7 +160,7 @@ func TestMessagesQuoteAShortPartOfTheConfiguration(t *testing.T) {
 	} {
 		e, err := extract.Build(c.spec)
 		if err == nil {
-			_, err = e.Extract(extracttest.Repo(t, map[string]string{c.file: c.body}))
+			_, err = e.Extract(t.Context(), extracttest.Repo(t, map[string]string{c.file: c.body}))
 		}
 		if err == nil || !strings.HasPrefix(err.Error(), c.want) || len(err.Error()) > 400 {
 			t.Errorf("error of %d bytes %.300q, want one under 400 that starts %q", len(fmt.Sprint(err)), fmt.Sprint(err), c.want)

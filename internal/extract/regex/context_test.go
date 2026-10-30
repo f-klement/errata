@@ -51,7 +51,7 @@ func TestContextWithAReference(t *testing.T) {
 	root := extracttest.Repo(t, map[string]string{"renovate.json": "--install a x\n// managed\n--install b x\n--install a y\n"})
 	d := mustReference(t, Spec{File: "renovate.json", Pattern: `--install ((?{charts})) `,
 		Context: &core.Context{Before: 1, With: `managed`}})
-	vs, err := d.ExtractWith(root, map[string][]check.Value{"charts": {value("a", "s", 1), value("b", "s", 2)}})
+	vs, err := d.ExtractWith(t.Context(), root, map[string][]check.Value{"charts": {value("a", "s", 1), value("b", "s", 2)}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func TestContextRecordsCountEveryMatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = e.Extract(root)
+	_, err = e.Extract(t.Context(), root)
 	extracttest.WantError(t, err, fmt.Sprintf("many: the records the pattern matches hold more than %d nodes in all", core.MaxValues))
 }
 

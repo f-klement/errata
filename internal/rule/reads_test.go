@@ -21,11 +21,11 @@ type reader struct {
 	name   string
 }
 
-func (reader) Extract(string) ([]check.Value, error) {
+func (reader) Extract(context.Context, string) ([]check.Value, error) {
 	return nil, errors.New("Extract called on an extractor that reads values")
 }
 
-func (r reader) ExtractWith(_ string, values map[string][]check.Value) ([]check.Value, error) {
+func (r reader) ExtractWith(_ context.Context, _ string, values map[string][]check.Value) ([]check.Value, error) {
 	*r.got = values
 	*r.ran = append(*r.ran, r.name)
 	return r.values, nil
@@ -43,13 +43,13 @@ type ranFake struct {
 	name string
 }
 
-func (f ranFake) Extract(root string) ([]check.Value, error) {
+func (f ranFake) Extract(ctx context.Context, root string) ([]check.Value, error) {
 	*f.ran = append(*f.ran, f.name)
-	return f.fake.Extract(root)
+	return f.fake.Extract(ctx, root)
 }
 
-func (f ranFake) ExtractWith(root string, _ map[string][]check.Value) ([]check.Value, error) {
-	return f.Extract(root)
+func (f ranFake) ExtractWith(ctx context.Context, root string, _ map[string][]check.Value) ([]check.Value, error) {
+	return f.Extract(ctx, root)
 }
 
 func compiledRule(t *testing.T, expr string, extractors ...check.NamedExtractor) check.Check {

@@ -95,13 +95,13 @@ type countingExtractor struct {
 	runs   *int
 }
 
-func (c countingExtractor) Extract(string) ([]check.Value, error) {
+func (c countingExtractor) Extract(context.Context, string) ([]check.Value, error) {
 	*c.runs++
 	return c.values, nil
 }
 
-func (c countingExtractor) ExtractWith(root string, _ map[string][]check.Value) ([]check.Value, error) {
-	return c.Extract(root)
+func (c countingExtractor) ExtractWith(ctx context.Context, root string, _ map[string][]check.Value) ([]check.Value, error) {
+	return c.Extract(ctx, root)
 }
 
 // assert reads a record as a map, a field by its name, and two fields of

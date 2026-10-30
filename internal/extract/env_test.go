@@ -28,7 +28,7 @@ func TestEnvAsksEachReader(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	vs, err := x.Extract(root)
+	vs, err := x.Extract(t.Context(), root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,6 +62,6 @@ func TestEnvChargesGitLabIncludes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = x.Extract(root)
+	_, err = x.Extract(t.Context(), root)
 	extracttest.WantError(t, err, "over the limit of")
 }

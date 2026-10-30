@@ -355,7 +355,7 @@ func builtReads(t *testing.T, raw string, x check.Extractor, d check.Description
 	}
 	root := extracttest.Repo(t, map[string]string{"a": "v\n", "b": "v\n"})
 	found := func(name string) bool {
-		vs, err := x.ExtractWith(root, map[string][]check.Value{name: {{Text: "v"}}})
+		vs, err := x.ExtractWith(t.Context(), root, map[string][]check.Value{name: {{Text: "v"}}})
 		var none *check.NoValue
 		if err != nil && !errors.As(err, &none) {
 			t.Errorf("%s: %v", raw, err)
@@ -400,6 +400,35 @@ func TestDescribeTellsWhatBuildReturns(t *testing.T) {
 	for _, k := range Keys() {
 		if !seen[k] {
 			t.Errorf("no spec of %s is described here", k)
+		}
+	}
+}
+
+// Each kind's description carries the max_bytes its spec sets, the bound
+// the rule holds the extractor's values to; exists and size, which set
+// none, are held to the default. register sets it for every kind, and the
+// specs here are one of each kind (TestDescribeTellsWhatBuildReturns).
+// Planted breaks: register's Describe without MaxBytes; env's Bound
+// returning 0.
+func TestDescribeCarriesMaxBytes(t *testing.T) {
+	for _, raw := range describes {
+		var entry map[string]map[string]any
+		if err := json.Unmarshal([]byte(raw), &entry); err != nil {
+			t.Fatal(err)
+		}
+		key := decode(t, raw).set[0].kind.Key
+		want := int64(1234)
+		if key == "exists" || key == "size" {
+			want = 0
+		} else {
+			entry[key]["max_bytes"] = want
+		}
+		withMax, err := json.Marshal(entry)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := decode(t, string(withMax)).Describe().MaxBytes; got != want {
+			t.Errorf("%s: described with max_bytes %d, want %d", withMax, got, want)
 		}
 	}
 }

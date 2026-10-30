@@ -26,6 +26,9 @@ func (w Where) Place() Where {
 	return w
 }
 
+// Bound is the max_bytes w sets, 0 for DefaultMaxBytes (Bounded).
+func (w Where) Bound() int64 { return w.MaxBytes }
+
 // Resolved is w with its max_bytes written out and its files copied, for
 // errata list.
 func (w Where) Resolved() Where {
@@ -48,6 +51,9 @@ type OneFile struct {
 func (o OneFile) Place() OneFile {
 	return OneFile{File: filepath.Clean(o.File)}
 }
+
+// Bound is the max_bytes o sets, 0 for DefaultMaxBytes (Bounded).
+func (o OneFile) Bound() int64 { return o.MaxBytes }
 
 // Resolved is o with its max_bytes written out, for errata list.
 func (o OneFile) Resolved() OneFile {

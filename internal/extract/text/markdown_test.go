@@ -383,7 +383,7 @@ func markdownBounds(t *testing.T, large bool) {
 			}
 			root := extracttest.Repo(t, map[string]string{"README.md": c.body})
 			start := time.Now()
-			got, err := x.Extract(root)
+			got, err := x.Extract(t.Context(), root)
 			took := time.Since(start)
 			if c.bound > 0 && took > c.bound*extracttest.RaceSlowdown {
 				t.Errorf("took %v, over %v", took, c.bound*extracttest.RaceSlowdown)

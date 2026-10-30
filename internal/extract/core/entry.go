@@ -2,6 +2,7 @@ package core
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	slashpath "path"
@@ -257,13 +258,13 @@ func (e EntryExtractor) ValuesAllowed() int {
 }
 
 // ExtractWith is Extract: the extractor reads no other extractor's values.
-func (e EntryExtractor) ExtractWith(root string, _ map[string][]check.Value) ([]check.Value, error) {
-	return e.Extract(root)
+func (e EntryExtractor) ExtractWith(ctx context.Context, root string, _ map[string][]check.Value) ([]check.Value, error) {
+	return e.Extract(ctx, root)
 }
 
 // Extract reads the file under root and returns every value the query
 // selects, in file order.
-func (e EntryExtractor) Extract(root string) ([]check.Value, error) {
+func (e EntryExtractor) Extract(_ context.Context, root string) ([]check.Value, error) {
 	return ExtractOne(root, e.Source, e)
 }
 

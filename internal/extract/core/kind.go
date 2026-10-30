@@ -8,6 +8,14 @@ import (
 	"github.com/f-klement/errata/internal/check"
 )
 
+// Bounded is a kind's spec, which states the max_bytes it sets, 0 for
+// DefaultMaxBytes. Where and OneFile, which a spec embeds, give it; a spec
+// that embeds neither states its own. extract describes every kind with it,
+// so the rule holds an extractor's values to the max_bytes its spec sets.
+type Bounded interface {
+	Bound() int64
+}
+
 // Kind is one extractor kind, as its reader declares it beside its Spec:
 // the key a rule writes it under in extract:, and the functions over its own
 // spec that extract calls for every kind. extract lists each Kind once, with

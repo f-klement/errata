@@ -2,6 +2,7 @@ package core
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"slices"
 	"sort"
@@ -239,12 +240,12 @@ func BuildTree(kind string, t Tree, f *Format, parse func([]byte) (*Node, error)
 }
 
 // ExtractWith is Extract: the extractor reads no other extractor's values.
-func (e treeExtractor) ExtractWith(root string, _ map[string][]check.Value) ([]check.Value, error) {
-	return e.Extract(root)
+func (e treeExtractor) ExtractWith(ctx context.Context, root string, _ map[string][]check.Value) ([]check.Value, error) {
+	return e.Extract(ctx, root)
 }
 
 // Extract reads the file under root and returns every scalar its path selects.
-func (e treeExtractor) Extract(root string) ([]check.Value, error) {
+func (e treeExtractor) Extract(_ context.Context, root string) ([]check.Value, error) {
 	return ExtractOne(root, e.Source, e)
 }
 

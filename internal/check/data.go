@@ -83,6 +83,10 @@ func (d *Data) Normalized(f func(string) string) *Data {
 // a report and a value's Text; assert reads the value itself.
 const ShownBytes = 256
 
+// MaxShown is the most bytes Show writes at ShownBytes: ShownBytes and the
+// ... that marks a cut. The rule holds a whole value's Text to it.
+const MaxShown = ShownBytes + len("...")
+
 // Show is d as a message shows it, close to JSON: a mapping as
 // {"key": value, ...} in file order, a sequence as [value, ...], and a
 // scalar quoted as Go quotes a string. It stops after limit bytes and ends

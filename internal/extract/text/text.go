@@ -3,6 +3,7 @@
 package text
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -80,14 +81,14 @@ func Build(t Spec) (check.Extractor, error) {
 }
 
 // ExtractWith is Extract: the extractor reads no other extractor's values.
-func (e textExtractor) ExtractWith(root string, _ map[string][]check.Value) ([]check.Value, error) {
-	return e.Extract(root)
+func (e textExtractor) ExtractWith(ctx context.Context, root string, _ map[string][]check.Value) ([]check.Value, error) {
+	return e.Extract(ctx, root)
 }
 
 // Extract returns group 1 of every match in the prose of the file under
 // root. Its line is the line of the file where the match starts, and its
 // text is the prose's.
-func (e textExtractor) Extract(root string) ([]check.Value, error) {
+func (e textExtractor) Extract(_ context.Context, root string) ([]check.Value, error) {
 	return core.ExtractOne(root, e.search.Source, e)
 }
 

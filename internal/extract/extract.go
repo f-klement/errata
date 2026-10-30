@@ -134,8 +134,10 @@ type kind = check.ExtractorKind
 
 // register is the extractor kind k declares, with build, over a spec held
 // as any, which is always an S. A function k leaves out stays nil, which
-// TestEveryKindRoundTrips reports.
-func register[S any](k core.Kind[S], build func(S) (check.Extractor, error)) *kind {
+// TestEveryKindRoundTrips reports. Its Describe carries the max_bytes the
+// spec sets, which S states (core.Bounded), so no kind's own Describe
+// repeats it.
+func register[S core.Bounded](k core.Kind[S], build func(S) (check.Extractor, error)) *kind {
 	r := &kind{Key: k.Key, Spec: reflect.TypeFor[S](), Decode: func(raw json.RawMessage) (any, error) { return decodeSpec[S](k.Key, raw) }}
 	if build != nil {
 		r.Build = func(s any) (check.Extractor, error) { return build(s.(S)) }
@@ -147,7 +149,11 @@ func register[S any](k core.Kind[S], build func(S) (check.Extractor, error)) *ki
 		r.Resolve = func(s any) any { return k.Resolve(s.(S)) }
 	}
 	if k.Describe != nil {
-		r.Describe = func(s any) check.Description { return k.Describe(s.(S)) }
+		r.Describe = func(s any) check.Description {
+			d := k.Describe(s.(S))
+			d.MaxBytes = s.(S).Bound()
+			return d
+		}
 	}
 	if e := k.Env; e != nil {
 		r.Env = &check.EnvReader{Order: e.Order, Chooses: e.Chooses, Sniffs: e.Sniffs, SniffBytes: e.SniffBytes}

@@ -7,6 +7,7 @@ package env
 
 import (
 	"cmp"
+	"context"
 	"errors"
 	"fmt"
 	"path"
@@ -177,6 +178,9 @@ func Build(s Spec, r Readers) (check.Extractor, error) {
 	return x, nil
 }
 
+// Bound is the max_bytes s sets, 0 for the default (core.Bounded).
+func (s Spec) Bound() int64 { return s.MaxBytes }
+
 // Kind is the env kind, which a rule writes under the key env.
 var Kind = core.Kind[Spec]{Key: "env", Place: Place, Resolve: Resolve, Describe: Describe}
 
@@ -238,14 +242,14 @@ type target struct {
 }
 
 // ExtractWith is Extract: the extractor reads no other extractor's values.
-func (x extractor) ExtractWith(root string, _ map[string][]check.Value) ([]check.Value, error) {
-	return x.Extract(root)
+func (x extractor) ExtractWith(ctx context.Context, root string, _ map[string][]check.Value) ([]check.Value, error) {
+	return x.Extract(ctx, root)
 }
 
 // Extract reads each file the entries name, in their order, a glob's in
 // git's order, and returns the values of the variable, each with its
 // reader and the part of the file it holds for as its origin.
-func (x extractor) Extract(root string) ([]check.Value, error) {
+func (x extractor) Extract(ctx context.Context, root string) ([]check.Value, error) {
 	targets, err := x.targets(root)
 	if err != nil {
 		return nil, err
@@ -275,7 +279,7 @@ func (x extractor) Extract(root string) ([]check.Value, error) {
 		}
 		// At least 1, since a reader's 0 is the default of 32 MiB: a file
 		// that grows past what Head saw is then refused as grown.
-		vs, read, err := x.read(root, t.file, reader, max(left, 1))
+		vs, read, err := x.read(ctx, root, t.file, reader, max(left, 1))
 		if err != nil {
 			return nil, err
 		}
@@ -299,7 +303,7 @@ func (x extractor) Extract(root string) ([]check.Value, error) {
 // check.NoValue: a file that does not set it adds nothing; and the bytes
 // it read, for a reader that reads more files than the one, as gitlab-ci
 // reads its includes (BytesReader), else 0.
-func (x extractor) read(root, file, reader string, maxBytes int64) ([]check.Value, int64, error) {
+func (x extractor) read(ctx context.Context, root, file, reader string, maxBytes int64) ([]check.Value, int64, error) {
 	r, err := x.readers.find(reader).Read(file, x.name, maxBytes)
 	if err != nil {
 		return nil, 0, fmt.Errorf("env: %w", err)
@@ -307,9 +311,9 @@ func (x extractor) read(root, file, reader string, maxBytes int64) ([]check.Valu
 	var vs []check.Value
 	var read int64
 	if br, ok := r.(BytesReader); ok {
-		vs, read, err = br.ExtractRead(root)
+		vs, read, err = br.ExtractRead(ctx, root)
 	} else {
-		vs, err = r.Extract(root)
+		vs, err = r.Extract(ctx, root)
 	}
 	var none *check.NoValue
 	if errors.As(err, &none) {
@@ -322,7 +326,7 @@ func (x extractor) read(root, file, reader string, maxBytes int64) ([]check.Valu
 // built for and says how many bytes they hold, which env charges to its
 // max_bytes: gitlab-ci, with its includes.
 type BytesReader interface {
-	ExtractRead(root string) ([]check.Value, int64, error)
+	ExtractRead(ctx context.Context, root string) ([]check.Value, int64, error)
 }
 
 // targets lists the files the entries name, each once, in the entries'

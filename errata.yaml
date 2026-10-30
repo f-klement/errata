@@ -45,11 +45,11 @@ checks:
       The README and ADR 0003 tell a user the file size an extractor reads by default and the most
       max_bytes accepts, and the README's errata list section and its generated check's keys give
       them in bytes. A bound
-      changed in internal/extract/core/limits.go and not in them has a user pick max_bytes from a
+      changed in internal/check/description.go or internal/extract/core/limits.go and not in them has a user pick max_bytes from a
       number errata no longer enforces, and a file the documentation says loads is refused.
     scope: repo
     extract:
-      code_default: {regex: {file: internal/extract/core/limits.go, pattern: '^\s*DefaultMaxBytes = (\d+) << 20$'}}
+      code_default: {regex: {file: internal/check/description.go, pattern: '^\s*DefaultMaxBytes = (\d+) << 20$'}}
       code_ceiling: {regex: {file: internal/extract/core/limits.go, pattern: '^\s*MaxMaxBytes = (\d+) << 20$'}}
       readme_default: {regex: {file: README.md, pattern: '(?:\| file size \| |writing 0, keeps )(\d+) MiB'}}
       readme_ceiling: {regex: {file: README.md, pattern: 'or one over \d+ \((\d+) MiB\)'}}

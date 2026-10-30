@@ -25,15 +25,15 @@ type fake struct {
 	root   *string
 }
 
-func (f fake) Extract(root string) ([]check.Value, error) {
+func (f fake) Extract(_ context.Context, root string) ([]check.Value, error) {
 	if f.root != nil {
 		*f.root = root
 	}
 	return f.values, f.err
 }
 
-func (f fake) ExtractWith(root string, _ map[string][]check.Value) ([]check.Value, error) {
-	return f.Extract(root)
+func (f fake) ExtractWith(ctx context.Context, root string, _ map[string][]check.Value) ([]check.Value, error) {
+	return f.Extract(ctx, root)
 }
 
 // described is a built extractor of each name, as Compile takes them: flat
@@ -121,13 +121,13 @@ func TestAgreeTrue(t *testing.T) {
 
 type slow struct{}
 
-func (slow) Extract(string) ([]check.Value, error) {
+func (slow) Extract(context.Context, string) ([]check.Value, error) {
 	time.Sleep(10 * time.Millisecond)
 	return []check.Value{at("x", "f", 1)}, nil
 }
 
-func (s slow) ExtractWith(root string, _ map[string][]check.Value) ([]check.Value, error) {
-	return s.Extract(root)
+func (s slow) ExtractWith(ctx context.Context, root string, _ map[string][]check.Value) ([]check.Value, error) {
+	return s.Extract(ctx, root)
 }
 
 func TestRunRecordsDuration(t *testing.T) {

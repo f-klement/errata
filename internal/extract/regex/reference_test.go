@@ -41,7 +41,7 @@ func TestReferenceQuotesEachValue(t *testing.T) {
 	if got := Describe(s).Reads; !slices.Equal(got, []string{"charts"}) {
 		t.Fatalf("Reads = %q", got)
 	}
-	vs, err := d.ExtractWith(root, map[string][]check.Value{"charts": {
+	vs, err := d.ExtractWith(t.Context(), root, map[string][]check.Value{"charts": {
 		value("argo-cd", "a.sh", 3), value("a.b", "a.sh", 5), value("argo-cd", "b.sh", 1),
 	}})
 	if err != nil {
@@ -58,7 +58,7 @@ func TestReferenceQuotesEachValue(t *testing.T) {
 func TestReferenceKeepsTheValueWhole(t *testing.T) {
 	root := extracttest.Repo(t, map[string]string{"f": "x: abab\ny: a|b\n"})
 	d := mustReference(t, Spec{File: "f", Pattern: `^\w: ((?{v})+)$`})
-	vs, err := d.ExtractWith(root, map[string][]check.Value{"v": {value("ab", "g", 1), value("a|b", "g", 2)}})
+	vs, err := d.ExtractWith(t.Context(), root, map[string][]check.Value{"v": {value("ab", "g", 1), value("a|b", "g", 2)}})
 	if err != nil || extracttest.Texts(vs) != "abab@1 a|b@2" {
 		t.Fatalf("got %v, %v", vs, err)
 	}
@@ -70,7 +70,7 @@ func TestReferenceKeepsTheValueWhole(t *testing.T) {
 func TestReferenceOfNoValue(t *testing.T) {
 	root := extracttest.Repo(t, map[string]string{"f": "chart: \n"})
 	d := mustReference(t, Spec{File: "f", Pattern: `chart: ((?{charts}))`})
-	vs, err := d.ExtractWith(root, map[string][]check.Value{"charts": nil})
+	vs, err := d.ExtractWith(t.Context(), root, map[string][]check.Value{"charts": nil})
 	var none *check.NoValue
 	if !errors.As(err, &none) || none.Reason != `extractor "charts" gave no value to search for` || vs != nil {
 		t.Fatalf("got %v, %v; want check.NoValue", vs, err)
@@ -80,7 +80,7 @@ func TestReferenceOfNoValue(t *testing.T) {
 // Extract, which no rule calls on an extractor that reads values, refuses.
 func TestReferenceExtractRefuses(t *testing.T) {
 	d := mustReference(t, Spec{File: "f", Pattern: `((?{charts}))`})
-	_, err := d.Extract(t.TempDir())
+	_, err := d.Extract(t.Context(), t.TempDir())
 	extracttest.WantError(t, err, `regex: the pattern references the values of extractor "charts", which only its rule gives it`)
 }
 
@@ -89,7 +89,7 @@ func TestReferenceExtractRefuses(t *testing.T) {
 func TestReferenceOverFiles(t *testing.T) {
 	root := extracttest.Tracked(t, map[string]string{"a/1.sh": "install b\ninstall a\n", "b/2.sh": "install a\n", "c.md": "install a\n"})
 	d := mustReference(t, Spec{Files: []string{"**/*.sh"}, Pattern: `install ((?{names}))$`})
-	vs, err := d.ExtractWith(root, map[string][]check.Value{"names": {value("a", "n", 1), value("b", "n", 2)}})
+	vs, err := d.ExtractWith(t.Context(), root, map[string][]check.Value{"names": {value("a", "n", 1), value("b", "n", 2)}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +103,7 @@ func TestReferenceOverFiles(t *testing.T) {
 func TestReferenceValuesAsPattern(t *testing.T) {
 	root := extracttest.Repo(t, map[string]string{"plans.yaml": "version: v1.36.4+k3s1\nversion: v1.36.4\n"})
 	d := mustReference(t, Spec{File: "plans.yaml", Pattern: `((?{matchers}))`, ValuesAs: AsPattern})
-	vs, err := d.ExtractWith(root, map[string][]check.Value{"matchers": {value(`version: (?<currentValue>v[\d.]+\+k3s\d+)`, "renovate.json", 4)}})
+	vs, err := d.ExtractWith(t.Context(), root, map[string][]check.Value{"matchers": {value(`version: (?<currentValue>v[\d.]+\+k3s\d+)`, "renovate.json", 4)}})
 	if err != nil || extracttest.Texts(vs) != "version: v1.36.4+k3s1@1" {
 		t.Fatalf("got %v, %v", vs, err)
 	}
@@ -123,10 +123,10 @@ func TestReferenceRefusesAValue(t *testing.T) {
 		{strings.Repeat("(a)", 32), `regex: the pattern with the value "(a)(a)`},
 	}
 	for _, tc := range cases {
-		_, err := d.ExtractWith(root, map[string][]check.Value{"m": {value(tc.value, "renovate.json", 4)}})
+		_, err := d.ExtractWith(t.Context(), root, map[string][]check.Value{"m": {value(tc.value, "renovate.json", 4)}})
 		extracttest.WantError(t, err, tc.want)
 	}
-	_, err := d.ExtractWith(root, map[string][]check.Value{"m": {value(strings.Repeat("(a)", 32), "renovate.json", 4)}})
+	_, err := d.ExtractWith(t.Context(), root, map[string][]check.Value{"m": {value(strings.Repeat("(a)", 32), "renovate.json", 4)}})
 	extracttest.WantError(t, err, `of extractor "m", at renovate.json:4: regex: pattern`)
 	extracttest.WantError(t, err, "it has 33 capture groups, over the limit of 32")
 }
@@ -257,14 +257,14 @@ func TestReferenceValueAnchorsAtTheText(t *testing.T) {
 		{`\s*version: (?<v>\S+)`, "  version: v1@1 \n  version: v2@1"},
 	}
 	for _, tc := range cases {
-		vs, err := d.ExtractWith(root, map[string][]check.Value{"m": {value(tc.value, "renovate.json", 4)}})
+		vs, err := d.ExtractWith(t.Context(), root, map[string][]check.Value{"m": {value(tc.value, "renovate.json", 4)}})
 		if err != nil || extracttest.Texts(vs) != tc.want {
 			t.Errorf("%s: got %q, %v; want %q", tc.value, extracttest.Texts(vs), err, tc.want)
 		}
 	}
 	// The pattern around the value is the author's, with the m flag.
 	d = mustReference(t, Spec{File: "plans.yaml", Pattern: `((?{m}))$`, ValuesAs: AsPattern})
-	vs, err := d.ExtractWith(root, map[string][]check.Value{"m": {value(`version: \S+`, "renovate.json", 4)}})
+	vs, err := d.ExtractWith(t.Context(), root, map[string][]check.Value{"m": {value(`version: \S+`, "renovate.json", 4)}})
 	if err != nil || extracttest.Texts(vs) != "version: v1@1 version: v2@2" {
 		t.Errorf("got %q, %v", extracttest.Texts(vs), err)
 	}
@@ -278,12 +278,12 @@ func TestReferenceRefusesEmptyAndLongValues(t *testing.T) {
 	root := extracttest.Repo(t, map[string]string{"f": "--install  x\n"})
 	for _, valuesAs := range []string{"", AsPattern} {
 		d := mustReference(t, Spec{File: "f", Pattern: `--install ((?{r})) `, ValuesAs: valuesAs})
-		_, err := d.ExtractWith(root, map[string][]check.Value{"r": {value("", "a.sh", 2)}})
+		_, err := d.ExtractWith(t.Context(), root, map[string][]check.Value{"r": {value("", "a.sh", 2)}})
 		extracttest.WantError(t, err, `regex: the value of extractor "r", at a.sh:2, is empty, and the pattern would match with nothing in the reference's place`)
 		long := strings.Repeat("a", core.MaxReference+1)
-		_, err = d.ExtractWith(root, map[string][]check.Value{"r": {value(long, "a.sh", 3)}})
+		_, err = d.ExtractWith(t.Context(), root, map[string][]check.Value{"r": {value(long, "a.sh", 3)}})
 		extracttest.WantError(t, err, `regex: the value of extractor "r", at a.sh:3, holds 4097 bytes, over the limit of 4096 for a value a pattern references`)
-		if _, err := d.ExtractWith(root, map[string][]check.Value{"r": {value(long[1:], "a.sh", 3)}}); err != nil {
+		if _, err := d.ExtractWith(t.Context(), root, map[string][]check.Value{"r": {value(long[1:], "a.sh", 3)}}); err != nil {
 			t.Errorf("a value at the limit: %v", err)
 		}
 	}

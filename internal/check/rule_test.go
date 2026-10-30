@@ -1,6 +1,7 @@
 package check
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -8,8 +9,8 @@ import (
 
 type noValues struct{}
 
-func (noValues) Extract(string) ([]Value, error) { return nil, nil }
-func (noValues) ExtractWith(string, map[string][]Value) ([]Value, error) {
+func (noValues) Extract(context.Context, string) ([]Value, error) { return nil, nil }
+func (noValues) ExtractWith(context.Context, string, map[string][]Value) ([]Value, error) {
 	return nil, nil
 }
 

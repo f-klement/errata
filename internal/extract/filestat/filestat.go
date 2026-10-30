@@ -4,6 +4,7 @@
 package filestat
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -18,6 +19,10 @@ import (
 type Spec struct {
 	File string `json:"file"`
 }
+
+// Bound is 0, the default (core.Bounded): exists and size read no byte,
+// and their values are a word or a number.
+func (Spec) Bound() int64 { return 0 }
 
 // ExistsKind and SizeKind are the exists and size kinds, which a rule
 // writes under the keys exists and size. Neither has a max_bytes, since
@@ -82,11 +87,11 @@ func checkSpec(kind string, s Spec) (core.Source, error) {
 type exists struct{ src core.Source }
 
 // ExtractWith is Extract: the extractor reads no other extractor's values.
-func (e exists) ExtractWith(root string, _ map[string][]check.Value) ([]check.Value, error) {
-	return e.Extract(root)
+func (e exists) ExtractWith(ctx context.Context, root string, _ map[string][]check.Value) ([]check.Value, error) {
+	return e.Extract(ctx, root)
 }
 
-func (e exists) Extract(root string) ([]check.Value, error) {
+func (e exists) Extract(_ context.Context, root string) ([]check.Value, error) {
 	info, err := e.src.Stat(root)
 	if errors.Is(err, fs.ErrNotExist) {
 		return e.value("false"), nil
@@ -107,11 +112,11 @@ func (e exists) value(text string) []check.Value {
 type size struct{ src core.Source }
 
 // ExtractWith is Extract: the extractor reads no other extractor's values.
-func (e size) ExtractWith(root string, _ map[string][]check.Value) ([]check.Value, error) {
-	return e.Extract(root)
+func (e size) ExtractWith(ctx context.Context, root string, _ map[string][]check.Value) ([]check.Value, error) {
+	return e.Extract(ctx, root)
 }
 
-func (e size) Extract(root string) ([]check.Value, error) {
+func (e size) Extract(_ context.Context, root string) ([]check.Value, error) {
 	info, err := e.src.Stat(root)
 	if err != nil {
 		return nil, err

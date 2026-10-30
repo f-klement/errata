@@ -7,6 +7,8 @@ import (
 	"time"
 	"unicode/utf16"
 	"unicode/utf8"
+
+	"github.com/f-klement/errata/internal/check"
 )
 
 // The limits that keep a hostile or merely large file from stalling or
@@ -27,7 +29,7 @@ const (
 	// ordinary file costs about 27 times its size in memory: an OpenAPI
 	// document of 8.2 MB takes 0.95 s and 223 MB. A denser file meets the
 	// node limit, which scales with max_bytes: see format.
-	DefaultMaxBytes = 32 << 20
+	DefaultMaxBytes = check.DefaultMaxBytes
 
 	// MaxMaxBytes is the largest max_bytes that loads. The node limit
 	// scales with max_bytes, and so does the memory a dense file can take:
@@ -47,8 +49,10 @@ const (
 	// one step of a path may select. The values also hold at most the
 	// extractor's max_bytes in all (source.values), which only YAML aliases
 	// and merge keys, or decoding that lengthens a value, could pass. Every value is kept and may be
-	// printed; 100000 regex matches in 4.3 MB take 0.8 s and 45 MB.
-	MaxValues = 100_000
+	// printed; 100000 regex matches in 4.3 MB take 0.8 s and 45 MB. A
+	// reader's checks stop it early; the rule holds every extractor's
+	// values to both bounds again where they reach it (check.MaxValues).
+	MaxValues = check.MaxValues
 
 	// MaxDepth is how deeply a file may nest: each key, including each part
 	// of a dotted TOML key or table header, and each element counts one

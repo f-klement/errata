@@ -2,6 +2,7 @@ package core
 
 import (
 	"cmp"
+	"context"
 	"fmt"
 	"slices"
 	"time"
@@ -113,12 +114,12 @@ func (e Each) In(src Source) Each {
 }
 
 // ExtractWith is Extract: the extractor reads no other extractor's values.
-func (e Each) ExtractWith(root string, _ map[string][]check.Value) ([]check.Value, error) {
-	return e.Extract(root)
+func (e Each) ExtractWith(ctx context.Context, root string, _ map[string][]check.Value) ([]check.Value, error) {
+	return e.Extract(ctx, root)
 }
 
 // Extract returns the values of every pattern in the file under root.
-func (e Each) Extract(root string) ([]check.Value, error) {
+func (e Each) Extract(_ context.Context, root string) ([]check.Value, error) {
 	return ExtractOne(root, e.Source, e)
 }
 

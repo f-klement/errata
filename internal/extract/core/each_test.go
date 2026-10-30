@@ -39,28 +39,28 @@ func add(t *testing.T, e *Each, values ...string) {
 // around the value.
 func TestEachOrdersByWhereMatchesStart(t *testing.T) {
 	root := extracttest.Repo(t, map[string]string{"f": "b2\r\na1\nb3 ab\nc\nxyxy\n"})
-	vs, err := mustEach(t, "f", 0, "(", ")", `a\d`, `b\d`, `a(?:b)?`, `a.`, `(?:x)?c`).Extract(root)
+	vs, err := mustEach(t, "f", 0, "(", ")", `a\d`, `b\d`, `a(?:b)?`, `a.`, `(?:x)?c`).Extract(t.Context(), root)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := extracttest.Texts(vs); got != "b2@1 a1@2 a@2 a1@2 b3@3 ab@3 ab@3 c@4" {
 		t.Errorf("got %q", got)
 	}
-	vs, err = mustEach(t, "f", 0, "^(", "+)$", `xy`, `(x)?c`).Extract(root)
+	vs, err = mustEach(t, "f", 0, "^(", "+)$", `xy`, `(x)?c`).Extract(t.Context(), root)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := extracttest.Texts(vs); got != "c@4 xyxy@5" {
 		t.Errorf("got %q", got)
 	}
-	vs, err = mustEach(t, "f", 0, "", "", `(x)?c`).Extract(root)
+	vs, err = mustEach(t, "f", 0, "", "", `(x)?c`).Extract(t.Context(), root)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(vs) != 0 {
 		t.Errorf("group 1 took no part, got %q", extracttest.Texts(vs))
 	}
-	if vs, _ = mustEach(t, "f", 0, "(", ")", `a`).Extract(root); vs[0].At.File != "f" {
+	if vs, _ = mustEach(t, "f", 0, "(", ")", `a`).Extract(t.Context(), root); vs[0].At.File != "f" {
 		t.Errorf("value at %v, want f", vs[0].At)
 	}
 }
@@ -68,9 +68,9 @@ func TestEachOrdersByWhereMatchesStart(t *testing.T) {
 // A file that is not there, or past its limit, is refused as a search's.
 func TestEachReadsAsASearch(t *testing.T) {
 	root := extracttest.Repo(t, map[string]string{"f": "aaaa"})
-	_, err := mustEach(t, "missing", 0, "(", ")", `a`).Extract(root)
+	_, err := mustEach(t, "missing", 0, "(", ")", `a`).Extract(t.Context(), root)
 	extracttest.WantError(t, err, "missing")
-	_, err = mustEach(t, "f", 2, "(", ")", `a`).Extract(root)
+	_, err = mustEach(t, "f", 2, "(", ")", `a`).Extract(t.Context(), root)
 	extracttest.WantError(t, err, "over the limit")
 	_, err = (Each{}).At("regex", "../f", 0)
 	extracttest.WantError(t, err, "regex: file \"../f\" is outside the repository")

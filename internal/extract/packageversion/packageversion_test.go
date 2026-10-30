@@ -291,7 +291,7 @@ func TestPackageVersionWithoutParsers(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = e.Extract(root)
+		_, err = e.Extract(t.Context(), root)
 		extracttest.WantError(t, err, name+": errata was built without the reader for "+name)
 	}
 }

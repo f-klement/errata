@@ -213,14 +213,14 @@ func TestToolVersionWalkLimits(t *testing.T) {
 	x := e.(extractor)
 	// ., a, a/b, a/b/.nvmrc, c: four entries below the root; a/b is two deep.
 	x.walk = core.WalkLimits{Entries: 4, Dirs: 2, Depth: 2, Names: 10}
-	if got, err := x.Extract(root); err != nil || marked(got) != "20@a/b/.nvmrc:1" {
+	if got, err := x.Extract(t.Context(), root); err != nil || marked(got) != "20@a/b/.nvmrc:1" {
 		t.Errorf("at the limits: %s, %v", marked(got), err)
 	}
 	x.walk = core.WalkLimits{Entries: 3, Dirs: 2, Depth: 2, Names: 10}
-	_, err = x.Extract(root)
+	_, err = x.Extract(t.Context(), root)
 	extracttest.WantError(t, err, "walk: the repository holds more than 3 files and directories outside the directories errata passes over, the limit")
 	x.walk = core.WalkLimits{Entries: 4, Dirs: 2, Depth: 1, Names: 10}
-	_, err = x.Extract(root)
+	_, err = x.Extract(t.Context(), root)
 	extracttest.WantError(t, err, `walk: "a/b" is nested more than 1 directories deep, the limit`)
 }
 
@@ -580,7 +580,7 @@ func TestToolVersionWithoutParsers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = e.Extract(extracttest.Repo(t, map[string]string{"rust-toolchain.toml": "[toolchain]\n"}))
+	_, err = e.Extract(t.Context(), extracttest.Repo(t, map[string]string{"rust-toolchain.toml": "[toolchain]\n"}))
 	extracttest.WantError(t, err, "rust-toolchain.toml: errata was built without the reader for rust-toolchain.toml")
 }
 

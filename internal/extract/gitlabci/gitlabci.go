@@ -11,6 +11,7 @@
 package gitlabci
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"path"
@@ -207,21 +208,21 @@ func (e extractor) maxValues() int {
 }
 
 // ExtractWith is Extract: the extractor reads no other extractor's values.
-func (e extractor) ExtractWith(root string, _ map[string][]check.Value) ([]check.Value, error) {
-	return e.Extract(root)
+func (e extractor) ExtractWith(ctx context.Context, root string, _ map[string][]check.Value) ([]check.Value, error) {
+	return e.Extract(ctx, root)
 }
 
 // Extract reads the file and the local files it includes under root, and
 // returns the values the job sees.
-func (e extractor) Extract(root string) ([]check.Value, error) {
-	vs, _, err := e.ExtractRead(root)
+func (e extractor) Extract(ctx context.Context, root string) ([]check.Value, error) {
+	vs, _, err := e.ExtractRead(ctx, root)
 	return vs, err
 }
 
 // ExtractRead is Extract, and the bytes of the file and the files it
 // includes it read, for the env extractor, whose files hold its max_bytes
 // in all, includes too.
-func (e extractor) ExtractRead(root string) ([]check.Value, int64, error) {
+func (e extractor) ExtractRead(_ context.Context, root string) ([]check.Value, int64, error) {
 	var read int64
 	vs, err := e.resolve(func(s core.Source) ([]byte, error) {
 		data, err := s.Read(root)
