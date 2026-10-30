@@ -9,7 +9,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/f-klement/errata/internal/check"
@@ -42,7 +41,9 @@ func FormatNames() []string {
 // Text is the human format. It prints each erratum and each unknown with its
 // reason, then the counts and the coverage line, which it prints on every run.
 // When the report's skips fail the run, the coverage line says so, since the
-// counts before it would read as a pass.
+// counts before it would read as a pass. When a check names witnesses, the
+// coverage line counts those that held, and a witness that did not is
+// printed as id [witness name], an erratum or an unknown of its own.
 // Under the coverage line it names each skipped check with its gap, each
 // value that skip_not_literal left out, whatever the check's verdict (a rule
 // that holds held on the values that were left), and the note of each rule
@@ -60,7 +61,7 @@ func (Text) Write(w io.Writer, r check.Report) error {
 		if !res.Failed() {
 			continue
 		}
-		fmt.Fprintf(&b, "%s %s (%s)\n", strings.ToUpper(string(res.Verdict)), res.Check.ID, res.Check.Scope)
+		fmt.Fprintf(&b, "%s %s (%s)\n", strings.ToUpper(string(res.Verdict)), res.Name(), res.Check.Scope)
 		writeIndented(&b, "why:  ", res.Check.Reason)
 		if res.Message != "" {
 			writeIndented(&b, "said: ", res.Message)
@@ -70,6 +71,9 @@ func (Text) Write(w io.Writer, r check.Report) error {
 
 	ran, skipped := r.Coverage()
 	fmt.Fprintf(&b, "%s, %d unknown. Coverage: ran %d, skipped %d.", errataCount(len(r.Errata())), len(r.Unknowns()), ran, skipped)
+	if held, ran := r.WitnessesHeld(); ran > 0 {
+		fmt.Fprintf(&b, " %s held.", plural(held, "witness", "witnesses"))
+	}
 	if r.FailingSkips() > 0 {
 		b.WriteString(" A skip fails this run.")
 	}
@@ -97,12 +101,10 @@ func (Text) Write(w io.Writer, r check.Report) error {
 // showing, but a newline and a tab, and every byte that is not UTF-8, as the
 // Go escape that names it: ESC as \x1b, CR as \r, NUL as \x00, CSI as \u009b,
 // a right to left override as \u202e, a stray byte as \xff. Those runes are
-// the control characters (C0, DEL and C1), the direction controls (U+061C,
-// U+200E, U+200F, U+202A to U+202E and U+2066 to U+2069), and the line and
-// paragraph separators U+2028 and U+2029. Raw, a file could hide a line,
-// fake a verdict, open a link, or reorder a line so that it reads as
-// something else. A CR before a newline is dropped, since a Windows line end
-// shows nothing. A backslash is left as it is, so the escape and a file that
+// the ones check.ActedOn names. Raw, a file could hide a line, fake a
+// verdict, open a link, or reorder a line so that it reads as something
+// else. A CR before a newline is dropped, since a Windows line end shows
+// nothing. A backslash is left as it is, so the escape and a file that
 // spells it out read alike; the point is that neither reaches the terminal
 // as a control.
 func QuoteControls(s string) string {
@@ -113,7 +115,7 @@ func QuoteControls(s string) string {
 		switch {
 		case r == utf8.RuneError && size == 1:
 			fmt.Fprintf(&b, `\x%02x`, s[0])
-		case r == '\n' || r == '\t' || !actedOn(r):
+		case r == '\n' || r == '\t' || !check.ActedOn(r):
 			b.WriteString(s[:size])
 		default:
 			q := strconv.QuoteRune(r)
@@ -124,23 +126,16 @@ func QuoteControls(s string) string {
 	return b.String()
 }
 
-// actedOn reports whether a terminal, or a viewer such as a web log, acts on
-// r rather than showing it: a control character, a direction control, or a
-// line or paragraph separator.
-func actedOn(r rune) bool {
-	return unicode.IsControl(r) || unicode.Is(unicode.Bidi_Control, r) || unicode.In(r, unicode.Zl, unicode.Zp)
-}
-
 // escapeActedOn rewrites each rune of b that a terminal acts on and that
 // encoding/json and encoding/xml write raw, DEL and every rune above it that
-// actedOn names, with esc. Both encoders escape the C0 controls already and
+// check.ActedOn names, with esc. Both encoders escape the C0 controls already and
 // write valid UTF-8, and every byte outside a string or text is ASCII, so
 // such a rune is always inside one, where an escape is allowed.
 func escapeActedOn(b []byte, esc func(r rune) string) []byte {
 	var out []byte
 	for i := 0; i < len(b); {
 		r, size := utf8.DecodeRune(b[i:])
-		if r >= 0x7f && actedOn(r) {
+		if r >= 0x7f && check.ActedOn(r) {
 			if out == nil {
 				out = append(make([]byte, 0, len(b)+16), b[:i]...)
 			}

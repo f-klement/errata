@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -39,7 +40,7 @@ func repo(t *testing.T, files map[string]string, init ...string) string {
 	return root
 }
 
-// lsFiles is git ls-files of root, as TrackedFiles lists files.
+// lsFiles is git ls-files of root, as readIndex lists files.
 func lsFiles(t *testing.T, root string) []string {
 	t.Helper()
 	out := strings.TrimSuffix(git(t, root, "ls-files", "-z"), "\x00")
@@ -51,7 +52,7 @@ func lsFiles(t *testing.T, root string) []string {
 
 func tracked(t *testing.T, root string) []string {
 	t.Helper()
-	got, err := TrackedFiles(root)
+	got, err := readIndex(root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +64,7 @@ var indexFiles = map[string]string{
 	"long/" + strings.Repeat("n", 5000)[:200] + "/f": "x",
 }
 
-// TrackedFiles lists what git ls-files lists, in each index version git
+// readIndex lists what git ls-files lists, in each index version git
 // writes and with either object format. Planted breaks: the padding of
 // versions 2 and 3 rounded from the path's start, which misread the second
 // entry; version 4's drop taken from the start of the path before.
@@ -149,15 +150,15 @@ func TestTrackedFilesLeavesOutWhatIsNoFile(t *testing.T) {
 // directory, and a split index. Planted break: the link extension read
 // past, which listed only the split index's own few entries.
 func TestTrackedFilesRefuses(t *testing.T) {
-	_, err := TrackedFiles(extracttest.Repo(t, map[string]string{"a": "x"}))
+	_, err := readIndex(extracttest.Repo(t, map[string]string{"a": "x"}))
 	extracttest.WantError(t, err, "the repository root holds no .git")
 
-	_, err = TrackedFiles(extracttest.Repo(t, map[string]string{".git": "nothing\n"}))
+	_, err = readIndex(extracttest.Repo(t, map[string]string{".git": "nothing\n"}))
 	extracttest.WantError(t, err, "the file .git names no gitdir")
 
 	root := repo(t, map[string]string{"a": "x"})
 	git(t, root, "update-index", "--split-index")
-	_, err = TrackedFiles(root)
+	_, err = readIndex(root)
 	extracttest.WantError(t, err, "it is a split index")
 }
 
@@ -392,6 +393,54 @@ func TestParseIndexPathBounds(t *testing.T) {
 	}
 }
 
+// An entry's path that Windows reads as a device, such as aux.yaml, is
+// refused there for that reason, not as outside the repository, and a path
+// that leaves the repository is refused as leaving it, a device name or a
+// colon in it or not. A path inside it with a colon, which Windows reads as
+// a drive or a stream, is refused for the colon. On Linux, where
+// filepath.IsLocal passes aux.yaml, the index reads it, and notLocal is
+// called as Windows's reading calls it. Planted break: notLocal back to the
+// one message, which called aux.yaml outside; the colon branch removed,
+// which called b/c:d outside.
+func TestParseIndexWindowsDevice(t *testing.T) {
+	device := "a name Windows keeps for a device, which a read would open in place of a file; git for Windows does not write it"
+	_, err := parseIndex(gitIndex(2, indexEntry{path: "dir/aux.yaml"}), sha1Size, maxPathBytes)
+	if runtime.GOOS == "windows" {
+		extracttest.WantError(t, err, `an entry's path "dir/aux.yaml" holds "aux.yaml", `+device)
+	} else if err != nil {
+		t.Errorf("dir/aux.yaml on %s: %v", runtime.GOOS, err)
+	}
+	for p, n := range map[string]string{"aux.yaml": "aux.yaml", "NUL": "NUL", `a\COM1.txt`: "COM1.txt", "x/lpt9": "lpt9", "conout$": "conout$"} {
+		extracttest.WantError(t, notLocal(p), "an entry's path "+Quote(p)+" holds "+Quote(n)+", "+device)
+	}
+	for _, p := range []string{"b/c:d", "1:x"} {
+		extracttest.WantError(t, notLocal(p), "an entry's path "+Quote(p)+" holds a colon, which Windows reads as a drive or a stream; git for Windows does not write it")
+	}
+	for _, p := range []string{"../aux", "/nul", "a/../../con.txt", `..\prn`, "../c:d"} {
+		extracttest.WantError(t, notLocal(p), "an entry's path "+Quote(p)+" leaves the repository, which git does not write")
+	}
+}
+
+// windowsDevice reads a name as Go's filepath.IsLocal does on Windows: the
+// four names, COM and LPT with a digit from 1 to 9 or a superscript one to
+// three, CONIN$ and CONOUT$, in any ASCII case, before a dot or a colon,
+// with trailing spaces dropped. Planted breaks: each digit bound moved by
+// one; the cut at a colon dropped; the trailing spaces kept; strings.ToUpper
+// for the ASCII case, which read the dotless ı as I.
+func TestWindowsDevice(t *testing.T) {
+	for n, want := range map[string]bool{
+		"con": true, "PRN": true, "Aux": true, "nul.tar.gz": true, "aux:stream": true, "aux .txt": true, "AUX  ": true,
+		"COM1": true, "com9": true, "lpt1.txt": true, "LPT9": true, "com\u00b9": true, "lpt\u00b2": true, "COM\u00b3.x": true,
+		"conin$": true, "CONOUT$.log": true,
+		"COM0": false, "LPT0": false, "COM10": false, "com:": false, "COM": false, "auxx": false, "xaux": false, " aux": false,
+		"co": false, "c": false, "": false, "com\u2074": false, "conin": false, "con\u0131n$": false, "LPT:": false,
+	} {
+		if got := windowsDevice(n); got != want {
+			t.Errorf("windowsDevice(%q) = %v, want %v", n, got, want)
+		}
+	}
+}
+
 // git's varint: 127 is one byte, 128 two (0x80 0x00), since a
 // continuation adds one; a number whose bytes all continue is refused, and
 // so is one longer than 8 bytes. Planted breaks: the added one dropped,
@@ -433,7 +482,7 @@ func TestIndexVarint(t *testing.T) {
 // file; readCapped's limit taken as >=.
 func TestTrackedFilesRefusesWhatIsNotThere(t *testing.T) {
 	for _, gitdir := range []string{"/nonexistent/repo/.git/worktrees/x", "../.git/modules/sub"} {
-		_, err := TrackedFiles(extracttest.Repo(t, map[string]string{".git": "gitdir: " + gitdir + "\n"}))
+		_, err := readIndex(extracttest.Repo(t, map[string]string{".git": "gitdir: " + gitdir + "\n"}))
 		extracttest.WantError(t, err, "the file .git names the git directory "+strconv.Quote(gitdir)+", which is not there")
 	}
 
@@ -442,10 +491,10 @@ func TestTrackedFilesRefusesWhatIsNotThere(t *testing.T) {
 	// drops from the end.
 	line := "gitdir: " + filepath.Join(main, ".git")
 	exact := line + strings.Repeat("\n", maxGitFile-len(line))
-	if got, err := TrackedFiles(extracttest.Repo(t, map[string]string{".git": exact})); err != nil || !slices.Equal(got, []string{"a"}) {
+	if got, err := readIndex(extracttest.Repo(t, map[string]string{".git": exact})); err != nil || !slices.Equal(got, []string{"a"}) {
 		t.Errorf("a .git file of %d bytes: %q, %v", maxGitFile, got, err)
 	}
-	_, err := TrackedFiles(extracttest.Repo(t, map[string]string{".git": exact + "\n"}))
+	_, err := readIndex(extracttest.Repo(t, map[string]string{".git": exact + "\n"}))
 	extracttest.WantError(t, err, "read .git: the file is over the limit of")
 
 }
@@ -489,7 +538,7 @@ func TestTrackedFilesRefusesWhatIsNoGitDir(t *testing.T) {
 	gitFile := func(t *testing.T, files map[string]string, gitdir string) error {
 		t.Helper()
 		files[".git"] = "gitdir: " + gitdir + "\n"
-		_, err := TrackedFiles(extracttest.Repo(t, files))
+		_, err := readIndex(extracttest.Repo(t, files))
 		return err
 	}
 	for _, c := range map[string]struct {
@@ -512,14 +561,14 @@ func TestTrackedFilesRefusesWhatIsNoGitDir(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(link, ".git"), []byte("gitdir: to-empty\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err := TrackedFiles(link)
+	_, err := readIndex(link)
 	extracttest.WantError(t, err, "which is no git directory: it holds no HEAD git takes: a file, or a symlink into refs/")
 
-	_, err = TrackedFiles(extracttest.Repo(t, map[string]string{".git/.keep": ""}))
+	_, err = readIndex(extracttest.Repo(t, map[string]string{".git/.keep": ""}))
 	extracttest.WantError(t, err, ".git is no git directory: it holds no HEAD git takes: a file, or a symlink into refs/")
 
 	main := repo(t, map[string]string{"a": "x"})
-	_, err = TrackedFiles(extracttest.Repo(t, map[string]string{".git": "gitdir: " + filepath.Join(main, ".git") + "\njunk\n"}))
+	_, err = readIndex(extracttest.Repo(t, map[string]string{".git": "gitdir: " + filepath.Join(main, ".git") + "\njunk\n"}))
 	extracttest.WantError(t, err, "the file .git holds more than its gitdir: line, which git refuses")
 }
 
@@ -540,10 +589,10 @@ func TestTrackedFilesTakesAHEADLinkIntoRefs(t *testing.T) {
 	}
 	elsewhere := extracttest.Repo(t, files)
 	extracttest.Symlink(t, "../other/HEAD", filepath.Join(elsewhere, ".git", "HEAD"))
-	_, err := TrackedFiles(elsewhere)
+	_, err := readIndex(elsewhere)
 	extracttest.WantError(t, err, ".git is no git directory: it holds no HEAD git takes: a file, or a symlink into refs/")
 	noSlash := extracttest.Repo(t, files)
 	extracttest.Symlink(t, "refsX/heads/main", filepath.Join(noSlash, ".git", "HEAD"))
-	_, err = TrackedFiles(noSlash)
+	_, err = readIndex(noSlash)
 	extracttest.WantError(t, err, ".git is no git directory: it holds no HEAD git takes: a file, or a symlink into refs/")
 }

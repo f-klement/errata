@@ -102,7 +102,8 @@ func TestLocationString(t *testing.T) {
 // path; a leading slash or backslash; . passed over, so ./../x climbs out;
 // a .. at depth 1 that ends at the root (a/..), and one below it; a drive
 // as the first name, after . or .., and as a later name; each end of both
-// letter ranges and the byte just past it; a one byte name; a device name.
+// letter ranges and the byte just past it; a one byte name; a device name;
+// Unicode lookalikes of the dot, the slash and the backslash, which pass.
 // Planted breaks, each in local or isDrive: a backslash not a separator
 // under Windows's reading; . read as a name; depth < 0 as <= 0; .. counted
 // up, a name counted down; the drive refused at any depth; a drive's
@@ -152,6 +153,9 @@ func TestLocationInside(t *testing.T) {
 		{":", true, false},
 		{"aux.yaml", true, false},
 		{"dir/con.txt", true, false},
+		{"\u2024\u2024\u2215x", true, false},
+		{"a\u2215\u2024\u2024\u2215\u2024\u2024\uff0fx", true, false},
+		{"\uff0e\uff0e\uff3cx", true, false},
 	} {
 		l := Location{File: c.file}
 		if got := l.Inside(); got != c.inside {
@@ -168,15 +172,44 @@ func TestLocationInside(t *testing.T) {
 }
 
 // HoldsControl finds a C0 control, DEL and a C1 control such as NEL
-// (U+0085) anywhere in a string, and nothing else: a space, a backslash, a
-// letter outside ASCII, U+00A0 just past the C1 range, and a line
-// separator, which the text report escapes. Planted break: the check
+// (U+0085) anywhere in a string, and passes a space, a backslash, a letter
+// outside ASCII and U+00A0 just past the C1 range. Planted break: the check
 // reduced to a newline alone, which passed the rest.
 func TestHoldsControl(t *testing.T) {
-	for s, want := range map[string]bool{
+	holds(t, map[string]bool{
 		"a\nb": true, "\r": true, "a\x1b[2J": true, "\t": true, "\x00": true, "a\x7f": true, "a\u0085b": true, "\u009f": true,
-		"": false, "a b.yaml": false, `a\nb`: false, "é.yaml": false, "\u00a0": false, "\u2028": false,
-	} {
+		"": false, "a b.yaml": false, `a\nb`: false, "é.yaml": false, "\u00a0": false,
+	})
+}
+
+// HoldsControl finds each direction control, both ends of the embedding
+// and override range U+202A to U+202E and of the isolate range U+2066 to
+// U+2069, and U+061C, U+200E and U+200F, which a SARIF viewer would act on
+// to reorder a line. It passes the runes just outside each range and the
+// zero width joiner beside the marks. Planted break: the direction
+// controls left out of the check, as before #228.
+func TestHoldsControlFindsDirectionControls(t *testing.T) {
+	holds(t, map[string]bool{
+		"a\u202ab": true, "\u202b": true, "x\u202e.yaml": true, "\u2066": true, "\u2067": true, "a\u2069": true,
+		"\u061c": true, "\u200e": true, "\u200f": true,
+		"\u2065": false, "\u206a": false, "\u202f": false, "\u200d": false, "\u2010": false, "\u061b": false,
+	})
+}
+
+// HoldsControl finds the line separator U+2028 and the paragraph separator
+// U+2029, which a SARIF viewer would act on to break a line, and passes
+// the runes beside them. Planted break: the separators left out of the
+// check, as before #228.
+func TestHoldsControlFindsSeparators(t *testing.T) {
+	holds(t, map[string]bool{
+		"a\u2028b": true, "\u2029": true, "x.yaml\u2028": true,
+		"\u2027": false, "\u2030": false,
+	})
+}
+
+func holds(t *testing.T, cases map[string]bool) {
+	t.Helper()
+	for s, want := range cases {
 		if got := HoldsControl(s); got != want {
 			t.Errorf("HoldsControl(%q) = %v, want %v", s, got, want)
 		}

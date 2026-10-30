@@ -2,8 +2,9 @@ package core
 
 import (
 	"strings"
-	"unicode"
 	"unicode/utf8"
+
+	"github.com/f-klement/errata/internal/check"
 )
 
 // Parsers are the YAML, JSON and TOML readers' parsers: a reader of version
@@ -30,15 +31,14 @@ func CheckVersion(line int, text string) error {
 		return LineError(line, "the version is empty")
 	}
 	if strings.ContainsFunc(text, actedOn) {
-		return LineError(line, "the version %s holds a control character, a direction control, a line separator or a byte that is not UTF-8, which no version holds", Quote(text))
+		return LineError(line, "the version %s holds a control character, a direction control, a line or paragraph separator or a byte that is not UTF-8, which no version holds", Quote(text))
 	}
 	return nil
 }
 
 // actedOn reports whether a terminal or a viewer acts on c rather than
-// showing it, as the report package's test has it (a control character, a
-// direction control, a line or paragraph separator), or c is the U+FFFD a
-// byte that is not UTF-8 decodes to.
+// showing it (check.ActedOn), or c is the U+FFFD a byte that is not UTF-8
+// decodes to.
 func actedOn(c rune) bool {
-	return unicode.IsControl(c) || unicode.Is(unicode.Bidi_Control, c) || unicode.In(c, unicode.Zl, unicode.Zp) || c == utf8.RuneError
+	return check.ActedOn(c) || c == utf8.RuneError
 }

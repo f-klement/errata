@@ -38,7 +38,7 @@ type Kind[S any] struct {
 	// Env, when set, makes the kind a reader the env kind asks: env reads
 	// a file with it when the file's name chooses it, or when a rule's
 	// readers: names its Key. extract hands it on to the registry as it is.
-	Env *check.EnvReader
+	Env *check.EnvChoice
 	// EnvRead, set with Env, builds the kind's extractor of the variable
 	// name in file, which reads at most maxBytes. It is given the parsers
 	// extract wires, since no reader imports another: the gitlab-ci and

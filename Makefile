@@ -220,7 +220,10 @@ cover: test
 # (scripts/mutation.sh --diff); CI's mutation job sets it to the base of the scope.
 # MUTATION_DEADLINE, in seconds since the epoch, is when mutation must have ended; a package
 # that would not end by then is left out and named (scripts/mutation.sh --deadline). CI's
-# mutation job sets it from the job's start and timeout.
+# mutation job sets it from the job's start and timeout. MUTATION_JOBS is how many packages
+# run at once (scripts/mutation.sh --jobs); CI's mutation job sets it from its pod's CPUs and
+# memory. MUTATION_MOST caps a diff run's packages (--most); CI's mutation job sets
+# it, and the packages over it are left out and named.
 #
 # Only a value given on make's command line counts. make exports command-line variables
 # to every recipe, so `make check MUTATION_SCOPE=x` reaches each make a recipe starts, the
@@ -239,6 +242,12 @@ endif
 ifeq ($(origin MUTATION_DEADLINE),environment)
 override MUTATION_DEADLINE :=
 endif
+ifeq ($(origin MUTATION_JOBS),environment)
+override MUTATION_JOBS :=
+endif
+ifeq ($(origin MUTATION_MOST),environment)
+override MUTATION_MOST :=
+endif
 ifeq ($(origin MUTATION_MEASURE_LEAST),environment)
 override MUTATION_MEASURE_LEAST :=
 endif
@@ -246,6 +255,8 @@ MUTATION_SCOPE    ?= all
 FUZZ_FLAGS        ?=
 MUTATION_DIFF     ?=
 MUTATION_DEADLINE ?=
+MUTATION_JOBS     ?=
+MUTATION_MOST     ?=
 
 # An empty FUZZ_TARGETS, from a derivation that broke or set on the command line, is refused: it
 # would pass with no target run.
@@ -261,7 +272,7 @@ fuzz:
 # scripts/mutation.sh runs gremlins from a copy of the tracked tree, one pass per package of
 # MUTATION_SCOPE, each held to its own floors; it says why.
 mutation: $(BIN)/gremlins
-	GREMLINS=$(BIN)/gremlins scripts/mutation.sh $(if $(MUTATION_DIFF),--diff $(MUTATION_DIFF) )$(if $(MUTATION_DEADLINE),--deadline $(MUTATION_DEADLINE) )$(MUTATION_SCOPE)
+	GREMLINS=$(BIN)/gremlins scripts/mutation.sh $(if $(MUTATION_DIFF),--diff $(MUTATION_DIFF) )$(if $(MUTATION_DEADLINE),--deadline $(MUTATION_DEADLINE) )$(if $(MUTATION_JOBS),--jobs $(MUTATION_JOBS) )$(if $(MUTATION_MOST),--most $(MUTATION_MOST) )$(MUTATION_SCOPE)
 
 vuln: $(BIN)/govulncheck
 	$(BIN)/govulncheck ./...

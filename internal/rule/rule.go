@@ -163,7 +163,8 @@ func extractOne(ctx context.Context, root string, e check.NamedExtractor, read m
 // returns: more than check.MaxValues of them, each node of a value handed
 // over whole counting one; more bytes in all than d's max_bytes; a value at
 // a location that names no path inside the repository (check.Location.Inside);
-// a value at a path that holds a control character; a value handed over
+// a value at a path that holds a control character, a direction control or
+// a line or paragraph separator (check.HoldsControl); a value handed over
 // whole whose Text, which a message quotes, holds more than check.MaxShown
 // bytes; or a value whose Shown the extractor set, which only the rule
 // sets and a report writes as it is. Each reader checks the first two as it
@@ -196,7 +197,7 @@ func bounded(d check.Description, values []check.Value) error {
 			return fmt.Errorf("it returned a value at %s, which is no path inside the repository", newQuoter(nil).quote(v.At.File))
 		}
 		if check.HoldsControl(v.At.File) {
-			return fmt.Errorf("it returned a value at %s, a path that holds a control character, which a text report would print as it is", newQuoter(nil).quote(v.At.File))
+			return fmt.Errorf("it returned a value at %s, a path that holds a control character, a direction control or a line or paragraph separator, which a terminal or a report viewer would act on", newQuoter(nil).quote(v.At.File))
 		}
 		if v.Data != nil && len(v.Text) > check.MaxShown {
 			return fmt.Errorf("it returned a value handed over whole at %s whose text holds %d bytes, over the %d a whole value shows", newQuoter(nil).quote(v.At.String()), len(v.Text), check.MaxShown)

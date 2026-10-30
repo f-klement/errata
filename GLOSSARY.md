@@ -39,7 +39,16 @@ file stops the run before anything runs. It says which checks the config holds, 
 ran: a skipped check is still on it.
 
 **Errata.** The output of a run: the claims its checks showed to be false. One of them is an
-erratum. A run that ends with an unknown and no errata still fails.
+erratum. A witness on which its check held is an erratum of that check too: the check could not
+be shown to fail. A run that ends with an unknown and no errata still fails.
+
+**Witness.** A fixture under `.errata/witness/` that a check names, on which the check must
+report false. It is a tree the repository commits, with a break planted in it. Every run runs the
+check on each of its witnesses: one on which the check reports false holds, one on which it holds
+is an erratum of that check, and one on which it is unknown, or whose fixture is not there, is an
+unknown. A rule reads the fixture as its root; a program check and a generator start in the
+repository root with `ERRATA_ROOT` at the fixture. Not a test fixture of errata's own, which
+lives in `testdata`.
 
 ## Scopes
 
@@ -115,17 +124,26 @@ shell, the way a program check's program runs. errata compares what it prints an
 `defaults` key, with the check's id put in for its placeholders. It is a program errata starts, as
 any `run` is.
 
-**Extractor.** The part of a rule that gets values from one place. A YAML path, an XPath into an
-XML file, a key in an INI, properties or env file, a regular expression capture, a sentence of
-Markdown prose, the versions of a tool in the files that pin it, the version a package gives
-itself in each of its manifests, one variable in every file a rule lists, whether a file is there and its size in bytes, an image
-digest, a field on a live object.
+**Extractor.** The part of a rule that gets values from one place. A YAML path, an XPath into an XML
+file, a key in an INI, properties or env file, a regular expression capture, a sentence of Markdown
+prose, the versions of a tool in the files that pin it, the version a package gives itself in each
+of its manifests, one variable in every file a rule lists, whether a file is there and its size in
+bytes, an image digest, a field on a live object.
 
 **Extractor kind.** The key an entry under a rule's `extract:` names, such as `yaml`, `regex` or
 `ini`, and the reader that reads an entry of it: it decodes the entry, builds its extractor, gives
 its place and its defaults, and describes what the extractor returns. Each entry names exactly
 one. Not a check kind, which says whether a check is a program check, a rule or a generated
 check.
+
+**Env reader.** An extractor kind the `env` extractor asks for one variable in a file, such as
+`envfile`, `shell` or `gitlab-ci`. A kind is one when it declares an env choice.
+
+**Env choice.** How `env` chooses its reader for a file, as each env reader declares it (in code,
+`check.EnvChoice`): its order among the readers, the test a file's name passes to choose it, and,
+for a reader that sniffs, as `shell` does with a `#!` line, the test of a file's first bytes that
+chooses it when no name test does. Of the readers a file chooses, the one of lowest order reads it;
+a rule's `readers:` key overrides the choice.
 
 **Reference.** A `(?{name})` in a `regex` pattern, which stands for the values of another
 extractor of the rule. The rule runs that extractor first, and the pattern is searched once for
@@ -200,4 +218,5 @@ gap is printed in the coverage. A skip does not fail the run unless `errata chec
 `--fail-on-skip`.
 
 **Coverage.** The count of checks that ran and the count that were skipped, with the gap for each
-skip. errata prints coverage on every run.
+skip, and, when a check names witnesses, the count of witnesses that held. A witness is not
+counted as a check that ran. errata prints coverage on every run.

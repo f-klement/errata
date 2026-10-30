@@ -65,3 +65,35 @@ func TestEnvChargesGitLabIncludes(t *testing.T) {
 	_, err = x.Extract(t.Context(), root)
 	extracttest.WantError(t, err, "over the limit of")
 }
+
+// An empty file costs env little to read, whichever reader its name
+// chooses of those that read one: under 32 KiB for each (9 to 13 KiB on
+// the build node), where the shell reader's guard made a buffer of 160 KB
+// for every script before its first check (#153). The first read is left
+// out, since it builds what every read after shares. An empty workflow or
+// Jenkinsfile is refused, so neither is here. The planted break: the
+// guard's buffer made in newGuard again.
+func TestEnvReadsAnEmptyFileCheaply(t *testing.T) {
+	const n, bound = 200, 32 << 10
+	for _, name := range []string{"e/%d.env", "e/%d.sh", "%d/.gitlab-ci.yml"} {
+		files := map[string]string{}
+		for i := range n {
+			files[fmt.Sprintf(name, i)] = ""
+		}
+		root := extracttest.Tracked(t, files)
+		glob := strings.ReplaceAll(name, "%d", "*")
+		x, err := Build(Of(env.Kind, env.Spec{Name: "PORT", Files: []string{glob}}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		extract := func() {
+			if _, err := x.Extract(t.Context(), root); err != nil {
+				t.Fatalf("%s: %v", glob, err)
+			}
+		}
+		extract()
+		if got := extracttest.Allocated(extract) / n; got > bound {
+			t.Errorf("%s: %d bytes allocated for each empty file, over %d", glob, got, bound)
+		}
+	}
+}

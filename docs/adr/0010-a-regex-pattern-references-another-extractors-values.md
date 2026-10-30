@@ -83,9 +83,10 @@ assert: releases.all(r, r in tracked)
   also accepts syntax that JavaScript rejects or reads otherwise: an inline flag such as `(?m)`
   inside a value, `\p{..}` classes, `\Q...\E`, `\A` and `\z`, `\x{..}` and POSIX classes such as
   `[[:alpha:]]`. A `matchString` free of all of these, over files of ASCII text without CR,
-  matches what a JavaScript `RegExp` matches. Renovate may compile a `matchString` with the `re2`
-  module where it is installed rather than with `RegExp`; errata has not checked which, and reads
-  every value as Go's RE2 either way. The key has refusals of its own. At load, a reference that
+  matches what a JavaScript `RegExp` matches. Renovate compiles a `matchString` with `regEx`
+  (`lib/util/regex.ts`), which uses the `re2` module where that loads, as it does in Renovate's
+  images, and `RegExp` otherwise (checked for ADR 0014); errata reads every value as Go's RE2
+  either way. The key has refusals of its own. At load, a reference that
   stands before capture group 1 is refused, since a value's own groups would then come first and
   group 1 would be a value's. When the rule runs, a value that is no RE2 pattern by itself, which
   keeps it from closing the group that holds it, and one that ends inside `\Q`, which would run on

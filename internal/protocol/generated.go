@@ -32,6 +32,10 @@ import (
 // of the repository, a directory. An exit status of 1 is unknown too: the
 // generator's exit status says whether it ran, and only the comparison
 // says whether the file is current.
+//
+// On a witness root is the fixture: the file is read from it, and the
+// generator starts in the repository's root with ERRATA_ROOT at the
+// fixture, as a program check's run does (ADR 0015).
 func RunGenerated(ctx context.Context, root string, c check.Check) (res check.Result) {
 	start := time.Now()
 	res.Check = c

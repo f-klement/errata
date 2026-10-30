@@ -82,7 +82,8 @@ checks:
         "make",
         "lint"
       ],
-      "timeout": "30s"
+      "timeout": "30s",
+      "witness": []
     },
     {
       "id": "slow-probe",
@@ -99,7 +100,8 @@ checks:
         "-c",
         "echo \"a b\" > out"
       ],
-      "timeout": "2m0s"
+      "timeout": "2m0s",
+      "witness": []
     }
   ],
   "required": []
@@ -186,7 +188,8 @@ checks:
       "skip_not_literal": [
         "php",
         "deps"
-      ]
+      ],
+      "witness": []
     }
   ],
   "required": []
@@ -277,7 +280,8 @@ checks:
       },
       "normalize": [],
       "allow_empty": [],
-      "skip_not_literal": []
+      "skip_not_literal": [],
+      "witness": []
     }
   ],
   "required": []
@@ -358,7 +362,8 @@ checks:
       },
       "normalize": [],
       "allow_empty": [],
-      "skip_not_literal": []
+      "skip_not_literal": [],
+      "witness": []
     }
   ],
   "required": []
@@ -414,7 +419,8 @@ checks:
       },
       "normalize": [],
       "allow_empty": [],
-      "skip_not_literal": []
+      "skip_not_literal": [],
+      "witness": []
     }
   ],
   "required": []

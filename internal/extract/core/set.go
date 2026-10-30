@@ -137,8 +137,8 @@ func (s FileSet) ExtractWith(ctx context.Context, root string, _ map[string][]ch
 }
 
 // Extract reads every file the entries name and returns their values.
-func (s FileSet) Extract(_ context.Context, root string) ([]check.Value, error) {
-	named, err := s.List(root)
+func (s FileSet) Extract(ctx context.Context, root string) ([]check.Value, error) {
+	named, err := s.List(ctx, root)
 	if err != nil {
 		return nil, err
 	}

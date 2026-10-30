@@ -48,8 +48,9 @@ linters:
         # no machine state, zone files included, can reach a verdict. An allow list, because a
         # deny list misses a package that reads a file without os (net/http's http.Dir did). Each
         # standard package ends in $, an exact match, since a bare io would admit io/ioutil.
-        # errata's own packages stop at check and semver: extract reads files. internal/semver
-        # is held to the same list, since rule's verdicts rest on it.
+        # errata's own packages stop at check, semver and minimatch: extract reads files.
+        # internal/semver and internal/minimatch are held to the same list, since rule's
+        # verdicts rest on them.
         rule-reads-no-files:
           list-mode: strict
           # Both globs: the second needs a directory between rule/ and the file, so it
@@ -58,6 +59,7 @@ linters:
             - "**/internal/rule/*.go"
             - "**/internal/rule/**/*.go"
             - "**/internal/semver/*.go"
+            - "**/internal/minimatch/*.go"
             - "!$test"
           allow:
             - archive/zip$
@@ -78,9 +80,12 @@ linters:
             - strings$
             - sync$
             - time$
+            - unicode$
+            - unicode/utf16$
             - unicode/utf8$
             - cel.dev/cel-go
             - github.com/f-klement/errata/internal/check$
+            - github.com/f-klement/errata/internal/minimatch$
             - github.com/f-klement/errata/internal/semver$
     nolintlint:
       require-explanation: true

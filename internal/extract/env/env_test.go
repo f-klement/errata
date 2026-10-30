@@ -32,7 +32,7 @@ type call struct {
 // order.
 var declared = []struct {
 	name string
-	env  *check.EnvReader
+	env  *check.EnvChoice
 }{
 	{envfile.Kind.Key, envfile.Kind.Env},
 	{gitlabci.Kind.Key, gitlabci.Kind.Env},
@@ -72,7 +72,7 @@ func fakes(calls *[]call) Readers {
 		if name == "shell" {
 			e.Sniffs, e.SniffBytes = func(b []byte) bool { return string(b) == "#!/bin/sh" }, 9
 		}
-		r.List = append(r.List, Reader{Name: name, EnvReader: e, Read: read})
+		r.List = append(r.List, Reader{Name: name, EnvChoice: e, Read: read})
 	}
 	return r
 }
@@ -180,9 +180,9 @@ func TestChooseTakesTheLowestOrder(t *testing.T) {
 	all := func(file string) bool { seen = append(seen, file); return true }
 	only := func(file string) bool { return file == "x.c" }
 	r := Readers{List: []Reader{
-		{Name: "b", EnvReader: check.EnvReader{Order: 2, Chooses: all}},
-		{Name: "c", EnvReader: check.EnvReader{Order: 3, Chooses: only}},
-		{Name: "a", EnvReader: check.EnvReader{Order: 1, Chooses: all}},
+		{Name: "b", EnvChoice: check.EnvChoice{Order: 2, Chooses: all}},
+		{Name: "c", EnvChoice: check.EnvChoice{Order: 3, Chooses: only}},
+		{Name: "a", EnvChoice: check.EnvChoice{Order: 1, Chooses: all}},
 	}}
 	if got := r.Choose("./sub/../x.c"); got != "a" {
 		t.Errorf("chose %q, want a", got)
@@ -207,9 +207,9 @@ func TestSniffTakesTheLowestOrder(t *testing.T) {
 	var seen []string
 	hash := func(head []byte) bool { seen = append(seen, string(head)); return strings.HasPrefix(string(head), "#") }
 	r := Readers{List: []Reader{
-		{Name: "c", EnvReader: check.EnvReader{Order: 3, Sniffs: hash, SniffBytes: 1}},
-		{Name: "none", EnvReader: check.EnvReader{Order: 0}},
-		{Name: "b", EnvReader: check.EnvReader{Order: 2, Sniffs: hash, SniffBytes: 3}},
+		{Name: "c", EnvChoice: check.EnvChoice{Order: 3, Sniffs: hash, SniffBytes: 1}},
+		{Name: "none", EnvChoice: check.EnvChoice{Order: 0}},
+		{Name: "b", EnvChoice: check.EnvChoice{Order: 2, Sniffs: hash, SniffBytes: 3}},
 	}}
 	if got := r.Sniff([]byte("#!/bin/sh")); got != "b" {
 		t.Errorf("sniffed %q, want b", got)
@@ -434,15 +434,15 @@ func TestFileBounds(t *testing.T) {
 	extracttest.WantError(t, err, `env: files names more than 10000 files, the limit, at "*.sh"`)
 }
 
-// The globs are matched against the paths of every tracked file, and the
-// bytes matched, the globs times the paths' bytes, are held to
-// maxMatchBytes, witnessed at the exact count, a limit the test sets: 3
-// globs over the 3 paths of 4, 4 and 8 bytes match 48 bytes. The refusal
-// still names maxMatchBytes, and comes before any glob is matched: under a
-// file limit of 1, which the first glob's two files pass, the bytes are
-// refused, not the files. Planted breaks: the bound dropped; each path
-// counted once whatever the globs, which matched 16; the bound one more;
-// the bytes charged as each glob is matched, which refused the files.
+// The globs, each with a wildcard first, are matched against the paths of
+// every tracked file, and the bytes matched, the globs times the paths'
+// bytes, are held to maxMatchBytes, witnessed at the exact count, a limit
+// the test sets: 3 globs over the 3 paths of 4, 4 and 8 bytes match 48
+// bytes. The refusal still names maxMatchBytes, and comes before any glob is
+// matched: under a file limit of 1, which the first glob's two files pass,
+// the bytes are refused, not the files. Planted breaks: the bound dropped;
+// each path counted once whatever the globs, which matched 16; the bound one
+// more; the bytes charged as each glob is matched, which refused the files.
 func TestMatchBound(t *testing.T) {
 	root := tracked(t, map[string]string{"a.sh": "", "b.sh": "", "sub/c.sh": ""}, ".")
 	var calls []call
@@ -458,7 +458,7 @@ func TestMatchBound(t *testing.T) {
 	limited.files.MatchLimit = 47
 	limited.files.FileLimit = 1
 	_, err = limited.Extract(t.Context(), root)
-	extracttest.WantError(t, err, fmt.Sprintf(`env: files lists 3 globs, and matching each against the 16 bytes of path git tracks takes more than %d bytes, the limit; list fewer globs`, maxMatchBytes))
+	extracttest.WantError(t, err, fmt.Sprintf(`env: files lists 3 globs, and matching each against the paths git tracks, below its directory when it starts with one, reads 48 bytes of path, more than %d, the limit; list fewer globs, or start each with its directory`, maxMatchBytes))
 }
 
 // A file two entries name takes the reader one of them gives it, whichever

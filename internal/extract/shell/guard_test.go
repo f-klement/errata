@@ -164,3 +164,23 @@ func TestGuardChecksEveryFewReads(t *testing.T) {
 		t.Errorf("%d checks, want %d", g.checks, want)
 	}
 }
+
+// The guard makes its buffer of maxFrames calls at its first check, not
+// when it is made, so a script the parser reads in fewer reads than a
+// check takes never pays for it (#153); and only once, so a check after
+// the first allocates nothing. The planted breaks: the buffer made in
+// newGuard, which held it before any check; its test as <=, which made it
+// again at every check.
+func TestGuardMakesItsBufferOnce(t *testing.T) {
+	g := guardHere()
+	if len(g.pcs) > g.base+maxFrames {
+		t.Errorf("a buffer of %d calls before any check", len(g.pcs))
+	}
+	g.tooDeep()
+	if want := g.base + maxFrames + 1; len(g.pcs) != want {
+		t.Errorf("a buffer of %d calls after the first check, want %d", len(g.pcs), want)
+	}
+	if n := testing.AllocsPerRun(10, func() { g.tooDeep() }); n != 0 {
+		t.Errorf("%v allocations a check after the first, want 0", n)
+	}
+}

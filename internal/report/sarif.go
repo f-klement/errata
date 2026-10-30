@@ -577,7 +577,7 @@ func cutKeeping(s, what string, limit int, tail string) string {
 // unknownText is the notification of an unknown, its message and reason
 // cut at msgLimit and reasonLimit, and said, which follows the message.
 func unknownText(res check.Result, msgLimit, reasonLimit int, said string) string {
-	text := "check " + plain(res.Check.ID) + " is unknown"
+	text := "check " + plain(res.Name()) + " is unknown"
 	if msg := strings.TrimSpace(res.Message); msg != "" {
 		text += ": " + cutKeeping(msg, "message", msgLimit, check.LeftOutCount(res.Extracted))
 	}

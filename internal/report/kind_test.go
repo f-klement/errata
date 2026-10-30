@@ -37,8 +37,8 @@ func TestListAKindFromTheKind(t *testing.T) {
 	}
 	doc := listDocument(t, checks)
 	got := doc["checks"].([]any)[0].(map[string]any)
-	if got["type"] != "fake" || got["probe"] != "<a b>" || len(got) != 6 {
-		t.Errorf("JSON of a fake check = %v, want type fake, probe <a b> and the four keys every check has", got)
+	if got["type"] != "fake" || got["probe"] != "<a b>" || len(got) != 7 {
+		t.Errorf("JSON of a fake check = %v, want type fake, probe <a b> and the five keys every check has", got)
 	}
 	var b bytes.Buffer
 	if err := (ListText{}).WriteList(&b, checks, nil); err != nil {

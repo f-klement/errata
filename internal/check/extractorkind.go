@@ -29,18 +29,20 @@ type ExtractorKind struct {
 	// Env, when set, is how the env kind chooses the kind as the reader of
 	// a file, which it lists under Key. It is the declaration the kind
 	// writes, not a copy of it.
-	Env *EnvReader
+	Env *EnvChoice
 	// EnvRead, set with Env, builds the kind's extractor of the variable
 	// name in file, reading at most maxBytes.
 	EnvRead func(file, name string, maxBytes int64) (Extractor, error)
 }
 
-// EnvReader is how a kind declares itself a reader the env kind asks for
-// one variable. A kind writes it once, and the registry hands the same
-// value on, so a field added here reaches env with nothing to copy. The
-// kind's Read sits beside it on the kind, since a reader package's Read
-// takes the parsers extract wires and the registry's takes none.
-type EnvReader struct {
+// EnvChoice is how the env kind chooses a kind as the reader of a file:
+// the kind's place in env's order, and the tests a file's name, or its
+// first bytes, pass to choose it. A kind that writes one is a reader env
+// asks for one variable. A kind writes it once, and the registry hands the
+// same value on, so a field added here reaches env with nothing to copy.
+// The kind's EnvRead sits beside it on the kind, since a reader package's
+// EnvRead takes the parsers extract wires and the registry's takes none.
+type EnvChoice struct {
 	// Order is the reader's place among env's readers, lowest first: in
 	// the list a message gives, and the one Chooses decides a file's
 	// reader when two would.

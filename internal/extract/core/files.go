@@ -1,16 +1,19 @@
 package core
 
 import (
+	"context"
 	"fmt"
 	"path"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strings"
 
 	"github.com/f-klement/errata/internal/check"
 )
 
 // A files: key lists entries, each a file or a glob. A glob is matched
-// against the files git tracks (TrackedFiles), so it names the files a
+// against the files git tracks (trackedFiles), so it names the files a
 // clone holds, in git's order, and never one that is not checked in. env
 // and the extractors that take a file set (FileSet) read it the same way.
 
@@ -18,21 +21,23 @@ import (
 const MaxEntries = 64
 
 // MaxMatchBytes is the most bytes of path the globs of one files: key are
-// matched against in all: each glob against every file git tracks, so the
-// sum of the globs' weights (globWeight) times the bytes of the index's
-// paths. path.Match costs time in proportion to the path, about 33 ns a
-// byte on a 3 core worker node, and the index may hold 64 MiB of paths, so
-// 64 globs over it took 167 s. The product is known once the index is
-// read, so a spec over the bound is refused before any glob is matched. A
-// dozen globs fit about 22 MB of paths: some 450000 files of 50 bytes, or
-// 320000 of 70.
+// matched against in all: each glob's weight (globWeight) times the bytes
+// of the paths it is matched against, which are the files git tracks under
+// its literal directory, or every one for a glob whose first segment holds
+// a wildcard (span). path.Match costs time in proportion to the path,
+// about 33 ns a byte on a 3 core worker node, and the index may hold 64
+// MiB of paths, so 64 globs over it took 167 s. The sum is known once the
+// index is read, so a spec over the bound is refused before any glob is
+// matched. A dozen globs with a wildcard first fit about 22 MB of paths:
+// some 450000 files of 50 bytes, or 320000 of 70; a glob such as
+// deploy/*.env is charged only for the paths under deploy/.
 const MaxMatchBytes = 256 << 20
 
 // MaxFiles is the most files one files: key names. Each costs an open, a
 // stat and a read before its reader runs, even for an empty file, which
 // max_bytes does not count, so a glob over the index's million files would
-// run for minutes: 10000 empty files take 1.4 s on the 6 core build node
-// and 3.7 s on a 3 core worker node.
+// run for minutes: 10000 empty files take 0.9 s on the build node, with
+// the 4 cores its runner pod gets, and allocate 12 KB each.
 const MaxFiles = 10_000
 
 // doubleStar is the segment of a glob that matches any number of whole
@@ -40,11 +45,13 @@ const MaxFiles = 10_000
 const doubleStar = "**"
 
 // FileEntry is one entry of a files: key: the file or the glob with
-// slashes, cleaned, and, for a glob, its segments.
+// slashes, cleaned, and, for a glob, its segments and its literal
+// directory (literalDir).
 type FileEntry struct {
 	Clean string
 	Glob  bool
 	segs  []string
+	dir   string
 }
 
 // Files is a files: key, checked. Its limits are MaxFiles and
@@ -78,6 +85,7 @@ func CheckFiles(kind string, files []string, maxBytes int64) (Files, error) {
 		listed[e.Clean] = true
 		if e.Glob {
 			e.segs = globSegments(e.Clean)
+			e.dir = literalDir(e.segs)
 		}
 		for _, s := range e.segs {
 			if _, err := path.Match(s, ""); err != nil {
@@ -98,6 +106,70 @@ func globSegments(glob string) []string {
 			continue
 		}
 		out = append(out, s)
+	}
+	return out
+}
+
+// literalDir is the leading segments of a glob that hold no *, ?, [ or \,
+// joined with /: "deploy" for deploy/*.env, "" for one whose first segment
+// holds one, such as */*.env or **/x. Such a segment matches only itself,
+// so every path the glob matches is the directory or below it (span). A
+// glob holds a segment with *, ? or [ (HasGlob), so the loop stops there.
+func literalDir(segs []string) string {
+	k := 0
+	for k < len(segs) && !strings.ContainsAny(segs[k], `*?[\`) {
+		k++
+	}
+	return strings.Join(segs[:k], "/")
+}
+
+// span is the paths of git's index a glob is matched against and charged
+// for: its literal directory, when the index holds it as a file, which
+// only a glob whose segments after it are all ** matches, and the paths
+// below it, in git's order.
+type span struct {
+	self, under []string
+}
+
+// spanOf is the span of a glob of literal directory dir in tracked, which
+// sorted says is in git's order: the paths below dir are a range of it,
+// found by binary search. A glob with no literal directory, or an index
+// out of git's order, which git refuses to read, spans every path.
+func spanOf(dir string, tracked []string, sorted bool) span {
+	if dir == "" || !sorted {
+		return span{under: tracked}
+	}
+	var s span
+	if i, found := slices.BinarySearch(tracked, dir); found {
+		s.self = tracked[i : i+1]
+	}
+	prefix := dir + "/"
+	lo, _ := slices.BinarySearch(tracked, prefix)
+	hi := lo + sort.Search(len(tracked)-lo, func(j int) bool { return !strings.HasPrefix(tracked[lo+j], prefix) })
+	s.under = tracked[lo:hi]
+	return s
+}
+
+// bytes is the bytes of the paths s holds.
+func (s span) bytes() int {
+	n := 0
+	for _, part := range [][]string{s.self, s.under} {
+		for _, t := range part {
+			n += len(t)
+		}
+	}
+	return n
+}
+
+// matches is the paths of s the glob of e matches, in git's order.
+func (e FileEntry) matches(s span) []string {
+	var out []string
+	for _, part := range [][]string{s.self, s.under} {
+		for _, t := range part {
+			if matchGlob(e.segs, t) {
+				out = append(out, t)
+			}
+		}
 	}
 	return out
 }
@@ -218,36 +290,35 @@ type Named struct {
 
 // List is the files the entries name, each once, in the entries' order: a
 // file, which need not exist until it is read, or the files git tracks that
-// a glob matches, in git's order. The index is read once, and only when an
-// entry is a glob. A glob that matches no file names none. A glob that
-// matches a path holding a control character is refused, so no reader opens
-// the file or names it in an error (check.HoldsControl); a file: entry was
-// checked at load (CheckSource).
-func (f Files) List(root string) ([]Named, error) {
-	var tracked []string     // nil until read; TrackedFiles never returns nil
+// a glob matches, in git's order, but those of witnesses (trackedFiles),
+// each glob matched only against its span. The index is read once, and only
+// when an entry is a glob. A glob that matches no file names none. A glob
+// that matches a path holding a control character, a direction control or a
+// line or paragraph separator is refused, so no reader opens the file or
+// names it in an error (check.HoldsControl); a file: entry was checked at
+// load (CheckSource).
+func (f Files) List(ctx context.Context, root string) ([]Named, error) {
+	var spans []span         // each entry's, nil until the index is read
 	seen := map[string]int{} // each file's index in out
 	var out []Named
 	for k, e := range f.Entries {
 		files := []string{e.Clean}
 		if e.Glob {
-			if tracked == nil {
-				var err error
-				if tracked, err = TrackedFiles(root); err != nil {
+			if spans == nil {
+				tracked, err := trackedFiles(ctx, root)
+				if err != nil {
 					return nil, fmt.Errorf("%s: files lists the glob %s: %w", f.kind, Quote(e.Clean), err)
 				}
-				if err := f.checkMatch(tracked); err != nil {
+				spans = f.spans(tracked)
+				if err := f.checkMatch(spans); err != nil {
 					return nil, err
 				}
 			}
-			files = nil
-			for _, t := range tracked {
-				if !matchGlob(e.segs, t) {
-					continue
-				}
+			files = e.matches(spans[k])
+			for _, t := range files {
 				if check.HoldsControl(t) {
-					return nil, fmt.Errorf("%s: files lists the glob %s, which matches %s, a tracked path that holds a control character, which a message would print as it is; rename the file", f.kind, Quote(e.Clean), Quote(t))
+					return nil, fmt.Errorf("%s: files lists the glob %s, which matches %s, a tracked path that holds a control character, a direction control or a line or paragraph separator, which a terminal or a report viewer would act on; rename the file", f.kind, Quote(e.Clean), Quote(t))
 				}
-				files = append(files, t)
 			}
 		}
 		for _, file := range files {
@@ -266,22 +337,36 @@ func (f Files) List(root string) ([]Named, error) {
 	return out, nil
 }
 
-// checkMatch refuses entries whose globs, each matched against every
-// tracked path, would read more than MatchLimit bytes of path, before the
-// first is matched: the bytes are the globs' weights times the paths' bytes.
-func (f Files) checkMatch(tracked []string) error {
-	globs, weight, paths := 0, 0, 0
-	for _, e := range f.Entries {
+// spans is the span of each entry that is a glob in tracked, by the
+// entry's index; an entry that is a file has none. The index is tested for
+// git's order once, and only when a glob has a literal directory.
+func (f Files) spans(tracked []string) []span {
+	sorted := false
+	if slices.ContainsFunc(f.Entries, func(e FileEntry) bool { return e.dir != "" }) {
+		sorted = slices.IsSorted(tracked)
+	}
+	out := make([]span, len(f.Entries))
+	for k, e := range f.Entries {
 		if e.Glob {
-			globs++
-			weight += globWeight(e.segs)
+			out[k] = spanOf(e.dir, tracked, sorted)
 		}
 	}
-	for _, t := range tracked {
-		paths += len(t)
+	return out
+}
+
+// checkMatch refuses entries whose globs, each matched against its span,
+// would read more than MatchLimit bytes of path, before the first is
+// matched: the bytes are each glob's weight times its span's bytes.
+func (f Files) checkMatch(spans []span) error {
+	globs, read := 0, 0
+	for k, e := range f.Entries {
+		if e.Glob {
+			globs++
+			read += globWeight(e.segs) * spans[k].bytes()
+		}
 	}
-	if weight*paths > f.MatchLimit {
-		return fmt.Errorf("%s: files lists %d globs, and matching each against the %d bytes of path git tracks takes more than %d bytes, the limit; list fewer globs", f.kind, globs, paths, MaxMatchBytes)
+	if read > f.MatchLimit {
+		return fmt.Errorf("%s: files lists %d globs, and matching each against the paths git tracks, below its directory when it starts with one, reads %d bytes of path, more than %d, the limit; list fewer globs, or start each with its directory", f.kind, globs, read, MaxMatchBytes)
 	}
 	return nil
 }

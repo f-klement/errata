@@ -236,7 +236,7 @@ func compileWith(expr string, extractors []check.NamedExtractor, lim limits, ext
 	}
 	program, err := env.Program(noted,
 		cel.CostLimit(lim.cost),
-		cel.CostTrackerOptions(append(append(setCosts(), semverCosts()...), noteCost)...),
+		cel.CostTrackerOptions(append(append(setCosts(), semverCosts()...), renovateCost(), noteCost)...),
 		cel.InterruptCheckFrequency(interruptEvery),
 	)
 	if err != nil {
@@ -717,7 +717,9 @@ type outcome struct {
 // and Eval waits a grace after the timeout for that look. Every helper reads
 // an argument of at most MaxArgument bytes. split, join and replace are
 // linear in what they read, and each builds at most MaxBuilt bytes. So a step
-// is short and the look comes soon. An evaluation that does not look within
+// is short and the look comes soon. renovate_match is the longest call,
+// about 125 ms (about 90 ms to compile, then the match; renovateCostDivisor),
+// so a step of many of them is not. An evaluation that does not look within
 // the grace, such as one in a call that does not return, keeps its goroutine
 // until it ends, and Eval returns without it; the run goes on. An error that
 // && or || absorbed is still the result.

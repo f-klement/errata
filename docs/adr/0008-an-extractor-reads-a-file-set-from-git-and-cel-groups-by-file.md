@@ -61,9 +61,11 @@ assert: by_file(ignores).all(f, f in by_file(options) && 'RespectIgnoreDifferenc
   its own. A regex extractor's time limit, 10 seconds for each 32 MiB of `max_bytes`, is shared by
   the searches of every file. One extractor
   reads at most 10000 files, empty ones too, since each costs an open. The globs are matched
-  against at most 256 MiB of path: the bytes of every tracked path times the sum of the globs'
-  weights, where a glob without `**` weighs 1 and a glob with `**` weighs its other segments,
-  since the matcher retries what follows the last `**` at each later segment of a path. That
+  against at most 256 MiB of path: each glob's weight times the bytes of the tracked paths it is
+  matched against, those below its literal directory (`deploy/` for `deploy/*.env`, a range of
+  git's sorted index found by binary search), or every tracked path for a glob whose first
+  segment holds a wildcard. A glob without `**` weighs 1 and a glob with `**` weighs its other
+  segments, since the matcher retries what follows the last `**` at each later segment of a path. That
   weight is multiplied by one for each 8 bytes of the glob's longest segment that holds a `*`,
   since `path.Match` tries what follows a `*` at each byte where the `*` could end: a segment of
   a `*` and 251 more bytes took 655 ns a byte of path at a weight of 1, and takes 28 ns a weighed

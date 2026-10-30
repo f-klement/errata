@@ -56,7 +56,8 @@ type listDoc struct {
 }
 
 // listCheck is one check of the JSON: its id, reason, scope, place and the
-// name of its kind, then the keys of its kind (check.Kind.ListFields).
+// name of its kind, then the keys of its kind (check.Kind.ListFields), then
+// the fixtures it names under witness, an empty list when it names none.
 type listCheck check.Check
 
 func (c listCheck) MarshalJSON() ([]byte, error) {
@@ -67,7 +68,8 @@ func (c listCheck) MarshalJSON() ([]byte, error) {
 		{Key: "at", Value: listAt{File: c.At.File, Line: c.At.Line, Outside: c.At.Outside}},
 		{Key: "type", Value: c.Kind.Name()},
 	}
-	return append(fields, c.Kind.ListFields(check.Check(c))...).MarshalJSON()
+	fields = append(fields, c.Kind.ListFields(check.Check(c))...)
+	return append(fields, check.Field{Key: "witness", Value: check.OrEmpty(c.Witness)}).MarshalJSON()
 }
 
 type listAt struct {
@@ -125,6 +127,13 @@ func (ListText) WriteList(w io.Writer, checks []check.Check, required []string) 
 		writeField(&b, "why:", c.Reason)
 		for _, l := range c.Kind.ListLines(c, listQuoter{}) {
 			writeField(&b, l.Label, l.Text)
+		}
+		if len(c.Witness) > 0 {
+			names := make([]string, len(c.Witness))
+			for i, w := range c.Witness {
+				names[i] = textValue(w)
+			}
+			writeField(&b, "witness:", strings.Join(names, ", "))
 		}
 		b.WriteString("\n")
 	}

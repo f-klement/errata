@@ -555,10 +555,10 @@ func TestYAMLRefusesAPathWithAControlCharacter(t *testing.T) {
 	forged := "x\nERRATUM forged (repo)\ny.yaml"
 	root := extracttest.Tracked(t, map[string]string{forged: "a: {b: 1}\n", "ok.yaml": "a: '2'\n"})
 	_, err := run(t, Spec{Files: []string{"*.yaml"}, Path: "a"}, root)
-	extracttest.WantError(t, err, `yaml: files lists the glob "*.yaml", which matches "x\nERRATUM forged (repo)\ny.yaml", a tracked path that holds a control character, which a message would print as it is; rename the file`)
+	extracttest.WantError(t, err, `yaml: files lists the glob "*.yaml", which matches "x\nERRATUM forged (repo)\ny.yaml", a tracked path that holds a control character, a direction control or a line or paragraph separator, which a terminal or a report viewer would act on; rename the file`)
 	if vs := mustRun(t, Spec{Files: []string{"o*.yaml"}, Path: "a"}, root); extracttest.Texts(vs) != "2@1" {
 		t.Errorf("a glob that matches no such path: %s", extracttest.Texts(vs))
 	}
 	_, err = build(Spec{File: forged, Path: "a"})
-	extracttest.WantError(t, err, `yaml: file "x\nERRATUM forged (repo)\ny.yaml" holds a control character, which a message would print as it is; rename the file`)
+	extracttest.WantError(t, err, `yaml: file "x\nERRATUM forged (repo)\ny.yaml" holds a control character, a direction control or a line or paragraph separator, which a terminal or a report viewer would act on; rename the file`)
 }

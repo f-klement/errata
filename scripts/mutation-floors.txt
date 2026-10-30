@@ -115,6 +115,9 @@ internal/extract/toolversion       85        85      5
 internal/extract/xml               85        85      5
 # yaml: 100%, efficacy 96.70%, on 2026-10-22.
 internal/extract/yaml              85        85      5
+# minimatch: 98.42%, 15 of its 950 not covered (2 of them indexFrom's
+# unreachable guard in brace.go), efficacy 92.51%, on 2026-10-30.
+internal/minimatch                 85        85      5
 internal/program                   85        85      5
 # protocol: 98.25%, 1 of its 57 not covered, efficacy 89.29%, on 2026-10-30
 # with case expressions covered. It had the floor 78 at 78.57% (3 of 14 not

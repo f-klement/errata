@@ -21,12 +21,12 @@ func TestTrackedFilesRefusesAFIFO(t *testing.T) {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
-	go func() { _, err := TrackedFiles(root); done <- err }()
+	go func() { _, err := readIndex(root); done <- err }()
 	select {
 	case err := <-done:
 		extracttest.WantError(t, err, "read git's index: it is not a regular file")
 	case <-time.After(5 * time.Second):
-		t.Fatal("TrackedFiles waits on a FIFO")
+		t.Fatal("readIndex waits on a FIFO")
 	}
 }
 
@@ -40,6 +40,6 @@ func TestTrackedFilesRefusesADeviceUnopened(t *testing.T) {
 	}
 	root := extracttest.Repo(t, map[string]string{".git/HEAD": "ref: refs/heads/main\n", ".git/objects/x": "", ".git/refs/x": ""})
 	extracttest.Symlink(t, "/dev/null", filepath.Join(root, ".git", "index"))
-	_, err := TrackedFiles(root)
+	_, err := readIndex(root)
 	extracttest.WantError(t, err, "read git's index: it is a device, which errata does not open")
 }

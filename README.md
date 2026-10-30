@@ -188,6 +188,7 @@ either: it would run nothing and pass. Every check has these keys:
 | `allow_empty` | no | rule only: the extractors that may find no value, such as `[client]` |
 | `skip_not_literal` | no | rule only: the extractors whose not literal values are left out, such as `[php]`; only an extractor that can return a not literal value may be listed (see [Values a file only computes](#values-a-file-only-computes)) |
 | `normalize` | no | rule only: `trim`, `lower` or both, in order, applied before `agree` compares or `assert` sees the values |
+| `witness` | no | scope `repo` only: one to eight fixtures under `.errata/witness/` on which the check must report false, such as `[toolchain-drifts]`: see [Witnesses](#witnesses) |
 
 Keys are matched exactly: `Agree` is refused, not read as `agree`. The file is one YAML document;
 a second `---` does not load, since the checks after it would never run. errata counts the
@@ -342,6 +343,69 @@ so `--fail-on-skip` never sees it skipped, and `required` lists it by its id as 
 says why errata runs a generator although rules never run anything
 ([ADR 0002](docs/adr/0002-errata-reads-configuration-and-never-runs-it.md)), and argues each
 verdict above.
+
+#### Witnesses
+
+A check that cannot fail passes on every repository, and a suite of such checks goes green on
+nothing: a regex that never matches under `allow_empty`, an assert that is true of any list, a
+program that reads the wrong directory. A witness shows that a check can fail. The check names a
+fixture, a small tree the repository commits under `.errata/witness/`, with a break planted in it,
+and every `errata check` runs the check on that fixture as well and requires it to report false:
+
+```yaml
+checks:
+  - id: go-toolchain-agrees
+    reason: The module and the image build with one Go.
+    scope: repo
+    extract:
+      mod: {regex: {file: go.mod, pattern: '(?m)^go (\S+)'}}
+      image: {regex: {file: Dockerfile, pattern: 'golang:(\S+)'}}
+    agree: [mod, image]
+    witness: [toolchain-drifts]
+```
+
+```text
+.errata/witness/toolchain-drifts/go.mod        go 1.21
+.errata/witness/toolchain-drifts/Dockerfile    FROM golang:1.22
+```
+
+A fixture holds only the files the check reads, laid out as in the repository. `witness` lists
+one to eight fixture names, each lower-case words joined by single hyphens, so a check with three
+branches can plant a break in each; checks may share a fixture. It loads only on a check of scope
+`repo`, since files cannot stand in for a live system.
+
+Each witness runs after its check, whatever the check's verdict, and adds a result of its own,
+named `id [witness name]` in the text report and in JUnit:
+
+| The check on its fixture | The witness |
+|---|---|
+| false | holds; the coverage line counts it, as `1 witness held.` |
+| true | an erratum: `go-toolchain-agrees held on its witness toolchain-drifts, so it could not be shown to fail`. SARIF puts it at the check in the config |
+| unknown, or the fixture is not a directory, or is reached through a symlink, wherever it leads | unknown, which fails the run |
+
+The exit codes do not change. Each kind of check runs on the fixture this way:
+
+- A rule reads the fixture as its root. A `files:` glob matches the files git's index lists
+  below the fixture, with the fixture's path cut off, so a file the fixture does not commit is
+  not read, as in CI. A `file:` names a path inside the fixture, and a symlink that leads out of
+  it is refused, as one that leads out of the repository is.
+- A program check starts in the repository root, as on any run, so `[python3, scripts/x.py]`
+  finds its script, and `ERRATA_ROOT` is the fixture's absolute path. A program must read the
+  tree from `ERRATA_ROOT`. One that finds it from its working directory or its own path reads
+  the repository, holds there, and its witness is an erratum, which is the point: a check that
+  never reads the tree it is handed cannot be shown to fail.
+- A generated check reads `generated.file` from the fixture and runs its generator from the
+  repository root with `ERRATA_ROOT` at the fixture.
+
+A witness runs under the check's own `timeout` and bounds, so each fixture costs one more run of
+its check; a check without one costs nothing more. The real run passes over `.errata/witness/`:
+a glob leaves its files out and the `tool_version` walk does not enter it, so a `**/*.yaml` does
+not read a planted break, while a `file:` that names a path inside still reads it. Other tools
+do not know the tree: a dependency bot such as Renovate updates a `go.mod` or a `Dockerfile` in a
+fixture as in the repository, and can bump both sides of a planted break into agreement, so list
+`.errata/witness/` among the paths it ignores.
+[ADR 0015](docs/adr/0015-a-check-names-witnesses-on-which-it-must-report-false.md) says why the
+witnesses run on every `errata check` and why a fixture is a tree of the repository.
 
 ### Rules
 
@@ -555,6 +619,7 @@ or a timestamp does not load (see [Mappings whole](#mappings-whole)).
 | `semver(s)` | the version `s`, which `<`, `<=`, `>`, `>=`, `==` and `!=` compare with another `semver()`, a missing number as 0, so `semver('20') == semver('20.0.0')`; `string()` writes it |
 | `semver_satisfies(v, r)` | true when the version `v` satisfies the range `r`, as `compare: semver` decides (see [Comparing versions](#comparing-versions)) |
 | `by_file(x)` | the values of the extractor `x` grouped by the file each came from, as a map from file to list (see [A set of files](#a-set-of-files)) |
+| `renovate_match(s, p)` | true when Renovate matches the string `s` with the pattern `p`, as it reads one entry of `managerFilePatterns` or `matchPackageNames` (see [Renovate's patterns](#renovates-patterns)) |
 | `s.split(sep)`, `s.split(sep, n)` | the parts of `s` between each `sep`, as a list; with `n`, at most `n` parts, the last holding the rest, and none for `n` of 0 |
 | `list.join()`, `list.join(sep)` | the members of a list of strings, with `sep` between them |
 | `s.replace(old, new)`, `s.replace(old, new, n)` | `s` with each `old` replaced by `new`; with `n`, the first `n` of them, and every one for a negative `n` |
@@ -659,6 +724,35 @@ tracking scans a stack once per member. `v.all(x, x != '')` takes about 5 ms ove
 unknown, well before the cost limit. The limit is checked after every step of a comprehension,
 so an evaluation stops within one step of it. With these limits neither loading nor checking an
 expression in a repository's configuration can stall CI.
+
+#### Renovate's patterns
+
+`renovate_match(s, p)` answers what Renovate's `matchRegexOrGlob` answers, the function behind
+`managerFilePatterns`, `matchPackageNames` and the other keys Renovate's documentation calls string
+pattern matching. `*` matches every string. An entry that starts with `/` or `!/` and ends with `/`
+or `/i` is a regex, searched anywhere in `s`, with the `i` flag after `/i` and the answer inverted
+after `!`. Any other entry is a minimatch glob, with dotfiles matched and case ignored. So an
+entry that lost its slashes is a glob that matches next to nothing, in errata as in Renovate. This
+rule holds every Argo CD Application file to Renovate's argocd manager:
+
+```yaml
+extract:
+  patterns: {json: {file: renovate.json, path: 'argocd.managerFilePatterns[*]'}}
+  apps: {regex: {files: ['infra/argocd/applications/*.yaml'], pattern: '\A([\s\S])'}}
+allow_empty: [patterns]
+assert: size(patterns) > 0 && by_file(apps).all(f, patterns.exists(p, renovate_match(f, p)))
+```
+
+errata reads a regex with Go's RE2, as Renovate reads it with the `re2` module, and a regex RE2
+does not compile, such as a lookahead, makes the rule unknown. It reads a glob with a port of the
+minimatch Renovate pins, so braces, extglobs such as `+(a|b)`, a leading `!` that negates or `#`
+that comments, POSIX classes such as `[[:alpha:]]` and every other glob mean what they mean to
+Renovate. A glob on which minimatch throws makes the rule unknown, since Renovate throws on it
+too. So does a glob past the port's bounds: braces that expand past 64 globs, a segment whose
+negations build a tree past 4096 nodes (about 10 of `!(a)`), more than 32768 characters of regex
+source, and a match that takes more than 131072 steps.
+[ADR 0014](docs/adr/0014-renovate-match-reads-a-pattern-as-renovate-does.md) has the details and
+the cases checked against Renovate's own code.
 
 ### Extractors
 
@@ -1881,7 +1975,8 @@ Without `files`, it walks the repository and reads every file of the table below
 tool, wherever it is: a directory's files in the table's order, then its subdirectories, each by
 name. The walk enters no directory of the list below, wherever it is, since each holds files the
 repository installs, downloads, builds or keeps for its tools, and a pin there is another
-project's. Nor does it enter a directory below the root that holds an entry named `.git`, a file
+project's; `.errata/witness` is a directory `witness` in a directory `.errata`, and holds the
+fixtures of [witnesses](#witnesses). Nor does it enter a directory below the root that holds an entry named `.git`, a file
 or a directory: a submodule, a worktree or a repository of its own, whose pins are another
 project's too. It does not read `.gitignore`. It does not enter a symlink to a directory, so a pin
 below one is not found; a symlink at a pin's name is read as `file` reads one, followed when it
@@ -1912,6 +2007,7 @@ finds many, or copies of one large file, costs no more than reading one file of 
 | `.gradle` | Gradle's caches |
 | `.cache` | the caches tools keep in the repository |
 | `testdata` | test fixtures, which the go command passes over too: a fixture is no claim of the repository |
+| `.errata/witness` | the fixtures of witnesses, each a break planted for a check to report false on, which globs pass over too |
 
 | File | Tool | Read as |
 |---|---|---|
@@ -1969,10 +2065,10 @@ without `=` or with no version, a `runtime.txt` that does not start with `python
 file that does not parse, a file of one version (each file the table reads as the first version,
 `.python-version`, `runtime.txt`, a legacy `rust-toolchain`) that holds none, only blank lines and
 comments, and a version that is empty or holds a control character, a direction control such as
-U+202E, a line separator or a byte that is not UTF-8. A byte order mark at the start of a file of
-lines is dropped, as errata's other readers drop it, and so is one at the start of `package.json`,
-`Cargo.toml`, `rust-toolchain` and `rust-toolchain.toml`, as npm, Cargo and rustup skip it.
-`pyproject.toml` keeps it and does not parse, as Python's tomllib refuses it.
+U+202E, a line or paragraph separator or a byte that is not UTF-8. A byte order mark at the start of
+a file of lines is dropped, as errata's other readers drop it, and so is one at the start of
+`package.json`, `Cargo.toml`, `rust-toolchain` and `rust-toolchain.toml`, as npm, Cargo and rustup
+skip it. `pyproject.toml` keeps it and does not parse, as Python's tomllib refuses it.
 
 Each file is read up to `max_bytes`, and the versions of all the files hold at most `max_bytes`
 bytes and 100000 values in all. A file of lines is read in one pass that keeps only the versions,
@@ -2018,9 +2114,9 @@ A version must be a string: a TOML `version = 1.0`, a JSON `"version": 1` or a t
 since npm, the Python build tools and Cargo refuse it, and so is a `pyproject.toml` that sets
 `project.version` and lists it in `dynamic` too, which PEP 621 forbids. Cargo refuses a
 `package.version` table other than `{ workspace = true }`, and so does errata. A version that is
-empty or holds a control character, a direction control, a line separator or a byte that is not
-UTF-8 makes the rule unknown, as does a JSON or TOML file that does not parse, past the node limit
-of its format (see Limits), and a `VERSION` file of only blank lines and comments.
+empty or holds a control character, a direction control, a line or paragraph separator or a byte
+that is not UTF-8 makes the rule unknown, as does a JSON or TOML file that does not parse, past the
+node limit of its format (see Limits), and a `VERSION` file of only blank lines and comments.
 
 A rule that compares a member of a Cargo workspace or a package with a dynamic version lists the
 extractor in `skip_not_literal`, and names the file that holds the version: the workspace's
@@ -2645,7 +2741,7 @@ core machine.
 | the config file | 1 MiB (1048576 bytes) | checked while reading, so a pipe given with `--config` is held to it too. YAML aliases may expand it to at most 4 MiB, counted as the bytes of every scalar and one for each node before anything is expanded: one scalar of 64 KiB aliased by 8000 checks, 528 KB of config, ran the loader out of memory, since the YAML library's own guard counts aliased nodes, not their bytes. Unlike the limits below, a config over it does not load, and errata exits 2. The largest real config known, a GitOps repository's, is 37 KB for 72 checks, 28 times under the limit. Loading costs memory in proportion to the config: the densest shape measured, one rule of thousands of regex extractors, allocates about 630 bytes for each byte of config |
 | file size | 32 MiB, or `max_bytes` | checked before reading. An ordinary file costs about 27 times its size in memory: an 8.2 MB OpenAPI document takes 0.95 s and 223 MB |
 | nodes | `max_bytes` divided by 7 (YAML), 3 (TOML), 8 (JSON) or 3 (XML) | checked before parsing, since the YAML and TOML parsers build a whole document or expression before errata sees it. errata counts in one pass an upper bound on the nodes the parser can build: two for each byte after which a key, a value or an item can start, with YAML's NEL, LS and PS line breaks among them, and a UTF-16 YAML file counted as the UTF-8 the parser reads. A file of one-character items counts one for each byte, an ordinary file one for every 3 to 16: a 6.3 MB Helm index has 6 times room at the default, a 7.9 MB uv.lock 4.8 times, a 7.4 MB Google API document 8 times. The limit bounds nodes, not memory, since a node costs more or less by its shape. The densest files measured so far at the default peak at 2.0 GB in YAML (mappings of 62 anchored, tagged keys), 2.55 GB in TOML (inline tables of dotted keys of 500 parts) and 0.42 GB in JSON (objects nested 900 deep), and grow in proportion to `max_bytes`; 32 MiB of one-character items ran out of 4.7 GB in YAML without the limit. Raise `max_bytes` to read a denser file. For XML errata counts each element, attribute, namespace declaration and text node as it builds them from encoding/xml's tokens, since it builds the tree itself. The densest of 39 real XML files, MARC library records, holds a node for every 11.5 bytes, almost 4 times the room at the default. The densest file XML can write, text between empty elements (`x<a/>`), reaches the limit at 28 MB, which takes 1.0 GB; 32 MiB of empty elements takes 1.3 GB. An attribute costs more memory than an element, since encoding/xml builds a whole start tag before errata counts it: the densest XML measured so far, one start tag of 8.4 million attributes in 32 MiB, peaks at 1.94 GB before it is refused |
-| values per extractor | 100000 | each node of a mapping that `as: map` hands over counts as one, the mapping itself included, and so does each record and each node of its fields. Every value is kept in memory and printed; a regex `(\d*)` matches at every byte. A path that selects more nodes at any step stops there. The values of one extractor also hold at most `max_bytes` bytes in all, since YAML aliases can repeat a value, decoding can lengthen one, and an XML element's value holds the text of every element inside it: `//a` over 1000 nested elements around 30 MB would return 30 GB, and is refused. Each reader counts as it reads, and the rule counts every extractor's values again, with their bytes, before it compares them, and refuses a value whose location names no path inside the repository; it reads the name as written, without following links, which the readers check when they open a file. It reads the name the same on every OS: a path that starts with `/` or `\`, whose first name once `.` and `..` are resolved is a drive such as `C:` (`C:x`, `./C:x`), or whose `..` leaves the root with `\` read as a separator or as part of a name, is outside, and a name Windows keeps for a device, such as `aux.yaml`, is inside. A `file:` or a `files:` entry that is outside this way is refused when the config loads. A path that holds a control character, such as a newline, which the text output would print as a line of its own, is refused in a `file:` when the config loads, in a tracked file a glob matches before it is read, and in a value's location. 100000 regex matches in 4.3 MB take 0.8 s and 45 MB |
+| values per extractor | 100000 | each node of a mapping that `as: map` hands over counts as one, the mapping itself included, and so does each record and each node of its fields. Every value is kept in memory and printed; a regex `(\d*)` matches at every byte. A path that selects more nodes at any step stops there. The values of one extractor also hold at most `max_bytes` bytes in all, since YAML aliases can repeat a value, decoding can lengthen one, and an XML element's value holds the text of every element inside it: `//a` over 1000 nested elements around 30 MB would return 30 GB, and is refused. Each reader counts as it reads, and the rule counts every extractor's values again, with their bytes, before it compares them, and refuses a value whose location names no path inside the repository; it reads the name as written, without following links, which the readers check when they open a file. It reads the name the same on every OS: a path that starts with `/` or `\`, whose first name once `.` and `..` are resolved is a drive such as `C:` (`C:x`, `./C:x`), or whose `..` leaves the root with `\` read as a separator or as part of a name, is outside, and a name Windows keeps for a device, such as `aux.yaml`, is inside. A `file:` or a `files:` entry that is outside this way is refused when the config loads. A path that holds a control character, such as a newline, which the text output would print as a line of its own, a direction control (U+061C, U+200E, U+200F, U+202A to U+202E, U+2066 to U+2069) or a line or paragraph separator (U+2028, U+2029), which a SARIF viewer would act on, is refused in a `file:` when the config loads, in a tracked file a glob matches before it is read, and in a value's location. 100000 regex matches in 4.3 MB take 0.8 s and 45 MB |
 | documents in strings | `max_bytes` in all, and the nodes `max_bytes` allows | the documents an extractor's `embedded` steps parse out of strings count together, as one more file: their bytes against `max_bytes`, and the nodes each can hold, counted as for a file of its format at its bytes per node, against `max_bytes` too. A string YAML aliases repeat counts each time. The nodes YAML aliases add, the filter work and the values count over the file and its documents together, so a run reads at most twice `max_bytes` for one extractor. Over a set of files, the documents in the strings of every file count together against the set's `max_bytes`, as one more file of the set |
 | depth | 1000 | each key, each part of a dotted TOML key or table header, and each element is one level, and an array table's element one more. The deepest of 56 real files measured nests 25 |
 | YAML aliases and merge keys | 1000000 nodes, for every file of `files` together | each alias adds the nodes of its anchor, and so does each mapping a merge key names, counted for the whole file before anything is built from them. A key counts by its length too: each 64 bytes of a key that a merge key copies count as one node more, and an alias used as a key counts one node and one more for each 64 bytes of its anchor's text, so a file that merges or repeats long keys many times reaches the limit instead of taking minutes. errata keeps one copy of an anchor, so 5000 mappings that merge one of 99 keys, at the limit, take 0.15 s and 51 MB |
@@ -2678,7 +2774,7 @@ core machine.
 | walk names | 16 MiB | the walk opens each directory from the one above it and holds the names of the directories it has still to walk, not their paths, so a long path costs its length once: 60000 directories of 250-byte names below a path of 3765 bytes take 8.2 s and 36 MB, where whole paths took 1.67 GB for 200000. Past the limit, as for 200000 such names in one directory, the walk is refused in 0.9 s |
 | walk depth | 64 directories | the deepest tree measured nests 17. A chain 64 deep with 15000 files in each directory takes 3.9 s and 3 MB |
 | git index | 64 MiB, whatever `max_bytes` is, and 1000000 entries; a path of 4096 bytes, and 64 MiB of paths in all | a glob in `files` reads `.git/index` whole and keeps the path of each entry: an entry is about 70 bytes and its path, so 64 MiB holds some 600000 files, and the entries limit is the walk's. A version 4 index writes each path as what it keeps of the one before and a suffix, so 65 bytes of the index can make a path of 4096 and 64 MiB of them gigabytes of paths: a path is held to 4096 bytes, the longest a file may be named, and the paths together to 64 MiB, which an index of plain paths cannot pass. An index read with the wrong object format is refused, since each entry's path must be the length its flags give |
-| `files` of `env`, `yaml`, `json`, `toml` and `regex` | 64 entries in `files`; 256 MiB of paths matched, the globs' weights times the bytes of the tracked paths; 10000 files read | each glob is matched against every tracked file, and a match costs time in proportion to the path, about 33 ns a byte on a 3 core worker node. A glob without `**` weighs 1, and one with `**` weighs its other segments, since the match retries what follows the last `**` at each later segment of a path: `infra/**/*.yaml` weighs 2. The weight is then multiplied by one for each 8 bytes of the glob's longest segment that holds a `*`, since a match tries what follows a `*` at each byte where it could end: `**/*` and 251 more bytes, over segments of 255 bytes, took 655 ns a byte of path at a weight of 1, and takes 28 ns a weighed byte on a 2 core worker node at its weight of 32. Each byte of a character class, its brackets included, counts as 3 bytes of the segment, since a match reads a class again at each byte it tests: twenty classes of 13 bytes after a `*` took 72 ns a weighed byte with each byte counted once, and take 21 ns with 3 cores at their weight of 98. An index may hold 64 MiB of paths, over which 64 globs took 167 s. The bytes to match are the weights times the paths' bytes, known once the index is read, so a spec over the bound is refused before any glob is matched. The bound fits about 22 MB of paths for a dozen globs, some 450000 files of 50 bytes or 320000 of 70, and 4 globs over a million files of 60 bytes. A very large monorepo with many globs is refused, which makes the rule unknown: list fewer globs. A file costs an open, a stat and a read of its first bytes before its reader runs, however small it is, so a glob over a million empty files would run for minutes; 10000 empty files take 1.4 s on the 6 core build node and 3.7 s on a 3 core worker node |
+| `files` of `env`, `yaml`, `json`, `toml` and `regex` | 64 entries in `files`; 256 MiB of paths matched, each glob's weight times the bytes of the tracked paths it is matched against; 10000 files read | each glob is matched against the tracked files below its literal directory, `deploy/` for `deploy/*.env`, which a binary search finds in git's index, sorted by path; a glob whose first segment holds a wildcard, such as `*/*.env` or `**/*.yaml`, is matched against every tracked file. A match costs time in proportion to the path, about 33 ns a byte on a 3 core worker node. A glob without `**` weighs 1, and one with `**` weighs its other segments, since the match retries what follows the last `**` at each later segment of a path: `infra/**/*.yaml` weighs 2. The weight is then multiplied by one for each 8 bytes of the glob's longest segment that holds a `*`, since a match tries what follows a `*` at each byte where it could end: `**/*` and 251 more bytes, over segments of 255 bytes, took 655 ns a byte of path at a weight of 1, and takes 28 ns a weighed byte on a 2 core worker node at its weight of 32. Each byte of a character class, its brackets included, counts as 3 bytes of the segment, since a match reads a class again at each byte it tests: twenty classes of 13 bytes after a `*` took 72 ns a weighed byte with each byte counted once, and take 21 ns with 3 cores at their weight of 98. An index may hold 64 MiB of paths, over which 64 globs took 167 s. The bytes to match are each glob's weight times the bytes of the paths it is matched against, known once the index is read, so a spec over the bound is refused before any glob is matched. The bound fits about 22 MB of paths for a dozen globs with a wildcard first, some 450000 files of 50 bytes or 320000 of 70, and 4 such globs over a million files of 60 bytes. A very large monorepo with many such globs is refused, which makes the rule unknown: list fewer globs, or start each with its directory. A file costs an open, a stat and a read of its first bytes before its reader runs, however small it is, so a glob over a million empty files would run for minutes; 10000 empty files take 0.9 s on the build node, with the 4 cores its runner pod gets, and allocate 12 KB each |
 | the values of `env`, or of `files` | 100000 and `max_bytes` in all | a CI file repeats a value for each job that inherits it, so the values of every file, job and step together hold to the limits of one extractor's. A Jenkinsfile is read again for each stage that sets the variable, all within the extractor's one work budget, so a file of hundreds of such stages is refused at it: 400 of them are refused in 1 s |
 | `package_version` files | 64 in `files` | a manifest gives at most two values, so 64 files stay under the limit on values by construction; a package has a manifest or two of each kind, and a rule over more packages names several extractors |
 | files one extractor reads | `max_bytes` in all | a walk may find many files, and symlinks or copies may repeat one, so the files of one extractor are read up to its `max_bytes` together, as one file is; in `tool_version` and the `files:` of yaml, json, toml and regex, links that end at one file read it once, and `env` and `package_version` read each name they list. 100 links to a 32 MiB file take 0.4 to 0.7 s, where reading each link took 31 to 64 s in all before |
@@ -2764,7 +2860,9 @@ that does not lex ([Jenkinsfiles](#jenkinsfiles)). A Markdown file parses whatev
 
 Stdout is the message. If stdout is a JSON object with a `message` string, errata uses that string.
 The program runs with the repository root as its working directory and receives `ERRATA_ROOT`,
-`ERRATA_CHECK_ID` and `ERRATA_SCOPE` in its environment. Its stdin is empty. A generated check's
+`ERRATA_CHECK_ID` and `ERRATA_SCOPE` in its environment. Its stdin is empty. Read the tree
+from `ERRATA_ROOT`, not the working directory: on a [witness](#witnesses) it is the fixture,
+while the working directory stays the repository root. A generated check's
 generator runs the same way, and its exit status is not a verdict
 ([Generated files](#generated-files)).
 
@@ -2875,6 +2973,7 @@ checks:
     agree: [app, deps]
     normalize: [trim]
     skip_not_literal: [deps]
+    witness: [version-differs]
   - id: replicas-fit
     reason: The cluster has a node for every replica.
     scope: repo
@@ -2908,7 +3007,8 @@ required:
       "at": {"file": "errata.yaml", "line": 2, "outside": false},
       "type": "program",
       "run": ["make", "lint"],
-      "timeout": "30s"
+      "timeout": "30s",
+      "witness": []
     },
     {
       "id": "version-agrees",
@@ -2924,13 +3024,14 @@ required:
       "relation": {"agree": ["app", "deps"], "compare": "text"},
       "normalize": ["trim"],
       "allow_empty": [],
-      "skip_not_literal": ["deps"]
+      "skip_not_literal": ["deps"],
+      "witness": ["version-differs"]
     },
     {
       "id": "replicas-fit",
       "reason": "The cluster has a node for every replica.",
       "scope": "repo",
-      "at": {"file": "errata.yaml", "line": 15, "outside": false},
+      "at": {"file": "errata.yaml", "line": 16, "outside": false},
       "type": "rule",
       "extract": {
         "nodes": {"regex": {"file": "README.md", "max_bytes": 33554432, "pattern": "(\\d+) nodes"}},
@@ -2939,16 +3040,18 @@ required:
       "relation": {"assert": "int(replicas[0]) <= int(nodes[0])"},
       "normalize": [],
       "allow_empty": [],
-      "skip_not_literal": []
+      "skip_not_literal": [],
+      "witness": []
     },
     {
       "id": "api-docs-current",
       "reason": "docs/api.md is generated from the schema.",
       "scope": "repo",
-      "at": {"file": "errata.yaml", "line": 22, "outside": false},
+      "at": {"file": "errata.yaml", "line": 23, "outside": false},
       "type": "generated",
       "generated": {"file": "docs/api.md", "run": ["python3", "scripts/api-docs.py"], "max_bytes": 33554432},
-      "timeout": "30s"
+      "timeout": "30s",
+      "witness": []
     }
   ],
   "required": ["lint-passes", "version-agrees", "replicas-fit", "api-docs-current"]
@@ -2977,6 +3080,7 @@ required:
 | `relation.compare` | beside `agree`: how its values are compared, `text` (the string form of each value after `normalize`) or `semver` (as versions and ranges) |
 | `relation.assert` | the expression as written |
 | `normalize`, `allow_empty`, `skip_not_literal` | rule: as the config lists them |
+| `witness` | every check: the fixtures it names, in order; an empty list when it names none (see [Witnesses](#witnesses)) |
 | `required` | the ids `required` lists, in its order; an empty list when the config has no `required` (see [Required checks](#required-checks)) |
 
 Values print as the config writes them, but for the defaults above. A file path, an ini section

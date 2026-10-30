@@ -71,13 +71,13 @@ type guard struct {
 func newGuard(data []byte, stmtLimit int) *guard {
 	g := &guard{data: data, stmtLimit: stmtLimit, untilCheck: checkEvery}
 	// The caller's own stack may be any depth; count it whole, in a buffer
-	// doubled until the stack leaves room in it.
+	// doubled until the stack leaves room in it. The buffer a check needs
+	// waits for the first check (tooDeep).
 	for g.pcs = make([]uintptr, 64); ; g.pcs = append(g.pcs, g.pcs...) {
 		if g.base = runtime.Callers(0, g.pcs); g.base < len(g.pcs) {
 			break
 		}
 	}
-	g.pcs = make([]uintptr, g.base+maxFrames+1)
 	return g
 }
 
@@ -112,5 +112,12 @@ func (g *guard) stop() { g.stopped = true }
 // tooDeep reports whether the stack holds more than maxFrames calls above
 // the parse's start.
 func (g *guard) tooDeep() bool {
+	// The buffer holds one call more than the limit allows, 160 KB, so it
+	// is made at the first check: a script the parser reads in fewer than
+	// checkEvery reads, an empty one too, never pays for it. Made with the
+	// guard, it was most of what env allocated for each empty script.
+	if need := g.base + maxFrames + 1; len(g.pcs) < need {
+		g.pcs = make([]uintptr, need)
+	}
 	return runtime.Callers(0, g.pcs)-g.base > maxFrames
 }

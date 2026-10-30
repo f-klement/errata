@@ -9,6 +9,8 @@ import (
 	slashpath "path"
 	"path/filepath"
 	"slices"
+
+	"github.com/f-klement/errata/internal/check"
 )
 
 // WalkLimits bound a walk of the repository: the files and directories it
@@ -37,7 +39,9 @@ var DefaultWalk = WalkLimits{Entries: 1_000_000, Dirs: 200_000, Depth: 64, Names
 // SkippedDirs are the directories a walk does not enter, by name, wherever
 // they are, each with the reason. Each holds files the repository installs,
 // downloads, builds or keeps for its tools, not files it writes: a pin
-// there is another project's.
+// there is another project's. A key with a slash names a directory by its
+// parent's name and its own, so .errata/witness is a directory witness in
+// any directory .errata.
 var SkippedDirs = map[string]string{
 	".git":             "git's own store: objects, refs and hooks, no file of the working tree",
 	"node_modules":     "the packages npm, Yarn and pnpm install, each with pins of its own",
@@ -55,6 +59,17 @@ var SkippedDirs = map[string]string{
 	".gradle":          "Gradle's caches",
 	".cache":           "the caches tools keep in the repository",
 	"testdata":         "test fixtures, which the go command passes over too: a fixture is no claim of the repository",
+	check.WitnessDir:   "the fixtures of witnesses, each a break planted for a check to report false on, which globs pass over too",
+}
+
+// skipped reports whether a walk passes over the directory name in the
+// directory rel: by its name, or by its parent's name and its own.
+func skipped(rel, name string) bool {
+	if _, skip := SkippedDirs[name]; skip {
+		return true
+	}
+	_, skip := SkippedDirs[slashpath.Base(rel)+"/"+name]
+	return skip
 }
 
 // walkBatch is how many entries of a directory a walk reads at a time, so a
@@ -176,7 +191,7 @@ func (w *walker) read(r *os.Root, rel string) (files, dirs []string, err error) 
 			// ReadDir gives an entry's type as Lstat does, so a symlink
 			// is never a directory here, whatever it points at.
 			if e.IsDir() {
-				if _, skip := SkippedDirs[name]; !skip {
+				if !skipped(rel, name) {
 					if w.names += len(name); w.names > w.limits.Names {
 						return nil, nil, fmt.Errorf("walk: the directories waiting to be walked have names of more than %d bytes in all, the limit, in %s; name the files to read in files", w.limits.Names, Quote(rel))
 					}

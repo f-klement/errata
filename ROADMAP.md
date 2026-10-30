@@ -87,9 +87,16 @@ Claims about how values sit together, not only what they are.
 
 ## v0.2.3: consolidation before plugins
 
-No new features. The places where a new extractor, check kind or reader is added today each hold
-a case per kind; this release makes each of them one table, so the readers of the later v0.2
-releases and the plugins of v0.3.0 are added in one place.
+The places where a new extractor, check kind or reader is added today each hold a case per kind;
+this release makes each of them one table, so the readers of the later v0.2 releases and the
+plugins of v0.3.0 are added in one place. It also clears the backlog that has no other release,
+which brings two features with it:
+
+- A check may name a witness, a fixture on which it must report false, so a check that cannot
+  fail is an erratum instead of a quiet pass.
+- A rule can match a path or a name against a Renovate pattern the way Renovate reads it, a regex
+  between slashes or else a minimatch glob, so a check can ask whether a Renovate manager reads
+  every file it should.
 
 - Each kind of extractor is registered once, and a rule's extract entry finds its kind by its
   key, so a key no installed reader knows can be named in an unknown result.
@@ -122,6 +129,36 @@ The reviews of this release left smaller items it closes too:
 - Two wrappers that only tests call are gone.
 - The location check accepts Windows reserved file names, as it does on every other system, and
   refuses a path holding a newline, which could forge a line of the text report.
+- The location check also refuses bidi controls and the Unicode line and paragraph separators,
+  which a SARIF viewer would show decoded, and its doc names what it does not judge.
+- A Windows reserved name in the git index is refused under its own name, not as a path outside
+  the repository.
+- A size test of the markdown reader compares a large input with a small one, instead of a wall
+  clock bound a busy node can miss.
+- `env:` reads an empty file without a buffer sized from its limit, and a glob with a literal
+  directory is matched only against that part of the index. The env reader's declaration has a
+  name that says what it holds.
+- A push's mutation job runs its packages in parallel, and the weekly pass logs each package's
+  working set beside its peak.
+- Renovate's minimum release age holds a digest update too, not only a version update.
+
+A last round before the release takes the findings of those reviews that were not quick fixes,
+and two items from later releases that touch the same code:
+
+- The git index refuses a Windows device name by Go's own check instead of a copied list, and
+  refuses an entry such as `a/../../x` before a witness's fixture is cut from it. The refusal of
+  an index out of git's order says how its globs were charged.
+- A generated check's witness is unknown on a fixture that lacks the generated file, as a rule's
+  is on a missing file.
+- A check with an empty `run` is refused by the check's own validation, not by validating a copy
+  with a placeholder.
+- `renovate_match` charges compiling a glob to the cost limit, so a rule of many calls stops
+  inside its timeout.
+- When packages run mutation at once, a package left running alone takes the workers the others
+  freed, and a stop ends every package running. The mutation floors follow a renamed or split
+  package, and CI derives its list of slow tests from the tree.
+- errata's own Renovate config is validated in CI, and an image whose registry gives no release
+  time still gets its digest updates.
 
 ## v0.2.4: CI and supply chain
 
@@ -164,8 +201,7 @@ It also closes findings the reviews of v0.2.1 to v0.2.3 left:
 - A regex's context and its search agree on a file's last line.
 - Under `compare: semver`, ranges that no release satisfies blame the range where the overlap
   ends.
-- The mutation floors follow a renamed or split package, and a lowering line excuses a drop for
-  one release only.
+- A lowering line in the mutation floors excuses a drop for one release only.
 - Fuzzing checks that an embedded value's text is on its reported line, and a size test pins the
   YAML walker's single pass.
 
@@ -184,8 +220,8 @@ Values written in code, and one version pinned in many places.
   date, a YAML timestamp or a binary value is not parsed as an embedded document.
 - The rest of CEL's strings extension, each function with a guard on the size it builds or the
   work it does, bounded by the cost limit the rule runs under.
-- Smaller items: an embedded step with no parser is refused, fuzzing covers file sets with
-  embedded steps, and CI derives its list of slow tests from the tree.
+- Smaller items: an embedded step with no parser is refused, and fuzzing covers file sets with
+  embedded steps.
 
 ## v0.2.7: host config and formats
 
@@ -198,8 +234,7 @@ The files a host is configured with, and the formats the earlier readers left op
 - INI and properties values read closer to their tools: fewer values marked not literal that a
   tool reads as written, template blocks that decide whether a key exists, and values the
   consuming tool computes marked as not literal.
-- A SARIF result for a file that does not exist points at its check in errata.yaml, and a check
-  with an empty `run` is refused by the check's own validation.
+- A SARIF result for a file that does not exist points at its check in errata.yaml.
 
 ## v0.3.0: the plugin system
 

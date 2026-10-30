@@ -296,7 +296,7 @@ func TestToolVersionRefusesWhatDoesNotParse(t *testing.T) {
 		{"rust-toolchain.toml", "rust", "[toolchain\n", "rust-toolchain.toml: "},
 		{"rust-toolchain", "rust", "1.75\n1.76\n", "rust-toolchain: "},
 		{"package.json", "node", "{\"engines\": ", "package.json: "},
-		{".nvmrc", "node", "\n2\x010\n", `.nvmrc: line 2: the version "2\x010" holds a control character, a direction control, a line separator or a byte that is not UTF-8`},
+		{".nvmrc", "node", "\n2\x010\n", `.nvmrc: line 2: the version "2\x010" holds a control character, a direction control, a line or paragraph separator or a byte that is not UTF-8`},
 		{".nvmrc", "node", "20\u009b31m\n", ".nvmrc: line 1: the version"},
 		{".nvmrc", "node", "20\u202e1.1\n", ".nvmrc: line 1: the version"},
 		{"package.json", "node", "{\"engines\": {\"node\": \"20\\u20281\"}}", "package.json: line 1: the version"},

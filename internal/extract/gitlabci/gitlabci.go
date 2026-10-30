@@ -40,7 +40,7 @@ const kindKey = "gitlab-ci"
 // Kind is the gitlab-ci kind, which a rule writes under the key gitlab-ci.
 // It is an env reader, third in env's list.
 var Kind = core.Kind[Spec]{Key: kindKey, Place: Place, Resolve: Resolve, Describe: Describe,
-	Env: &check.EnvReader{Order: 30, Chooses: chooses}, EnvRead: envRead}
+	Env: &check.EnvChoice{Order: 30, Chooses: chooses}, EnvRead: envRead}
 
 // chooses takes, for the env kind, a file named .gitlab-ci.yml.
 func chooses(file string) bool { return path.Base(file) == ".gitlab-ci.yml" }

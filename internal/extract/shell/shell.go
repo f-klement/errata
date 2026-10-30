@@ -38,7 +38,7 @@ const kindKey = "shell"
 // Kind is the shell kind, which a rule writes under the key shell. It is
 // an env reader, second in env's list.
 var Kind = core.Kind[Spec]{Key: kindKey, Place: Place, Resolve: Resolve, Describe: Describe,
-	Env: &check.EnvReader{Order: 20, Chooses: chooses, Sniffs: IsScript, SniffBytes: ShebangBytes}, EnvRead: envRead}
+	Env: &check.EnvChoice{Order: 20, Chooses: chooses, Sniffs: IsScript, SniffBytes: ShebangBytes}, EnvRead: envRead}
 
 // chooses takes, for the env kind, a name that ends in .sh, and .envrc,
 // direnv's shell script.

@@ -17,6 +17,9 @@
 //
 // The program runs with its working directory at the repository root and
 // receives ERRATA_ROOT, ERRATA_CHECK_ID and ERRATA_SCOPE in its environment.
+// On a witness ERRATA_ROOT is the fixture, and the working directory stays
+// the repository's root (ADR 0015), so a program reads the tree it is
+// handed from ERRATA_ROOT.
 package protocol
 
 import (
@@ -59,8 +62,10 @@ func Run(ctx context.Context, root string, c check.Check) (res check.Result) {
 	return res
 }
 
-// run starts argv for check c through program.Run, with root as its
-// working directory, and returns how it ended. The program gets c's
+// run starts argv for check c through program.Run and returns how it
+// ended. Its working directory is root, or the repository's root on a run
+// of a witness, whose root is the fixture (check.WorkDir), so a relative
+// argv resolves as on any run; ERRATA_ROOT is root. The program gets c's
 // timeout, a timeout of 0 being none; the environment of errata with
 // ERRATA_ROOT, ERRATA_CHECK_ID and ERRATA_SCOPE added; no stdin, so a
 // program that reads it reads an empty file at once; and a process group
@@ -71,7 +76,7 @@ func Run(ctx context.Context, root string, c check.Check) (res check.Result) {
 func run(ctx context.Context, root string, c check.Check, argv []string, bound int64) program.Ended {
 	return program.Run(ctx, program.Spec{
 		Argv: argv,
-		Dir:  root,
+		Dir:  check.WorkDir(ctx, root),
 		Env: []string{
 			"ERRATA_ROOT=" + root,
 			"ERRATA_CHECK_ID=" + c.ID,

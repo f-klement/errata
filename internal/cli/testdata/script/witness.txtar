@@ -1,0 +1,219 @@
+# A check names witnesses, fixtures under .errata/witness/ on which it must
+# report false (ADR 0015). Every errata check runs them after the check.
+env GIT_CONFIG_NOSYSTEM=1
+env GIT_CONFIG_GLOBAL=/dev/null
+exec git init -q
+exec git add go.mod Dockerfile .nvmrc conf scripts state gen.txt .errata/witness/drift .errata/witness/same .errata/witness/partial .errata/witness/one-port/conf/a.yaml .errata/witness/node-drift .errata/witness/bad-state .errata/witness/stale-gen
+
+# 1. A rule true on the repository and false on its fixture passes, and the
+# coverage counts the witness. Planted break: the witness run on the real
+# root, where it holds.
+exec errata check -c rule.yaml
+stdout '^0 errata, 0 unknown. Coverage: ran 1, skipped 0. 1 witness held.$'
+
+# 2. A witness the check holds on is an erratum naming both. A program that
+# reads its working directory and not ERRATA_ROOT reads the repository, and
+# its witness fails loudly too. Planted break: the witness keeps the
+# check's verdict.
+! exec errata check -c held.yaml
+stdout '^FALSE agrees \[witness same\] \(repo\)$'
+stdout 'said: agrees held on its witness same, so it could not be shown to fail$'
+stdout '^FALSE reads-cwd \[witness bad-state\] \(repo\)$'
+stdout '^2 errata, 0 unknown. Coverage: ran 2, skipped 0. 0 witnesses held.$'
+
+# 3. A fixture that lacks the rule's file, or is not there, is unknown.
+# Planted break: an unknown counted as held.
+! exec errata check -c partial.yaml
+stdout '^UNKNOWN agrees \[witness partial\] \(repo\)$'
+stdout '^UNKNOWN agrees \[witness gone\] \(repo\)$'
+stdout 'its fixture .errata/witness/gone is not in the repository'
+stdout '^0 errata, 2 unknown. Coverage: ran 1, skipped 0. 0 witnesses held.$'
+
+# 4. A glob on a witness reads the files the fixture commits: its untracked
+# conf/b.yaml and the repository's conf/b.yaml are not read. Planted break:
+# the whole real index, which reads the fixture's untracked 80.
+exec errata check -c glob.yaml
+stdout '1 witness held.$'
+
+# 5. The real run's globs and walks pass over .errata/witness/: the
+# fixtures' 81 and 18 would make both rules false. A file: that names a
+# path inside still reads it, and finds the 81. Planted breaks: the
+# exclusion dropped from the glob, or from the walk; a file: inside
+# .errata/witness/ refused.
+exec errata check -c skipped.yaml
+stdout '^0 errata, 0 unknown. Coverage: ran 3, skipped 0.$'
+
+# 6. A program on a witness starts in the repository's root, so its
+# relative script is found, with ERRATA_ROOT at the fixture. Planted break:
+# the working directory at the fixture, where scripts/state.sh is not.
+exec errata check -c program.yaml
+stdout '1 witness held.$'
+
+# 7. A generated check reads its file from the fixture. Planted break: the
+# repository's file, which is current, so the witness is an erratum.
+exec errata check -c generated.yaml
+stdout '1 witness held.$'
+
+# 8. A witness of a program that runs past its timeout is unknown. Planted
+# break: a timeout of 0, after which the program exits 0 and holds.
+! exec errata check -c sleeps.yaml
+stdout '^UNKNOWN sleeps \[witness drift\] \(repo\)$'
+stdout 'did not finish within 200ms'
+
+# 9. A witness on a live check, a name that is not one segment, an empty
+# list and nine names do not load. Planted break: each refusal removed.
+! exec errata check -c refused.yaml
+stderr 'check "on-live": .*witness on scope "live": a witness is a tree of files'
+stderr 'check "slash": .*witness "a/b" must be lower-case words joined by single hyphens'
+stderr 'check "dots": .*witness "\.\." must be lower-case words joined by single hyphens'
+stderr 'check "empty": .*witness lists no fixture'
+stderr 'check "nine": .*witness names 9 fixtures, over the limit of 8'
+stderr 'check "twice": .*witness names "drift" twice'
+stderr 'check "bare": decode: witness takes a list of fixture names'
+exec sh -c 'errata check -c refused.yaml >/dev/null 2>&1; echo code=$?'
+stdout code=2
+
+# 10. JUnit, SARIF and errata list name the fixture.
+! exec errata check -c held.yaml -f junit
+stdout '<testcase name="agrees \[witness same\]" classname="errata.repo"'
+stdout '<failure message="agrees held on its witness same, so it could not be shown to fail">'
+! exec errata check -c held.yaml -f sarif
+stdout '"text": "agrees held on its witness same, so it could not be shown to fail'
+! exec errata check -c partial.yaml -f sarif
+stdout '"text": "check agrees \[witness gone\] is unknown: its fixture'
+exec errata list -c rule.yaml -f json
+stdout '"witness": \[\n\s+"drift"\n\s+\]'
+exec errata list -c rule.yaml
+stdout '^  witness: drift$'
+
+-- go.mod --
+module example.com/m
+
+go 1.22
+-- Dockerfile --
+FROM golang:1.22
+FROM node:20.11.1
+-- .nvmrc --
+20.11.1
+-- conf/a.yaml --
+port: 80
+-- conf/b.yaml --
+port: 80
+-- scripts/state.sh --
+grep -q '^ok$' "$ERRATA_ROOT/state"
+-- scripts/cwd.sh --
+grep -q '^ok$' state
+-- state --
+ok
+-- gen.txt --
+hello
+-- .errata/witness/drift/go.mod --
+module example.com/m
+
+go 1.21
+-- .errata/witness/drift/Dockerfile --
+FROM golang:1.22
+-- .errata/witness/same/go.mod --
+go 1.22
+-- .errata/witness/same/Dockerfile --
+FROM golang:1.22
+-- .errata/witness/partial/go.mod --
+go 1.21
+-- .errata/witness/one-port/conf/a.yaml --
+port: 81
+-- .errata/witness/one-port/conf/b.yaml --
+port: 80
+-- .errata/witness/node-drift/.nvmrc --
+18.0.0
+-- .errata/witness/bad-state/state --
+broken
+-- .errata/witness/stale-gen/gen.txt --
+old
+-- rule.yaml --
+checks:
+  - id: go-agrees
+    reason: The module and the image build with one Go.
+    scope: repo
+    extract:
+      mod: {regex: {file: go.mod, pattern: '(?m)^go (\S+)'}}
+      image: {regex: {file: Dockerfile, pattern: 'golang:(\S+)'}}
+    agree: [mod, image]
+    witness: [drift]
+-- held.yaml --
+checks:
+  - id: agrees
+    reason: r
+    scope: repo
+    extract:
+      mod: {regex: {file: go.mod, pattern: '(?m)^go (\S+)'}}
+      image: {regex: {file: Dockerfile, pattern: 'golang:(\S+)'}}
+    agree: [mod, image]
+    witness: [same]
+  - {id: reads-cwd, reason: r, scope: repo, run: [sh, scripts/cwd.sh], witness: [bad-state]}
+-- partial.yaml --
+checks:
+  - id: agrees
+    reason: r
+    scope: repo
+    extract:
+      mod: {regex: {file: go.mod, pattern: '(?m)^go (\S+)'}}
+      image: {regex: {file: Dockerfile, pattern: 'golang:(\S+)'}}
+    agree: [mod, image]
+    witness: [partial, gone]
+-- glob.yaml --
+checks:
+  - id: some-port-is-80
+    reason: r
+    scope: repo
+    extract:
+      ports: {yaml: {files: ['conf/*.yaml'], path: port}}
+    assert: ports.exists(p, p == '80')
+    witness: [one-port]
+-- skipped.yaml --
+checks:
+  - id: every-port-is-80
+    reason: r
+    scope: repo
+    extract:
+      ports: {yaml: {files: ['**/*.yaml'], path: port}}
+    assert: ports.all(p, p == '80')
+  - id: node-agrees
+    reason: r
+    scope: repo
+    extract:
+      pins: {tool_version: {tool: node}}
+      image: {regex: {file: Dockerfile, pattern: 'node:(\S+)'}}
+    agree: [pins, image]
+  - id: a-fixture-is-read-by-name
+    reason: r
+    scope: repo
+    extract:
+      planted: {regex: {file: .errata/witness/one-port/conf/a.yaml, pattern: 'port: (\d+)'}}
+    assert: planted == ['81']
+-- program.yaml --
+checks:
+  - {id: state-ok, reason: r, scope: repo, run: [sh, scripts/state.sh], witness: [bad-state]}
+-- generated.yaml --
+checks:
+  - id: gen-current
+    reason: r
+    scope: repo
+    generated: {file: gen.txt, run: [echo, hello]}
+    witness: [stale-gen]
+-- sleeps.yaml --
+checks:
+  - id: sleeps
+    reason: r
+    scope: repo
+    timeout: 200ms
+    run: [sh, -c, 'case "$ERRATA_ROOT" in */.errata/witness/*) sleep 3;; esac']
+    witness: [drift]
+-- refused.yaml --
+checks:
+  - {id: on-live, reason: r, scope: live, run: ['true'], witness: [drift]}
+  - {id: slash, reason: r, scope: repo, run: ['true'], witness: [a/b]}
+  - {id: dots, reason: r, scope: repo, run: ['true'], witness: ['..']}
+  - {id: empty, reason: r, scope: repo, run: ['true'], witness: []}
+  - {id: nine, reason: r, scope: repo, run: ['true'], witness: [a, b, c, d, e, f, g, h, i]}
+  - {id: twice, reason: r, scope: repo, run: ['true'], witness: [drift, drift]}
+  - {id: bare, reason: r, scope: repo, run: ['true'], witness: drift}

@@ -47,6 +47,10 @@ type Check struct {
 	// At is where the check is written: the config file and the line its
 	// entry starts on. The loader sets it; a line of 0 is not known.
 	At Location
+	// Witness names the fixtures, each a directory in WitnessDir, on which
+	// the check must report false (ADR 0015). Every run runs the check on
+	// each of them after its own run.
+	Witness []string
 }
 
 var idPattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
@@ -83,6 +87,7 @@ func (c Check) Validate() error {
 	if c.Timeout < 0 {
 		errs = append(errs, errors.New("timeout must not be negative"))
 	}
+	errs = append(errs, validateWitnesses(c)...)
 	if len(errs) > 0 {
 		return fmt.Errorf("check %q: %w", c.ID, errors.Join(errs...))
 	}
@@ -129,6 +134,11 @@ type Result struct {
 	// Blamed is the value of Extracted that a false rule blames, where a
 	// report points the erratum; nil when the rule blames none.
 	Blamed *Blame
+	// Witness is the fixture this result ran the check on, "" for the
+	// check's own run. Its Verdict is the witness's: true when the check
+	// reported false there, as it must, false, an erratum, when the check
+	// held there, and unknown when it could not evaluate.
+	Witness string
 }
 
 // Skipped reports whether the check did not run.
@@ -180,9 +190,13 @@ func (r Report) with(v Verdict) []Result {
 	return out
 }
 
-// Coverage counts the checks that ran and the checks that were skipped.
+// Coverage counts the checks that ran and the checks that were skipped. A
+// result on a witness is no check of its own, and WitnessesHeld counts it.
 func (r Report) Coverage() (ran, skipped int) {
 	for _, res := range r.Results {
+		if res.Witness != "" {
+			continue
+		}
 		if res.Skipped() {
 			skipped++
 		} else {

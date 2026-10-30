@@ -79,7 +79,7 @@ var kinds = registry(
 
 // envReaders are the readers the env kind asks, each for one variable in
 // one file: every kind of kinds that declares itself an env reader
-// (check.EnvReader), with the Read beside it.
+// (check.EnvChoice), with the Read beside it.
 var envReaders env.Readers
 
 func init() { envReaders = readersOf(kinds) }
@@ -109,7 +109,7 @@ func readersOf(t table) env.Readers {
 			panic(fmt.Sprintf("extract: the env readers %q and %q are both at order %d", other, k.Key, k.Env.Order))
 		}
 		at[k.Env.Order] = k.Key
-		r.List = append(r.List, env.Reader{Name: k.Key, EnvReader: *k.Env, Read: k.EnvRead})
+		r.List = append(r.List, env.Reader{Name: k.Key, EnvChoice: *k.Env, Read: k.EnvRead})
 	}
 	return r
 }

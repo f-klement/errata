@@ -26,7 +26,7 @@ func (fakeSpec) Bound() int64 { return 0 }
 // with #!, declared as a reader package declares one: its value of a
 // variable names the variable, the file, and whether the facade handed it
 // the YAML parser it hands the CI readers.
-var fakeEnv = check.EnvReader{
+var fakeEnv = check.EnvChoice{
 	Order:      60,
 	Chooses:    func(file string) bool { return path.Ext(file) == ".fake" },
 	Sniffs:     func(head []byte) bool { return string(head) == "#!" },
@@ -50,7 +50,7 @@ func (f fakeRead) ExtractWith(ctx context.Context, root string, _ map[string][]c
 
 // fakeKinds are kinds with a fake kind registered after them, which
 // declares e and read as its env reader.
-func fakeKinds(e *check.EnvReader, read func(string, string, int64, core.Parsers) (check.Extractor, error)) table {
+func fakeKinds(e *check.EnvChoice, read func(string, string, int64, core.Parsers) (check.Extractor, error)) table {
 	k := core.Kind[fakeSpec]{Key: "fake", Env: e, EnvRead: read}
 	return registry(append(slices.Clone(kinds.order), register(k, nil))...)
 }
@@ -137,7 +137,7 @@ func TestReadersOfRefuses(t *testing.T) {
 	noChooses.Chooses = nil
 	noBytes.SniffBytes = 0
 	for name, c := range map[string]struct {
-		e    *check.EnvReader
+		e    *check.EnvChoice
 		read func(string, string, int64, core.Parsers) (check.Extractor, error)
 		want string
 	}{
@@ -160,7 +160,7 @@ func TestReadersOfRefuses(t *testing.T) {
 
 // register hands on a kind's env reader declaration as the kind wrote it,
 // the same value and not a copy of its fields, so a field added to
-// check.EnvReader reaches env with no copy to extend. Planted break:
+// check.EnvChoice reaches env with no copy to extend. Planted break:
 // register copying the declaration field by field.
 func TestRegisterHandsOnTheEnvDeclaration(t *testing.T) {
 	if got := fakeKinds(&fakeEnv, fakeEnvRead).byKey["fake"].Env; got != &fakeEnv {

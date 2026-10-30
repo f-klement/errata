@@ -1,7 +1,8 @@
 #!/bin/sh
 # mutation.sh: run gremlins over each package of a scope, each held to its own floors.
 #
-# Usage: scripts/mutation.sh [--diff <base>] [--deadline <epoch seconds>] all | none | <package directory>...
+# Usage: scripts/mutation.sh [--diff <base>] [--deadline <epoch seconds>] [--jobs <n>] [--most <n>]
+#                            all | none | <package directory>...
 #   make mutation                                   every package, as locally and weekly
 #   make mutation MUTATION_SCOPE="internal/config"  the packages listed
 #   make mutation MUTATION_SCOPE="internal/config" MUTATION_DIFF=<commit>
@@ -9,6 +10,11 @@
 #   make mutation ... MUTATION_DEADLINE=<epoch seconds>
 #                                                   ending by then, leaving out and naming a
 #                                                   package that would not (left_out below)
+#   make mutation ... MUTATION_JOBS=<n>             n packages at once (run_slot below); CI's
+#                                                   mutation job sets it from its pod (#151)
+#   make mutation ... MUTATION_DIFF=<commit> MUTATION_MOST=<n>
+#                                                   at most n packages, those with the most
+#                                                   changed lines; the rest are left out (#151)
 #
 # Each package is one pass, `gremlins unleash <package directory>`, judged alone against its
 # floors (scripts/mutation-floors.txt, read below). A package directory is one under internal/
@@ -57,6 +63,16 @@
 # an hour (extract/ini, 1500 mutants), past a push's 25 minutes (owner decision 2026-10-24).
 # ci/test-ci.sh runs the real gremlins on a module of its own to show that a diff run mutates
 # the changed lines and skips the rest.
+#
+# --jobs <n> runs up to n packages at once (#151). A push that lands several tickets scopes a
+# dozen packages, and each pays for its build, its timing and gremlins' coverage pass even when
+# its changed lines hold a handful of mutants: pipeline 2986574549 ran 13 packages one after
+# the other in 1417 s, over the 25 minutes. ci/push-mutation.sh picks n from the pod's CPUs
+# and memory. The mutants that run at once stay at .gremlins.yaml's workers, shared out
+# between the packages, so the timing each package measures holds as it does today. Each
+# package's verdict, the LEFT OUT for time line and the exit status are the same either way,
+# and its log is printed whole, in the order of the scope, once every package has ended. The
+# weekly pass runs one package at a time, so each package's memory line is its own.
 set -eu
 GREMLINS=${GREMLINS:-gremlins}
 
@@ -73,9 +89,23 @@ has_go() {
     return 1
 }
 
-diff_base="" deadline=""
+diff_base="" deadline="" jobs=1 most=""
 while :; do
     case "${1:-}" in
+        --most)
+            [ "$#" -ge 2 ] || refuse "--most takes the number of packages a diff run mutates at most"
+            most=$2
+            shift 2
+            case "$most" in
+                ''|*[!0-9]*|0*) refuse "--most takes the number of packages a diff run mutates at most, 1 or more, not '$most'" ;;
+            esac ;;
+        --jobs)
+            [ "$#" -ge 2 ] || refuse "--jobs takes a number of packages to run at once"
+            jobs=$2
+            shift 2
+            case "$jobs" in
+                ''|*[!0-9]*|0*) refuse "--jobs takes a number of packages to run at once, 1 or more, not '$jobs'" ;;
+            esac ;;
         --diff)
             [ "$#" -ge 2 ] || refuse "--diff takes a base commit"
             diff_base=$2
@@ -93,7 +123,9 @@ while :; do
         *) break ;;
     esac
 done
-[ "$#" -gt 0 ] || refuse "no scope given. Usage: scripts/mutation.sh [--diff <base>] [--deadline <epoch seconds>] all | none | <package directory>..."
+[ "$#" -gt 0 ] || refuse "no scope given. Usage: scripts/mutation.sh [--diff <base>] [--deadline <epoch seconds>] [--jobs <n>] [--most <n>] all | none | <package directory>..."
+# The weekly pass judges every package whole, so only a diff run, a push's, has a cap.
+[ -z "$most" ] || [ -n "$diff_base" ] || refuse "--most caps a diff run's packages; without --diff every package in scope is mutated"
 cd "$(dirname "$0")/.."
 case "$*" in
     all) [ -z "$diff_base" ] || refuse "--diff takes the packages that changed, not all, which the weekly pass mutates" ;;
@@ -118,7 +150,7 @@ if [ "$1" = none ]; then
 fi
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/errata-mutation.XXXXXX")
-trap 'rm -rf "$work"' EXIT
+trap '[ -z "${sampler:-}" ] || kill "$sampler" 2>/dev/null; rm -rf "$work"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
@@ -201,17 +233,26 @@ fi
 # for the reason the git shim gives below.
 [ -f scripts/casecover/main.go ] || refuse "scripts/casecover is missing; it covers case expressions for gremlins"
 [ -f scripts/goshim.sh ] || refuse "scripts/goshim.sh is missing; it runs scripts/casecover for gremlins"
-mkdir "$work/goshim" "$work/bin"
+mkdir "$work/bin"
 go build -o "$work/bin/casecover" ./scripts/casecover || refuse "could not build scripts/casecover"
 # quote <text>: the text as one single quoted word for sh.
 quote() {
     printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
 }
-{
-    echo '#!/bin/sh'
-    echo "exec /bin/sh $(quote "$(pwd)/scripts/goshim.sh") $(quote "$(command -v go)") $(quote "$work/bin/casecover") $(quote "$(pwd)") \"\$@\""
-} >"$work/goshim/go"
-chmod +x "$work/goshim/go"
+# write_goshim <directory>: the `go` gremlins finds first, in that directory, with the tree it
+# runs in, the working directory, as casecover's module root. A package run at once beside
+# others runs in a copy of the tree of its own (run_slot) and writes one of its own, so
+# casecover reads the files gremlins tests. goshim_dir names the one run_gremlins puts on PATH.
+write_goshim() {
+    mkdir -p "$1"
+    {
+        echo '#!/bin/sh'
+        echo "exec /bin/sh $(quote "$(pwd)/scripts/goshim.sh") $(quote "$(command -v go)") $(quote "$work/bin/casecover") $(quote "$(pwd)") \"\$@\""
+    } >"$1/go"
+    chmod +x "$1/go"
+    goshim_dir=$1
+}
+write_goshim "$work/goshim"
 # Gremlins' own working copies go under the same directory, and leave with it.
 TMPDIR=$work
 export TMPDIR
@@ -331,19 +372,19 @@ case "$MEASURE_LEAST" in ''|*[!0-9]*) refuse "MUTATION_MEASURE_LEAST is '$MEASUR
 # 4.2 s and cost a second pass of 3.3 minutes.
 measure_pass() {
     tags=$(sed -n 's/^  tags: *\([^ #]*\).*/\1/p' .gremlins.yaml)
-    bounded go test ${tags:+-tags "$tags"} -cover -coverprofile "$work/measure.cov" -run '^$' "./$1/..." >/dev/null 2>&1 || true
+    bounded go test ${tags:+-tags "$tags"} -cover -coverprofile "$pw/measure.cov" -run '^$' "./$1/..." >/dev/null 2>&1 || true
     pass_s=""
     for _ in 1 2; do
         start=$(date +%s%N)
-        bounded go test ${tags:+-tags "$tags"} -cover -coverprofile "$work/measure.cov" "./$1/..." >/dev/null 2>&1 || { pass_s=""; return 0; }
+        bounded go test ${tags:+-tags "$tags"} -cover -coverprofile "$pw/measure.cov" "./$1/..." >/dev/null 2>&1 || { pass_s=""; return 0; }
         pass_s=$(awk -v a="$start" -v b="$(date +%s%N)" -v p="$pass_s" 'BEGIN { s = (b - a) / 1e9; if (p != "" && p + 0 < s) s = p; printf "%.3f", s }')
     done
 }
 
-# workers: how many mutants gremlins runs at once, from .gremlins.yaml; 1 when it says none.
+# workers: how many mutants a package's gremlins runs at once: pkg_workers, set below from
+# .gremlins.yaml and the packages that run at once.
 workers() {
-    n=$(sed -n 's/^  workers: *\([0-9]*\).*/\1/p' .gremlins.yaml)
-    echo "${n:-1}"
+    echo "$pkg_workers"
 }
 
 # measure_mutant <package>: mutant_s, the seconds a mutant takes as gremlins runs one, its
@@ -367,20 +408,23 @@ measure_mutant() {
     [ -n "$src" ] || return 0
     src=$1/$src
     bounded go test ${tags:+-tags "$tags"} -run '^$' "./$1" >/dev/null 2>&1 || return 0
-    cp "$src" "$work/probe.keep"
+    cp "$src" "$pw/probe.keep"
     printf '\nfunc ErrataMutationProbe() {}\n' >>"$src"
     w=$(workers)
     start=$(date +%s%N)
-    i=0
+    i=0 probes=""
     while [ "$i" -lt "$w" ]; do
-        { bounded go test ${tags:+-tags "$tags"} -failfast "./$1" >/dev/null 2>&1 || : >"$work/probe.failed"; } &
+        { bounded go test ${tags:+-tags "$tags"} -failfast "./$1" >/dev/null 2>&1 || : >"$pw/probe.failed"; } &
+        probes="$probes $!"
         i=$((i + 1))
     done
-    wait
+    # Each probe by its own id: a bare wait would also wait for the memory sampler, which
+    # never ends.
+    for id in $probes; do wait "$id" || true; done
     end=$(date +%s%N)
-    cp "$work/probe.keep" "$src"
-    if [ -e "$work/probe.failed" ]; then
-        rm -f "$work/probe.failed"
+    cp "$pw/probe.keep" "$src"
+    if [ -e "$pw/probe.failed" ]; then
+        rm -f "$pw/probe.failed"
         echo "==> mutation: $1: could not time a mutant: its tests failed with a function added to $src"
         return 0
     fi
@@ -413,7 +457,7 @@ coefficient_for() {
 # gremlins_pass_s: the seconds of the coverage pass gremlins timed, from its "done in" line, a
 # Go duration such as 812.3ms, 4.3s or 1m2.5s; empty when it printed none.
 gremlins_pass_s() {
-    sed -n 's/.*Gathering coverage\.\.\. *done in \([0-9.hmsµun]*\).*/\1/p; s/^done in \([0-9.hmsµun]*\)$/\1/p' "$work/out" | head -n 1 | awk '
+    sed -n 's/.*Gathering coverage\.\.\. *done in \([0-9.hmsµun]*\).*/\1/p; s/^done in \([0-9.hmsµun]*\)$/\1/p' "$pw/out" | head -n 1 | awk '
         NF {
             d = $0; t = 0
             while (match(d, /^[0-9.]+(h|ms|µs|us|ns|m|s)/)) {
@@ -433,7 +477,7 @@ seconds() {
 
 # count <label>: the number gremlins printed after "<label>: ", or 0.
 count() {
-    n=$(sed -n "s/.*$1: \([0-9]*\).*/\1/p" "$work/out" | head -n 1)
+    n=$(sed -n "s/.*$1: \([0-9]*\).*/\1/p" "$pw/out" | head -n 1)
     echo "${n:-0}"
 }
 
@@ -448,19 +492,20 @@ config_for() {
     sed -e "s/^    efficacy: [0-9]*/    efficacy: 0/" \
         -e "s/^    mutant-coverage: [0-9]*/    mutant-coverage: 0/" \
         -e "s/^  timeout-coefficient: [0-9]*/  timeout-coefficient: $coef/" \
-        .gremlins.yaml >"$work/gremlins.base"
+        -e "s/^  workers: [0-9]*/  workers: $pkg_workers/" \
+        .gremlins.yaml >"$pw/gremlins.base"
     {
         echo "    - /"
         awk -v pre="    - ^$1/" 'index($0, pre) == 1 && length($0) > length(pre) { print "    - ^" substr($0, length(pre) + 1) }' .gremlins.yaml
-    } >"$work/excludes"
-    awk -v extra="$work/excludes" '
+    } >"$pw/excludes"
+    awk -v extra="$pw/excludes" '
         { print }
         /^  exclude-files:$/ { while ((getline line < extra) > 0) print line; n++ }
         END { if (n != 1) exit 1 }
-    ' "$work/gremlins.base" >"$work/gremlins.yaml" \
+    ' "$pw/gremlins.base" >"$pw/gremlins.yaml" \
         || refuse "a copy of .gremlins.yaml has no single '  exclude-files:' line to add the package's exclusions to"
-    for key in "    efficacy: 0" "    mutant-coverage: 0" "  timeout-coefficient: $coef"; do
-        grep -q "^$key\( \|\$\)" "$work/gremlins.yaml" || refuse "could not write '$key' into a copy of .gremlins.yaml"
+    for key in "    efficacy: 0" "    mutant-coverage: 0" "  timeout-coefficient: $coef" "  workers: $pkg_workers"; do
+        grep -q "^$key\( \|\$\)" "$pw/gremlins.yaml" || refuse "could not write '$key' into a copy of .gremlins.yaml"
     done
 }
 
@@ -480,6 +525,94 @@ excluded_whole() {
 # percent <part> <whole>: part over whole as a percentage with two decimals.
 percent() {
     awk -v p="$1" -v w="$2" 'BEGIN { printf "%.2f%%", 100 * p / w }'
+}
+
+# Memory (#152). The pod's cgroup, MUTATION_CGROUP (default /sys/fs/cgroup, the job's own
+# under cgroup v2), is read each second while a package runs: memory.current, which counts the
+# page cache, and anon from memory.stat, the working set that reclaim cannot give back. Each
+# package's line gives the highest of each. anon is the package's own, since the processes of
+# the package before it have exited. memory.current is the pod's: the kernel keeps the page
+# cache earlier packages read until it reclaims it, so after a few packages it reads near the
+# limit whatever the package needs, and the line says so. memory.peak is the cgroup's highest
+# since the pod started, so the line quotes it as the pod's so far. A whole pass of core
+# or ini reached memory.peak at the 4 GiB limit on 2026-10-25 and passed: the page cache may
+# make up much of that, and the anon beside it says how much. When packages run at once the
+# cgroup holds them all, and the one line covers them together.
+CGROUP=${MUTATION_CGROUP:-/sys/fs/cgroup}
+sampler=""
+
+# mib <bytes>: in MiB, whole.
+mib() {
+    awk -v b="$1" 'BEGIN { printf "%d", b / 1048576 }'
+}
+
+# memory_readable: the cgroup has the two files the samples read.
+memory_readable() {
+    [ -r "$CGROUP/memory.current" ] && [ -r "$CGROUP/memory.stat" ]
+}
+
+# memory_note: once, before the first package, the line that says memory is not measured.
+memory_note() {
+    memory_readable || echo "==> mutation: memory not measured: $CGROUP has no readable memory.current and memory.stat"
+}
+
+# memory_sample <file>: the file holds the highest memory.current and anon seen, in bytes.
+memory_sample() {
+    memory_readable || return 0
+    c=$(cat "$CGROUP/memory.current" 2>/dev/null) || return 0
+    a=$(sed -n 's/^anon //p' "$CGROUP/memory.stat" 2>/dev/null) || return 0
+    old="0 0"
+    [ ! -s "$1" ] || old=$(cat "$1")
+    echo "$old ${c:-0} ${a:-0}" | awk '{ print ($3 > $1 ? $3 : $1), ($4 > $2 ? $4 : $2) }' >"$1.new" && mv "$1.new" "$1"
+}
+
+# memory_start <file>: sample now and then each second, in the background, into the file.
+memory_start() {
+    rm -f "$1"
+    memory_readable || return 0
+    memory_sample "$1"
+    (while :; do sleep 1; memory_sample "$1"; done) &
+    sampler=$!
+}
+
+# memory_stop <file>: stop the samples, and take a last one.
+memory_stop() {
+    [ -n "$sampler" ] || return 0
+    kill "$sampler" 2>/dev/null || true
+    wait "$sampler" 2>/dev/null || true
+    sampler=""
+    memory_sample "$1"
+}
+
+# memory_line <what> <file>: the line for one package, or for the packages that ran at once.
+memory_line() {
+    [ -s "$2" ] || return 0
+    set -- "$1" $(cat "$2")
+    limit=$(cat "$CGROUP/memory.max" 2>/dev/null || true)
+    case "$limit" in
+        ''|*[!0-9]*) limit="no limit" ;;
+        *) limit="a $(mib "$limit") MiB limit" ;;
+    esac
+    peak=$(cat "$CGROUP/memory.peak" 2>/dev/null || true)
+    case "$peak" in
+        ''|*[!0-9]*) peak="" ;;
+        *) peak="; the pod's memory.peak so far $(mib "$peak") MiB" ;;
+    esac
+    echo "==> memory $1: anon at most $(mib "$3") MiB; the pod's memory.current at most $(mib "$2") MiB while it ran, the page cache earlier packages left included; sampled each second, of $limit$peak"
+}
+
+# memory_summary: the memory lines again, after the verdicts, one a package in the order of
+# the scope, so the weekly pass's figures sit together at the end of its log.
+memory_summary() {
+    memory_readable || return 0
+    echo "==> mutation: memory of each pass (anon, the working set, is the package's own; memory.current is the pod's and counts the page cache earlier packages left):"
+    if [ -e "$work/memory.line" ]; then
+        cat "$work/memory.line"
+    else
+        for i in $run; do
+            [ ! -e "$work/p/$i/memory.line" ] || cat "$work/p/$i/memory.line"
+        done
+    fi
 }
 
 # left_s: the seconds left before the deadline, 0 when it has passed.
@@ -513,11 +646,11 @@ run_gremlins() {
     d=$1
     shift
     if [ -n "$d" ]; then
-        PATH="$work/goshim:$work/shim:$PATH" ERRATA_MUTATION_BASE=$diff_base ERRATA_MUTATION_DIFF=$d \
-            ERRATA_MUTATION_ASKED="$work/asked" \
-            bounded "$GREMLINS" unleash --config "$work/gremlins.yaml" --diff "$diff_base" "$@"
+        PATH="$goshim_dir:$work/shim:$PATH" ERRATA_MUTATION_BASE=$diff_base ERRATA_MUTATION_DIFF=$d \
+            ERRATA_MUTATION_ASKED="$pw/asked" \
+            bounded "$GREMLINS" unleash --config "$pw/gremlins.yaml" --diff "$diff_base" "$@"
     else
-        PATH="$work/goshim:$PATH" bounded "$GREMLINS" unleash --config "$work/gremlins.yaml" "$@"
+        PATH="$goshim_dir:$PATH" bounded "$GREMLINS" unleash --config "$pw/gremlins.yaml" "$@"
     fi
 }
 
@@ -525,7 +658,7 @@ run_gremlins() {
 # counts. With a diff file, gremlins runs with --diff and the shim first on PATH. ran_out is
 # set when the deadline stopped it.
 pass_once() {
-    rm -f "$work/rc" "$work/asked"
+    rm -f "$pw/rc" "$pw/asked"
     {
         rc=0
         if [ -n "${2:-}" ]; then
@@ -533,9 +666,9 @@ pass_once() {
         else
             run_gremlins "" -S lt "$1" || rc=$?
         fi
-        echo "$rc" >"$work/rc"
-    } 2>&1 | tee "$work/out"
-    rc=$(cat "$work/rc")
+        echo "$rc" >"$pw/rc"
+    } 2>&1 | tee "$pw/out"
+    rc=$(cat "$pw/rc")
     ran_out=""
     if [ -n "$deadline" ] && { [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; } && [ "$(left_s)" -eq 0 ]; then
         ran_out=yes
@@ -550,8 +683,8 @@ pass_once() {
 # gremlins' pass in seconds. runnable is empty when the dry run printed no count.
 dry_once() {
     rc=0
-    run_gremlins "${2:-}" --dry-run "$1" >"$work/out" 2>&1 || rc=$?
-    runnable=$(sed -n 's/.*Runnable: \([0-9]*\).*/\1/p' "$work/out" | head -n 1)
+    run_gremlins "${2:-}" --dry-run "$1" >"$pw/out" 2>&1 || rc=$?
+    runnable=$(sed -n 's/.*Runnable: \([0-9]*\).*/\1/p' "$pw/out" | head -n 1)
     dry_pass=$(gremlins_pass_s)
     [ "$rc" -eq 0 ] || runnable=""
 }
@@ -572,8 +705,8 @@ estimate() {
 # says so and why; the weekly pass judges it whole.
 left_out() {
     echo "==> mutation: $1: LEFT OUT, $2; the weekly pass judges it"
-    echo "$1: LEFT OUT for time, $2; left to the weekly pass." >>"$work/summary"
-    left="$left $1"
+    echo "$1: LEFT OUT for time, $2; left to the weekly pass." >>"$pw/summary"
+    echo "$1" >"$pw/left"
 }
 
 # scope_note: what a summary line adds for a run over the changed lines, after judge_pass: the
@@ -604,14 +737,14 @@ judge_pass() {
     verdict="passed"
     if [ "$rc" -ne 0 ]; then
         verdict="FAILED, gremlins exit $rc"
-    elif ! grep -q 'Killed: [0-9]' "$work/out" && grep -q '^No results to report\.$' "$work/out"; then
+    elif ! grep -q 'Killed: [0-9]' "$pw/out" && grep -q '^No results to report\.$' "$pw/out"; then
         # What gremlins prints, and all it prints, for a package with no mutants.
         figures="No mutants."
-    elif ! grep -q 'Killed: [0-9]' "$work/out"; then
+    elif ! grep -q 'Killed: [0-9]' "$pw/out"; then
         verdict="FAILED, gremlins printed no counts"
         rc=1
     elif [ -n "$diff" ] && [ "$ran" -eq 0 ] && [ "$uncovered" -gt 0 ]; then
-        lines=$(sed -n 's/.*NOT COVERED .* at \([^ ]*\):[0-9]*$/\1/p' "$work/out" | sort -u | head -n 10 | tr '\n' ' ' | sed 's/ $//; s/ /, /g')
+        lines=$(sed -n 's/.*NOT COVERED .* at \([^ ]*\):[0-9]*$/\1/p' "$pw/out" | sort -u | head -n 10 | tr '\n' ' ' | sed 's/ $//; s/ /, /g')
         verdict="FAILED, no test reaches any of its $uncovered mutants on the changed lines (${lines:-lines not printed})"
         rc=1
     elif [ "$all" -gt 0 ] && { [ -z "$diff" ] || [ "$all" -ge "$MCOVER_MIN_DIFF" ]; } && [ $((ran * 100)) -le $((all * mcover)) ]; then
@@ -623,7 +756,7 @@ judge_pass() {
     elif [ "${2:-}" != no-cap ] && over_cap; then
         verdict="FAILED, $timedout of $ran mutants timed out, over $TIMEOUT_CAP% and over $TIMEOUT_MIN$again"
         rc=1
-    elif [ -n "$diff" ] && [ ! -e "$work/asked" ]; then
+    elif [ -n "$diff" ] && [ ! -e "$pw/asked" ]; then
         # The shim was not asked for the diff, so gremlins judged every mutant, not the changed
         # lines: it no longer calls git as the shim expects.
         verdict="FAILED, gremlins never asked the git shim for the diff"
@@ -694,7 +827,7 @@ unleash() {
         && awk -v l="$(seconds "$coef" "$gpass")" -v f="$(limit_floor)" 'BEGIN { exit !(l < f) }'; then
         short=yes
     fi
-    if [ "$rc" -eq 0 ] && grep -q 'Killed: [0-9]' "$work/out" && { over_cap || [ -n "$short" ]; }; then
+    if [ "$rc" -eq 0 ] && grep -q 'Killed: [0-9]' "$pw/out" && { over_cap || [ -n "$short" ]; }; then
         need=$(estimate "$ran" "$gpass")
         if ! fits "$need"; then
             # A timeout may be the node's and not the mutant's, which is why a second pass
@@ -706,7 +839,7 @@ unleash() {
             echo "==> mutation: $p: limit per mutant $(seconds "$coef" "$gpass") s: coefficient $coef times gremlins' pass of $gpass s"
             judge_pass "$p" no-cap
             if [ "$rc" -ne 0 ]; then
-                echo "$p: $verdict, judged on its first pass, with no time for the second. $figures Timed out: $timedout of $ran.$(scope_note)" >>"$work/summary"
+                echo "$p: $verdict, judged on its first pass, with no time for the second. $figures Timed out: $timedout of $ran.$(scope_note)" >>"$pw/summary"
                 return 1
             fi
             if [ -n "$short" ] && ! over_cap; then
@@ -738,7 +871,7 @@ unleash() {
         echo "==> mutation: $p: limit per mutant $(seconds "$coef" "$gpass") s: coefficient $coef times gremlins' pass of $gpass s"
     fi
     judge_pass "$p"
-    echo "$p: $verdict. $figures Timed out: $timedout of $ran.$(scope_note)" >>"$work/summary"
+    echo "$p: $verdict. $figures Timed out: $timedout of $ran.$(scope_note)" >>"$pw/summary"
     [ "$rc" -eq 0 ]
 }
 
@@ -756,24 +889,163 @@ for p in "$@"; do
         || refuse "$p has no row in $FLOORS_FILE, or more than one, or one that is not four fields of a package and three whole numbers: add one, with its efficacy floor, mutant coverage floor and least coefficient"
 done
 
-failed=0 left=""
+# Each package in scope gets a directory of its own, $work/p/<its place in the scope>: its name,
+# its scratch files (pw), its summary line, and a file `left` when it was left out for time.
+# The summary is put together from them in the order of the scope, however the packages ran.
+mkdir "$work/p"
+i=0 run=""
 for p in "$@"; do
+    i=$((i + 1))
+    mkdir "$work/p/$i"
+    echo "$p" >"$work/p/$i/name"
     if excluded_whole "$p"; then
-        echo "$p: skipped, .gremlins.yaml excludes it whole." >>"$work/summary"
+        echo "$p: skipped, .gremlins.yaml excludes it whole." >"$work/p/$i/summary"
         continue
     fi
     if [ -n "$diff_base" ] && [ ! -e "$(diff_file "$p")" ]; then
         echo "==> mutation: $p: its Go code is as at $diff_base, so there are no changed lines to mutate; the weekly pass judges it whole"
-        echo "$p: skipped, its Go code is as at $diff_base; left to the weekly pass." >>"$work/summary"
+        echo "$p: skipped, its Go code is as at $diff_base; left to the weekly pass." >"$work/p/$i/summary"
         continue
     fi
-    unleash "$p" || failed=1
+    run="$run $i"
+done
+count=$(echo $run | wc -w)
+
+# The cap (--most, #151). A push mutates at most that many packages, so its job ends inside its
+# 25 minutes however many tickets it lands; ci/push-mutation.sh says how the number was picked.
+# The packages with the most changed lines run, the lines a diff adds or changes in the
+# package's own Go code: those hold most of the mutants a push brings, and a package with a few
+# changed lines leaves the least unjudged until the weekly pass. Counting mutants would take a
+# gremlins dry run, a coverage pass, for every package, the cost the cap is there to save. A tie
+# goes to the package first in the scope. The rest are left out as for time, named, and the run
+# exits 3. The packages that run start with the most changed lines, so the longest start first
+# when they run at once.
+# changed_lines <diff file>: the lines it adds to the package's own Go code, not its tests. The
+# diff also holds the files of packages nested below, which this package's pass excludes.
+changed_lines() {
+    awk '/^\+\+\+ / { f = substr($0, 7); own = (f !~ /\// && f ~ /\.go$/ && f !~ /_test\.go$/); next }
+        own && /^\+/ { n++ }
+        END { print n + 0 }' "$1"
+}
+if [ -n "$most" ] && [ "$count" -gt "$most" ]; then
+    ranked=$(for i in $run; do
+        printf '%s %s\n' "$(changed_lines "$(diff_file "$(cat "$work/p/$i/name")")")" "$i"
+    done | sort -k1,1nr -k2,2n -s)
+    run=$(printf '%s\n' "$ranked" | head -n "$most" | awk '{ printf " %s", $2 }')
+    printf '%s\n' "$ranked" | tail -n +"$((most + 1))" | while read -r lines i; do
+        pw=$work/p/$i
+        left_out "$(cat "$pw/name")" "over the push's cap of $most packages, which go to those with the most changed lines; it has $lines"
+    done
+    count=$most
+fi
+
+# Packages at once: --jobs, and no more than there are packages to run. The mutants that run
+# at once stay at .gremlins.yaml's workers, which were sized for the CI job pod's two cores, so
+# each package's gremlins gets an equal share of them, and at least one.
+yaml_workers=$(sed -n 's/^  workers: *\([0-9]*\).*/\1/p' .gremlins.yaml)
+yaml_workers=${yaml_workers:-1}
+at_once=$jobs
+[ "$at_once" -le "$count" ] || at_once=$count
+# No more packages at once than there are workers, so no more mutants run at once than one
+# package at a time runs: a pod with more CPUs than that would otherwise give each package one
+# worker and run more mutants at once than the limit per mutant was ever measured at (#193).
+if [ "$at_once" -gt "$yaml_workers" ]; then
+    echo "==> mutation: --jobs $jobs, but at most $yaml_workers packages run at once, the gremlins workers .gremlins.yaml sets, so no more mutants run at once than one package at a time runs"
+    at_once=$yaml_workers
+fi
+[ "$at_once" -ge 1 ] || at_once=1
+pkg_workers=$((yaml_workers / at_once))
+[ "$pkg_workers" -ge 1 ] || pkg_workers=1
+
+memory_note
+failed=0
+if [ "$at_once" -le 1 ]; then
+    for i in $run; do
+        pw=$work/p/$i
+        p=$(cat "$pw/name")
+        memory_start "$pw/memory"
+        unleash "$p" || failed=1
+        memory_stop "$pw/memory"
+        memory_line "$p" "$pw/memory" | tee "$pw/memory.line"
+    done
+else
+    # run_slot: run the packages no other slot has claimed, one after the other. A claim is a
+    # directory, which mkdir makes for one caller only. Each package runs in a copy of the tree
+    # of its own, since timing a mutant edits a file of the package (measure_mutant), and its
+    # output goes to its log, shown whole once every package has ended. The build cache is
+    # shared: go keeps it safe for builds running at once, and one package then reuses what
+    # another built.
+    run_slot() {
+        for i in $run; do
+            mkdir "$work/claim/$i" 2>/dev/null || continue
+            pw=$work/p/$i
+            p=$(cat "$pw/name")
+            echo "==> mutation: $p: started"
+            status=0
+            if [ -n "${in_copy:-}" ]; then
+                cp -R "$work/tree" "$pw/tree"
+                (cd "$pw/tree" && write_goshim "$pw/goshim" && unleash "$p") >"$pw/log" 2>&1 || status=$?
+            else
+                (unleash "$p") >"$pw/log" 2>&1 || status=$?
+            fi
+            echo "$status" >"$pw/status"
+            echo "==> mutation: $p: ended"
+        done
+    }
+    echo "==> mutation: $at_once of the $count packages run at once, each with $pkg_workers of the $yaml_workers gremlins workers .gremlins.yaml sets; each package's log follows once all have ended"
+    mkdir "$work/claim"
+    memory_start "$work/memory"
+    k=0 slots=""
+    while [ "$k" -lt "$at_once" ]; do
+        run_slot &
+        slots="$slots $!"
+        k=$((k + 1))
+    done
+    # Each slot by its own id, not a bare wait, which would wait for the memory sampler too.
+    for id in $slots; do wait "$id" || true; done
+    memory_stop "$work/memory"
+    # A package whose run stopped before its verdict, a refusal (exit 2) above all, wrote no
+    # summary line: it gets one here, and a refusal makes the run exit 2, as it does when
+    # packages run one at a time.
+    names="" refused=""
+    for i in $run; do
+        pw=$work/p/$i
+        p=$(cat "$pw/name")
+        names="$names $p"
+        echo "==> mutation: $p: its log"
+        cat "$pw/log" 2>/dev/null || echo "==> mutation: $p: no log, since its slot ended before it ran the package"
+        status=$(cat "$pw/status" 2>/dev/null || echo none)
+        [ "$status" = 0 ] || failed=1
+        [ "$status" != 2 ] || refused=yes
+        if [ "$status" != 0 ] && [ ! -e "$pw/summary" ]; then
+            if [ "$status" = none ]; then
+                echo "$p: FAILED, its slot ended before it ran the package." >"$pw/summary"
+            else
+                echo "$p: FAILED, its run stopped with exit $status before a verdict; its log above says why." >"$pw/summary"
+            fi
+        fi
+    done
+    memory_line "$at_once at once:$names" "$work/memory" | tee "$work/memory.line"
+fi
+
+: >"$work/summary"
+left=""
+i=0
+for p in "$@"; do
+    i=$((i + 1))
+    [ ! -e "$work/p/$i/summary" ] || cat "$work/p/$i/summary" >>"$work/summary"
+    [ ! -e "$work/p/$i/left" ] || left="$left $p"
 done
 
 echo "==> mutation scope: $scope"
 sed 's/^/==>   /' "$work/summary"
+memory_summary
 if [ "$failed" -ne 0 ]; then
     [ -z "$left" ] || echo "==> mutation: left out for time, and judged only by the weekly pass:$left"
+    if [ -n "${refused:-}" ]; then
+        echo "==> mutation: REFUSED in a package run at once, its log above says why; FAILED"
+        exit 2
+    fi
     echo "==> mutation: FAILED"
     exit 1
 fi

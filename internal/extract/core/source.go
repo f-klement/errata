@@ -45,10 +45,10 @@ type Source struct {
 // refuses on every OS a path that Windows reads as absolute or climbing
 // out, such as C:x, as the rule refuses such a value's location
 // (check.Location.Inside), so the config fails at load and not each run.
-// It refuses a path that holds a control character, such as a newline,
-// which a message would print as it is (check.HoldsControl). A max_bytes
-// of zero is the default limit, and one below zero or over maxMaxBytes is
-// refused.
+// It refuses a path that holds a control character, such as a newline, a
+// direction control or a line or paragraph separator, which a terminal or
+// a report viewer would act on (check.HoldsControl). A max_bytes of zero
+// is the default limit, and one below zero or over maxMaxBytes is refused.
 func CheckSource(kind, file string, maxBytes int64) (Source, error) {
 	if file == "" {
 		return Source{}, fmt.Errorf("%s: file is required", kind)
@@ -63,7 +63,7 @@ func CheckSource(kind, file string, maxBytes int64) (Source, error) {
 		return Source{}, fmt.Errorf("%s: file %s is absolute, names a drive or climbs out where a backslash separates names, as on Windows, so it is refused on every OS: write a path relative to the repository root that does not leave it", kind, Quote(file))
 	}
 	if check.HoldsControl(file) {
-		return Source{}, fmt.Errorf("%s: file %s holds a control character, which a message would print as it is; rename the file", kind, Quote(file))
+		return Source{}, fmt.Errorf("%s: file %s holds a control character, a direction control or a line or paragraph separator, which a terminal or a report viewer would act on; rename the file", kind, Quote(file))
 	}
 	if maxBytes < 0 || maxBytes > MaxMaxBytes {
 		return Source{}, fmt.Errorf("%s: max_bytes is %d; write a number of bytes from 1 to %d, or leave it out for %d",

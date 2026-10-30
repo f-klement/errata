@@ -32,6 +32,7 @@ import (
 //	subset(a, b)        every member of a is in b
 //	duration * int      a duration scaled by a whole number, and int * duration
 //	semver(s), semver_satisfies(v, r)  versions and ranges (semver.go)
+//	renovate_match(s, p)  whether Renovate matches s with the pattern p (renovate.go)
 //
 // A helper that cannot read its argument returns an error, which makes the
 // rule unknown with the error in the message: never false and never true.
@@ -130,6 +131,7 @@ func helpers() []cel.EnvOption {
 	}
 	opts = append(opts, cel.Function("same_set", same...), cel.Function("subset", sub...))
 	opts = append(opts, semverHelpers()...)
+	opts = append(opts, renovateHelpers()...)
 	for name, id := range timeZoneOverloads {
 		opts = append(opts, cel.Function(name, cel.MemberOverload(id, []*cel.Type{cel.TimestampType, cel.StringType}, cel.IntType,
 			cel.BinaryBinding(inZone(name)))))

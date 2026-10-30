@@ -49,6 +49,14 @@ func (l Location) OutsideOnWindows() bool {
 // refused on every OS: a\b/../.. climbs out on Linux, and a\..\..\x on
 // Windows. Nothing else is refused.
 //
+// It judges the ASCII separators, the ASCII dot and the ASCII drive
+// letters alone. A name such as 1:x, which is no drive, passes, and so
+// does a Unicode lookalike of . or /, such as U+2024 ONE DOT LEADER,
+// U+2215 DIVISION SLASH or the fullwidth U+FF0F, which local reads as part
+// of a name. A value's location is never opened, and a file: entry is
+// opened only after filepath.IsLocal passes it on the OS that opens it, so
+// neither escapes the repository.
+//
 // It is not filepath.IsLocal, which on Windows also refuses the names
 // Windows keeps for devices (NUL, CON, PRN, AUX, COM1 and the like, with
 // any extension), so a repository's aux.yaml would be outside it on Windows
@@ -82,13 +90,27 @@ func isDrive(n string) bool {
 	return len(n) > 1 && n[1] == ':' && ('a' <= n[0] && n[0] <= 'z' || 'A' <= n[0] && n[0] <= 'Z')
 }
 
-// HoldsControl reports whether s holds a control character, such as a
-// newline. A path that holds one is refused wherever errata meets it, in a
-// config's file:, a glob's match and a value's location, since a message or
-// the text report would print it as it is, and a newline in a file's name
-// would print a line that reads as an erratum or a verdict of its own.
+// ActedOn reports whether a terminal or a viewer acts on r rather than
+// showing it: a control character (C0, DEL and C1), such as a newline; a
+// direction control (U+061C, U+200E, U+200F, U+202A to U+202E and U+2066
+// to U+2069); or the line or paragraph separator, U+2028 and U+2029. It is
+// the one set errata refuses in a path (HoldsControl) and in a version
+// (core.CheckVersion), and that the reports escape (report.QuoteControls),
+// so the guard and the escape cannot drift apart.
+func ActedOn(r rune) bool {
+	return unicode.IsControl(r) || unicode.Is(unicode.Bidi_Control, r) || unicode.In(r, unicode.Zl, unicode.Zp)
+}
+
+// HoldsControl reports whether s holds a rune ActedOn names. A path that
+// holds one is refused wherever errata meets it, in a config's file:, a
+// glob's match and a value's location. A message or the text report would
+// print a control character as it is, and a newline in a file's name would
+// print a line that reads as an erratum or a verdict of its own. The text
+// report escapes the other two, but a SARIF viewer decodes the JSON escape,
+// so there a direction control could reorder the line a reviewer reads and
+// a separator could break it.
 func HoldsControl(s string) bool {
-	return strings.ContainsFunc(s, unicode.IsControl)
+	return strings.ContainsFunc(s, ActedOn)
 }
 
 // String is l as a message names it: the file and the line, as f.yaml:3, or

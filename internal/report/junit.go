@@ -18,7 +18,8 @@ import (
 // message is "skipped: " and its gap, so the suite's counts fail where the
 // exit code does.
 // A rule that left not literal values out names each in <system-out>,
-// whatever its verdict.
+// whatever its verdict. A witness is a testcase of its own, id [witness
+// name], which fails when the check held on it.
 type JUnit struct{}
 
 type junitSuite struct {
@@ -50,7 +51,7 @@ func (JUnit) Write(w io.Writer, r check.Report) error {
 	s := junitSuite{Name: "errata", Tests: len(r.Results)}
 	for _, res := range r.Results {
 		c := junitCase{
-			Name:      res.Check.ID,
+			Name:      res.Name(),
 			Classname: "errata." + string(res.Check.Scope),
 			Time:      res.Duration.Seconds(),
 		}

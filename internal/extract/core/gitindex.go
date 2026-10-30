@@ -11,14 +11,16 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+
+	"github.com/f-klement/errata/internal/check"
 )
 
-// maxIndex is the largest git index TrackedFiles reads, in bytes, the
+// maxIndex is the largest git index readIndex reads, in bytes, the
 // ceiling of max_bytes. An entry is about 70 bytes and its path, so it holds
 // some 600000 files; the Linux kernel's index, of 90000 files, is 10 MB.
 const maxIndex = MaxMaxBytes
 
-// maxGitFile is the most bytes of a .git file TrackedFiles reads: one line,
+// maxGitFile is the most bytes of a .git file readIndex reads: one line,
 // gitdir: and a path, which is at most maxFileName long.
 const maxGitFile = 4160 // maxFileName and 64 bytes
 
@@ -40,7 +42,7 @@ const (
 	nameMask         = 0x0fff
 )
 
-// TrackedFiles lists the files of git's index at the repository root root
+// readIndex lists the files of git's index at the repository root root
 // that the working tree holds: those git ls-files lists, relative to root,
 // with slashes, in git's order, but each once, a file in conflict too, and
 // without a submodule or a file a sparse checkout leaves out
@@ -50,8 +52,10 @@ const (
 // names; a split index, whose entries are in a second file, is refused. A
 // root that is not the top of a git repository is refused, and so is a
 // .git file that names a directory that is not there, an index that is not
-// a regular file, and one over maxIndex bytes.
-func TrackedFiles(root string) ([]string, error) {
+// a regular file, and one over maxIndex bytes. It is unexported so that no
+// reader lists the index but through trackedFiles, which leaves out the
+// fixtures of witnesses (ADR 0015).
+func readIndex(root string) ([]string, error) {
 	dir, err := gitDir(root)
 	if err != nil {
 		return nil, err
@@ -314,7 +318,7 @@ func parseIndex(data []byte, hash, budget int) ([]string, error) {
 			continue
 		}
 		if !filepath.IsLocal(string(name)) {
-			return nil, fmt.Errorf("an entry's path %s leaves the repository, which git does not write", Quote(string(name)))
+			return nil, notLocal(string(name))
 		}
 		if mode&modeType != modeFile && mode&modeType != modeSymlink || extended&flagSkipWorktree != 0 {
 			continue
@@ -333,6 +337,60 @@ func parseIndex(data []byte, hash, budget int) ([]string, error) {
 		return nil, errors.New("an entry has no path")
 	}
 	return files, nil
+}
+
+// notLocal is the refusal of an entry's path that filepath.IsLocal refused.
+// On Windows that is also a path inside the repository one of whose names
+// Windows keeps for a device, such as aux.yaml, which a read would open in
+// place of a file, or a path inside it that holds a colon, which Windows
+// reads as a drive or a stream; the message names that reason rather than
+// calling the path outside. git for Windows does not write either; an
+// index written on another OS can hold it.
+func notLocal(name string) error {
+	if (check.Location{File: name}).Inside() {
+		for _, n := range strings.FieldsFunc(name, func(r rune) bool { return r == '/' || r == '\\' }) {
+			if windowsDevice(n) {
+				return fmt.Errorf("an entry's path %s holds %s, a name Windows keeps for a device, which a read would open in place of a file; git for Windows does not write it", Quote(name), Quote(n))
+			}
+		}
+		if strings.Contains(name, ":") {
+			return fmt.Errorf("an entry's path %s holds a colon, which Windows reads as a drive or a stream; git for Windows does not write it", Quote(name))
+		}
+	}
+	return fmt.Errorf("an entry's path %s leaves the repository, which git does not write", Quote(name))
+}
+
+// windowsDevice reports whether Windows may read the name n as a device, as
+// Go's filepath.IsLocal reads it there: CON, PRN, AUX, NUL, COM1 to COM9,
+// LPT1 to LPT9 (with ¹, ² or ³ for the digit too), CONIN$ or CONOUT$, in any
+// case, before any dot or colon and with trailing spaces dropped. Some
+// Windows versions read such a name with an extension, such as aux.yaml,
+// as a file; IsLocal refuses it on every version, and so does this.
+func windowsDevice(n string) bool {
+	if i := strings.IndexAny(n, ".:"); i >= 0 {
+		n = n[:i]
+	}
+	// ASCII alone, as Windows compares: strings.ToUpper would read the
+	// dotless ı as I.
+	n = strings.Map(func(r rune) rune {
+		if 'a' <= r && r <= 'z' {
+			return r - 'a' + 'A'
+		}
+		return r
+	}, strings.TrimRight(n, " "))
+	switch n {
+	case "CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$":
+		return true
+	}
+	if len(n) < 4 || n[:3] != "COM" && n[:3] != "LPT" {
+		return false
+	}
+	switch d := n[3:]; d {
+	case "\u00b9", "\u00b2", "\u00b3":
+		return true
+	default:
+		return len(d) == 1 && '1' <= d[0] && d[0] <= '9'
+	}
 }
 
 // checkExtensions refuses a split index: its link extension says that most

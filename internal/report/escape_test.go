@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"unicode"
 
 	"github.com/f-klement/errata/internal/check"
 )
@@ -112,5 +113,27 @@ func TestListEscapesWhatATerminalActsOn(t *testing.T) {
 	p, r := doc.Checks[0], doc.Checks[1]
 	if p.Reason != payload || p.Run[1] != payload || r.Extract["x"]["regex"]["pattern"] != payload || r.Relation.Assert != payload {
 		t.Errorf("the JSON listing reads back as %+v, want the text as written", doc)
+	}
+}
+
+// The reports escape every rune check.ActedOn names, the set the location
+// guard refuses, and no other, but the newline and the tab the text output
+// keeps; the JSON and XML escape takes the same set from DEL up. Every
+// rune is tried. Planted break: QuoteControls keeping U+2028 raw, as a
+// copy of the set that drifted from the guard's would.
+func TestReportsEscapeWhatTheGuardRefuses(t *testing.T) {
+	for r := rune(0); r <= unicode.MaxRune; r++ {
+		if 0xd800 <= r && r <= 0xdfff {
+			continue
+		}
+		s := string(r)
+		want := check.ActedOn(r) && r != '\n' && r != '\t'
+		if got := QuoteControls(s) != s; got != want {
+			t.Errorf("QuoteControls escapes %U: %v, want %v", r, got, want)
+		}
+		want = r >= 0x7f && check.ActedOn(r)
+		if got := string(escapeActedOn([]byte(s), func(rune) string { return "?" })) != s; got != want {
+			t.Errorf("escapeActedOn escapes %U: %v, want %v", r, got, want)
+		}
 	}
 }

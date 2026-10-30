@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -220,7 +221,14 @@ func TestMarkdownBounds(t *testing.T) {
 	markdownBounds(t, false)
 }
 
-// The large cases of TestMarkdownBounds.
+// The large cases of TestMarkdownBounds. A large case's time is held to a
+// ratio, not a wall clock, so that it holds on a loaded node: a quarter of
+// its input, of the same shape, is read too, and the case may take at most
+// eight times as long, with a tenth of a second for a pause in either run. A
+// linear read takes about four times, and a quadratic one sixteen. Each is
+// timed twice and the faster run kept, so a moment of load on one run does
+// not count. Planted break: definitions walking every line before each, a
+// quadratic walk, which failed the 100000 definitions.
 func TestMarkdownBoundsOnLargeInputs(t *testing.T) {
 	slowOnly(t)
 	markdownBounds(t, true)
@@ -242,6 +250,9 @@ func markdownBounds(t *testing.T, large bool) {
 		refused string
 		bound   time.Duration
 		large   bool
+		// quarter is a large case's input at a quarter of its size, and
+		// quarterRefused the start of its refusal, "" for one that reads.
+		quarter, quarterRefused string
 	}{
 		// Blocks and inline nodes nest at most maxDepth levels: the text of
 		// a paragraph in 998 block quotes is at 1000. The guard refuses a
@@ -305,7 +316,8 @@ func markdownBounds(t *testing.T, large bool) {
 		{name: "3163 definitions after a line of text", body: "a\n" + defs(3163)},
 		{name: "3163 definitions indented three spaces", body: strings.ReplaceAll(defs(3163), "[x]", "   [x]"),
 			refused: "README.md: line 1: a paragraph of 3163 lines may hold 3163 link reference definitions, and the two multiplied are over the limit of 10000000; put blank lines between the definitions"},
-		{name: "100000 definitions", body: defs(100_000), refused: "README.md: line 1: a paragraph of 100000 lines may hold 100000 link reference definitions, and the two multiplied are over the limit of 10000000; put blank lines between the definitions", bound: time.Second, large: true},
+		{name: "100000 definitions", body: defs(100_000), refused: "README.md: line 1: a paragraph of 100000 lines may hold 100000 link reference definitions, and the two multiplied are over the limit of 10000000; put blank lines between the definitions", large: true,
+			quarter: defs(25_000), quarterRefused: "README.md: line 1: a paragraph of 25000 lines may hold 25000 link reference definitions"},
 		// Nodes: max_bytes/4 of them, counted as the parse makes them: two for
 		// each line, one for the paragraph and three more.
 		{name: "lines at the node limit", body: strings.Repeat("a\n", 123), limit: 1000},
@@ -348,10 +360,11 @@ func markdownBounds(t *testing.T, large bool) {
 		// read it through a reader that looked at the guard. goldmark v2
 		// scans the attributes by hand in one pass, about 0.07 s for 4 MiB on
 		// the build node: the guard looks before and after that call, and
-		// the parse ends within the bound. The smaller tag's time limit is
-		// well under its scan, so the parse always runs past it.
-		{name: "a tag of four million attributes", body: "z <x" + strings.Repeat(" a=b", 4<<20), parse: 100 * time.Millisecond,
-			refused: "README.md: parsing the Markdown took more than 100ms, the limit" + tail, bound: time.Second, large: true},
+		// the parse ends soon after it. Each tag's time limit is well under
+		// its scan, so the parse always runs past it.
+		{name: "a tag of four million attributes", body: "z <x" + strings.Repeat(" a=b", 4<<20), parse: 10 * time.Millisecond,
+			refused: "README.md: parsing the Markdown took more than 10ms, the limit" + tail, large: true,
+			quarter: "z <x" + strings.Repeat(" a=b", 1<<20), quarterRefused: "README.md: parsing the Markdown took more than 10ms, the limit"},
 		{name: "a tag of a million attributes", body: "z <x" + strings.Repeat(" a=b", 1<<20), parse: 10 * time.Millisecond,
 			refused: "README.md: parsing the Markdown took more than 10ms, the limit" + tail, bound: time.Second},
 		// The search reuses the regex extractor's, its time limit and its
@@ -359,8 +372,11 @@ func markdownBounds(t *testing.T, large bool) {
 		// make test.
 		{name: "a search that scans the line after each match", body: strings.Repeat("1 ", 10000),
 			refused: "README.md: matching took more than 100ms, the limit, and stopped after", bound: 1500 * time.Millisecond},
+		// The quarter reads its 25001 values, as the large input reads its
+		// first 100000.
 		{name: "100001 values", body: strings.Repeat("a ", 100_001),
-			refused: "README.md: the extractor selects more than 100000 values, the limit; narrow the path or the pattern so it selects fewer", bound: 3 * time.Second, large: true},
+			refused: "README.md: the extractor selects more than 100000 values, the limit; narrow the path or the pattern so it selects fewer", large: true,
+			quarter: strings.Repeat("a ", 25_001)},
 	} {
 		if c.large != large {
 			continue
@@ -381,22 +397,39 @@ func markdownBounds(t *testing.T, large bool) {
 			if strings.HasPrefix(c.name, "a search") {
 				x.search.TimeLimit = 100 * time.Millisecond
 			}
-			root := extracttest.Repo(t, map[string]string{"README.md": c.body})
-			start := time.Now()
-			got, err := x.Extract(t.Context(), root)
-			took := time.Since(start)
-			if c.bound > 0 && took > c.bound*extracttest.RaceSlowdown {
-				t.Errorf("took %v, over %v", took, c.bound*extracttest.RaceSlowdown)
-			}
-			switch {
-			case c.refused != "":
-				if err == nil || !strings.HasPrefix(err.Error(), c.refused) {
-					t.Errorf("error %v, want %q", err, c.refused)
+			// read extracts body as the case's README.md, runs times, and
+			// returns the fastest run, which wants refused.
+			read := func(body, refused string, runs int) time.Duration {
+				root := extracttest.Repo(t, map[string]string{"README.md": body})
+				fastest := time.Duration(math.MaxInt64)
+				for range runs {
+					start := time.Now()
+					got, err := x.Extract(t.Context(), root)
+					fastest = min(fastest, time.Since(start))
+					switch {
+					case refused != "":
+						if err == nil || !strings.HasPrefix(err.Error(), refused) {
+							t.Errorf("error %v, want %q", err, refused)
+						}
+					case err != nil:
+						t.Errorf("error %v, want values", err)
+					case len(got) == 0:
+						t.Errorf("no values")
+					}
 				}
-			case err != nil:
-				t.Errorf("error %v, want values", err)
-			case len(got) == 0:
-				t.Errorf("no values")
+				return fastest
+			}
+			if c.quarter == "" {
+				if took := read(c.body, c.refused, 1); c.bound > 0 && took > c.bound*extracttest.RaceSlowdown {
+					t.Errorf("took %v, over %v", took, c.bound*extracttest.RaceSlowdown)
+				}
+				return
+			}
+			quarter := read(c.quarter, c.quarterRefused, 2)
+			whole := read(c.body, c.refused, 2)
+			t.Logf("the input took %v, a quarter of it %v", whole, quarter)
+			if limit := 8*quarter + 100*time.Millisecond; whole > limit {
+				t.Errorf("the input took %v, over %v, eight times the %v of a quarter of it and a tenth of a second", whole, limit, quarter)
 			}
 		})
 	}

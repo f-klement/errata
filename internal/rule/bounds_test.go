@@ -110,16 +110,17 @@ func TestRuleReadsALocationTheSameOnEveryOS(t *testing.T) {
 	}
 }
 
-// A value at a path that holds a newline or another control character
-// makes its rule unknown, naming the path quoted, so the text report never
-// prints a line the path forged. A path with a space, a backslash or a
-// letter outside ASCII passes. Planted break: the control character
-// check removed from bounded.
+// A value at a path that holds a newline or another control character, a
+// direction control or a line or paragraph separator makes its rule unknown,
+// naming the path quoted, so neither the text report nor a SARIF viewer
+// prints a line the path forged or reordered. A path with a space, a
+// backslash or a letter outside ASCII passes. Planted break: the control
+// character check removed from bounded.
 func TestRuleRefusesALocationWithAControlCharacter(t *testing.T) {
-	for _, f := range []string{"a\nERRATUM forged.yaml", "a\r.yaml", "a\x1b[2J.yaml", "a\x7f", "a\u0085b"} {
+	for _, f := range []string{"a\nERRATUM forged.yaml", "a\r.yaml", "a\x1b[2J.yaml", "a\x7f", "a\u0085b", "a\u202e.yaml", "a\u2066b", "a\u2028b"} {
 		v := check.Value{Text: "x", At: check.Location{File: f, Line: 1}}
 		unknownWith(t, agreeRule(named("a", fake{values: []check.Value{v}})),
-			`extractor "a": it returned a value at `+strconv.Quote(f)+`, a path that holds a control character, which a text report would print as it is`)
+			`extractor "a": it returned a value at `+strconv.Quote(f)+`, a path that holds a control character, a direction control or a line or paragraph separator, which a terminal or a report viewer would act on`)
 	}
 	ok := []check.Value{at("x", "a b.yaml", 1), at("x", `a\tb.yaml`, 2), at("x", "é.yaml", 3)}
 	if res := Run(t.Context(), "", agreeRule(named("a", fake{values: ok}))); res.Verdict != check.VerdictTrue {

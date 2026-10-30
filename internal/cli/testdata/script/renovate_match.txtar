@@ -1,0 +1,115 @@
+# renovate_match reads a managerFilePatterns entry as Renovate does: a
+# regex only between slashes, any other entry a minimatch glob. With a file
+# set, every Application file git tracks is held to Renovate's argocd
+# manager, the k3s check argocd_manager_covers_every_application.
+exec git init -q
+exec git add infra
+exec errata check
+stdout '^0 errata, 0 unknown. Coverage: ran 1, skipped 0.$'
+
+# The pattern without its slashes is a glob that matches no file.
+cp renovate-no-slashes.json renovate.json
+! exec errata check
+stdout '^FALSE argocd-manager-covers-every-application \(repo\)$'
+stdout '^          patterns\[0\] = "\^infra/argocd/applications/\.\*\\\\\.yaml\$" at renovate.json:3$'
+
+# A glob covers the files, in either case.
+cp renovate-glob.json renovate.json
+exec errata check
+stdout '^0 errata, 0 unknown.'
+
+# A new Application file outside a narrowed pattern is an erratum from the
+# commit that adds it.
+cp renovate-narrow.json renovate.json
+exec errata check
+stdout '^0 errata, 0 unknown.'
+cp infra/argocd/applications/loki.yaml infra/argocd/applications/zz-new.yaml
+exec git add infra
+! exec errata check
+stdout '^FALSE argocd-manager-covers-every-application'
+stdout 'apps\[2\] = "a" at infra/argocd/applications/zz-new.yaml:1$'
+
+# No pattern at all is an erratum, not a pass.
+cp renovate-none.json renovate.json
+! exec errata check
+stdout '^FALSE argocd-manager-covers-every-application'
+
+# A brace glob reads as minimatch expands it.
+cp renovate-braces.json renovate.json
+exec errata check
+stdout '^0 errata, 0 unknown.'
+
+# A pattern Renovate cannot run makes the rule unknown, naming it: a
+# lookahead, which RE2 lacks, and a glob whose regex JavaScript refuses,
+# on which minimatch throws.
+cp renovate-lookahead.json renovate.json
+! exec errata check
+stdout '^UNKNOWN argocd-manager-covers-every-application'
+stdout 'renovate_match: "/\^infra/\(\?=a\)\.\*/" is written as a regex between slashes, and RE2 does not compile it'
+cp renovate-throws.json renovate.json
+! exec errata check
+stdout '^UNKNOWN argocd-manager-covers-every-application'
+stdout 'renovate_match: minimatch throws on the glob "infra/argocd/applications/\[\[:alpha:\]\], \*"'
+
+-- errata.yaml --
+checks:
+  - id: argocd-manager-covers-every-application
+    reason: Renovate's argocd manager has no default file patterns.
+    scope: repo
+    extract:
+      patterns: {json: {file: renovate.json, path: 'argocd.managerFilePatterns[*]'}}
+      apps: {regex: {files: ['infra/argocd/applications/*.yaml'], pattern: '\A([\s\S])'}}
+    allow_empty: [patterns]
+    assert: size(patterns) > 0 && by_file(apps).all(f, patterns.exists(p, renovate_match(f, p)))
+-- renovate.json --
+{
+  "argocd": {"managerFilePatterns": [
+    "/^infra/argocd/applications/.*\\.yaml$/"
+  ]}
+}
+-- renovate-no-slashes.json --
+{
+  "argocd": {"managerFilePatterns": [
+    "^infra/argocd/applications/.*\\.yaml$"
+  ]}
+}
+-- renovate-glob.json --
+{
+  "argocd": {"managerFilePatterns": [
+    "INFRA/ArgoCD/**/*.YAML"
+  ]}
+}
+-- renovate-narrow.json --
+{
+  "argocd": {"managerFilePatterns": [
+    "/^infra/argocd/applications/[a-m].*\\.yaml$/"
+  ]}
+}
+-- renovate-none.json --
+{
+  "argocd": {}
+}
+-- renovate-lookahead.json --
+{
+  "argocd": {"managerFilePatterns": [
+    "/^infra/(?=a).*/"
+  ]}
+}
+-- renovate-braces.json --
+{
+  "argocd": {"managerFilePatterns": [
+    "infra/{argocd,x}/**"
+  ]}
+}
+-- renovate-throws.json --
+{
+  "argocd": {"managerFilePatterns": [
+    "infra/argocd/applications/[[:alpha:]], *"
+  ]}
+}
+-- infra/argocd/applications/grafana.yaml --
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+-- infra/argocd/applications/loki.yaml --
+apiVersion: argoproj.io/v1alpha1
+kind: Application

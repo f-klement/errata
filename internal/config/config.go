@@ -57,6 +57,8 @@ type checkEntry struct {
 	Scope   string   `json:"scope"`
 	Run     []string `json:"run"`
 	Timeout string   `json:"timeout,omitempty"`
+	// Witness names the fixtures the check must report false on.
+	Witness []string `json:"witness,omitempty"`
 
 	Extract    map[string]extract.Spec `json:"extract,omitempty"`
 	Agree      []string                `json:"agree,omitempty"`
@@ -395,17 +397,26 @@ func build(raw json.RawMessage, def defaults, newExtractor Builder) (c check.Che
 			}
 		}
 	}
+	if v, ok := keys["witness"]; ok {
+		if b := string(bytes.TrimSpace(v)); b != "null" && !strings.HasPrefix(b, "[") {
+			return refuse(fmt.Errorf("witness takes a list of fixture names, such as witness: [name]; %s is not accepted", clip(b)))
+		}
+	}
 	var e checkEntry
 	if err := decodeStrict(raw, &e); err != nil {
 		return refuse(err)
 	}
 
 	c = check.Check{
-		ID:     e.ID,
-		Reason: e.Reason,
-		Scope:  check.Scope(e.Scope),
+		ID:      e.ID,
+		Reason:  e.Reason,
+		Scope:   check.Scope(e.Scope),
+		Witness: e.Witness,
 	}
 	row, errs := kindOf(keys)
+	if _, ok := keys["witness"]; ok && len(e.Witness) == 0 {
+		errs = append(errs, fmt.Errorf("witness lists no fixture: name one to %d directories of %s, or leave the key out", check.MaxWitnesses, check.WitnessDir))
+	}
 	var kerrs []error
 	if row != nil {
 		c.Timeout, errs = timeout(row, e.Timeout, errs)

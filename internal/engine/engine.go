@@ -73,6 +73,9 @@ func (e *Engine) Execute(ctx context.Context, checks []check.Check) check.Report
 			continue
 		}
 		rep.Results = append(rep.Results, e.Run(ctx, e.Root, c))
+		for _, w := range c.Witness {
+			rep.Results = append(rep.Results, e.witness(ctx, c, w))
+		}
 	}
 	return rep
 }

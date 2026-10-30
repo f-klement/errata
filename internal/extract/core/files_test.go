@@ -3,6 +3,7 @@ package core
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -115,7 +116,7 @@ func TestCheckFiles(t *testing.T) {
 		{[]string{`a\..\..\x`}, `yaml: file "a\\..\\..\\x" is absolute, names a drive or climbs out`},
 		{[]string{`\*.yaml`}, `yaml: file "\\*.yaml" is absolute, names a drive or climbs out`},
 		// Planted break: the control character check removed from CheckSource.
-		{[]string{"a\tb.yaml"}, `yaml: file "a\tb.yaml" holds a control character, which a message would print as it is; rename the file`},
+		{[]string{"a\tb.yaml"}, `yaml: file "a\tb.yaml" holds a control character, a direction control or a line or paragraph separator, which a terminal or a report viewer would act on; rename the file`},
 		{make([]string, MaxEntries+1), fmt.Sprintf("yaml: files lists %d entries, over the limit of %d", MaxEntries+1, MaxEntries)},
 	} {
 		_, err := CheckFiles("yaml", c.files, 0)
@@ -143,7 +144,7 @@ func TestList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := f.List(root)
+	got, err := f.List(t.Context(), root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,39 +169,148 @@ func writeFile(t *testing.T, root, rel, body string) {
 func TestListNeedsGitForAGlob(t *testing.T) {
 	root := extracttest.Repo(t, map[string]string{"a.yaml": ""})
 	plain, _ := CheckFiles("json", []string{"a.yaml"}, 0)
-	if got, err := plain.List(root); err != nil || len(got) != 1 {
+	if got, err := plain.List(t.Context(), root); err != nil || len(got) != 1 {
 		t.Errorf("a plain list outside git: %v, %v", got, err)
 	}
 	glob, _ := CheckFiles("json", []string{"*.yaml"}, 0)
-	_, err := glob.List(root)
+	_, err := glob.List(t.Context(), root)
 	extracttest.WantError(t, err, `json: files lists the glob "*.yaml": the repository root holds no .git`)
 }
 
 // The files are held to FileLimit, witnessed at 2 with the message naming
-// MaxFiles, and the globs' weights times the paths' bytes to MatchLimit,
-// witnessed at the exact count: a/**/b/*.c weighs 3 and *.c 1, over 13
-// bytes of path, 52. Planted breaks: either bound dropped, or one more;
-// each glob weighed 1.
+// MaxFiles, and each glob's weight times its span's bytes to MatchLimit,
+// witnessed at the exact count: a/**/b/*.c weighs 3 over the 7 bytes of
+// a/b/c.c, below its directory a, and *.c 1 over all 13 bytes of path, 34.
+// Planted breaks: either bound dropped, or one more; each glob weighed 1.
 func TestListBounds(t *testing.T) {
 	root := repo(t, map[string]string{"a.c": "", "b.c": "", "a/b/c.c": ""}) // 3, 3 and 7 bytes
 	f, _ := CheckFiles("regex", []string{"*.c"}, 0)
 	f.FileLimit = 2
-	if _, err := f.List(root); err != nil {
+	if _, err := f.List(t.Context(), root); err != nil {
 		t.Errorf("2 files under a limit of 2: %v", err)
 	}
 	f, _ = CheckFiles("regex", []string{"*.c", "a/b/*.c"}, 0)
 	f.FileLimit = 2
-	_, err := f.List(root)
+	_, err := f.List(t.Context(), root)
 	extracttest.WantError(t, err, fmt.Sprintf(`regex: files names more than %d files, the limit, at "a/b/*.c"; narrow the glob`, MaxFiles))
 
 	f, _ = CheckFiles("regex", []string{"a/**/b/*.c", "*.c"}, 0)
-	f.MatchLimit = 4 * 13
-	if _, err := f.List(root); err != nil {
-		t.Errorf("52 bytes under a limit of 52: %v", err)
+	f.MatchLimit = 3*7 + 13
+	if _, err := f.List(t.Context(), root); err != nil {
+		t.Errorf("34 bytes under a limit of 34: %v", err)
 	}
-	f.MatchLimit = 4*13 - 1
-	_, err = f.List(root)
-	extracttest.WantError(t, err, fmt.Sprintf("regex: files lists 2 globs, and matching each against the 13 bytes of path git tracks takes more than %d bytes, the limit", MaxMatchBytes))
+	f.MatchLimit = 3*7 + 13 - 1
+	_, err = f.List(t.Context(), root)
+	extracttest.WantError(t, err, fmt.Sprintf("regex: files lists 2 globs, and matching each against the paths git tracks, below its directory when it starts with one, reads 34 bytes of path, more than %d, the limit; list fewer globs, or start each with its directory", MaxMatchBytes))
+}
+
+// A glob's literal directory is its leading segments without a wildcard
+// or a \, and none for a glob that starts with one. Planted break: a \
+// read as a literal, which made a\b a directory.
+func TestLiteralDir(t *testing.T) {
+	for glob, want := range map[string]string{
+		"deploy/*.env": "deploy", ".github/workflows/*.yml": ".github/workflows", "a/**/b/*.c": "a",
+		"*/x.env": "", "**/x": "", "[ab]/x": "", "a?/x": "", `a\b/*`: "", "a/b*": "a", "a/b/c?": "a/b",
+	} {
+		if got := literalDir(globSegments(glob)); got != want {
+			t.Errorf("%s: %q, want %q", glob, got, want)
+		}
+	}
+}
+
+// mixedIndex is an index in git's order of paths in and around the
+// directories the globs of TestSpanMatchesAsTheWholeIndex name: deploy
+// beside deploy-x, deploy.env and deploy0, which sort around deploy/, and
+// c, a file where the glob c/** names a directory.
+func mixedIndex() []string {
+	segs := []string{"a", "b.env", "deploy", "deploy-x", "deploy.env", "deploy0", "x.yml", "z"}
+	var out []string
+	for _, a := range segs {
+		for _, b := range segs {
+			out = append(out, a+"/"+b, a+"/"+b+"/"+a)
+		}
+		out = append(out, a+".env")
+	}
+	out = append(out, "c", ".github/workflows/ci.yml", ".github/workflows/x/ci.yml", "deploy-x.env")
+	slices.Sort(out)
+	return slices.Compact(out)
+}
+
+// Each glob matched against its span gives what the whole index gives
+// matched path by path: path.Match for a glob without **, matchGlob for
+// every glob; in git's order, and in another order, where every glob
+// spans the whole index. Planted breaks: the directory itself left out of
+// the span, which missed c for c/**; the span's start searched for deploy
+// without its /, which missed deploy/*; the order not tested, which lost
+// files in the shuffled index.
+func TestSpanMatchesAsTheWholeIndex(t *testing.T) {
+	globs := []string{
+		"deploy/*.env", "deploy/**", "deploy/**/*.env", "deploy/*/deploy", "deploy*/*", "deploy?/*",
+		"a/b.en?", "a/*", "a/deploy/*", "z/**/a", "c/**", ".github/workflows/*.yml",
+		".github/**/*.yml", "*/*.env", "**/*.env", "[ad]*/*", "*", "**", "x.yml/*/x.yml",
+	}
+	f, err := CheckFiles("yaml", globs, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sorted := mixedIndex()
+	shuffled := slices.Clone(sorted)
+	slices.Reverse(shuffled)
+	for _, tracked := range [][]string{sorted, shuffled} {
+		spans := f.spans(tracked)
+		for k, e := range f.Entries {
+			var whole, byMatch []string
+			for _, p := range tracked {
+				if matchGlob(e.segs, p) {
+					whole = append(whole, p)
+				}
+				if ok, _ := path.Match(e.Clean, p); ok {
+					byMatch = append(byMatch, p)
+				}
+			}
+			got := e.matches(spans[k])
+			if !slices.Equal(got, whole) {
+				t.Errorf("%s: span gives %q, the whole index %q", e.Clean, got, whole)
+			}
+			if !strings.Contains(e.Clean, "**") && !slices.Equal(got, byMatch) {
+				t.Errorf("%s: span gives %q, path.Match %q", e.Clean, got, byMatch)
+			}
+			if len(whole) == 0 && tracked[0] == sorted[0] {
+				t.Errorf("%s matches nothing in the index, so it tests nothing", e.Clean)
+			}
+		}
+	}
+}
+
+// A glob with a literal directory is charged for the paths below it only,
+// so paths outside it, however many, do not move the charge: deploy/*.env
+// over deploy/a.env and deploy/b.env reads 24 bytes beside 10 or 10000
+// other paths, siblings that sort around deploy/ among them. A glob with a
+// wildcard first is charged for every path, as before. Planted break:
+// every glob spanning the whole index, which refused deploy/*.env.
+func TestSpanChargeIgnoresPathsOutside(t *testing.T) {
+	for _, n := range []int{10, 10000} {
+		tracked := []string{"deploy-x/a.env", "deploy.env", "deploy/a.env", "deploy/b.env", "deploy0/a.env"}
+		for i := range n {
+			tracked = append(tracked, fmt.Sprintf("a/%d.env", i), fmt.Sprintf("z/%d.env", i))
+		}
+		slices.Sort(tracked)
+		f, _ := CheckFiles("env", []string{"deploy/*.env"}, 0)
+		f.MatchLimit = 24
+		if err := f.checkMatch(f.spans(tracked)); err != nil {
+			t.Errorf("deploy/*.env beside %d paths: %v", 2*n+3, err)
+		}
+		f.MatchLimit = 23
+		extracttest.WantError(t, f.checkMatch(f.spans(tracked)), "reads 24 bytes of path")
+
+		wild, _ := CheckFiles("env", []string{"*/*.env"}, 0)
+		all := 0
+		for _, p := range tracked {
+			all += len(p)
+		}
+		wild.MatchLimit = all - 1
+		extracttest.WantError(t, wild.checkMatch(wild.spans(tracked)), fmt.Sprintf("reads %d bytes of path", all))
+	}
 }
 
 // CheckFiles marks an entry with *, ? or [ a glob, by HasGlob, and Clean
