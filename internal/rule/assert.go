@@ -234,9 +234,12 @@ func compileWith(expr string, extractors []check.NamedExtractor, lim limits, ext
 	if err != nil {
 		return nil, fmt.Errorf("assert: %w", err)
 	}
+	if noted, err = renovateThroughLog(env, noted); err != nil {
+		return nil, fmt.Errorf("assert: %w", err)
+	}
 	program, err := env.Program(noted,
 		cel.CostLimit(lim.cost),
-		cel.CostTrackerOptions(append(append(setCosts(), semverCosts()...), renovateCost(), noteCost)...),
+		cel.CostTrackerOptions(append(append(append(setCosts(), semverCosts()...), renovateCost()...), noteCost)...),
 		cel.InterruptCheckFrequency(interruptEvery),
 	)
 	if err != nil {
@@ -600,9 +603,25 @@ func everyMember(ctx *cel.OptimizerContext, c celast.ComprehensionExpr) {
 }
 
 // errorLog keeps the first error an evaluation's notes saw. It is the value
-// of the hidden log variable, one per evaluation.
+// of the hidden log variable, one per evaluation, and carries the
+// evaluation's context to the helpers that look at it.
 type errorLog struct {
 	first *types.Err
+	ctx   context.Context
+	// globs are the globs renovate_match compiled in the evaluation.
+	globs globCache
+	// steps are what the last renovate_match call's glob match took, for
+	// its cost.
+	steps int
+}
+
+// context is the evaluation's context, or the background where Eval set
+// none.
+func (l *errorLog) context() context.Context {
+	if l.ctx == nil {
+		return context.Background()
+	}
+	return l.ctx
 }
 
 // note logs v when it is an error, or not a bool, which && and || would
@@ -717,12 +736,22 @@ type outcome struct {
 // and Eval waits a grace after the timeout for that look. Every helper reads
 // an argument of at most MaxArgument bytes. split, join and replace are
 // linear in what they read, and each builds at most MaxBuilt bytes. So a step
-// is short and the look comes soon. renovate_match is the longest call,
-// about 125 ms (about 90 ms to compile, then the match; renovateCostDivisor),
-// so a step of many of them is not. An evaluation that does not look within
-// the grace, such as one in a call that does not return, keeps its goroutine
-// until it ends, and Eval returns without it; the run goes on. An error that
-// && or || absorbed is still the result.
+// is short and the look comes soon. renovate_match is the longest call:
+// the slowest compile measured took 91 ms on the 4 core node, and a match
+// at most 17.6 ms on the build node. So a step of many of them is not. CEL
+// checks the cost limit after each call, and the cost charges a glob's
+// compile and match and a regex's match, whose program is bounded
+// (renovateCallCost, maxRegexInsts), so the limit stops such a step after
+// at most about 5 s of work. Through the CI runner on the 4 core node that
+// is 4.1 s of compiles of the slowest glob, 5 s of the short glob slowest
+// to compile for its length, and 3.7 s of regexes at the instruction
+// bound; on the build node, 1.15 s of matches of the slowest cached glob
+// measured (renovateStepDivisor). Each call also looks at ctx through the
+// log (renovateThroughLog), so a step that runs past the timeout ends
+// within one regex match, at most about 120 ms. An evaluation that does
+// not look within the grace, such as one in a call that does not
+// return, keeps its goroutine until it ends, and Eval returns without it; the
+// run goes on. An error that && or || absorbed is still the result.
 func (a *assertion) Eval(parent context.Context, extracted []check.Extracted) (bool, error) {
 	log := &errorLog{}
 	vars := map[string]any{}
@@ -759,6 +788,7 @@ func (a *assertion) Eval(parent context.Context, extracted []check.Extracted) (b
 	vars[logVariable] = log
 	ctx, cancel := context.WithTimeout(parent, a.limits.timeout)
 	defer cancel()
+	log.ctx = ctx
 	done := make(chan outcome, 1)
 	go func() {
 		v, _, err := a.program.ContextEval(ctx, vars)

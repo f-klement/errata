@@ -91,8 +91,8 @@ func (e exists) ExtractWith(ctx context.Context, root string, _ map[string][]che
 	return e.Extract(ctx, root)
 }
 
-func (e exists) Extract(_ context.Context, root string) ([]check.Value, error) {
-	info, err := e.src.Stat(root)
+func (e exists) Extract(ctx context.Context, root string) ([]check.Value, error) {
+	info, err := e.src.Stat(ctx, root)
 	if errors.Is(err, fs.ErrNotExist) {
 		return e.value("false"), nil
 	}
@@ -116,8 +116,8 @@ func (e size) ExtractWith(ctx context.Context, root string, _ map[string][]check
 	return e.Extract(ctx, root)
 }
 
-func (e size) Extract(_ context.Context, root string) ([]check.Value, error) {
-	info, err := e.src.Stat(root)
+func (e size) Extract(ctx context.Context, root string) ([]check.Value, error) {
+	info, err := e.src.Stat(ctx, root)
 	if err != nil {
 		return nil, err
 	}

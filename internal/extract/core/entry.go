@@ -264,8 +264,8 @@ func (e EntryExtractor) ExtractWith(ctx context.Context, root string, _ map[stri
 
 // Extract reads the file under root and returns every value the query
 // selects, in file order.
-func (e EntryExtractor) Extract(_ context.Context, root string) ([]check.Value, error) {
-	return ExtractOne(root, e.Source, e)
+func (e EntryExtractor) Extract(ctx context.Context, root string) ([]check.Value, error) {
+	return ExtractOne(ctx, root, e.Source, e)
 }
 
 // FromShared is FromData: a read of entries has its own work budget, and

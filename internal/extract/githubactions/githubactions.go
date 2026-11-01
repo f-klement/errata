@@ -198,8 +198,8 @@ func (e extractor) ExtractWith(ctx context.Context, root string, _ map[string][]
 
 // Extract reads the workflow and returns the values the step, or the job,
 // sees.
-func (e extractor) Extract(_ context.Context, root string) ([]check.Value, error) {
-	return core.ExtractOne(root, e.Source, e)
+func (e extractor) Extract(ctx context.Context, root string) ([]check.Value, error) {
+	return core.ExtractOne(ctx, root, e.Source, e)
 }
 
 // FromShared is fromData: a workflow read has its own bounds, and spends

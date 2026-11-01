@@ -309,8 +309,9 @@ func (f Files) List(ctx context.Context, root string) ([]Named, error) {
 				if err != nil {
 					return nil, fmt.Errorf("%s: files lists the glob %s: %w", f.kind, Quote(e.Clean), err)
 				}
-				spans = f.spans(tracked)
-				if err := f.checkMatch(spans); err != nil {
+				var whole bool
+				spans, whole = f.spans(tracked)
+				if err := f.checkMatch(spans, whole); err != nil {
 					return nil, err
 				}
 			}
@@ -339,31 +340,39 @@ func (f Files) List(ctx context.Context, root string) ([]Named, error) {
 
 // spans is the span of each entry that is a glob in tracked, by the
 // entry's index; an entry that is a file has none. The index is tested for
-// git's order once, and only when a glob has a literal directory.
-func (f Files) spans(tracked []string) []span {
+// git's order once, and only when a glob has a literal directory. whole
+// reports an index out of git's order, in which a glob with a literal
+// directory spans every path too (spanOf).
+func (f Files) spans(tracked []string) (out []span, whole bool) {
 	sorted := false
 	if slices.ContainsFunc(f.Entries, func(e FileEntry) bool { return e.dir != "" }) {
 		sorted = slices.IsSorted(tracked)
+		whole = !sorted
 	}
-	out := make([]span, len(f.Entries))
+	out = make([]span, len(f.Entries))
 	for k, e := range f.Entries {
 		if e.Glob {
 			out[k] = spanOf(e.dir, tracked, sorted)
 		}
 	}
-	return out
+	return out, whole
 }
 
 // checkMatch refuses entries whose globs, each matched against its span,
 // would read more than MatchLimit bytes of path, before the first is
-// matched: the bytes are each glob's weight times its span's bytes.
-func (f Files) checkMatch(spans []span) error {
+// matched: the bytes are each glob's weight times its span's bytes. whole
+// says the index is out of git's order, so each glob was charged for every
+// path, and the message says so rather than naming a directory.
+func (f Files) checkMatch(spans []span, whole bool) error {
 	globs, read := 0, 0
 	for k, e := range f.Entries {
 		if e.Glob {
 			globs++
 			read += globWeight(e.segs) * spans[k].bytes()
 		}
+	}
+	if read > f.MatchLimit && whole {
+		return fmt.Errorf("%s: files lists %d globs, and matching each against every path git tracks, since the index is out of git's order and a glob's directory cannot be found in it, reads %d bytes of path, more than %d, the limit; list fewer globs, and look at the index, which git itself refuses to read out of its order", f.kind, globs, read, MaxMatchBytes)
 	}
 	if read > f.MatchLimit {
 		return fmt.Errorf("%s: files lists %d globs, and matching each against the paths git tracks, below its directory when it starts with one, reads %d bytes of path, more than %d, the limit; list fewer globs, or start each with its directory", f.kind, globs, read, MaxMatchBytes)

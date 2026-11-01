@@ -179,8 +179,9 @@ func (x extractor) ExtractWith(ctx context.Context, root string, _ map[string][]
 // table's order before its subdirectories'; a symlink among them that
 // dangles inside the repository is passed over, as a file that is not
 // there. A file that files: names must exist.
-func (x extractor) Extract(_ context.Context, root string) ([]check.Value, error) {
-	r := reading{x: x, root: root, out: []check.Value{}, read: map[string][]check.Value{}}
+func (x extractor) Extract(ctx context.Context, root string) ([]check.Value, error) {
+	r := reading{ctx: ctx, x: x, root: root, out: []check.Value{}, read: map[string][]check.Value{}}
+	defer r.close()
 	if x.explicit {
 		for _, f := range x.files {
 			if err := r.file(f); err != nil {
@@ -189,7 +190,7 @@ func (x extractor) Extract(_ context.Context, root string) ([]check.Value, error
 		}
 		return r.out, nil
 	}
-	err := core.Walk(root, x.walk, func(_, name string) bool { return x.search[name] }, func(dir string, names []string) error {
+	err := core.Walk(ctx, root, x.walk, func(_, name string) bool { return x.search[name] }, func(dir string, names []string) error {
 		// A directory's files in the table's order, .tool-versions first.
 		slices.SortFunc(names, func(a, b string) int {
 			return slices.Index(kinds, kindOf(a)) - slices.Index(kinds, kindOf(b))
@@ -215,23 +216,39 @@ func (x extractor) Extract(_ context.Context, root string) ([]check.Value, error
 // the bytes of the values, and the versions of each file read, by where its
 // symlinks end, so links to one file read it once.
 type reading struct {
+	ctx        context.Context
 	x          extractor
 	root       string
+	files      *core.Reader // opened at the first file, for them all
 	out        []check.Value
 	bytes      int64 // read from every file
 	valueBytes int64
 	read       map[string][]check.Value
 }
 
+// close closes the reader of r's files, when one was opened.
+func (r *reading) close() {
+	if r.files != nil {
+		r.files.Close()
+	}
+}
+
 // file reads f, or takes its versions from the file it links to when that
 // was read before, and adds them at f's own path.
 func (r *reading) file(f file) error {
-	resolved, err := f.Resolved(r.root)
+	if r.files == nil {
+		files, err := core.OpenReader(r.ctx, r.root)
+		if err != nil {
+			return err
+		}
+		r.files = files
+	}
+	resolved, err := r.files.Resolved(f.Source)
 	if err == nil {
 		got, seen := r.read[resolved]
 		if !seen {
 			var data []byte
-			if data, err = f.Read(r.root); err == nil {
+			if data, err = r.files.Read(f.Source); err == nil {
 				// The files of one extractor are read up to its max_bytes
 				// in all, as one file is: a walk may find many, and
 				// symlinks or copies may repeat one.

@@ -15,11 +15,13 @@ GOVULNCHECK_VERSION   := v1.9.0
 GORELEASER_VERSION    := v2.19.0
 SYFT_VERSION          := v1.55.0
 KO_VERSION            := v0.19.1
+JQ_VERSION            := 1.8.2
 
 # SHA-256 of each released archive, from the project's own checksum file at
 # that version. After a version bump, `make tool-sums` rewrites them; until
 # then the download fails its check. Renovate runs it on its own bumps
-# (renovate.json). govulncheck publishes no binaries and is always built.
+# (renovate.json). govulncheck publishes no binaries and is always built. jq's
+# release is the binary itself, not an archive.
 GOLANGCI_LINT_SHA256_linux_amd64 := 9b7fe6a6bf6334b98decf8d86b11415ea7889afdabdd1959fdce23af2a9ebcea
 GOLANGCI_LINT_SHA256_linux_arm64 := b4d8f17068b35ee6060cc2f69a16fb48740d706fbba81661c318649c114a6998
 GREMLINS_SHA256_linux_amd64      := b02a42e47935f891c9a411d68c07e211c7082609e79c2435b67c85ee9658c538
@@ -30,20 +32,36 @@ SYFT_SHA256_linux_amd64          := bb65249542db5fedeeb4d3f9b018b75e7264dbfbbb10
 SYFT_SHA256_linux_arm64          := 929bd163db2d7cd2255d3bcb8967208079813d7b46b0c952f7b794d8e2c7d304
 KO_SHA256_linux_amd64            := 635ac6ea3fd376c935fee597fbb29ab2c2449f49ef1655085fe3aa9c25fed7a5
 KO_SHA256_linux_arm64            := 4099b2d1170d3b8a70e049237462efc2dd14d5fa30e9d2e5e108fb4f778cdd3f
+JQ_SHA256_linux_amd64            := b1c22172dd303f3be49e935aa56aa48a8b7a46e0bc838b4997d3bb451495870f
+JQ_SHA256_linux_arm64            := 8b85c817833814ddca00a144c33705546355afccf0cf39b188f3cdb48b852309
+JQ_SHA256_darwin_amd64           := e94b266e3c26690550006abe63152b782280f4e14374accdf04cbde844f00bc0
+JQ_SHA256_darwin_arm64           := 2d75340ba57a4b4b4c8708a21c2dc8e958a48aaa8bba13b27f77f6e4c0eca07e
 
 PLATFORM := $(shell uname -s | tr A-Z a-z)_$(shell uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
 # GoReleaser names its archives Linux_x86_64 and Linux_arm64.
 GORELEASER_ASSET := $(subst linux_amd64,Linux_x86_64,$(subst linux_arm64,Linux_arm64,$(PLATFORM)))
 
+# The checker of a download's SHA-256: sha256sum, or on a system without it, such as macOS
+# without coreutils, shasum -a 256, which reads the same lines with -c.
+SHA256SUM := $(shell command -v sha256sum >/dev/null 2>&1 && echo sha256sum || echo shasum -a 256)
 # fetch <url> <sha256> <path inside the archive> <destination>
 define fetch
 	@tmp=$$(mktemp -d) && trap 'rm -rf "$$tmp"' EXIT && \
 	curl -sSfL -o "$$tmp/a.tar.gz" "$(1)" && \
-	{ echo "$(2)  $$tmp/a.tar.gz" | sha256sum -c --quiet - || \
+	{ echo "$(2)  $$tmp/a.tar.gz" | $(SHA256SUM) -c --quiet - || \
 	  { echo "checksum mismatch for $(1). After a version bump, run make tool-sums." >&2; exit 1; }; } && \
 	tar -xzf "$$tmp/a.tar.gz" -C "$$tmp" "$(3)" && \
 	mkdir -p "$(BIN)" && install -m 0755 "$$tmp/$(3)" "$(4)" && \
 	echo "installed $(4)"
+endef
+# fetch_bin <url> <sha256> <destination>: as fetch, for a release that is the binary itself.
+define fetch_bin
+	@tmp=$$(mktemp -d) && trap 'rm -rf "$$tmp"' EXIT && \
+	curl -sSfL -o "$$tmp/b" "$(1)" && \
+	{ echo "$(2)  $$tmp/b" | $(SHA256SUM) -c --quiet - || \
+	  { echo "checksum mismatch for $(1). After a version bump, run make tool-sums." >&2; exit 1; }; } && \
+	mkdir -p "$(BIN)" && install -m 0755 "$$tmp/b" "$(3)" && \
+	echo "installed $(3)"
 endef
 
 COVERAGE_MIN := 90
@@ -91,7 +109,7 @@ precheck:
 build:
 	CGO_ENABLED=0 $(GO) build -trimpath -ldflags '$(LDFLAGS)' -o errata ./cmd/errata
 
-tools: $(BIN)/golangci-lint $(BIN)/gremlins $(BIN)/govulncheck $(BIN)/goreleaser $(BIN)/syft $(BIN)/ko
+tools: $(BIN)/golangci-lint $(BIN)/gremlins $(BIN)/govulncheck $(BIN)/goreleaser $(BIN)/syft $(BIN)/ko $(BIN)/jq
 
 $(BIN)/golangci-lint:
 ifneq ($(GOLANGCI_LINT_SHA256_$(PLATFORM)),)
@@ -127,6 +145,17 @@ ifneq ($(KO_SHA256_$(PLATFORM)),)
 else
 	GOBIN=$(BIN) $(GO) install github.com/google/ko@$(KO_VERSION)
 endif
+# jq reads renovate.json in ci/tests/tool-sums.sh as Renovate parses it, JSON escapes included.
+# jq publishes binaries for Linux and macOS (named jq-macos-*), each checked against its sum.
+# jq is not written in Go, so elsewhere it is the system's own, and only at the pinned version.
+$(BIN)/jq:
+ifneq ($(JQ_SHA256_$(PLATFORM)),)
+	$(call fetch_bin,https://github.com/jqlang/jq/releases/download/jq-$(JQ_VERSION)/jq-$(subst darwin,macos,$(subst _,-,$(PLATFORM))),$(JQ_SHA256_$(PLATFORM)),$@)
+else
+	@j=$$(command -v jq) || { echo "no jq release for $(PLATFORM): install jq $(JQ_VERSION)" >&2; exit 1; }; \
+	[ "$$("$$j" --version)" = "jq-$(JQ_VERSION)" ] || { echo "$$j is $$("$$j" --version), not jq-$(JQ_VERSION): install jq $(JQ_VERSION)" >&2; exit 1; }; \
+	mkdir -p "$(BIN)" && ln -sf "$$j" "$@"
+endif
 
 # Lint runs once for each GOOS the release builds. A file named _windows.go
 # or _darwin.go is outside a linux build, so linux alone would not see what
@@ -153,48 +182,18 @@ test:
 
 # Tests too slow for the race detector or for a rerun per mutant: each calls
 # slowOnly, which skips under -race, -short and the mutation tag, and runs
-# here once, plain. go test passes when -run matches nothing, so each must
-# report its own PASS line: a renamed test, or a name misspelt here, fails
-# instead of running nowhere. A test that calls slowOnly and is missing here
-# fails TestEverySlowTestIsInMakeSlow in make test. A test that checks less
-# on this machine than it can elsewhere logs a line with "narrowed: ", and
-# make slow shows it.
-SLOW_TESTS := ./internal/report:TestSARIFBoundsTheReviewersUpload \
-              ./internal/extract/core:TestFilterLimitsAtTheCheapestCost \
-              ./internal/extract/toml:TestReplayMeasuredInputsAtFullSize \
-              ./internal/extract/yaml:TestReplayMeasuredInputsAtFullSize \
-              ./internal/extract/text:TestMarkdownBoundsOnLargeInputs \
-              ./internal/extract/yaml:TestExcusedYAMLIsLinear \
-              ./internal/extract/core:TestMessagesQuoteAShortPartOfALargeFile \
-              ./internal/extract/core:TestFilterReadsALargeNumberOnce \
-              ./internal/extract/core:TestContextIsLinear \
-              ./internal/extract/xml:TestXMLValueLimitAtItsSize \
-              ./internal/extract/xml:TestXMLComparisonsStopAtTheFilterLimitAtItsSize \
-              ./internal/extract/xml:TestXMLDeclarationsLookAtALargeFileOnce \
-              ./internal/extract/ini:TestGitAgreesWithGitConfig \
-              ./internal/extract/ini:TestGitConfigReadsNoRepositoryAround \
-              ./internal/extract/core:TestINIValueLimitAtItsSize \
-              ./internal/extract/core:TestQueryWorkIsBounded \
-              ./internal/extract/core:TestQueryChargesItsSteps \
-              ./internal/extract/core:TestRegexTriesReadTheFileAboutOnce \
-              ./internal/extract/core:TestWalkHoldsNamesNotPaths \
-              ./internal/extract/core:TestExtractValueLimit \
-              ./internal/extract/ini:TestReplayINIShapesAtFullSize \
-              ./internal/extract/properties:TestReplayPropertiesShapesAtFullSize \
-              ./internal/extract/toolversion:TestReplayToolVersionShapesAtFullSize \
-              ./internal/extract/packageversion:TestReplayPackageVersionShapesAtFullSize \
-              ./internal/extract/envfile:TestReplayEnvfileShapesAtFullSize \
-              ./internal/extract/gitlabci:TestReplayGitLabCIShapesAtFullSize \
-              ./internal/extract/githubactions:TestCostIsLinearInTheFile \
-              ./internal/extract/shell:TestReplayShellShapesAtFullSize \
-              ./internal/extract/shell:TestShellDeepTreeLineTakesNoStack \
-              ./internal/extract/shell:TestShellMemoryDoesNotGrowWithStatementsAtFullSize \
-              ./internal/extract/shell:TestShellMemoryDoesNotGrowWithStatements \
-              ./internal/extract/shell:TestShellEmptyDocumentHoldsNoStatements \
-              ./internal/extract/jenkins:TestReplayJenkinsShapesAtFullSize \
-              ./internal/extract/ini:TestPHPDeepReferenceCopiesItsTextOnce
+# here once, plain. SLOW_TESTS comes from the tree (#214): scripts/slowtests
+# lists every test whose body calls slowOnly, and fails, listing none, on a
+# call it would miss, so a new slow test needs no edit here. go test passes
+# when -run matches nothing, so each must report its own PASS line, and an
+# empty list is refused rather than pass with no test run. A test that checks
+# less on this machine than it can elsewhere logs a line with "narrowed: ",
+# and the target shows it.
+SLOW_TESTS = $(shell $(GO) run ./scripts/slowtests .)
 slow:
-	@for t in $(SLOW_TESTS); do \
+	@list='$(strip $(SLOW_TESTS))'; \
+	[ -n "$$list" ] || { echo "make slow: REFUSED: SLOW_TESTS is empty, so no slow test would run" >&2; exit 2; }; \
+	for t in $$list; do \
 		pkg=$${t%%:*}; name=$${t##*:}; \
 		out=$$($(GO) test -count=1 -v -run "^$$name$$" $$pkg 2>&1); status=$$?; \
 		echo "$$out" | grep -E "^(--- |ok|FAIL)|_test\.go:[0-9]+: narrowed: "; \
@@ -251,6 +250,9 @@ endif
 ifeq ($(origin MUTATION_MEASURE_LEAST),environment)
 override MUTATION_MEASURE_LEAST :=
 endif
+ifeq ($(origin MUTATION_PER_PACKAGE),environment)
+override MUTATION_PER_PACKAGE :=
+endif
 MUTATION_SCOPE    ?= all
 FUZZ_FLAGS        ?=
 MUTATION_DIFF     ?=
@@ -292,10 +294,10 @@ public-dry: build
 	ci/public-tree.sh $$tree public && ./errata check --root public
 
 # The publish and autopatch scripts, against local repositories only. Gremlins too: one test
-# runs it on a module of its own, to show what a diff run mutates.
-ci-test: $(BIN)/gremlins
+# runs it on a module of its own, to show what a diff run mutates. jq reads renovate.json.
+ci-test: $(BIN)/gremlins $(BIN)/jq
 	cd ci/autopatch && $(GO) vet ./... && $(GO) test -count=1 ./...
-	GREMLINS=$(BIN)/gremlins ci/test-ci.sh
+	GREMLINS=$(BIN)/gremlins JQ=$(BIN)/jq ci/test-ci.sh
 
 # The release image, built by ko with .goreleaser.yaml's base image and user
 # into a tarball, pushed nowhere, and its config checked against what the

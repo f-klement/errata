@@ -41,9 +41,7 @@ type Kind interface {
 	ListLines(c Check, q Quoter) []Line
 }
 
-// errNoKind is Validate's refusal of a check that holds no kind, and a
-// program check's of one with no run, which is what an entry that writes
-// neither run nor a default run loads as.
+// errNoKind is Validate's refusal of a check that holds no kind.
 var errNoKind = errors.New("run or extract is required: a program check has run, a rule has extract, and a generated check has generated")
 
 // Rule returns the rule c is, or nil when c is another kind.

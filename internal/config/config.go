@@ -428,21 +428,19 @@ func build(raw json.RawMessage, def defaults, newExtractor Builder) (c check.Che
 		berr = fmt.Errorf("check %q: %w", e.ID, errors.Join(errs...))
 	}
 	// Validate even after a build error, so one pass reports every problem
-	// with the check, and after the defaults apply, so a program check that
-	// has neither its own run nor the default is refused as one with no run.
-	// On a conflict the check holds no kind and does not load. It is
-	// validated as a program check with a stand-in run, which refuses
-	// nothing, so its id, reason and scope are still checked in the same
-	// pass and it is not also refused as one with no kind.
-	// A run refused for listing no argument is validated as present in
-	// the same way: the specific error stands alone, without "run or
-	// extract is required" after it, which would tell an author who wrote
-	// run to write run.
-	v := c
-	if row == nil || errors.Is(errors.Join(kerrs...), errEmptyRun) {
-		v.Kind = &check.Program{Run: []string{"the stand-in run"}}
+	// with the check, and after the defaults apply, so an entry that has
+	// neither its own run nor the default holds no kind and is refused as
+	// one with no run. A run written empty is a program check's, which
+	// validation refuses with its own message.
+	// On a conflict the check holds no kind and does not load. Its keys
+	// are validated without its kind, so its id, reason and scope are
+	// still checked in the same pass and it is not also refused as one
+	// with no kind.
+	validate := c.Validate
+	if row == nil {
+		validate = c.ValidateKeys
 	}
-	return c, errors.Join(berr, v.Validate())
+	return c, errors.Join(berr, validate())
 }
 
 // kindRow is one kind of check in config's kind decision: what an entry is
@@ -584,23 +582,20 @@ func timeout(row *kindRow, written string, errs []error) (time.Duration, []error
 	return parsed, errs
 }
 
-// errEmptyRun refuses a program check's run that lists no argument. build
-// reads it to validate the check as one with a run, so it is refused once.
-var errEmptyRun = errors.New("run lists no argument: write the command, or remove the key, which takes the default run if the file sets one")
-
 // buildProgram builds a program check: its own run, or the default run
-// when the entry writes none. An empty run would take the default run, a
-// program the entry says it does not have, so it is refused.
+// when the entry writes none. A run written empty stays empty rather than
+// take the default run, a program the entry says it does not have, and
+// validation refuses it. An entry that writes no run, in a file that sets
+// no default, holds no kind: it names no program to run.
 func buildProgram(e checkEntry, keys map[string]json.RawMessage, def defaults, _ Builder) (check.Kind, []error) {
 	p := &check.Program{Run: e.Run}
-	var errs []error
-	if _, wrote := keys["run"]; wrote && len(e.Run) == 0 {
-		errs = append(errs, errEmptyRun)
-	}
 	if err := def.apply(p, keys, e.ID); err != nil {
-		errs = append(errs, err)
+		return p, []error{err}
 	}
-	return p, errs
+	if _, wrote := keys["run"]; !wrote && len(p.Run) == 0 {
+		return nil, nil
+	}
+	return p, nil
 }
 
 // buildGeneratedKind builds a generated check. One written null holds no

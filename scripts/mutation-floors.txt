@@ -20,6 +20,50 @@
 # column, or the same line left in place after the next tag carries the new row
 # is not excused. This is the one place the line's form is written out.
 #
+# A package renamed, or split out of another, names the package it came from
+# after its figures (#215):
+#   internal/program                   85        85      20     from internal/protocol
+# A row with no row of its own at the tag is then compared with that package's
+# row at the tag, and the line above it excuses a lowering from those figures.
+# A row with no `from` and no row of its own at the tag is new, and compared
+# with nothing. Once a tag carries the row, it is compared with its own row and
+# the `from` may go. A row the tag has and HEAD has not fails the ratchet,
+# whether or not its code is gone, unless a row compared with it names it in
+# `from`, or a line anywhere in this table records the removal (owner decision
+# 2026-10-31), in this form:
+#   # removed internal/<package> by owner 2026-11-02: <why>
+# The line goes when a package of that name has a row again: left in place,
+# it would excuse that package's next removal too, so the ratchet fails on it.
+#
+# A row may also hold three fields after its figures, all three or none:
+# `mutant <seconds>`, the time a mutant of the package took at one worker,
+# `measuring <seconds>`, the time the script's measuring of its pass and a
+# mutant took, and `measured <pipeline id or YYYY-MM-DD>`, where the two were
+# taken. scripts/mutation.sh refuses a row with some of them and not all.
+# When packages run at once under a deadline, a package with these times whose
+# mutants would not fit at its share of the workers, and would at all of them,
+# runs alone with all of them first, when that leaves time for the others
+# (scripts/mutation.sh, alone_look). A package without them keeps its slot.
+#
+# The weekly pass prints, after its memory lines, each package's row with the
+# times it took and its pipeline's id; copying a row over the old one refreshes
+# it. The weekly job runs on builder (.weekly pins the node) with 2 CPUs, and a
+# push's mutation job, which reads the times, can run on any node, so a row's
+# times are builder's. The weekly pass measures a package alone, so a copied
+# row's measuring runs lower than the same package's in a push slot that shares
+# the CPUs with another. The times below are pipeline 3010608824's, from a push
+# job on 2026-10-30, for the packages whose mutant took 8 s or more: its log's
+# "a mutant took" line for the mutant. Its log has no line for the measuring,
+# so that is the slot's time from its "started" to its "ended" line, less the
+# rest of the slot. The dry run's coverage pass is the estimate line's figure
+# less its mutants and 1 (core 21, minimatch 4, rule 5, report 3.2). For core
+# and minimatch, left out after their dry run, the slot less that pass (core
+# 203.55 - 21, minimatch 126.36 - 4); for rule and report, less that pass,
+# gremlins' pass and their mutants at the row's time (rule 252.12 - 5 - 14.1 -
+# 11 x 15.7, report 107.76 - 3.2 - 5.0 - 8 x 8.7). Each is an upper bound: the
+# dry run's wall time holds more than its coverage pass. A package with faster
+# mutants fits a push's changed lines at one worker.
+#
 # A figure at or below its floor fails. Efficacy is 85 for every package.
 # Mutant coverage is 85 but where Go's coverage profile cannot see a test reach
 # a mutant: it leaves package-level declarations and code after a statement's
@@ -63,7 +107,7 @@ internal/extract                   85        85      5
 # it again. 110 of those 111 were case expressions, which no longer count as not
 # covered when their clause runs, and 1 is package level. It had the floor 82 at
 # 82.57% (111 of 637) until env's reader added code its tests reach.
-internal/extract/core              85        85      5
+internal/extract/core              85        85      5      mutant 26.3 measuring 182 measured 3010608824
 # env: 100%, efficacy 100%, on 2026-10-25.
 internal/extract/env               85        85      5
 # envfile: 100% on a dry run.
@@ -117,7 +161,7 @@ internal/extract/xml               85        85      5
 internal/extract/yaml              85        85      5
 # minimatch: 98.42%, 15 of its 950 not covered (2 of them indexFrom's
 # unreachable guard in brace.go), efficacy 92.51%, on 2026-10-30.
-internal/minimatch                 85        85      5
+internal/minimatch                 85        85      5      mutant 8.6 measuring 122 measured 3010608824
 internal/program                   85        85      5
 # protocol: 98.25%, 1 of its 57 not covered, efficacy 89.29%, on 2026-10-30
 # with case expressions covered. It had the floor 78 at 78.57% (3 of 14 not
@@ -134,6 +178,6 @@ internal/program                   85        85      5
 # costs nothing: a killed mutant ends when its test fails, not at the timeout.
 internal/protocol                  85        85      20
 internal/provider                  85        85      5
-internal/report                    85        85      5
-internal/rule                      85        85      5
+internal/report                    85        85      5      mutant 8.7 measuring 29 measured 3010608824
+internal/rule                      85        85      5      mutant 15.7 measuring 59 measured 3010608824
 internal/semver                    85        85      5

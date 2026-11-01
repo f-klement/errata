@@ -1,5 +1,7 @@
 package check
 
+import "errors"
+
 // Program is what makes a check a program check: the program it runs
 // through the check protocol, whose exit code is the verdict.
 type Program struct {
@@ -18,10 +20,14 @@ func (*Program) Nouns() (one, many string) { return "program check", "program ch
 // takes every scope.
 func (*Program) ScopeRefusal(Scope) string { return "" }
 
+// errEmptyRun refuses a program check whose run lists no argument, so it
+// has no command to run.
+var errEmptyRun = errors.New("run lists no argument: write the command, or remove the key, which takes the default run if the file sets one")
+
 // Validate refuses a program check with no command.
 func (p *Program) Validate(Check) []error {
 	if len(p.Run) == 0 {
-		return []error{errNoKind}
+		return []error{errEmptyRun}
 	}
 	return nil
 }

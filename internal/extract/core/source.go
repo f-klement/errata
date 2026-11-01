@@ -8,6 +8,7 @@
 package core
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -91,16 +92,271 @@ var errOutside = errors.New("a symlink leads outside the repository")
 // calls the chain a loop.
 const maxLinks = 40
 
+// tree is the directory a read under a root goes through: an *os.Root
+// open on it, and its path with its symlinks resolved, which resolve reads
+// a link's target against.
+type tree struct {
+	*os.Root
+	real  string
+	held  bool            // the fixture the engine opened, which close leaves open
+	dirs  *chain          // the directories below the root open now
+	files map[string]bool // on a witness, the files the index lists below the fixture
+}
+
+// chain is the directories a tree holds open below its root, each opened
+// from the one before it: a/, a/b/, a/b/c/ for a look at a/b/c/x. A look
+// at a name goes through the directory that holds it, so it costs one
+// lookup, where a look through the root walks every directory on the way
+// again; a file set's files, in git's order, share their directories.
+// It holds at most maxChain, so a deep path cannot hold a descriptor for
+// each of its directories; a look below that goes through the deepest one
+// by the rest of its path.
+type chain struct {
+	names []string   // the directory names below the root, in order
+	roots []*os.Root // roots[i] is open on names[:i+1]
+}
+
+// maxChain is the most directories a tree holds open below its root, the
+// depth a walk may go (DefaultWalk).
+const maxChain = 64
+
+// at is the directory to look up rel in, a path relative to t's root, and
+// the name to look up there: rel's last name, or the rest of rel below the
+// deepest directory the chain holds, as when a directory on the way is
+// too deep or cannot be opened.
+func (t tree) at(rel string) (*os.Root, string) {
+	names := splitPath(rel)
+	if len(names) == 0 {
+		return t.Root, rel // the root itself
+	}
+	dirs := names[:len(names)-1]
+	c := t.dirs
+	keep := 0
+	for keep < len(c.names) && keep < len(dirs) && c.names[keep] == dirs[keep] {
+		keep++
+	}
+	// Where the chain parts from rel's directories, what lies past is
+	// closed; a chain that ends on the way holds nothing past, so nothing
+	// closes. A chain that runs on below them is kept: resolve looks at
+	// each prefix of a path in turn, and the next look goes deeper again.
+	if keep < len(dirs) {
+		for _, r := range c.roots[keep:] {
+			_ = r.Close()
+		}
+		c.names, c.roots = c.names[:keep], c.roots[:keep]
+	}
+	for len(c.names) < min(len(dirs), maxChain) {
+		parent := t.Root
+		if n := len(c.roots); n > 0 {
+			parent = c.roots[n-1]
+		}
+		name := dirs[len(c.names)]
+		r, err := parent.OpenRoot(name)
+		if err != nil {
+			// The look below goes through the rest of the path, and
+			// gives the error the file system gives it there, such as
+			// ENOTDIR for a name below a file.
+			break
+		}
+		c.names, c.roots = append(c.names, name), append(c.roots, r)
+	}
+	held := min(len(dirs), len(c.names)) // rel's directories the chain holds
+	parent := t.Root
+	if held > 0 {
+		parent = c.roots[held-1]
+	}
+	return parent, filepath.Join(names[held:]...)
+}
+
+// lstat is Lstat of rel in t, through the directory that holds it.
+func (t tree) lstat(rel string) (fs.FileInfo, error) {
+	r, name := t.at(rel)
+	return r.Lstat(name)
+}
+
+// readlink is Readlink of rel in t, through the directory that holds it.
+func (t tree) readlink(rel string) (string, error) {
+	r, name := t.at(rel)
+	return r.Readlink(name)
+}
+
+// fixtureKey is the context key of the fixture a witness's run reads.
+type fixtureKey struct{}
+
+// heldFixture is the fixture a witness's run reads: its path, as the run
+// is given it as its root, its directory, held open, and the files git's
+// index lists below it, relative to it and written with slashes: every
+// one, which a read finds (indexed), and those a glob matches, without
+// the fixtures nested in it (globbed, as trackedFiles lists them).
+type heldFixture struct {
+	path    string
+	dir     *os.Root
+	indexed map[string]bool
+	globbed []string
+}
+
+// OnFixture is ctx, the context of a run of a witness (check.OnWitness),
+// with the fixture's directory, dir, which the engine opened when it
+// checked where the fixture is, and fixture, the path the run is given as
+// its root. Every read under that root goes through dir (openTree), so a
+// symlink put at .errata, at .errata/witness or at the fixture after that
+// check cannot move the read, and a read under any other root is refused.
+// The caller keeps dir open for the run and closes it after. It lives
+// here, not in check, since internal/rule imports check and reads no file.
+//
+// It reads git's index of the repository once (indexBelow), and refuses a
+// fixture the index lists no file below, whatever kind of check runs on
+// it: a clone in CI holds none of its files, so the witness must be
+// unknown here as it is there. A read on the run then finds only the
+// files the index lists below the fixture (tree.indexed), a nested
+// fixture's included, so a fixture that commits some of its files reads
+// as its clone would, and a glob on the run matches the list read here.
+func OnFixture(ctx context.Context, fixture string, dir *os.Root) (context.Context, error) {
+	if _, witness := check.RealRoot(ctx); !witness {
+		return nil, errors.New("a fixture is held only on a witness's run")
+	}
+	globbed, below, err := indexBelow(ctx, fixture)
+	if err != nil {
+		return nil, err
+	}
+	indexed := make(map[string]bool, len(below))
+	for _, f := range below {
+		indexed[f] = true
+	}
+	return context.WithValue(ctx, fixtureKey{}, heldFixture{path: fixture, dir: dir, indexed: indexed, globbed: globbed}), nil
+}
+
+// notIndexed is the error of a read on a witness of a file git's index
+// does not list below the fixture. A clone holds no such file, so
+// errors.Is reads it as fs.ErrNotExist, as the read in CI would fail.
+// file is the path the spec wrote and entry, relative to the fixture and
+// written with slashes, is the one the index lacks: the file itself, or
+// a link on the way or its target, which the message then names as the
+// one to commit.
+type notIndexed struct{ file, entry string }
+
+func (e notIndexed) Error() string {
+	const lacks = " not in git's index below the fixture, so a clone of the repository does not hold it; commit "
+	if e.entry == filepath.ToSlash(filepath.Clean(e.file)) {
+		return e.file + " is" + lacks + "it"
+	}
+	return e.file + " needs " + e.entry + ", which is" + lacks + e.entry
+}
+
+func (e notIndexed) Is(target error) bool { return target == fs.ErrNotExist }
+
+// indexed refuses rel, where a read of file lands, on a witness whose index
+// does not list it below the fixture, and passes anything on another run.
+func (t tree) indexed(file, rel string) error {
+	if t.files == nil || t.files[filepath.ToSlash(rel)] {
+		return nil
+	}
+	return notIndexed{file: file, entry: filepath.ToSlash(rel)}
+}
+
+// openTree opens root for a read. On a witness's run root is the fixture,
+// and the read goes through the directory the engine opened when it
+// checked the fixture (OnFixture), so a symlink swapped in at
+// .errata, at .errata/witness or at the fixture since then moves nothing:
+// the read stays in the directory that was checked, or is refused when
+// that directory is gone. A root other than the fixture held is refused,
+// since the held directory is no other. Any other run opens root by its
+// path.
+func openTree(ctx context.Context, root string) (tree, error) {
+	if real, witness := check.RealRoot(ctx); witness {
+		held, _ := ctx.Value(fixtureKey{}).(heldFixture)
+		rel, err := filepath.Rel(real, root)
+		if held.dir == nil || filepath.Clean(root) != filepath.Clean(held.path) || err != nil || !filepath.IsLocal(rel) {
+			return tree{}, fmt.Errorf("the witness at %s is not a fixture opened inside the repository root", Quote(root))
+		}
+		// The repository's root is the caller's, as on a real run; only
+		// the fixture below it is held.
+		realReal, err := filepath.EvalSymlinks(real)
+		if err != nil {
+			return tree{}, fmt.Errorf("open the repository root: %w", bare(err))
+		}
+		return tree{Root: held.dir, real: filepath.Join(realReal, rel), held: true, dirs: &chain{}, files: held.indexed}, nil
+	}
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return tree{}, fmt.Errorf("open the repository root: %w", bare(err))
+	}
+	r, err := os.OpenRoot(realRoot)
+	if err != nil {
+		return tree{}, fmt.Errorf("open the repository root: %w", bare(err))
+	}
+	return tree{Root: r, real: realRoot, dirs: &chain{}}, nil
+}
+
+// close closes the directories t holds below its root, and t, unless it
+// is the fixture the engine holds.
+func (t tree) close() {
+	for _, r := range t.dirs.roots {
+		_ = r.Close()
+	}
+	t.dirs.names, t.dirs.roots = nil, nil
+	if !t.held {
+		_ = t.Close()
+	}
+}
+
+// Reader reads files under one root through one tree, opened once, so
+// the files an extractor reads share the root's open and the directories
+// on their way (chain). Close it when the files are read.
+type Reader struct{ t tree }
+
+// OpenReader opens root for reads, as Read opens it (openTree).
+func OpenReader(ctx context.Context, root string) (*Reader, error) {
+	t, err := openTree(ctx, root)
+	if err != nil {
+		return nil, err
+	}
+	return &Reader{t: t}, nil
+}
+
+// Read is s.Read under the reader's root.
+func (r *Reader) Read(s Source) ([]byte, error) { return s.readIn(r.t) }
+
+// Resolved is s.Resolved under the reader's root.
+func (r *Reader) Resolved(s Source) (string, error) { return s.resolvedIn(r.t) }
+
+// Close closes what the reader holds open.
+func (r *Reader) Close() { r.t.close() }
+
+// OpenDir opens root to list it, as a read under root opens it (openTree):
+// on a witness's run, the fixture the engine opened.
+func OpenDir(ctx context.Context, root string) (*os.File, error) {
+	t, err := openTree(ctx, root)
+	if err != nil {
+		return nil, err
+	}
+	defer t.close()
+	d, err := t.Open(".")
+	if err != nil {
+		return nil, fmt.Errorf("open the repository root: %w", bare(err))
+	}
+	return d, nil
+}
+
 // Resolved is the path, relative to the root, where the file ends once its
 // symlinks are followed, or the refusal Read would give for a link that
 // leads out or a file that is not there. Two Sources with one Resolved read
 // one file.
-func (s Source) Resolved(root string) (string, error) {
-	realRoot, err := filepath.EvalSymlinks(root)
+func (s Source) Resolved(ctx context.Context, root string) (string, error) {
+	t, err := openTree(ctx, root)
 	if err != nil {
-		return "", fmt.Errorf("open the repository root: %w", bare(err))
+		return "", err
 	}
-	rel, _, err := resolve(realRoot, s.File)
+	defer t.close()
+	return s.resolvedIn(t)
+}
+
+// resolvedIn is Resolved in the tree t, which the caller opened.
+func (s Source) resolvedIn(t tree) (string, error) {
+	rel, mode, err := resolve(t, s.File)
+	if err == nil && !mode.IsDir() {
+		err = t.indexed(s.File, rel)
+	}
 	if err != nil {
 		return "", fmt.Errorf("read %s: %w", s.File, err)
 	}
@@ -115,21 +371,17 @@ func (s Source) Resolved(root string) (string, error) {
 // a name on the way to it is a file and no directory, the error is one
 // that errors.Is reads as fs.ErrNotExist. Every error names the file as the
 // spec wrote it.
-func (s Source) Stat(root string) (fs.FileInfo, error) {
+func (s Source) Stat(ctx context.Context, root string) (fs.FileInfo, error) {
 	// A root that is not there, or is no directory, says nothing of the
 	// file, so its error keeps the text and drops the fs.ErrNotExist. The
 	// root is opened before resolve, since resolve would read a file at the
 	// root as a name below a file, ENOTDIR, which is a missing file.
-	realRoot, err := filepath.EvalSymlinks(root)
+	t, err := openTree(ctx, root)
 	if err != nil {
-		return nil, fmt.Errorf("open the repository root: %s", bare(err).Error())
+		return nil, errors.New(err.Error())
 	}
-	r, err := os.OpenRoot(realRoot)
-	if err != nil {
-		return nil, fmt.Errorf("open the repository root: %s", bare(err).Error())
-	}
-	defer r.Close()
-	rel, _, err := resolve(realRoot, s.File)
+	defer t.close()
+	rel, _, err := resolve(t, s.File)
 	if err != nil {
 		return nil, fmt.Errorf("stat %s: %w", s.File, notThere(err))
 	}
@@ -137,9 +389,16 @@ func (s Source) Stat(root string) (fs.FileInfo, error) {
 	// swapped in on the way after resolve is refused too. Lstat does not
 	// follow a link swapped in at the name itself: the caller sees a
 	// symlink, which is no regular file.
-	info, err := r.Lstat(rel)
+	info, err := t.lstat(rel)
 	if err != nil {
 		return nil, fmt.Errorf("stat %s: %w", s.File, notThere(bare(err)))
+	}
+	// A directory is no entry of the index, and stays unknown to exists
+	// and size, as on any run.
+	if !info.IsDir() {
+		if err := t.indexed(s.File, rel); err != nil {
+			return nil, fmt.Errorf("stat %s: %w", s.File, err)
+		}
 	}
 	return info, nil
 }
@@ -164,8 +423,19 @@ func notThere(err error) error {
 // Read reads the file under root. A file over the limit is refused before
 // it is read, and a file that grows past it while it is read is refused too.
 // Every error names the file as the spec wrote it, never an absolute path.
-func (s Source) Read(root string) ([]byte, error) {
-	f, _, err := s.open(root)
+func (s Source) Read(ctx context.Context, root string) ([]byte, error) {
+	t, err := openTree(ctx, root)
+	if err != nil {
+		return nil, err
+	}
+	defer t.close()
+	return s.readIn(t)
+}
+
+// readIn is Read in the tree t, which the caller opened, so the files of a
+// set open their root once.
+func (s Source) readIn(t tree) ([]byte, error) {
+	f, _, err := s.openIn(t)
 	if err != nil {
 		return nil, err
 	}
@@ -189,8 +459,8 @@ func (s Source) readLimited(r io.Reader) ([]byte, error) {
 
 // Head is the first n bytes of the file under root, all of it when it is
 // shorter, and the file's size in bytes, refused as Read refuses the file.
-func (s Source) Head(root string, n int) ([]byte, int64, error) {
-	f, size, err := s.open(root)
+func (s Source) Head(ctx context.Context, root string, n int) ([]byte, int64, error) {
+	f, size, err := s.open(ctx, root)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -204,12 +474,21 @@ func (s Source) Head(root string, n int) ([]byte, int64, error) {
 
 // open opens the file under root, refusing a link that leads out, a file
 // that is not there and one over the limit, and returns its size.
-func (s Source) open(root string) (*os.File, int64, error) {
-	realRoot, err := filepath.EvalSymlinks(root)
+func (s Source) open(ctx context.Context, root string) (*os.File, int64, error) {
+	t, err := openTree(ctx, root)
 	if err != nil {
-		return nil, 0, fmt.Errorf("open the repository root: %w", bare(err))
+		return nil, 0, err
 	}
-	rel, mode, err := resolve(realRoot, s.File)
+	defer t.close()
+	return s.openIn(t)
+}
+
+// openIn is open in the tree t, which the caller opened.
+func (s Source) openIn(t tree) (*os.File, int64, error) {
+	rel, mode, err := resolve(t, s.File)
+	if err == nil && !mode.IsDir() {
+		err = t.indexed(s.File, rel)
+	}
 	if err != nil {
 		return nil, 0, fmt.Errorf("read %s: %w", s.File, err)
 	}
@@ -218,18 +497,14 @@ func (s Source) open(root string) (*os.File, int64, error) {
 	if mode&fs.ModeDevice != 0 {
 		return nil, 0, fmt.Errorf("read %s: %w", s.File, errDevice)
 	}
-	r, err := os.OpenRoot(realRoot)
-	if err != nil {
-		return nil, 0, fmt.Errorf("open the repository root: %w", bare(err))
-	}
-	defer r.Close()
 	// The open goes through os.Root, which refuses a link that leads out,
 	// so a link swapped in after resolve is refused too. It does not block,
 	// so a FIFO, which git never checks out, opens at once, and the type
 	// check of the open file refuses it, and a socket, before a byte is
 	// read. That check also refuses a device swapped in after resolve, and
 	// O_NOCTTY keeps such a terminal from becoming errata's own.
-	f, err := r.OpenFile(rel, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOCTTY, 0)
+	dir, name := t.at(rel)
+	f, err := dir.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOCTTY, 0)
 	if err != nil {
 		return nil, 0, fmt.Errorf("read %s: %w", s.File, bare(err))
 	}
@@ -280,15 +555,18 @@ func bare(err error) error {
 }
 
 // resolve follows the symlinks on the way to file and returns the path,
-// relative to realRoot, where it ends, and the type of the file there as
+// relative to t's root, where it ends, and the type of the file there as
 // Lstat gives it. It walks one name at a time as the
 // kernel does, so a .. in a link's target goes up from where the link
-// points. It looks only at paths inside realRoot, and refuses a link that
-// leads out before it touches anything outside. A route may pass through a
-// directory above the root on its way back in, since those directories are
-// real: realRoot is the root with its own links resolved. A .. in file itself
-// is resolved by name first, by Clean, before any link.
-func resolve(realRoot, file string) (string, fs.FileMode, error) {
+// points. It looks only at paths inside the root, each through t's
+// os.Root, and refuses a link that leads out before it touches anything
+// outside. A route may pass through a directory above the root on its way
+// back in, since those directories are real: t.real is the root with its
+// own links resolved, and the route is followed by name, touching nothing
+// above the root. A .. in file itself is resolved by name first, by Clean,
+// before any link.
+func resolve(t tree, file string) (string, fs.FileMode, error) {
+	realRoot := t.real
 	todo := splitPath(filepath.Clean(file))
 	cur := realRoot
 	mode := fs.ModeDir // of cur
@@ -308,7 +586,11 @@ func resolve(realRoot, file string) (string, fs.FileMode, error) {
 			cur, mode = next, fs.ModeDir // a directory above the root, on the way back to it
 			continue
 		}
-		info, err := os.Lstat(next)
+		at, err := filepath.Rel(realRoot, next)
+		if err != nil {
+			return "", 0, err
+		}
+		info, err := t.lstat(at)
 		if err != nil {
 			return "", 0, bare(err)
 		}
@@ -319,7 +601,13 @@ func resolve(realRoot, file string) (string, fs.FileMode, error) {
 		if links++; links > maxLinks {
 			return "", 0, errors.New("too many levels of symbolic links")
 		}
-		target, err := os.Readlink(next)
+		// On a witness a link the fixture does not commit is not in a
+		// clone, so nothing is followed through it. git's index lists a
+		// symlink as an entry of its own, so a committed one is followed.
+		if err := t.indexed(file, at); err != nil {
+			return "", 0, err
+		}
+		target, err := t.readlink(at)
 		if err != nil {
 			return "", 0, bare(err)
 		}

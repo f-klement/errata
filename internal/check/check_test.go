@@ -28,7 +28,7 @@ func TestValidate(t *testing.T) {
 		{"trailing hyphen", func(c *Check) { c.ID = "docs-" }, "lower-case words"},
 		{"double hyphen", func(c *Check) { c.ID = "a--b" }, "lower-case words"},
 		{"unknown scope", func(c *Check) { c.Scope = "cluster" }, `scope "cluster"`},
-		{"no run", func(c *Check) { c.Kind = &Program{} }, "run or extract is required"},
+		{"no run", func(c *Check) { c.Kind = &Program{} }, "run lists no argument"},
 		{"no kind", func(c *Check) { c.Kind = nil }, "run or extract is required"},
 		{"negative timeout", func(c *Check) { c.Timeout = -time.Second }, "timeout must not be negative"},
 		{"zero timeout", func(c *Check) { c.Timeout = 0 }, ""},
@@ -59,6 +59,47 @@ func TestValidateReportsEveryProblem(t *testing.T) {
 	for _, want := range []string{"id", "reason", "scope", "run or extract"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not mention %s", err, want)
+		}
+	}
+}
+
+// A program check whose run lists no argument is refused with the one
+// message that names run, not as a check with no kind, which would tell an
+// author who wrote run to write run. The planted break: Program.Validate
+// returning errNoKind, as it did before #182.
+func TestAnEmptyRunIsItsOwnError(t *testing.T) {
+	const want = `check "docs-name-node": run lists no argument: write the command, or remove the key, which takes the default run if the file sets one`
+	for _, run := range [][]string{nil, {}} {
+		c := valid()
+		c.Kind = &Program{Run: run}
+		if err := c.Validate(); err == nil || err.Error() != want {
+			t.Errorf("run %#v: error = %v, want %q alone", run, err, want)
+		}
+	}
+}
+
+// ValidateKeys refuses what Validate refuses of the keys every kind holds,
+// and does not ask for a kind, so a check that holds none passes it. The
+// planted breaks: ValidateKeys asking for the kind, which refuses the check
+// with no kind; and leaving out the witnesses, which passes the check that
+// names one twice.
+func TestValidateKeysLeavesOutTheKind(t *testing.T) {
+	c := valid()
+	c.Kind = nil
+	if err := c.ValidateKeys(); err != nil {
+		t.Errorf("a check with no kind: ValidateKeys = %v, want nil", err)
+	}
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "run or extract is required") {
+		t.Errorf("a check with no kind: Validate = %v, want run or extract is required", err)
+	}
+	c = Check{Witness: []string{"w", "w"}, Timeout: -time.Second}
+	err := c.ValidateKeys()
+	if err == nil || strings.Contains(err.Error(), "run or extract") {
+		t.Fatalf("an empty check: ValidateKeys = %v, want its keys refused and no kind asked for", err)
+	}
+	for _, want := range []string{"id \"\" must be", "reason is required", "scope \"\" must be", "timeout must not be negative", `witness names "w" twice`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("ValidateKeys = %q, want it to contain %q", err, want)
 		}
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -35,7 +36,13 @@ import (
 //
 // On a witness root is the fixture: the file is read from it, and the
 // generator starts in the repository's root with ERRATA_ROOT at the
-// fixture, as a program check's run does (ADR 0015).
+// fixture, as a program check's run does (ADR 0015). A fixture that holds
+// nothing at the file makes the witness unknown before the generator
+// starts: the false a missing file gives on the repository would hold the
+// witness, though the fixture left the file out rather than plant a break
+// in it, as a rule's file that is not there is unknown. A file that is
+// there but cannot be read is unknown after the run, as on the
+// repository.
 func RunGenerated(ctx context.Context, root string, c check.Check) (res check.Result) {
 	start := time.Now()
 	res.Check = c
@@ -46,8 +53,13 @@ func RunGenerated(ctx context.Context, root string, c check.Check) (res check.Re
 	// writes the file and prints it is compared with the file as
 	// committed, not with what it just wrote.
 	src := core.Source{File: g.File, Limit: g.MaxBytes}
-	data, err := src.Read(root)
-	gone := err != nil && missing(src, root)
+	data, err := src.Read(ctx, root)
+	gone := err != nil && missing(ctx, src, root)
+	if real, witness := check.RealRoot(ctx); gone && witness {
+		res.Verdict = check.VerdictUnknown
+		res.Message = fmt.Sprintf("its fixture %s holds nothing at %s, the file the generated check compares, so the check could not be shown to fail; commit the file with a break planted in it", fixtureName(real, root), g.File)
+		return res
+	}
 
 	p := run(ctx, root, c, g.Run, g.MaxBytes)
 	if msg := generatorFailed(p, c); msg != "" {
@@ -71,6 +83,18 @@ func RunGenerated(ctx context.Context, root string, c check.Check) (res check.Re
 	res.Verdict = check.VerdictFalse
 	res.Message, res.At = difference(g.File, data, p.Stdout)
 	return res
+}
+
+// fixtureName is the fixture at root as a path from the repository's root
+// real, with slashes. A root outside real gives a path that starts with
+// "../", and root itself comes back only when filepath.Rel cannot relate
+// the two, as when one is relative and the other absolute.
+func fixtureName(real, root string) string {
+	rel, err := filepath.Rel(real, root)
+	if err != nil {
+		return root
+	}
+	return filepath.ToSlash(rel)
 }
 
 // generatorFailed is the message of a generator that ended without an
@@ -112,8 +136,8 @@ func lastBytes(s string, n int) string {
 // missing reports whether nothing is at src's file, as exists reads it: no
 // file at the name, or a name on the way to it that is a file and no
 // directory.
-func missing(src core.Source, root string) bool {
-	_, err := src.Stat(root)
+func missing(ctx context.Context, src core.Source, root string) bool {
+	_, err := src.Stat(ctx, root)
 	return errors.Is(err, fs.ErrNotExist)
 }
 

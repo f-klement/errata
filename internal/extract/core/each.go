@@ -110,8 +110,8 @@ func (e Each) ExtractWith(ctx context.Context, root string, _ map[string][]check
 }
 
 // Extract returns the values of every pattern in the file under root.
-func (e Each) Extract(_ context.Context, root string) ([]check.Value, error) {
-	return ExtractOne(root, e.Source, e)
+func (e Each) Extract(ctx context.Context, root string) ([]check.Value, error) {
+	return ExtractOne(ctx, root, e.Source, e)
 }
 
 // FromShared is FromData: the searches share their time through the

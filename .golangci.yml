@@ -75,6 +75,7 @@ linters:
             - net/netip$
             - reflect$
             - regexp$
+            - regexp/syntax$
             - slices$
             - strconv$
             - strings$

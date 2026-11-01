@@ -1,6 +1,7 @@
 package minimatch
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -42,18 +43,42 @@ type machine struct {
 type budget struct {
 	left int
 	err  error
+	// ctx, when set, ends the match once it is done.
+	ctx context.Context
 }
 
 // errBudget is the error of a match that ran out of steps.
 var errBudget = errors.New("matching takes more than the step budget")
 
-// step spends one step, and reports false once none is left.
-func (b *budget) step() bool {
-	if b.left <= 0 {
+// checkEvery is how many steps a match takes between two looks at its
+// context. Through the CI runner on the build node the slowest step
+// measured took 134 ns (classWork), so 1024 steps take about 0.14 ms.
+const checkEvery = 1 << 10
+
+// step spends one step, and reports false once none is left or the
+// budget's context is done.
+func (b *budget) step() bool { return b.spend(1) }
+
+// spend spends n steps, and reports false once fewer than n are left or
+// the budget's context is done. It looks at the context each time what is
+// left reaches or passes a multiple of checkEvery.
+func (b *budget) spend(n int) bool {
+	if n <= 0 {
+		return true
+	}
+	if b.left < n {
+		b.left = 0
 		b.err = errBudget
 		return false
 	}
-	b.left--
+	before := b.left
+	b.left -= n
+	if b.ctx != nil && b.left <= (before-1)/checkEvery*checkEvery {
+		if err := stopped(b.ctx); err != nil {
+			b.err = err
+			return false
+		}
+	}
 	return true
 }
 
@@ -490,42 +515,83 @@ func (m *machine) wordBoundary(pos int) bool {
 
 // wordRanges are the word characters of \w and \b: with the i and u flags
 // also ſ and the Kelvin sign, which fold into s and k, as the
-// specification's WordCharacters has it.
+// specification's WordCharacters has it. wordBoundary asks twice for each
+// \b it tests, so the two lists are built once.
 func wordRanges(icase, uflag bool) [][2]rune {
-	ranges := [][2]rune{{'0', '9'}, {'A', 'Z'}, {'_', '_'}, {'a', 'z'}}
 	if icase && uflag {
-		ranges = append(ranges, [2]rune{0x017F, 0x017F}, [2]rune{0x212A, 0x212A})
+		return foldedWordRanges
 	}
-	return ranges
+	return basicWordRanges
 }
+
+// The two lists wordRanges gives. A caller that appends to one gets a new
+// slice, since each is exactly as long as its capacity.
+var (
+	basicWordRanges  = [][2]rune{{'0', '9'}, {'A', 'Z'}, {'_', '_'}, {'a', 'z'}}
+	foldedWordRanges = [][2]rune{{'0', '9'}, {'A', 'Z'}, {'_', '_'}, {'a', 'z'}, {0x017F, 0x017F}, {0x212A, 0x212A}}
+)
 
 // lineTerminator is whether . leaves r out.
 func lineTerminator(r rune) bool { return r == '\n' || r == '\r' || r == 0x2028 || r == 0x2029 }
 
-// set is a class: ranges of characters, named classes, and negation.
+// set is a class: ranges of characters, the class escapes it names, and
+// negation, or a Unicode property, \p{..}. A class is a union, so class
+// merges its ranges and names each escape once: x then 119 of [:word:]
+// asked 476 properties for each character it tested, and asks 4.
 type set struct {
-	ranges [][2]rune
-	preds  []func(rune) bool
-	negate bool
+	ranges   [][2]rune
+	named    []*set
+	property string
+	negate   bool
+	// key names a class escape, such as \d or \P{L}, so that a class
+	// holds it once.
+	key string
 }
 
-func (s *set) has(r rune) bool {
-	for _, span := range s.ranges {
+// A class test costs a step, and one more for each classWork units of
+// work it took: a unit for each range it compared, and namedWork for each
+// class escape it asked, a property's table search or a short list of
+// ranges. So a step of a match takes about as long whatever the class
+// (TestClassTestCostsItsWork). Through the CI runner on the build node, x
+// and 16 of @(|) then a class, which spend every step against a string of
+// two characters, took 16.4 us a step for 119 of [:word:] against xⒶ when
+// each test cost one step and asked every property it named. Now the
+// slowest such class measured, [:print:] and 60 code points apart against
+// xⒶ, takes 134 ns a step, 17.6 ms a match, and [ab] 57 ns. An ordinary
+// class such as [a-z0-9_-] takes under 256 units a test, one step. A
+// class of POSIX classes costs a step more for a character it misses
+// through 256 units of properties: [[:word:]] asks its 4 against -, and
+// [[:alnum:]] its 3 for Ⓐ and again for its case partner ⓐ, 384 units.
+const (
+	classWork = 256
+	namedWork = 64
+)
+
+// has is whether r is in s, before its negation, and the work that took.
+func (s *set) has(r rune) (bool, int) {
+	if s.property != "" {
+		return hasProperty(s.property, r), namedWork
+	}
+	for i, span := range s.ranges {
 		if r >= span[0] && r <= span[1] {
-			return true
+			return true, i + 1
 		}
 	}
-	for _, f := range s.preds {
-		if f(r) {
-			return true
+	work := len(s.ranges)
+	for _, n := range s.named {
+		in, _ := n.has(r)
+		work += namedWork
+		if in != n.negate {
+			return true, work
 		}
 	}
-	return false
+	return false, work
 }
 
-// matches is whether r is in s, comparing by case under the i flag.
-func (m *machine) matches(s *set, r rune) bool {
-	in := s.has(r)
+// matches is whether r is in s, comparing by case under the i flag, and
+// the work that took.
+func (m *machine) matches(s *set, r rune) (bool, int) {
+	in, work := s.has(r)
 	if !in && m.icase {
 		var others []rune
 		if m.uflag {
@@ -533,9 +599,19 @@ func (m *machine) matches(s *set, r rune) bool {
 		} else {
 			others = equivalentUnits(r)
 		}
-		in = slices.ContainsFunc(others, s.has)
+		for _, o := range others {
+			if o == r {
+				continue
+			}
+			hit, w := s.has(o)
+			work += w
+			if hit {
+				in = true
+				break
+			}
+		}
 	}
-	return in != s.negate
+	return in != s.negate, work
 }
 
 func (s *set) matcher() matcher {
@@ -544,8 +620,27 @@ func (s *set) matcher() matcher {
 			return false
 		}
 		r, w := m.char(pos)
-		return m.matches(s, r) && k(pos+w)
+		in, work := m.matches(s, r)
+		if !m.steps.spend(work / classWork) {
+			return false
+		}
+		return in && k(pos+w)
 	}
+}
+
+// merge sorts s's ranges and joins those that overlap or touch, which
+// changes no answer.
+func (s *set) merge() {
+	slices.SortFunc(s.ranges, func(a, b [2]rune) int { return int(a[0] - b[0]) })
+	var out [][2]rune
+	for _, span := range s.ranges {
+		if n := len(out); n > 0 && span[0] <= out[n-1][1]+1 {
+			out[n-1][1] = max(out[n-1][1], span[1])
+			continue
+		}
+		out = append(out, span)
+	}
+	s.ranges = out
 }
 
 // class reads a class after its [.
@@ -561,6 +656,7 @@ func (p *parser) class() (matcher, error) {
 		}
 		if p.peek() == ']' {
 			p.pos++
+			s.merge()
 			return s.matcher(), nil
 		}
 		lo, loSet, err := p.classAtom()
@@ -593,12 +689,18 @@ func (p *parser) class() (matcher, error) {
 	}
 }
 
+// add adds the character c, or the class escape named, to s: an escape
+// of ranges alone, \d, \s or \w, adds its ranges, and any other one is
+// added once.
 func (s *set) add(c rune, named *set) {
-	if named != nil {
-		s.preds = append(s.preds, func(r rune) bool { return named.has(r) != named.negate })
-		return
+	switch {
+	case named == nil:
+		s.ranges = append(s.ranges, [2]rune{c, c})
+	case !named.negate && named.property == "":
+		s.ranges = append(s.ranges, named.ranges...)
+	case !slices.ContainsFunc(s.named, func(n *set) bool { return n.key == named.key }):
+		s.named = append(s.named, named)
 	}
-	s.ranges = append(s.ranges, [2]rune{c, c})
 }
 
 // classAtom reads one character of a class, or a class escape such as \d
@@ -641,6 +743,12 @@ func (p *parser) atomEscape() (matcher, error) {
 		if err != nil {
 			return nil, err
 		}
+		if s.property != "" && s.negate {
+			// \P{..} is the complement first, and the i flag then folds
+			// into it: under i and u, a is in \P{Ll} because A is. A
+			// class holds the escape as a member, which does that.
+			return (&set{named: []*set{s}}).matcher(), nil
+		}
 		return s.matcher(), nil
 	}
 	c, err := p.characterEscape(false)
@@ -680,12 +788,13 @@ func (p *parser) classEscape() (*set, error) {
 		if !knownProperty(name) {
 			return nil, p.fail("invalid property name")
 		}
-		return &set{preds: []func(rune) bool{func(r rune) bool { return hasProperty(name, r) }}, negate: c == 'P'}, nil
+		return &set{property: name, negate: c == 'P', key: string(c) + name}, nil
 	default:
 		return nil, nil
 	}
 	p.pos++
 	s.negate = c == 'D' || c == 'W' || c == 'S'
+	s.key = string(c)
 	return s, nil
 }
 

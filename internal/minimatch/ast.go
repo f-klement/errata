@@ -1,6 +1,7 @@
 package minimatch
 
 import (
+	"context"
 	"errors"
 	"slices"
 	"strconv"
@@ -505,6 +506,9 @@ type source struct {
 	noTrav  []int
 	err     error
 	written int
+	// ctx, when set, is looked at once for each node the build writes,
+	// and stops it once it is done.
+	ctx context.Context
 }
 
 // size is the length the source will have.
@@ -550,7 +554,7 @@ func (b *source) from(mark int) units {
 // needs the u flag. glob is the segment's text; sb.written gains the units
 // the build appended.
 func (n *node) rootSource(glob units, sb *sourceBudget) (units, units, bool, bool, error) {
-	b := &source{limit: max(sb.left, 2*len(glob))}
+	b := &source{limit: max(sb.left, 2*len(glob)), ctx: sb.ctx}
 	hasMagic, uflag := n.writeSource(b)
 	sb.written += b.written
 	if b.err != nil {
@@ -560,6 +564,13 @@ func (n *node) rootSource(glob units, sb *sourceBudget) (units, units, bool, boo
 	re := body
 	if slices.Contains(b.noTrav, 0) {
 		re = concat(startNoTraversal, body)
+		// The entry at 0 is the root's own when its first part is a
+		// string, and ast.js leaves that out of the body. Otherwise it is
+		// a child's, such as the plain child an unclosed ?(.. makes,
+		// whose source ast.js copies into the root's body with it.
+		if n.parts[0].a != nil {
+			body = re
+		}
 	}
 	return re, unescape(body), hasMagic, uflag, nil
 }
@@ -568,6 +579,13 @@ func (n *node) rootSource(glob units, sb *sourceBudget) (units, units, bool, boo
 // node's regex source to b, and returns whether it has magic and whether
 // it needs the u flag.
 func (n *node) writeSource(b *source) (bool, bool) {
+	if b.ctx != nil && b.err == nil {
+		// Each node reads its ancestors, so a segment of a few thousand
+		// nodes builds for tens of milliseconds.
+		if b.err = stopped(b.ctx); b.err != nil {
+			return false, false
+		}
+	}
 	if !isExtglobType(n.typ) {
 		noEmpty := n.isStart() && n.isEnd() && !slices.ContainsFunc(n.parts, func(p part) bool { return p.a != nil })
 		mark := len(b.buf)

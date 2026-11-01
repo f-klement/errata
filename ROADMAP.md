@@ -152,8 +152,12 @@ and two items from later releases that touch the same code:
   is on a missing file.
 - A check with an empty `run` is refused by the check's own validation, not by validating a copy
   with a placeholder.
-- `renovate_match` charges compiling a glob to the cost limit, so a rule of many calls stops
-  inside its timeout.
+- `renovate_match` charges compiling a glob and running a regex to the cost limit, and refuses
+  a regex whose program is too large. Each call looks at the rule's timeout, so a rule stops
+  within one regex match of it, at most about 120 ms.
+  An evaluation compiles each glob once, within a bound of 256 globs and 65536 code units, and
+  is charged for it once, so a rule over hundreds of files and a manager's entries keeps its
+  verdict; a glob's match is charged by the steps it takes.
 - When packages run mutation at once, a package left running alone takes the workers the others
   freed, and a stop ends every package running. The mutation floors follow a renamed or split
   package, and CI derives its list of slow tests from the tree.

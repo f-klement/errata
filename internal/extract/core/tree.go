@@ -245,8 +245,8 @@ func (e treeExtractor) ExtractWith(ctx context.Context, root string, _ map[strin
 }
 
 // Extract reads the file under root and returns every scalar its path selects.
-func (e treeExtractor) Extract(_ context.Context, root string) ([]check.Value, error) {
-	return ExtractOne(root, e.Source, e)
+func (e treeExtractor) Extract(ctx context.Context, root string) ([]check.Value, error) {
+	return ExtractOne(ctx, root, e.Source, e)
 }
 
 // FromData returns the values in data, the bytes of the file, as Extract

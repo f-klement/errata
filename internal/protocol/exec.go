@@ -42,7 +42,8 @@ func Run(ctx context.Context, root string, c check.Check) (res check.Result) {
 	// res is a named result so this assignment reaches the caller.
 	defer func() { res.Duration = time.Since(start) }()
 
-	// A program check's output has no bound yet: #191 decides it.
+	// A program check's output has no bound yet, unlike a generator's: a
+	// bound would make a check that prints past it unknown.
 	p := run(ctx, root, c, c.Program().Run, 0)
 	res.Message = message(p.Stdout)
 

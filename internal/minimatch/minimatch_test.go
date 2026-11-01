@@ -1,6 +1,7 @@
 package minimatch
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -165,6 +166,43 @@ func TestEveryAlternativeCostsAStep(t *testing.T) {
 	}
 }
 
+// A compiled Glob gives each Match its own MaxSteps: x and 12 of @(|)
+// spend at least 2^12 steps on xy, so 40 matches spend more than MaxSteps
+// in all, and each still answers.
+func TestGlobMatchHasItsOwnSteps(t *testing.T) {
+	ctx := context.Background()
+	g := CompileContext(ctx, "x"+strings.Repeat("@(|)", 12))
+	for i := range 40 {
+		if ok, _, err := g.MatchSteps(ctx, "xy"); ok || err != nil {
+			t.Fatalf("match %d: %v, %v", i+1, ok, err)
+		}
+	}
+}
+
+// MatchSteps counts the steps a match took: each segment it tests and each
+// try of a regex costs one, up to MaxSteps for a match the budget stops.
+// Under nocase a/b.yaml is a regex for each letter, and x and 12 of @(|)
+// try each of 2^12 paths against xy.
+func TestMatchStepsCountsTheSteps(t *testing.T) {
+	ctx := context.Background()
+	for _, c := range []struct {
+		glob, file string
+		steps      int
+	}{
+		{"a/b.yaml", "a/b.yaml", 9},
+		{"x" + strings.Repeat("@(|)", 12), "xy", 8192},
+	} {
+		_, steps, err := CompileContext(ctx, c.glob).MatchSteps(ctx, c.file)
+		if err != nil || steps != c.steps {
+			t.Errorf("%s against %s: %d steps, %v; want %d", c.glob, c.file, steps, err, c.steps)
+		}
+	}
+	_, steps, err := CompileContext(ctx, stepsGlob).MatchSteps(ctx, stepsFile)
+	if err == nil || steps != MaxSteps {
+		t.Errorf("the glob that spends every step: %d steps, %v; want %d and the step budget", steps, err, MaxSteps)
+	}
+}
+
 // A string that is not UTF-8 has no UTF-16 form to match.
 func TestMatchRefusesInvalidUTF8(t *testing.T) {
 	for _, c := range [][2]string{{"\xff", "*"}, {"a", "\xff"}} {
@@ -238,5 +276,79 @@ func TestUnicodeTablesMatchGo(t *testing.T) {
 	if unicode.Version != generatedUnder {
 		t.Errorf("Go's tables are Unicode %s, and unicode_node.go was generated against %s: run "+
 			"testdata/unicode/gen.go and gen.mjs again (ADR 0014)", unicode.Version, generatedUnder)
+	}
+}
+
+// A class test costs a step, and one more for each classWork units of
+// work: x and 4 of @(|) test the class 16 times against xy or xⒶ, so a
+// class that takes no more than a few units costs what [ab] does, and one
+// that takes more costs 16 times its extra steps on top. 470 code points
+// that no two touch are 470 ranges, compared for y and again for Y: 940
+// units, 3 more steps a test. 119 of [:word:] name its 4 properties once,
+// asked for Ⓐ and for ⓐ: 512 units, 2 more steps, where 476 properties
+// would be 238. 957 of b merge into one range. [[:alnum:]] asks its 3
+// properties for - (192 units, no more steps), and for Ⓐ and ⓐ (384, one
+// more); [[:word:]] asks 4 for -, 256 units, one more. 450 code points in
+// a row, each written alone, merge into one range.
+func TestClassTestCostsItsWork(t *testing.T) {
+	ctx := context.Background()
+	steps := func(class, file string) int {
+		_, n, err := CompileContext(ctx, "x"+strings.Repeat("@(|)", 4)+"["+class+"]").MatchSteps(ctx, file)
+		if err != nil {
+			t.Fatalf("[%s]: %v", class, err)
+		}
+		return n
+	}
+	var apart, consecutive strings.Builder
+	for i := range 470 {
+		apart.WriteRune(rune(0x100 + 2*i))
+	}
+	for i := range 450 {
+		consecutive.WriteRune(rune(0x400 + i))
+	}
+	base := steps("ab", "xy")
+	for _, c := range []struct {
+		name, class, file string
+		extra             int
+	}{
+		{"470 ranges apart", apart.String(), "xy", 3},
+		{"119 of [:word:]", strings.Repeat("[:word:]", 119), "xⒶ", 2},
+		{"957 of b", strings.Repeat("b", 957), "xy", 0},
+		{"[:alnum:]", "[:alnum:]", "x-", 0},
+		{"[:alnum:] against a case pair", "[:alnum:]", "xⒶ", 1},
+		{"[:word:]", "[:word:]", "x-", 1},
+		{"450 code points in a row", consecutive.String(), "xy", 0},
+	} {
+		if got, want := steps(c.class, c.file), base+16*c.extra; got != want {
+			t.Errorf("%s against %s: %d steps, want %d", c.name, c.file, got, want)
+		}
+	}
+	// A test that finds its character in a range has compared each range
+	// up to it: the last of 256 ranges apart is 256 units, a step more than
+	// the first of two.
+	var first256 strings.Builder
+	for i := range 256 {
+		first256.WriteRune(rune(0x100 + 2*i))
+	}
+	last := string(rune(0x100 + 2*255))
+	if got, want := steps(first256.String(), "x"+last), steps("ab", "xa")+1; got != want {
+		t.Errorf("the last of 256 ranges: %d steps, want %d", got, want)
+	}
+}
+
+// Size counts a segment and its literal or regex source, and for a glob
+// the port refuses, the source its error keeps: 1/22 is two literal
+// segments, 2 and 3 units; a is a regex under nocase, 1 and the 3 of
+// [aA]; a string that is not UTF-8 keeps nothing; and ten negations then a
+// class JavaScript refuses keep 26092 units of source.
+func TestSizeCountsWhatAGlobHolds(t *testing.T) {
+	refused := strings.Repeat("!(*)", 10) + "[[:alpha:]] x001"
+	for _, c := range []struct {
+		glob string
+		size int
+	}{{"1/22", 5}, {"a", 4}, {"**/1", 3}, {"\xff", 0}, {refused, 26092}} {
+		if got := CompileContext(context.Background(), c.glob).Size(); got != c.size {
+			t.Errorf("%.20q: Size %d, want %d", c.glob, got, c.size)
+		}
 	}
 }

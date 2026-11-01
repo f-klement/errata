@@ -73,3 +73,20 @@ func TestRegexRefusesBackreferencesAndOctal(t *testing.T) {
 		}
 	}
 }
+
+// A \b test allocates nothing under any flags: wordRanges hands out lists
+// built once, where it built a new one on each of the two calls a position
+// makes.
+func TestWordBoundaryAllocatesNothing(t *testing.T) {
+	for _, flags := range [][2]bool{{false, false}, {true, false}, {false, true}, {true, true}} {
+		m := &machine{in: toUnits("ab ſK"), icase: flags[0], uflag: flags[1]}
+		allocs := testing.AllocsPerRun(10, func() {
+			for pos := range len(m.in) + 1 {
+				m.wordBoundary(pos)
+			}
+		})
+		if allocs != 0 {
+			t.Errorf("i %v, u %v: %v allocations a pass over %d positions", flags[0], flags[1], allocs, len(m.in)+1)
+		}
+	}
+}

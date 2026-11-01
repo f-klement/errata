@@ -73,12 +73,16 @@ func TestDefaultRunIsCopiedForEachCheck(t *testing.T) {
 }
 
 // A check with no run and no rule key is refused as before when the file
-// sets no default run, whether or not it has a defaults key.
+// sets no default run, whether or not it has a defaults key. The whole
+// error is compared, so the empty run's message beside it fails the test.
+// The planted break: buildProgram building a program check with no run,
+// which validation refuses as a run that lists no argument.
 func TestNoRunAndNoDefaultIsRefused(t *testing.T) {
+	const want = `checks[0]: check "a": run or extract is required: a program check has run, a rule has extract, and a generated check has generated`
 	for _, top := range []string{"", "defaults: {}\n", "defaults: null\n", "defaults:\n"} {
 		_, err := parseRaw([]byte(top + "checks:\n- {id: a, reason: r, scope: repo}\n"))
-		if err == nil || !strings.Contains(err.Error(), `check "a": run or extract is required`) {
-			t.Errorf("%q: error = %v, want run or extract is required", top, err)
+		if err == nil || err.Error() != want {
+			t.Errorf("%q: error = %v, want %q alone", top, err, want)
 		}
 	}
 }
@@ -164,8 +168,9 @@ func TestDefaultsRefusals(t *testing.T) {
 // command, and is refused with the one error that says so, with or without
 // a default and however the empty run is written. The whole error is
 // compared, so a second message after it, such as "run or extract is
-// required", fails the test. The planted breaks: build without the
-// empty-run check, and build validating the refused run as missing.
+// required", fails the test. Validation gives the message, from the check
+// config builds, which holds the empty run as written. The planted break:
+// buildProgram reading an empty run as no run, which holds no kind.
 func TestAnEmptyOwnRunIsTheOneError(t *testing.T) {
 	const want = `checks[0]: check "a": run lists no argument: write the command, or remove the key, which takes the default run if the file sets one`
 	for _, raw := range []string{
@@ -178,6 +183,22 @@ func TestAnEmptyOwnRunIsTheOneError(t *testing.T) {
 		if err == nil || err.Error() != want {
 			t.Errorf("%q: error = %v, want %q alone", raw, err, want)
 		}
+	}
+}
+
+// A check whose entry writes the keys of two kinds holds no kind, and its
+// other keys are still validated in the same pass, so a bad id, reason and
+// scope are refused beside the conflict, and the check is not also refused
+// as one with no kind. The whole error is compared. The planted break: the
+// conflict's validation made a no-op, which drops the id, reason and scope.
+func TestAConflictsOtherKeysAreRefusedInTheSamePass(t *testing.T) {
+	const want = `checks[0]: check "A": keys of two kinds of check: run makes a program check, and generated makes a generated check; a check is one kind: remove the keys of the kinds it is not, or write a check for each
+check "A": id "A" must be lower-case words joined by single hyphens
+reason is required: say why the check exists and what breaks without it
+scope "cluster" must be one of repo, live, applied`
+	_, err := parseRaw([]byte("checks:\n- {id: A, reason: '', scope: cluster, run: [], generated: {file: f, run: [g]}}\n"))
+	if err == nil || err.Error() != want {
+		t.Errorf("error = %v, want %q", err, want)
 	}
 }
 

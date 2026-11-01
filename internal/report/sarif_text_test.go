@@ -458,8 +458,8 @@ func writeWith(t *testing.T, rep check.Report, bu budget) []byte {
 }
 
 // slowOnly skips t under -race, -short and Gremlins' mutation tag, and make
-// slow runs it once, plain, from the Makefile's SLOW_TESTS, which the extract
-// package's TestEverySlowTestIsInMakeSlow holds to the tests that call it.
+// slow runs it once, plain, from the Makefile's SLOW_TESTS, which
+// scripts/slowtests lists from the tests that call it.
 func slowOnly(t *testing.T) {
 	t.Helper()
 	if testing.Short() || raceEnabled || mutationRun {

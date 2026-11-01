@@ -27,7 +27,7 @@ func TestStatLooksAtAFIFO(t *testing.T) {
 	}
 	for _, name := range []string{"p", "link"} {
 		done := make(chan result, 1)
-		go func() { info, err := (Source{File: name}).Stat(root); done <- result{info, err} }()
+		go func() { info, err := (Source{File: name}).Stat(t.Context(), root); done <- result{info, err} }()
 		select {
 		case r := <-done:
 			if r.err != nil || r.info.Mode().Type() != fs.ModeNamedPipe {
@@ -53,7 +53,7 @@ func TestStatRefusesAnUnsearchableDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(filepath.Join(root, "a"), 0o750) })
-	_, err := (Source{File: "a/f"}).Stat(root)
+	_, err := (Source{File: "a/f"}).Stat(t.Context(), root)
 	if err == nil || err.Error() != "stat a/f: permission denied" || errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("%v; want the refusal stat a/f: permission denied", err)
 	}

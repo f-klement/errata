@@ -14,7 +14,7 @@ var RaceSlowdown = map[bool]time.Duration{false: 1, true: 10}[RaceEnabled]
 // make test's two minute timeout cannot hold, and which costs seconds for
 // every mutant. make slow runs it once, plain, from the Makefile's
 // SLOW_TESTS. Each package calls it through a slowOnly of its own, which is
-// the call TestEverySlowTestIsInMakeSlow looks for in a test's body. A small
+// the call scripts/slowtests looks for in a test's body. A small
 // input that reaches the same limit stays in make test beside each one.
 func SlowOnly(t *testing.T) {
 	t.Helper()

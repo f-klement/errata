@@ -46,8 +46,9 @@ be shown to fail. A run that ends with an unknown and no errata still fails.
 report false. It is a tree the repository commits, with a break planted in it. Every run runs the
 check on each of its witnesses: one on which the check reports false holds, one on which it holds
 is an erratum of that check, and one on which it is unknown, or whose fixture is not there, is an
-unknown. A rule reads the fixture as its root; a program check and a generator start in the
-repository root with `ERRATA_ROOT` at the fixture. Not a test fixture of errata's own, which
+unknown, as is a generated check's witness whose fixture holds no generated file. A rule reads
+the fixture as its root; a program check and a generator start in the repository root with
+`ERRATA_ROOT` at the fixture. Not a test fixture of errata's own, which
 lives in `testdata`.
 
 ## Scopes

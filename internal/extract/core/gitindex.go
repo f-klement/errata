@@ -183,7 +183,7 @@ func isGitDir(dir string) error {
 // symlink into refs/, as a repository made with core.preferSymlinkRefs
 // has. A Readlink that fails gives "", which is no ref.
 func headRef(head string) bool {
-	info, err := os.Lstat(head)
+	info, err := os.Lstat(head) //nolint:gosec // G703: head is HEAD in the git directory gitDir found below the root the caller names, which errata reads by design
 	if err != nil {
 		return false
 	}
@@ -317,8 +317,8 @@ func parseIndex(data []byte, hash, budget int) ([]string, error) {
 			unnamed = true
 			continue
 		}
-		if !filepath.IsLocal(string(name)) {
-			return nil, notLocal(string(name))
+		if err := checkEntry(string(name), filepath.IsLocal); err != nil {
+			return nil, err
 		}
 		if mode&modeType != modeFile && mode&modeType != modeSymlink || extended&flagSkipWorktree != 0 {
 			continue
@@ -339,17 +339,81 @@ func parseIndex(data []byte, hash, budget int) ([]string, error) {
 	return files, nil
 }
 
-// notLocal is the refusal of an entry's path that filepath.IsLocal refused.
-// On Windows that is also a path inside the repository one of whose names
-// Windows keeps for a device, such as aux.yaml, which a read would open in
-// place of a file, or a path inside it that holds a colon, which Windows
-// reads as a drive or a stream; the message names that reason rather than
-// calling the path outside. git for Windows does not write either; an
-// index written on another OS can hold it.
-func notLocal(name string) error {
+// checkEntry refuses an entry's path that local, filepath.IsLocal in
+// production, refuses (notLocal), and on an OS where a backslash separates
+// names, as on Windows, a path that holds one. git writes a backslash as
+// part of a name, where Windows reads it as a separator: the path git
+// tracks as one file would open another, and .errata\witness\w\x, one
+// name to git, would pass check.Witnessed and path.Clean, which read
+// slashes only, and name a fixture's file. There it also refuses a name
+// Windows may take for the short name of .errata, such as ERRATA~1, which
+// check.Witnessed does not see. Whether a backslash separates is local's
+// verdict too: it does where local reads a\..\.. as climbing out, so a
+// test hands it a stand-in for Windows's verdict on any OS.
+// git for Windows does not write such a path; an index written on another
+// OS can hold it.
+func checkEntry(name string, local func(string) bool) error {
+	if !local(name) {
+		return notLocal(name, local)
+	}
+	if local(`a\..\..`) {
+		return nil
+	}
+	if strings.Contains(name, `\`) {
+		return fmt.Errorf("an entry's path %s holds a backslash, which Windows reads as a separator, so the path would name another file than the one git tracks; git for Windows does not write it", Quote(name))
+	}
+	for _, n := range strings.Split(name, "/") {
+		if shortErrata(n) {
+			return fmt.Errorf("an entry's path %s holds %s, which Windows may open as .errata by its short name, so the path could name a witness's file; git for Windows does not write it", Quote(name), Quote(n))
+		}
+	}
+	return nil
+}
+
+// shortErrata reports whether n is a short name Windows may give .errata,
+// in any case: errata~ and digits, as ERRATA~1, the form NTFS gives the
+// first four names that shorten alike, or the hashed form it gives from
+// the fifth on, er, four hex digits, ~ and digits, as ER1A2B~1.
+func shortErrata(n string) bool {
+	if len(n) > len("errata~") && strings.EqualFold(n[:len("errata~")], "errata~") {
+		return digits(n[len("errata~"):])
+	}
+	if len(n) > len("er1a2b~") && strings.EqualFold(n[:2], "er") && n[6] == '~' {
+		for _, c := range strings.ToLower(n[2:6]) {
+			if !strings.ContainsRune("0123456789abcdef", c) {
+				return false
+			}
+		}
+		return digits(n[7:])
+	}
+	return false
+}
+
+// digits reports whether s holds only the digits 0 to 9.
+func digits(s string) bool {
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// notLocal is the refusal of an entry's path that local, filepath.IsLocal
+// in production, refused. On Windows that is also a path inside the
+// repository one of whose names Windows keeps for a device, such as aux,
+// which a read would open in place of a file, or a path inside it that
+// holds a colon, which Windows reads as a drive or a stream; the message
+// names that reason rather than calling the path outside. A device name is
+// a name local refuses alone, without a colon and other than "..": the
+// verdict is Go's, so errata copies no list of the names, and follows Go
+// where Windows does, as Windows 11 reads aux.yaml as a file. git for
+// Windows does not write either; an index written on another OS can hold
+// it.
+func notLocal(name string, local func(string) bool) error {
 	if (check.Location{File: name}).Inside() {
 		for _, n := range strings.FieldsFunc(name, func(r rune) bool { return r == '/' || r == '\\' }) {
-			if windowsDevice(n) {
+			if n != ".." && !strings.Contains(n, ":") && !local(n) {
 				return fmt.Errorf("an entry's path %s holds %s, a name Windows keeps for a device, which a read would open in place of a file; git for Windows does not write it", Quote(name), Quote(n))
 			}
 		}
@@ -358,39 +422,6 @@ func notLocal(name string) error {
 		}
 	}
 	return fmt.Errorf("an entry's path %s leaves the repository, which git does not write", Quote(name))
-}
-
-// windowsDevice reports whether Windows may read the name n as a device, as
-// Go's filepath.IsLocal reads it there: CON, PRN, AUX, NUL, COM1 to COM9,
-// LPT1 to LPT9 (with ¹, ² or ³ for the digit too), CONIN$ or CONOUT$, in any
-// case, before any dot or colon and with trailing spaces dropped. Some
-// Windows versions read such a name with an extension, such as aux.yaml,
-// as a file; IsLocal refuses it on every version, and so does this.
-func windowsDevice(n string) bool {
-	if i := strings.IndexAny(n, ".:"); i >= 0 {
-		n = n[:i]
-	}
-	// ASCII alone, as Windows compares: strings.ToUpper would read the
-	// dotless ı as I.
-	n = strings.Map(func(r rune) rune {
-		if 'a' <= r && r <= 'z' {
-			return r - 'a' + 'A'
-		}
-		return r
-	}, strings.TrimRight(n, " "))
-	switch n {
-	case "CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$":
-		return true
-	}
-	if len(n) < 4 || n[:3] != "COM" && n[:3] != "LPT" {
-		return false
-	}
-	switch d := n[3:]; d {
-	case "\u00b9", "\u00b2", "\u00b3":
-		return true
-	default:
-		return len(d) == 1 && '1' <= d[0] && d[0] <= '9'
-	}
 }
 
 // checkExtensions refuses a split index: its link extension says that most

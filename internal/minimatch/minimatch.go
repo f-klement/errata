@@ -12,18 +12,22 @@
 // MaxExpansions globs, a segment of negations whose tree passes maxNodes,
 // segments whose regex sources pass maxSource in all, and a match that
 // takes more than MaxSteps steps. A glob whose regex JavaScript
-// refuses, which makes minimatch throw, is an error too.
+// refuses, which makes minimatch throw, is an error too. CompileContext
+// and MatchSteps also stop, with an error, once their context is done.
 package minimatch
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strconv"
 	"unicode/utf8"
 )
 
 // MaxSteps is the most steps one Match may take: each try of a regex
-// node, and each segment the globstar matcher compares.
+// node, and each segment the globstar matcher compares. A class test
+// counts more steps for a class that takes it more work (classWork).
 const MaxSteps = 1 << 17
 
 // maxSource is the most regex source the segments of one glob may build
@@ -106,24 +110,106 @@ type mm struct {
 type sourceBudget struct {
 	left    int
 	written int
+	// ctx, when set, stops the build once it is done.
+	ctx context.Context
 }
 
 // Match is whether minimatch matches file with glob under dot and nocase,
 // as new Minimatch(glob, {dot: true, nocase: true}).match(file) answers,
-// or an error where the port does not compute that answer.
+// or an error where the port does not compute that answer:
+// CompileContext then MatchSteps, under a context that is never done.
 func Match(file, glob string) (bool, error) {
-	if !utf8.ValidString(file) || !utf8.ValidString(glob) {
-		return false, errors.New("a string that is not UTF-8")
+	ctx := context.Background()
+	match, _, err := CompileContext(ctx, glob).MatchSteps(ctx, file)
+	return match, err
+}
+
+// Glob is a glob compiled once, to match many strings: new Minimatch(glob,
+// {dot: true, nocase: true}), or why the port does not compile it.
+type Glob struct {
+	m   *mm
+	err error
+}
+
+var errUTF8 = errors.New("a string that is not UTF-8")
+
+// CompileContext compiles glob as Match does, stopped once ctx is done: it
+// looks at ctx at each brace set it expands, before it parses each
+// segment, and at each node of a segment's tree as it builds the regex
+// source. A glob Match refuses, a stopped compile included, is a Glob
+// whose MatchSteps returns that error, after it has refused a file that is
+// not UTF-8, as Match would.
+func CompileContext(ctx context.Context, glob string) *Glob {
+	if !utf8.ValidString(glob) {
+		return &Glob{err: errUTF8}
 	}
-	m, err := compile(toUnits(glob))
+	m, err := compileContext(ctx, toUnits(glob))
 	if err != nil {
-		return false, err
+		return &Glob{err: err}
 	}
-	return m.match(toUnits(file))
+	return &Glob{m: m}
+}
+
+// MatchSteps is Match(file, glob) for the glob g was compiled from, and
+// the steps the match took, at most MaxSteps: what a caller charges a
+// match by, since a glob can spend every step against a string of two
+// bytes. Each call has its own MaxSteps, and stops once ctx is done,
+// whatever context g was compiled under: the match looks at ctx every
+// checkEvery steps. A stopped call's error wraps ctx.Err().
+func (g *Glob) MatchSteps(ctx context.Context, file string) (bool, int, error) {
+	if !utf8.ValidString(file) {
+		return false, 0, errUTF8
+	}
+	if g.err != nil {
+		return false, 0, g.err
+	}
+	m := *g.m
+	m.steps = &budget{left: MaxSteps, ctx: ctx}
+	match, err := m.match(toUnits(file))
+	return match, MaxSteps - m.steps.left, err
+}
+
+// Size is the code units g holds, its segments' literals and the sources
+// of their regexes, and one for each segment, which holds memory of its
+// own. A glob the port refuses holds its error, and a regex JavaScript
+// refuses keeps the whole source the segment built, up to maxSource; Size
+// counts its bytes. What a compiled glob keeps in memory grows with it.
+func (g *Glob) Size() int {
+	if g.err != nil {
+		var refused *SyntaxError
+		if errors.As(g.err, &refused) {
+			return len(refused.Source)
+		}
+		return 0
+	}
+	n := 0
+	for _, segs := range g.m.set {
+		for _, s := range segs {
+			n += 1 + len(s.literal)
+			if s.re != nil {
+				n += len(s.re.source)
+			}
+		}
+	}
+	return n
+}
+
+// stopped is the error of a call whose context is done, or nil.
+func stopped(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("the match was stopped: %w", err)
+	}
+	return nil
 }
 
 func compile(pattern units) (*mm, error) {
-	m := &mm{steps: &budget{left: MaxSteps}}
+	return compileContext(context.Background(), pattern)
+}
+
+// compileContext is compile, stopped once ctx is done; the mm it returns
+// stops its match then too.
+func compileContext(ctx context.Context, pattern units) (*mm, error) {
+	m := &mm{steps: &budget{left: MaxSteps, ctx: ctx}}
 	if len(pattern) > 0 && pattern[0] == '#' {
 		m.comment = true
 		return m, nil
@@ -139,7 +225,7 @@ func compile(pattern units) (*mm, error) {
 		i++
 	}
 	pattern = pattern[i:]
-	expanded, err := braceExpand(pattern)
+	expanded, err := braceExpandContext(ctx, pattern)
 	if err != nil {
 		return nil, err
 	}
@@ -150,9 +236,13 @@ func compile(pattern units) (*mm, error) {
 		}
 	}
 	m.source.left = maxSource
+	m.source.ctx = ctx
 	for _, g := range globSet {
 		var segs []segment
 		for _, s := range levelOneOptimize(slashSplit(g)) {
+			if err := stopped(ctx); err != nil {
+				return m, err
+			}
 			seg, err := parseSegment(s, &m.source)
 			if err != nil {
 				// m is returned for what it spent, which a test reads.

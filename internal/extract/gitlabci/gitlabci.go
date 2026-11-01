@@ -222,10 +222,10 @@ func (e extractor) Extract(ctx context.Context, root string) ([]check.Value, err
 // ExtractRead is Extract, and the bytes of the file and the files it
 // includes it read, for the env extractor, whose files hold its max_bytes
 // in all, includes too.
-func (e extractor) ExtractRead(_ context.Context, root string) ([]check.Value, int64, error) {
+func (e extractor) ExtractRead(ctx context.Context, root string) ([]check.Value, int64, error) {
 	var read int64
 	vs, err := e.resolve(func(s core.Source) ([]byte, error) {
-		data, err := s.Read(root)
+		data, err := s.Read(ctx, root)
 		read += int64(len(data))
 		return data, err
 	})

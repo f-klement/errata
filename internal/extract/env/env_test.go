@@ -87,8 +87,8 @@ func (f fake) ExtractWith(ctx context.Context, root string, _ map[string][]check
 	return f.Extract(ctx, root)
 }
 
-func (f fake) Extract(_ context.Context, root string) ([]check.Value, error) {
-	data, err := f.src.Read(root)
+func (f fake) Extract(ctx context.Context, root string) ([]check.Value, error) {
+	data, err := f.src.Read(ctx, root)
 	if err != nil {
 		return nil, err
 	}
@@ -121,7 +121,7 @@ type includer struct{ fake }
 
 func (f includer) ExtractRead(ctx context.Context, root string) ([]check.Value, int64, error) {
 	vs, err := f.Extract(ctx, root)
-	data, _ := f.src.Read(root)
+	data, _ := f.src.Read(ctx, root)
 	read := 3 * int64(len(data))
 	if read > f.src.Limit {
 		return nil, read, fmt.Errorf("%s: the file and its includes are over the limit of %d bytes", f.src.File, f.src.Limit)

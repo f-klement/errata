@@ -88,8 +88,8 @@ func (e textExtractor) ExtractWith(ctx context.Context, root string, _ map[strin
 // Extract returns group 1 of every match in the prose of the file under
 // root. Its line is the line of the file where the match starts, and its
 // text is the prose's.
-func (e textExtractor) Extract(_ context.Context, root string) ([]check.Value, error) {
-	return core.ExtractOne(root, e.search.Source, e)
+func (e textExtractor) Extract(ctx context.Context, root string) ([]check.Value, error) {
+	return core.ExtractOne(ctx, root, e.search.Source, e)
 }
 
 // FromShared is FromData: a text read has its own time limits, and spends

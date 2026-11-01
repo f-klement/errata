@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -22,7 +23,7 @@ func pins(_, name string) bool { return name == ".pin" }
 // paths is Walk of root with l and want, as the path of each file visited.
 func paths(root string, l WalkLimits, want func(dir, name string) bool) ([]string, error) {
 	var out []string
-	err := Walk(root, l, want, func(dir string, names []string) error {
+	err := Walk(context.Background(), root, l, want, func(dir string, names []string) error {
 		for _, n := range names {
 			out = append(out, slashpath.Join(dir, n))
 		}
@@ -39,11 +40,15 @@ func walk(t *testing.T, root string, l WalkLimits) (string, error) {
 }
 
 // A walk returns each file want accepts, a directory's before its
-// subdirectories', each by name, and enters none of SkippedDirs. The
-// planted break: read without the SkippedDirs test, which returns a pin
-// from each.
+// subdirectories', each by name, and enters none of SkippedDirs, nor a
+// directory of witnesses spelt in another case, and enters a directory
+// witness outside a directory .errata. Planted breaks: read without the
+// SkippedDirs test, which returns a pin from each; skipped without
+// check.WitnessesIn, which returned .Errata/WITNESS/w/.pin; every
+// directory witness skipped in any case, which dropped witness/.pin.
 func TestWalkOrderAndSkippedDirs(t *testing.T) {
-	files := map[string]string{".pin": "", "b/.pin": "", "a/.pin": "", "a/x": "", "a/c/.pin": "", "a/c/d/.other": ""}
+	files := map[string]string{".pin": "", "b/.pin": "", "a/.pin": "", "a/x": "", "a/c/.pin": "", "a/c/d/.other": "", ".Errata/WITNESS/w/.pin": "", "a/.ERRATA/Witness/.pin": "",
+		"witness/.pin": "", "a/witness/.pin": "", "errata/witness/.pin": ""}
 	for name := range SkippedDirs {
 		files[name+"/.pin"] = ""
 		if name != ".git" { // a .git below the root passes over its directory
@@ -51,7 +56,7 @@ func TestWalkOrderAndSkippedDirs(t *testing.T) {
 		}
 	}
 	var visited []string
-	err := Walk(extracttest.Repo(t, files), DefaultWalk, pins, func(dir string, names []string) error {
+	err := Walk(t.Context(), extracttest.Repo(t, files), DefaultWalk, pins, func(dir string, names []string) error {
 		for _, n := range names {
 			visited = append(visited, slashpath.Join(dir, n))
 		}
@@ -60,7 +65,7 @@ func TestWalkOrderAndSkippedDirs(t *testing.T) {
 		}
 		return nil
 	})
-	if got := strings.Join(visited, " "); err != nil || got != ".pin a/.pin a/c/.pin b/.pin" {
+	if got := strings.Join(visited, " "); err != nil || got != ".pin a/.pin a/c/.pin a/witness/.pin b/.pin errata/witness/.pin witness/.pin" {
 		t.Errorf("got %q, %v", got, err)
 	}
 }
@@ -340,7 +345,7 @@ func TestWalkHoldsNamesNotPaths(t *testing.T) {
 		}
 		return false
 	}
-	if err := Walk(root, DefaultWalk, sample, func(string, []string) error { return nil }); err != nil {
+	if err := Walk(t.Context(), root, DefaultWalk, sample, func(string, []string) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
 	if calls != 10000 {

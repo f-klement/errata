@@ -260,7 +260,7 @@ func (x extractor) Extract(ctx context.Context, root string) ([]check.Value, err
 	left := x.limit // the bytes the files read may still hold
 	var held int64  // the bytes of the values so far
 	for _, t := range targets {
-		head, size, err := core.Source{File: t.file, Limit: left}.Head(root, x.readers.sniffBytes())
+		head, size, err := core.Source{File: t.file, Limit: left}.Head(ctx, root, x.readers.sniffBytes())
 		if err != nil && errors.Is(err, core.ErrTooLarge) {
 			// The limit the message names is what the files before left,
 			// or max_bytes for the first.

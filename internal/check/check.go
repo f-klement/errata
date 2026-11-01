@@ -60,9 +60,21 @@ var idPattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 // space or leading hyphen, so it can be put into an argument of a command.
 func ValidID(id string) bool { return idPattern.MatchString(id) }
 
-// Validate returns every problem with c joined into one error. A check that
-// fails validation does not load.
-func (c Check) Validate() error {
+// Validate returns every problem with c joined into one error, its kind's
+// among them. A check that fails validation does not load.
+func (c Check) Validate() error { return c.validate(true) }
+
+// ValidateKeys returns every problem with the keys c holds whatever its
+// kind: its id, reason, scope, timeout and witnesses. It is for a check
+// whose kind was refused before it was built, such as a check whose entry
+// wrote the keys of two kinds. Such a check holds no kind, and Validate
+// would refuse it a second time as one with no run. A nil error does not
+// make c loadable: only Validate says that.
+func (c Check) ValidateKeys() error { return c.validate(false) }
+
+// validate is Validate, which asks for the kind's problems too, and
+// ValidateKeys, which does not. The errors keep the order of the keys.
+func (c Check) validate(withKind bool) error {
 	var errs []error
 	if !ValidID(c.ID) {
 		errs = append(errs, fmt.Errorf("id %q must be lower-case words joined by single hyphens", c.ID))
@@ -73,9 +85,12 @@ func (c Check) Validate() error {
 	if !c.Scope.known() {
 		errs = append(errs, fmt.Errorf("scope %q must be one of repo, live, applied", c.Scope))
 	}
-	if c.Kind == nil {
+	switch {
+	case !withKind:
+		// ValidateKeys leaves the kind out, so no kind is no problem.
+	case c.Kind == nil:
 		errs = append(errs, errNoKind)
-	} else {
+	default:
 		if c.Scope.known() {
 			// An unknown scope is refused once, above.
 			if why := c.Kind.ScopeRefusal(c.Scope); why != "" {

@@ -257,7 +257,7 @@ func TestSpanMatchesAsTheWholeIndex(t *testing.T) {
 	shuffled := slices.Clone(sorted)
 	slices.Reverse(shuffled)
 	for _, tracked := range [][]string{sorted, shuffled} {
-		spans := f.spans(tracked)
+		spans, _ := f.spans(tracked)
 		for k, e := range f.Entries {
 			var whole, byMatch []string
 			for _, p := range tracked {
@@ -311,6 +311,32 @@ func TestSpanChargeIgnoresPathsOutside(t *testing.T) {
 		wild.MatchLimit = all - 1
 		extracttest.WantError(t, wild.checkMatch(wild.spans(tracked)), fmt.Sprintf("reads %d bytes of path", all))
 	}
+}
+
+// On an index out of git's order a glob with a literal directory is
+// charged for every path, and the refusal says so instead of naming its
+// directory: deploy/*.env and deploy/*.yml over an index that lists z.env
+// before deploy/a.env read all 17 bytes of path each, 34 in all, which a
+// limit of 34 takes and lists deploy/a.env. Planted breaks: List passing
+// false for whole, and spans never setting it, each of which gave the
+// message of an index in order; the limit test dropped from the branch for
+// an index out of order, and its > made >=, each of which refused 34 bytes
+// under a limit of 34.
+func TestListBoundOfAnIndexOutOfOrder(t *testing.T) {
+	root := repo(t, map[string]string{"deploy/a.env": "", "z.env": ""})
+	index := gitIndex(2, indexEntry{path: "z.env"}, indexEntry{path: "deploy/a.env"})
+	if err := os.WriteFile(filepath.Join(root, ".git", "index"), index, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, _ := CheckFiles("env", []string{"deploy/*.env", "deploy/*.yml"}, 0)
+	f.MatchLimit = 34
+	got, err := f.List(t.Context(), root)
+	if err != nil || len(got) != 1 || got[0].File != "deploy/a.env" {
+		t.Errorf("34 bytes under a limit of 34: %v, %v, want deploy/a.env", got, err)
+	}
+	f.MatchLimit = 33
+	_, err = f.List(t.Context(), root)
+	extracttest.WantError(t, err, fmt.Sprintf("env: files lists 2 globs, and matching each against every path git tracks, since the index is out of git's order and a glob's directory cannot be found in it, reads 34 bytes of path, more than %d, the limit; list fewer globs, and look at the index, which git itself refuses to read out of its order", MaxMatchBytes))
 }
 
 // CheckFiles marks an entry with *, ? or [ a glob, by HasGlob, and Clean

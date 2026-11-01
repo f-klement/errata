@@ -256,7 +256,7 @@ func TestPackageVersionPassesOverADirectory(t *testing.T) {
 // a Package.json under the table's name, and the root's listing does not.
 func TestPackageVersionReadsExactNames(t *testing.T) {
 	root := extracttest.Repo(t, map[string]string{"version": "9.9.9\n", "Package.json": `{"version": "9.9.9"}`, "Cargo.toml": "[package]\nversion = \"1.0.0\"\n"})
-	got, err := rootNames(root)
+	got, err := rootNames(t.Context(), root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,7 +266,7 @@ func TestPackageVersionReadsExactNames(t *testing.T) {
 	if got := marked(extracttest.MustRun(t, build, Spec{}, root)); got != "1.0.0@Cargo.toml:2" {
 		t.Errorf("got %q", got)
 	}
-	_, err = rootNames(filepath.Join(root, "missing"))
+	_, err = rootNames(t.Context(), filepath.Join(root, "missing"))
 	extracttest.WantError(t, err, "open the repository root: no such file or directory")
 }
 

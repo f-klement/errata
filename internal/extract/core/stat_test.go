@@ -39,7 +39,7 @@ func TestStat(t *testing.T) {
 		{"dangling/../f", false, 5},
 		{"real", true, 0},
 	} {
-		info, err := (Source{File: c.file}).Stat(root)
+		info, err := (Source{File: c.file}).Stat(t.Context(), root)
 		if err != nil {
 			t.Errorf("%s: %v", c.file, err)
 			continue
@@ -62,7 +62,7 @@ func TestStat(t *testing.T) {
 		{filepath.Join(t.TempDir(), "gone"), "f", "open the repository root: no such file or directory", false},
 		{filepath.Join(root, "f"), "legacy/old.conf", "open the repository root: not a directory", false},
 	} {
-		info, err := (Source{File: c.file}).Stat(c.root)
+		info, err := (Source{File: c.file}).Stat(t.Context(), c.root)
 		if err == nil || err.Error() != c.want || info != nil {
 			t.Errorf("%s: %v, %v; want the error %q", c.file, info, err, c.want)
 			continue

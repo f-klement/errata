@@ -60,7 +60,7 @@ func parseDefaults(raw json.RawMessage, node *yaml.Node) (defaults, []error) {
 // with the value build fills in for it: a later default, such as a timeout,
 // decides on keys too. A program check that does not write run gets the
 // default; one that writes run keeps its own, even an empty one, which
-// build refuses. Only a program check takes a default.
+// validation refuses. Only a program check takes a default.
 func (d defaults) apply(p *check.Program, keys map[string]json.RawMessage, id string) error {
 	if _, written := keys["run"]; !written {
 		p.Run = substitute(d.Run, id)

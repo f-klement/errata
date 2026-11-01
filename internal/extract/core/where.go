@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"path/filepath"
 	"slices"
 
@@ -70,8 +71,8 @@ func (o OneFile) Check(kind string) (Source, error) {
 // ExtractOne reads the file of src under root, with every check Read makes,
 // and returns the values r finds in its bytes: the Extract of a reader of
 // one file.
-func ExtractOne(root string, src Source, r FileReader) ([]check.Value, error) {
-	data, err := src.Read(root)
+func ExtractOne(ctx context.Context, root string, src Source, r FileReader) ([]check.Value, error) {
+	data, err := src.Read(ctx, root)
 	if err != nil {
 		return nil, err
 	}

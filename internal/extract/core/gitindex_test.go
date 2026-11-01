@@ -393,51 +393,95 @@ func TestParseIndexPathBounds(t *testing.T) {
 	}
 }
 
-// An entry's path that Windows reads as a device, such as aux.yaml, is
-// refused there for that reason, not as outside the repository, and a path
-// that leaves the repository is refused as leaving it, a device name or a
-// colon in it or not. A path inside it with a colon, which Windows reads as
-// a drive or a stream, is refused for the colon. On Linux, where
-// filepath.IsLocal passes aux.yaml, the index reads it, and notLocal is
-// called as Windows's reading calls it. Planted break: notLocal back to the
-// one message, which called aux.yaml outside; the colon branch removed,
-// which called b/c:d outside.
+// An entry's path one of whose names Windows reads as a device, such as
+// aux, is refused there for that reason, not as outside the repository,
+// and a path that leaves the repository is refused as leaving it, a device
+// name or a colon in it or not. A path inside it with a colon, which
+// Windows reads as a drive or a stream, is refused for the colon. On
+// Windows parseIndex refuses dir/aux with Go's own verdict; elsewhere,
+// where filepath.IsLocal passes it, the index reads it, and notLocal is
+// called with windowsLocal, which stands in for Windows's verdict and
+// calls zzz a device too, so the name comes from the verdict and from no
+// list. Planted breaks: the verdict ignored, which called aux outside; the
+// colon test of a name dropped, which called c:d a device; the ".." test
+// dropped, which called .. a device; the colon branch removed, which
+// called b/c:d outside.
 func TestParseIndexWindowsDevice(t *testing.T) {
 	device := "a name Windows keeps for a device, which a read would open in place of a file; git for Windows does not write it"
-	_, err := parseIndex(gitIndex(2, indexEntry{path: "dir/aux.yaml"}), sha1Size, maxPathBytes)
+	_, err := parseIndex(gitIndex(2, indexEntry{path: "dir/aux"}), sha1Size, maxPathBytes)
 	if runtime.GOOS == "windows" {
-		extracttest.WantError(t, err, `an entry's path "dir/aux.yaml" holds "aux.yaml", `+device)
+		extracttest.WantError(t, err, `an entry's path "dir/aux" holds "aux", `+device)
 	} else if err != nil {
-		t.Errorf("dir/aux.yaml on %s: %v", runtime.GOOS, err)
+		t.Errorf("dir/aux on %s: %v", runtime.GOOS, err)
 	}
-	for p, n := range map[string]string{"aux.yaml": "aux.yaml", "NUL": "NUL", `a\COM1.txt`: "COM1.txt", "x/lpt9": "lpt9", "conout$": "conout$"} {
-		extracttest.WantError(t, notLocal(p), "an entry's path "+Quote(p)+" holds "+Quote(n)+", "+device)
+	for p, n := range map[string]string{"aux": "aux", "NUL": "NUL", `a\COM1`: "COM1", "x/conout$": "conout$", "a/zzz/b": "zzz"} {
+		extracttest.WantError(t, notLocal(p, windowsLocal), "an entry's path "+Quote(p)+" holds "+Quote(n)+", "+device)
 	}
-	for _, p := range []string{"b/c:d", "1:x"} {
-		extracttest.WantError(t, notLocal(p), "an entry's path "+Quote(p)+" holds a colon, which Windows reads as a drive or a stream; git for Windows does not write it")
+	for _, p := range []string{"b/c:d", "1:x", "a/../x/b:c"} {
+		extracttest.WantError(t, notLocal(p, windowsLocal), "an entry's path "+Quote(p)+" holds a colon, which Windows reads as a drive or a stream; git for Windows does not write it")
 	}
-	for _, p := range []string{"../aux", "/nul", "a/../../con.txt", `..\prn`, "../c:d"} {
-		extracttest.WantError(t, notLocal(p), "an entry's path "+Quote(p)+" leaves the repository, which git does not write")
+	for _, p := range []string{"../aux", "/nul", "a/../../con", `..\prn`, "../c:d"} {
+		extracttest.WantError(t, notLocal(p, windowsLocal), "an entry's path "+Quote(p)+" leaves the repository, which git does not write")
 	}
 }
 
-// windowsDevice reads a name as Go's filepath.IsLocal does on Windows: the
-// four names, COM and LPT with a digit from 1 to 9 or a superscript one to
-// three, CONIN$ and CONOUT$, in any ASCII case, before a dot or a colon,
-// with trailing spaces dropped. Planted breaks: each digit bound moved by
-// one; the cut at a colon dropped; the trailing spaces kept; strings.ToUpper
-// for the ASCII case, which read the dotless ı as I.
-func TestWindowsDevice(t *testing.T) {
-	for n, want := range map[string]bool{
-		"con": true, "PRN": true, "Aux": true, "nul.tar.gz": true, "aux:stream": true, "aux .txt": true, "AUX  ": true,
-		"COM1": true, "com9": true, "lpt1.txt": true, "LPT9": true, "com\u00b9": true, "lpt\u00b2": true, "COM\u00b3.x": true,
-		"conin$": true, "CONOUT$.log": true,
-		"COM0": false, "LPT0": false, "COM10": false, "com:": false, "COM": false, "auxx": false, "xaux": false, " aux": false,
-		"co": false, "c": false, "": false, "com\u2074": false, "conin": false, "con\u0131n$": false, "LPT:": false,
-	} {
-		if got := windowsDevice(n); got != want {
-			t.Errorf("windowsDevice(%q) = %v, want %v", n, got, want)
+// windowsLocal stands in for filepath.IsLocal on Windows in a test that
+// runs elsewhere: it reads a backslash as a separator, and refuses a name
+// with a colon, and a name that is one of a few devices, in any case, or
+// zzz, which no Windows keeps.
+func windowsLocal(p string) bool {
+	for _, n := range strings.FieldsFunc(p, func(r rune) bool { return r == '/' || r == '\\' }) {
+		if strings.Contains(n, ":") || slices.Contains([]string{"AUX", "NUL", "COM1", "CONOUT$", "ZZZ"}, strings.ToUpper(n)) {
+			return false
 		}
+	}
+	return filepath.IsLocal(strings.ReplaceAll(p, `\`, "/"))
+}
+
+// An entry that holds a backslash is refused where a backslash separates
+// names, as on Windows, and read as part of a name elsewhere, as git
+// writes it. Off Windows the rule runs with windowsLocal, a stand-in for
+// Windows's verdict, which is where checkEntry learns that a backslash
+// separates. Planted breaks: the backslash test dropped, which let
+// .errata\witness\w\y.yaml through under windowsLocal; the test made
+// unconditional, which refused it under Linux's verdict; the short name
+// test dropped, which let ERRATA~1/witness/w/y.yaml through; the hashed
+// form's branch dropped, which let ER1A2B~1 through; the digit test's
+// bounds moved off 0 and 9, mutants mutation left alive, which let
+// errata~0 and ERRATA~9 through.
+func TestCheckEntryBackslash(t *testing.T) {
+	backslash := "a backslash, which Windows reads as a separator, so the path would name another file than the one git tracks; git for Windows does not write it"
+	for _, p := range []string{`.errata\witness\w\y.yaml`, `a\b`, `dir/x\y.yaml`} {
+		extracttest.WantError(t, checkEntry(p, windowsLocal), "an entry's path "+Quote(p)+" holds "+backslash)
+		if runtime.GOOS != "windows" {
+			if err := checkEntry(p, filepath.IsLocal); err != nil {
+				t.Errorf("%s on %s: %v", p, runtime.GOOS, err)
+			}
+		}
+	}
+	for _, n := range []string{"ERRATA~1", "errata~12", "errata~0", "ERRATA~9", "ER1A2B~1", "erffff~5"} {
+		p := n + "/witness/w/y.yaml"
+		extracttest.WantError(t, checkEntry(p, windowsLocal), "an entry's path "+Quote(p)+" holds "+Quote(n)+", which Windows may open as .errata by its short name, so the path could name a witness's file; git for Windows does not write it")
+		if err := checkEntry(p, filepath.IsLocal); runtime.GOOS != "windows" && err != nil {
+			t.Errorf("%s on %s: %v", p, runtime.GOOS, err)
+		}
+	}
+	for _, p := range []string{"errata~/x", "errata~1a/x", "xerrata~1/x", "er1a2g~1/x", "er1a2b~/x", "er1a2b~1a/x", "ab1a2b~1/x"} {
+		if err := checkEntry(p, windowsLocal); err != nil {
+			t.Errorf("%s under windowsLocal: %v", p, err)
+		}
+	}
+	extracttest.WantError(t, checkEntry(`a\..\..\x`, windowsLocal), "an entry's path "+Quote(`a\..\..\x`)+" leaves the repository, which git does not write")
+	for _, p := range []string{"a/b", ".errata/witness/w/y.yaml"} {
+		if err := checkEntry(p, windowsLocal); err != nil {
+			t.Errorf("%s under windowsLocal: %v", p, err)
+		}
+	}
+	_, err := parseIndex(gitIndex(2, indexEntry{path: `.errata\witness\w\y.yaml`}), sha1Size, maxPathBytes)
+	if runtime.GOOS == "windows" {
+		extracttest.WantError(t, err, "an entry's path "+Quote(`.errata\witness\w\y.yaml`)+" holds "+backslash)
+	} else if err != nil {
+		t.Errorf("a backslash on %s: %v", runtime.GOOS, err)
 	}
 }
 

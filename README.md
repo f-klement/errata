@@ -327,7 +327,7 @@ stdin reads nothing and goes on. errata compares the output and never runs it.
 |---|---|
 | the output equals the file | true |
 | the output differs from the file in any byte, a CR before a newline and the last newline included | false, at the first line that differs |
-| nothing is at `generated.file` | false: the generator printed a file the repository lacks |
+| nothing is at `generated.file` | false: the generator printed a file the repository lacks. On a [witness](#witnesses) the witness is unknown instead, and the generator does not run |
 | the generator exits with any status but 0, exit 1 included, or cannot be started | unknown, with the end of its stderr |
 | the generator runs past `timeout`, or writes more than `max_bytes` to stdout or to stderr | unknown; errata kills its process group if the generator is still running. A child left running after the generator exits runs on |
 | the file is over `max_bytes`, a directory, or a link that leads out of the repository | unknown |
@@ -381,26 +381,48 @@ named `id [witness name]` in the text report and in JUnit:
 |---|---|
 | false | holds; the coverage line counts it, as `1 witness held.` |
 | true | an erratum: `go-toolchain-agrees held on its witness toolchain-drifts, so it could not be shown to fail`. SARIF puts it at the check in the config |
-| unknown, or the fixture is not a directory, or is reached through a symlink, wherever it leads | unknown, which fails the run |
+| unknown, or the fixture is not a directory, or is reached through a symlink, wherever it leads, or git's index lists no file below it | unknown, which fails the run |
 
-The exit codes do not change. Each kind of check runs on the fixture this way:
+The exit codes do not change. A clone in CI holds only the files git's index lists, so every kind
+of check needs the repository's git index on a witness, a program check's included: a fixture the
+index lists no file below makes the witness unknown before its check runs. A rule's reads of the
+fixture (a `file:`, a glob, `exists` and a generated check's `generated.file`) then find only the
+files the index lists below it, so a file the fixture does not commit reads as not there, as in a
+clone. Each kind of check runs on the fixture this way:
 
 - A rule reads the fixture as its root. A `files:` glob matches the files git's index lists
   below the fixture, with the fixture's path cut off, so a file the fixture does not commit is
-  not read, as in CI. A `file:` names a path inside the fixture, and a symlink that leads out of
-  it is refused, as one that leads out of the repository is.
+  not read, as in CI. An index entry with a `.` or `..` name or an empty one, which git does not
+  write, is refused on every run, a real run's included: `a/../../x` below the fixture is
+  outside it once cut, and `.errata/./witness/w/x` names a fixture's file that a real run would
+  not pass over. A `file:` names a path inside the fixture, and a symlink that leads out of it
+  is refused, as one that leads out of the repository is. errata opens the fixture's directory
+  when it checks that no symlink leads to it, and the rule reads every file, walk and listing
+  through that open directory, so a symlink put at `.errata`, `.errata/witness` or the fixture
+  while the run is under way moves no read.
 - A program check starts in the repository root, as on any run, so `[python3, scripts/x.py]`
   finds its script, and `ERRATA_ROOT` is the fixture's absolute path. A program must read the
-  tree from `ERRATA_ROOT`. One that finds it from its working directory or its own path reads
-  the repository, holds there, and its witness is an erratum, which is the point: a check that
-  never reads the tree it is handed cannot be shown to fail.
+  tree from `ERRATA_ROOT`. It reads by that path, so the directory errata checked does not bind
+  it as it binds a rule: a symlink put in its way during the run moves its reads. It need not be
+  bound, since it runs the repository's code with the job's rights. One that finds the tree from
+  its working directory or its own path reads the repository, holds there, and its witness is an
+  erratum, which is the point: a check that never reads the tree it is handed cannot be shown to
+  fail. A program reads its fixture from the disk, not through git's index, so a file the
+  fixture does not commit is read on a local run and is missing in CI: commit every file the
+  program reads.
 - A generated check reads `generated.file` from the fixture and runs its generator from the
-  repository root with `ERRATA_ROOT` at the fixture.
+  repository root with `ERRATA_ROOT` at the fixture. A fixture that holds nothing at
+  `generated.file` makes the witness unknown without running the generator: on the repository
+  the missing file is an erratum, which would hold the witness, but the fixture left the file
+  out instead of planting a break in it, as a rule's file that is not there is unknown. The
+  generator reads the fixture from the disk, as a program does, so commit every file it reads.
 
 A witness runs under the check's own `timeout` and bounds, so each fixture costs one more run of
 its check; a check without one costs nothing more. The real run passes over `.errata/witness/`:
 a glob leaves its files out and the `tool_version` walk does not enter it, so a `**/*.yaml` does
-not read a planted break, while a `file:` that names a path inside still reads it. Other tools
+not read a planted break, while a `file:` that names a path inside still reads it. It passes
+over `.Errata/Witness/` and any other case of the two names too, on every OS, since macOS and
+Windows open that as `.errata/witness/` and run its fixtures as witnesses. Other tools
 do not know the tree: a dependency bot such as Renovate updates a `go.mod` or a `Dockerfile` in a
 fixture as in the repository, and can bump both sides of a planted break into agreement, so list
 `.errata/witness/` among the paths it ignores.
@@ -1975,8 +1997,9 @@ Without `files`, it walks the repository and reads every file of the table below
 tool, wherever it is: a directory's files in the table's order, then its subdirectories, each by
 name. The walk enters no directory of the list below, wherever it is, since each holds files the
 repository installs, downloads, builds or keeps for its tools, and a pin there is another
-project's; `.errata/witness` is a directory `witness` in a directory `.errata`, and holds the
-fixtures of [witnesses](#witnesses). Nor does it enter a directory below the root that holds an entry named `.git`, a file
+project's; `.errata/witness` is a directory `witness` in a directory `.errata`, each name in any
+case, and holds the fixtures of [witnesses](#witnesses). Every other name of the list matches
+byte for byte, the same on every OS. Nor does it enter a directory below the root that holds an entry named `.git`, a file
 or a directory: a submodule, a worktree or a repository of its own, whose pins are another
 project's too. It does not read `.gitignore`. It does not enter a symlink to a directory, so a pin
 below one is not found; a symlink at a pin's name is read as `file` reads one, followed when it
@@ -2616,7 +2639,13 @@ that is there but is no git directory as git tests it (a `HEAD` file or a symlin
 `objects` and `refs` directories, in the `commondir` of a worktree), such as an empty mount point,
 makes the rule unknown rather than match nothing. So does a `.git` file with more than its `gitdir:`
 line. So do a split index (`git update-index --split-index`) and an index that is not a regular
-file, a device among them, which is refused before it is opened. An entry without a glob names one
+file, a device among them, which is refused before it is opened. On Windows so does an index
+with an entry Windows would open as another file than the one git tracks: a path that holds a
+backslash, which git writes as part of a name and Windows reads as a separator, so that
+`.errata\witness\w\x.yaml` would name a witness's file; a name such as `ERRATA~1`, which
+Windows may open as `.errata` by its short name; a colon; or a name Windows keeps for a device,
+such as `aux`. git for Windows writes none of them, but an index written on another OS
+can hold them. An entry without a glob names one
 file, which must exist. A file that two entries name is read once, by the reader one of them gives
 it under `readers:`, whichever entry comes first; two readers for one file make the rule unknown,
 naming both entries.
@@ -2774,7 +2803,7 @@ core machine.
 | walk names | 16 MiB | the walk opens each directory from the one above it and holds the names of the directories it has still to walk, not their paths, so a long path costs its length once: 60000 directories of 250-byte names below a path of 3765 bytes take 8.2 s and 36 MB, where whole paths took 1.67 GB for 200000. Past the limit, as for 200000 such names in one directory, the walk is refused in 0.9 s |
 | walk depth | 64 directories | the deepest tree measured nests 17. A chain 64 deep with 15000 files in each directory takes 3.9 s and 3 MB |
 | git index | 64 MiB, whatever `max_bytes` is, and 1000000 entries; a path of 4096 bytes, and 64 MiB of paths in all | a glob in `files` reads `.git/index` whole and keeps the path of each entry: an entry is about 70 bytes and its path, so 64 MiB holds some 600000 files, and the entries limit is the walk's. A version 4 index writes each path as what it keeps of the one before and a suffix, so 65 bytes of the index can make a path of 4096 and 64 MiB of them gigabytes of paths: a path is held to 4096 bytes, the longest a file may be named, and the paths together to 64 MiB, which an index of plain paths cannot pass. An index read with the wrong object format is refused, since each entry's path must be the length its flags give |
-| `files` of `env`, `yaml`, `json`, `toml` and `regex` | 64 entries in `files`; 256 MiB of paths matched, each glob's weight times the bytes of the tracked paths it is matched against; 10000 files read | each glob is matched against the tracked files below its literal directory, `deploy/` for `deploy/*.env`, which a binary search finds in git's index, sorted by path; a glob whose first segment holds a wildcard, such as `*/*.env` or `**/*.yaml`, is matched against every tracked file. A match costs time in proportion to the path, about 33 ns a byte on a 3 core worker node. A glob without `**` weighs 1, and one with `**` weighs its other segments, since the match retries what follows the last `**` at each later segment of a path: `infra/**/*.yaml` weighs 2. The weight is then multiplied by one for each 8 bytes of the glob's longest segment that holds a `*`, since a match tries what follows a `*` at each byte where it could end: `**/*` and 251 more bytes, over segments of 255 bytes, took 655 ns a byte of path at a weight of 1, and takes 28 ns a weighed byte on a 2 core worker node at its weight of 32. Each byte of a character class, its brackets included, counts as 3 bytes of the segment, since a match reads a class again at each byte it tests: twenty classes of 13 bytes after a `*` took 72 ns a weighed byte with each byte counted once, and take 21 ns with 3 cores at their weight of 98. An index may hold 64 MiB of paths, over which 64 globs took 167 s. The bytes to match are each glob's weight times the bytes of the paths it is matched against, known once the index is read, so a spec over the bound is refused before any glob is matched. The bound fits about 22 MB of paths for a dozen globs with a wildcard first, some 450000 files of 50 bytes or 320000 of 70, and 4 such globs over a million files of 60 bytes. A very large monorepo with many such globs is refused, which makes the rule unknown: list fewer globs, or start each with its directory. A file costs an open, a stat and a read of its first bytes before its reader runs, however small it is, so a glob over a million empty files would run for minutes; 10000 empty files take 0.9 s on the build node, with the 4 cores its runner pod gets, and allocate 12 KB each |
+| `files` of `env`, `yaml`, `json`, `toml` and `regex` | 64 entries in `files`; 256 MiB of paths matched, each glob's weight times the bytes of the tracked paths it is matched against; 10000 files read | each glob is matched against the tracked files below its literal directory, `deploy/` for `deploy/*.env`, which a binary search finds in git's index, sorted by path; a glob whose first segment holds a wildcard, such as `*/*.env` or `**/*.yaml`, is matched against every tracked file, and so is every glob over an index out of git's order, which git itself refuses to read, and the refusal says so. A match costs time in proportion to the path, about 33 ns a byte on a 3 core worker node. A glob without `**` weighs 1, and one with `**` weighs its other segments, since the match retries what follows the last `**` at each later segment of a path: `infra/**/*.yaml` weighs 2. The weight is then multiplied by one for each 8 bytes of the glob's longest segment that holds a `*`, since a match tries what follows a `*` at each byte where it could end: `**/*` and 251 more bytes, over segments of 255 bytes, took 655 ns a byte of path at a weight of 1, and takes 28 ns a weighed byte on a 2 core worker node at its weight of 32. Each byte of a character class, its brackets included, counts as 3 bytes of the segment, since a match reads a class again at each byte it tests: twenty classes of 13 bytes after a `*` took 72 ns a weighed byte with each byte counted once, and take 21 ns with 3 cores at their weight of 98. An index may hold 64 MiB of paths, over which 64 globs took 167 s. The bytes to match are each glob's weight times the bytes of the paths it is matched against, known once the index is read, so a spec over the bound is refused before any glob is matched. The bound fits about 22 MB of paths for a dozen globs with a wildcard first, some 450000 files of 50 bytes or 320000 of 70, and 4 such globs over a million files of 60 bytes. A very large monorepo with many such globs is refused, which makes the rule unknown: list fewer globs, or start each with its directory. A file costs an open, a stat and a read of its first bytes before its reader runs, however small it is, so a glob over a million empty files would run for minutes; 10000 empty files take 0.9 s on the build node, with the 4 cores its runner pod gets, and allocate 12 KB each |
 | the values of `env`, or of `files` | 100000 and `max_bytes` in all | a CI file repeats a value for each job that inherits it, so the values of every file, job and step together hold to the limits of one extractor's. A Jenkinsfile is read again for each stage that sets the variable, all within the extractor's one work budget, so a file of hundreds of such stages is refused at it: 400 of them are refused in 1 s |
 | `package_version` files | 64 in `files` | a manifest gives at most two values, so 64 files stay under the limit on values by construction; a package has a manifest or two of each kind, and a rule over more packages names several extractors |
 | files one extractor reads | `max_bytes` in all | a walk may find many files, and symlinks or copies may repeat one, so the files of one extractor are read up to its `max_bytes` together, as one file is; in `tool_version` and the `files:` of yaml, json, toml and regex, links that end at one file read it once, and `env` and `package_version` read each name they list. 100 links to a 32 MiB file take 0.4 to 0.7 s, where reading each link took 31 to 64 s in all before |
@@ -3237,7 +3266,7 @@ the job to see it.
 With Go 1.27 or later:
 
 ```bash
-make tools    # golangci-lint, gremlins, govulncheck and goreleaser into ./bin, at pinned versions
+make tools    # golangci-lint, gremlins, govulncheck, goreleaser, syft, ko and jq into ./bin, at pinned versions
 make build    # static binary at ./errata
 ./errata check
 ```

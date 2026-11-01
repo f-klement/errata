@@ -105,8 +105,8 @@ func (e xmlExtractor) ExtractWith(ctx context.Context, root string, _ map[string
 
 // Extract reads the file under root and returns every value its path
 // selects.
-func (e xmlExtractor) Extract(_ context.Context, root string) ([]check.Value, error) {
-	return core.ExtractOne(root, e.Source, e)
+func (e xmlExtractor) Extract(ctx context.Context, root string) ([]check.Value, error) {
+	return core.ExtractOne(ctx, root, e.Source, e)
 }
 
 // FromShared is FromData: a read of an XML file has its own node budget,

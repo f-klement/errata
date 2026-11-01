@@ -150,7 +150,99 @@ if [ "$1" = none ]; then
 fi
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/errata-mutation.XXXXXX")
-trap '[ -z "${sampler:-}" ] || kill "$sampler" 2>/dev/null; rm -rf "$work"' EXIT
+
+# Stopping what the run started (#236). A TERM used to end the script and remove $work while
+# the packages run at once ran on. Each slot is a subshell, and with a deadline every command
+# that runs tests runs under `timeout` (bounded), which puts itself and what it runs in a process
+# group of its own. A TERM to the script's pid alone left the slots running; a TERM to its whole
+# process group, as GNU timeout sends when ci/run-on-node.sh's bound runs out, killed the slots,
+# and left the timeout groups running as orphans, which no walk from this shell finds. So
+# bounded records each timeout's pid, which is its process group, under $work/groups while it
+# runs, and on every exit the script stops each process below it by parent and each process in a
+# recorded group. It stops them first (SIGSTOP) and looks again until a look finds none it has
+# not stopped, so none can start a child it misses: one look on an exit with nothing running,
+# two when the first finds processes, three if one forked while the first looked. Then it sends TERM and CONT, which `timeout` hands on to
+# its group, waits up to 10 s for them to end, kills the rest, and only then removes $work.
+mkdir "$work/groups"
+#
+# procs_below <file>: into the file, each process below this shell or in a group under
+# $work/groups, one pid a line. It runs in the main shell, so the one process that exists only
+# for the look is the `cat` that lists the processes, and that one is left out by its pid.
+# Linux has /proc; elsewhere ps lists them.
+procs_below() {
+    if [ -r /proc/self/stat ]; then
+        cat /proc/[0-9]*/stat >"$work/procs" 2>/dev/null &
+        lister=$!
+        wait "$lister" || true
+        sed -n 's/^\([0-9]*\) (.*) [A-Za-z] \([0-9]*\) \([0-9]*\) .*/\1 \2 \3/p' "$work/procs" >"$work/procs.table"
+    else
+        ps -A -o pid= -o ppid= -o pgid= >"$work/procs.table" 2>/dev/null &
+        lister=$!
+        wait "$lister" || true
+    fi
+    ls "$work/groups" >"$work/procs.groups"
+    awk -v root=$$ -v skip="$lister" -v groups="$work/procs.groups" '
+        BEGIN { while ((getline g < groups) > 0) group[g] = 1 }
+        { kids[$2] = kids[$2] " " $1; if ($3 in group && $1 != skip && $1 != root) start = start " " $1 }
+        END {
+            # Every process in a recorded group, then everything below this shell or below one of
+            # them, each once.
+            seen[root] = 1
+            n = split(start, a, " ")
+            for (i = 1; i <= n; i++) if (!(a[i] in seen)) { seen[a[i]] = 1; print a[i] }
+            q = root start
+            while (q != "") {
+                n = split(q, a, " "); q = ""
+                for (i = 1; i <= n; i++) {
+                    m = split(kids[a[i]], c, " ")
+                    for (j = 1; j <= m; j++) if (!(c[j] in seen) && c[j] != skip) { seen[c[j]] = 1; print c[j]; q = q " " c[j] }
+                }
+            }
+        }' "$work/procs.table" >"$1"
+}
+# alive <pid>: the process has not ended. A process that ended and that no parent has reaped
+# yet, a zombie, has ended.
+alive() {
+    if [ -r /proc/self/stat ]; then
+        s=$(sed -n 's/^[0-9]* (.*) \([A-Za-z]\) .*/\1/p' "/proc/$1/stat" 2>/dev/null) || return 1
+        [ -n "$s" ] && [ "$s" != Z ] && [ "$s" != X ]
+    else
+        kill -0 "$1" 2>/dev/null
+    fi
+}
+# stop_below: stop every process below this shell and in its recorded groups, as above.
+# MUTATION_STOP_LOG, a file, gets the number of looks and of processes stopped, for the tests.
+stop_below() {
+    stopped="" looks=0
+    while [ "$looks" -lt 10 ]; do
+        looks=$((looks + 1))
+        procs_below "$work/below"
+        new=$(awk -v have=" $stopped " 'index(have, " " $1 " ") == 0' "$work/below")
+        [ -n "$new" ] || break
+        # shellcheck disable=SC2086
+        kill -STOP $new 2>/dev/null || true
+        stopped="$stopped $(echo $new)"
+    done
+    [ -z "${MUTATION_STOP_LOG:-}" ] || echo "looks $looks stopped $(echo $stopped | wc -w)" >>"$MUTATION_STOP_LOG"
+    [ -n "$stopped" ] || return 0
+    # shellcheck disable=SC2086
+    { kill -TERM $stopped; kill -CONT $stopped; } 2>/dev/null || true
+    i=0 left=$stopped
+    while [ "$i" -lt 50 ]; do
+        still=""
+        for id in $left; do
+            if alive "$id"; then still="$still $id"; fi
+        done
+        left=$still
+        [ -n "$left" ] || break
+        sleep 0.2
+        i=$((i + 1))
+    done
+    # shellcheck disable=SC2086
+    [ -z "$left" ] || kill -KILL $left 2>/dev/null || true
+    wait 2>/dev/null || true
+}
+trap 'stop_below; rm -rf "$work"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
@@ -305,12 +397,48 @@ FLOORS_FILE=scripts/mutation-floors.txt
 [ -f "$FLOORS_FILE" ] || refuse "$FLOORS_FILE is missing; it holds every package's floors"
 floors_table=$(sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "$FLOORS_FILE")
 
-# floors_for <package>: efficacy, mcover and base_coef from the package's row; false when the
-# table has no row for it, or more than one, or a row whose figures are not whole numbers.
+# The form of a row: the package directory and three whole numbers, its efficacy floor, its
+# mutant coverage floor and its least coefficient. After them a row may hold, once each and in
+# any order, `from <package>`, the package it came from, which only the ratchet in
+# ci/tests/mutation.sh reads (#215), and three fields that come together or not at all (#247):
+# `mutant <seconds>`, the time a mutant of the package took at one worker, `measuring
+# <seconds>`, the time its measuring took (measure_pass and measure_mutant), both of which the
+# schedule of packages at once reads (alone_look, #236), and `measured <pipeline id or
+# YYYY-MM-DD>`, where they were taken. Every row is checked here, before any pass and whatever
+# the scope, so a malformed row anywhere in the table refuses every run, the tests' among them.
+FLOORS_FORM="a row is a package and three whole numbers, then, once each and in any order, 'from <package>' and the three fields 'mutant <seconds>', 'measuring <seconds>' and 'measured <pipeline id or YYYY-MM-DD>', which come together or not at all"
+bad_rows=$(printf '%s\n' "$floors_table" | awk '{
+    ok = (NF >= 4 && (NF - 4) % 2 == 0 && $1 ~ /^internal\/[^ ]*[^\/]$/ && $2 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/ && $4 ~ /^[0-9]+$/)
+    split("", had); timed = 0
+    for (i = 5; i < NF; i += 2) {
+        if ($i in had) ok = 0
+        had[$i] = 1
+        if ($i == "from") { if ($(i + 1) !~ /^internal\/[^ ]*[^\/]$/) ok = 0 }
+        else if ($i == "mutant" || $i == "measuring") { if ($(i + 1) !~ /^[0-9]+(\.[0-9]+)?$/) ok = 0; timed++ }
+        else if ($i == "measured") { if ($(i + 1) !~ /^([0-9]+|[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9])$/) ok = 0; timed++ }
+        else ok = 0
+    }
+    if (timed != 0 && timed != 3) ok = 0
+    if (!ok) print $1
+}')
+# shellcheck disable=SC2086
+[ -z "$bad_rows" ] || refuse "$FLOORS_FILE has a row of the wrong form for$(printf ' %s' $bad_rows): $FLOORS_FORM"
+
+# floors_for <package>: efficacy, mcover, base_coef, row_mutant and row_measuring from the
+# package's row, whose form is checked above; false when the table has no row for it, or more
+# than one. row_mutant and row_measuring are empty when the row has no times.
 floors_for() {
-    row=$(printf '%s\n' "$floors_table" | awk -v p="$1" '$1 == p { n++; r = $2 " " $3 " " $4; ok = (NF == 4 && $2 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/ && $4 ~ /^[0-9]+$/) } END { if (n != 1 || !ok) exit 1; print r }') || return 1
+    row=$(printf '%s\n' "$floors_table" | awk -v p="$1" '$1 == p {
+        n++; r = $2 " " $3 " " $4; m = "-"; g = "-"
+        for (i = 5; i < NF; i += 2) {
+            if ($i == "mutant") m = $(i + 1)
+            else if ($i == "measuring") g = $(i + 1)
+        }
+    } END { if (n != 1) exit 1; print r, m, g }') || return 1
     set -- $row
-    efficacy=$1 mcover=$2 base_coef=$3
+    efficacy=$1 mcover=$2 base_coef=$3 row_mutant=$4 row_measuring=$5
+    [ "$row_mutant" != - ] || row_mutant=""
+    [ "$row_measuring" != - ] || row_measuring=""
 }
 
 # A package fails when more than TIMEOUT_CAP percent of its mutants that ran timed out, and
@@ -398,7 +526,7 @@ workers() {
 # does after its first mutant. Only in the copy of the tree: it edits the file, then puts it
 # back.
 measure_mutant() {
-    mutant_s=""
+    mutant_s="" mutant1_s=""
     [ -n "${in_copy:-}" ] || return 0
     tags=$(sed -n 's/^  tags: *\([^ #]*\).*/\1/p' .gremlins.yaml)
     # The first Go file the build takes, as go list names it with gremlins' tags: a file a build
@@ -409,11 +537,30 @@ measure_mutant() {
     src=$1/$src
     bounded go test ${tags:+-tags "$tags"} -run '^$' "./$1" >/dev/null 2>&1 || return 0
     cp "$src" "$pw/probe.keep"
-    printf '\nfunc ErrataMutationProbe() {}\n' >>"$src"
     w=$(workers)
+    probe_at "$1" "$w" Probe
+    mutant_s=$took
+    # The measuring a push's pass makes ends here, so this is where its time is taken.
+    measuring_s=$(awk -v a="$measure_start" -v b="$(date +%s%N)" 'BEGIN { s = (b - a) / 1e9; r = int(s); if (r < s) r++; printf "%d", r }')
+    # A run of whole packages with no deadline, the weekly pass's, also times a mutant at one
+    # worker, the time a floors row holds (#247). Another function, so the package is built again.
+    if [ ! -e "$pw/probe.failed" ] && [ -z "$diff_base" ] && [ -z "$deadline" ]; then
+        if [ "$w" -eq 1 ]; then mutant1_s=$mutant_s; else probe_at "$1" 1 ProbeAlone; mutant1_s=$took; fi
+    fi
+    cp "$pw/probe.keep" "$src"
+    if [ -e "$pw/probe.failed" ]; then
+        rm -f "$pw/probe.failed"
+        mutant_s="" mutant1_s=""
+        echo "==> mutation: $1: could not time a mutant: its tests failed with a function added to $src"
+    fi
+}
+# probe_at <package> <n> <name>: took, the seconds n runs at once of the package's tests take,
+# with a function ErrataMutation<name> added to src; $pw/probe.failed when one failed.
+probe_at() {
+    printf '\nfunc ErrataMutation%s() {}\n' "$3" >>"$src"
     start=$(date +%s%N)
     i=0 probes=""
-    while [ "$i" -lt "$w" ]; do
+    while [ "$i" -lt "$2" ]; do
         { bounded go test ${tags:+-tags "$tags"} -failfast "./$1" >/dev/null 2>&1 || : >"$pw/probe.failed"; } &
         probes="$probes $!"
         i=$((i + 1))
@@ -422,13 +569,17 @@ measure_mutant() {
     # never ends.
     for id in $probes; do wait "$id" || true; done
     end=$(date +%s%N)
-    cp "$pw/probe.keep" "$src"
-    if [ -e "$pw/probe.failed" ]; then
-        rm -f "$pw/probe.failed"
-        echo "==> mutation: $1: could not time a mutant: its tests failed with a function added to $src"
-        return 0
-    fi
-    mutant_s=$(awk -v a="$start" -v b="$end" 'BEGIN { printf "%.3f", (b - a) / 1e9 }')
+    took=$(awk -v a="$start" -v b="$end" 'BEGIN { printf "%.3f", (b - a) / 1e9 }')
+}
+# floors_row <package> <mutant seconds> <measuring seconds>: the package's floors row, aligned as
+# scripts/mutation-floors.txt aligns it, with its mutant and measuring times set to those,
+# measured in this pipeline, or on today's date outside CI (#247).
+floors_row() {
+    printf '%s\n' "$floors_table" | awk -v p="$1" -v m="$2" -v g="$3" -v id="${CI_PIPELINE_ID:-$(date -u +%Y-%m-%d)}" '$1 == p {
+        r = sprintf("%-34s %-9s %-7s %-6s ", $1, $2, $3, $4)
+        for (i = 5; i < NF; i += 2) if ($i != "mutant" && $i != "measuring" && $i != "measured") r = r $i " " $(i + 1) " "
+        printf "%smutant %.1f measuring %d measured %s\n", r, m, g, id
+    }'
 }
 
 # limit_floor: the least limit per mutant, in seconds: LIMIT_FLOOR, or MUTANT_FLOOR times the
@@ -606,13 +757,20 @@ memory_line() {
 memory_summary() {
     memory_readable || return 0
     echo "==> mutation: memory of each pass (anon, the working set, is the package's own; memory.current is the pod's and counts the page cache earlier packages left):"
-    if [ -e "$work/memory.line" ]; then
-        cat "$work/memory.line"
-    else
-        for i in $run; do
-            [ ! -e "$work/p/$i/memory.line" ] || cat "$work/p/$i/memory.line"
-        done
-    fi
+    for i in $all_run; do
+        [ ! -e "$work/p/$i/memory.line" ] || cat "$work/p/$i/memory.line"
+    done
+    [ ! -e "$work/memory.line" ] || cat "$work/memory.line"
+}
+
+# rows_summary: the floors rows the pass timed, after the memory lines, in the order of the scope.
+rows_summary() {
+    set -- "$work"/p/*/row.line
+    [ -e "$1" ] || return 0
+    echo "==> mutation: each package's floors row with the times this pass took, a mutant at one worker and the measuring; a row copied into scripts/mutation-floors.txt refreshes its times:"
+    for i in $all_run; do
+        [ ! -e "$work/p/$i/row.line" ] || cat "$work/p/$i/row.line"
+    done
 }
 
 # left_s: the seconds left before the deadline, 0 when it has passed.
@@ -633,8 +791,18 @@ fits() {
 # runs this way, so no package runs past the deadline.
 bounded() {
     if [ -n "$deadline" ]; then
-        # timeout takes 0 as no limit at all.
-        timeout -k 10 "$(left_s | sed 's/^0$/1/')" "$@"
+        # timeout takes 0 as no limit at all. It runs in the background, so its pid, which is its
+        # process group, can be recorded for stop_below while it runs; the wait gives its status.
+        # The process records its own pid and then becomes timeout, so the record exists before
+        # timeout leaves this script's process group: a TERM to the group either reaches it there
+        # or finds it recorded. When this shell wrote the record after the fork, a TERM in between
+        # ended the shell first and left the pass running unseen (#248).
+        sh -c ': >"$1/$$" && shift && exec "$@"' sh "$work/groups" timeout -k 10 "$(left_s | sed 's/^0$/1/')" "$@" &
+        tg=$!
+        trc=0
+        wait "$tg" || trc=$?
+        rm -f "$work/groups/$tg"
+        return "$trc"
     else
         "$@"
     fi
@@ -776,6 +944,7 @@ unleash() {
         return 0
     fi
     floors_for "$p"
+    measure_start=$(date +%s%N)
     measure_pass "$p"
     measure_mutant "$p"
     if ! fits 1; then
@@ -798,11 +967,20 @@ unleash() {
     if [ -n "$mutant_s" ]; then
         echo "==> mutation: $p: a mutant took $mutant_s s to build and test, $(workers) at once, so each gets at least $(limit_floor) s"
     fi
+    if [ -n "$mutant1_s" ]; then
+        [ "$(workers)" -eq 1 ] || echo "==> mutation: $p: a mutant took $mutant1_s s to build and test, 1 at once"
+        floors_row "$p" "$mutant1_s" "$measuring_s" >"$pw/row.line"
+    fi
     config_for "$p" "$coef"
     # With a deadline, a dry run counts the mutants first, and a package whose pass would not
     # end before the deadline is left out whole rather than stopped halfway.
+    # alone_look's dry run, made before the slots started, is not made again.
     if [ -n "$deadline" ]; then
-        dry_once "$p" "$diff"
+        if [ -s "$pw/dry" ]; then
+            read -r runnable dry_pass <"$pw/dry"
+        else
+            dry_once "$p" "$diff"
+        fi
         if [ -n "$runnable" ]; then
             need=$(estimate "$runnable" "$dry_pass")
             if ! fits "$need"; then
@@ -886,7 +1064,7 @@ fi
 # A package with no row is refused before the first pass, not an hour into a run.
 for p in "$@"; do
     excluded_whole "$p" || floors_for "$p" \
-        || refuse "$p has no row in $FLOORS_FILE, or more than one, or one that is not four fields of a package and three whole numbers: add one, with its efficacy floor, mutant coverage floor and least coefficient"
+        || refuse "$p has no row in $FLOORS_FILE, or more than one: add one, with its efficacy floor, mutant coverage floor and least coefficient; $FLOORS_FORM"
 done
 
 # Each package in scope gets a directory of its own, $work/p/<its place in the scope>: its name,
@@ -956,18 +1134,140 @@ fi
 [ "$at_once" -ge 1 ] || at_once=1
 pkg_workers=$((yaml_workers / at_once))
 [ "$pkg_workers" -ge 1 ] || pkg_workers=1
+all_run=$run
 
+# A package too big for one worker runs alone with all of them, when that leaves time for the
+# rest (#236, owner decisions 2026-10-31). Packages at once each get a share of the workers, and
+# at its share a big package's estimate can miss the deadline where at all of them it fits:
+# pipeline 3010608824 left out internal/extract/core, whose 40 mutants needed about 1074 s at one
+# worker, 26.3 s each, with 719 s left. So under a deadline, before the slots start, each package
+# whose floors row holds a mutant time (`mutant <seconds>`, measured at one worker in a pipeline)
+# has its mutants counted by the dry run its pass makes anyway, kept for the pass. Each estimate
+# is the seconds the package's measuring takes before its pass, its row's `measuring`, gremlins' coverage
+# pass, and a round of mutants per as many as the package has workers: a round of one mutant
+# takes the row's time, and a round of two or more ROUND_COST times it (core: 28.8 s for a round
+# of two against 26.3 s alone, pipelines 3009308601 and 3010608824).
+#
+# A package whose estimate at its share of the workers does not fit the time left, and at all of
+# them does, runs alone with all the workers before the others, but only when what it needs
+# alone still leaves time for every other package in scope at today's scheduling; otherwise the
+# schedule is today's. The others' time is their estimates' sum over the slots they run in, or
+# the longest of them when that is more, since one package holds its slot for all its time: a
+# package with a mutant time and a count its estimate at its share, or only its measuring when
+# that does not fit, since it is then left out after it; any other package PER_PACKAGE seconds.
+# A package with no time in its row, or whose dry run gives no count, keeps today's scheduling,
+# and so does one that fits at its share or would not fit at all of them; its own measured
+# estimate decides it in its slot.
+ROUND_COST=1.1
+# PER_PACKAGE: the seconds a package without times in its row is counted at in a slot, measuring
+# and pass together. Pipeline 3010608824's four such packages took 55.12, 90.24, 65.62 and
+# 15.03 s in their slots (check, engine, config, protocol: each from its "started" to its "ended"
+# line), 226.0 s together, 56.5 s a package, rounded up (delta review 2 of #236, finding 5; review
+# of #247, F4). Once the weekly pass's rows are copied in, every package has times and this counts
+# a new one alone. ci/push-mutation.sh's cap counts a whole job's package at a figure of its own.
+# MUTATION_PER_PACKAGE sets it otherwise; ci/test-ci.sh lowers it.
+PER_PACKAGE=${MUTATION_PER_PACKAGE:-57}
+case "$PER_PACKAGE" in ''|*[!0-9]*) refuse "MUTATION_PER_PACKAGE is '$PER_PACKAGE', not a number of seconds" ;; esac
+# need_at <mutants> <row time> <coverage pass> <workers>: the estimate above, whole seconds, with
+# the row's measuring time.
+need_at() {
+    awk -v n="$1" -v t="$2" -v g="${3:-0}" -v w="$4" -v m="$row_measuring" -v k="$ROUND_COST" 'BEGIN {
+        full = int(n / w); rest = n - full * w
+        c = full * t * (w > 1 ? k : 1)
+        if (rest == 1) c += t; else if (rest > 1) c += t * k
+        printf "%d", m + g + c + 1
+    }'
+}
+# alone_look <index>: the package's estimates, logged, into $pw/alone: "share <s> all <s>" when
+# it has a time and a count, nothing otherwise; and its cost in a slot into $pw/slot_cost.
+alone_look() {
+    pw=$work/p/$1
+    p=$(cat "$pw/name")
+    rm -f "$pw/alone"
+    echo "$PER_PACKAGE" >"$pw/slot_cost"
+    floors_for "$p"
+    if [ -z "$row_mutant" ]; then
+        echo "==> mutation: $p: no mutant time in its floors row, so it runs in a slot, counted at $PER_PACKAGE s"
+        return 0
+    fi
+    diff=""
+    [ -z "$diff_base" ] || diff=$(diff_file "$p")
+    config_for "$p" "$base_coef"
+    dry_once "$p" "$diff"
+    if [ -z "$runnable" ]; then
+        echo "==> mutation: $p: its dry run gave no count, so it runs in a slot, counted at $PER_PACKAGE s"
+        return 0
+    fi
+    echo "$runnable $dry_pass" >"$pw/dry"
+    share=$(need_at "$runnable" "$row_mutant" "$dry_pass" "$pkg_workers")
+    all=$(need_at "$runnable" "$row_mutant" "$dry_pass" "$yaml_workers")
+    why="$runnable mutants at its floors row's $row_mutant s need about $share s at its $pkg_workers of the $yaml_workers workers and $all s at all $yaml_workers, and $(left_s) s are left"
+    if fits "$share"; then
+        echo "$share" >"$pw/slot_cost"
+        echo "==> mutation: $p: $why, so it runs in a slot"
+        return 0
+    fi
+    awk -v m="$row_measuring" -v g="${dry_pass:-0}" 'BEGIN { printf "%d", m + g + 1 }' >"$pw/slot_cost"
+    if ! fits "$all"; then
+        echo "==> mutation: $p: $why, so it does not fit either way and runs in a slot"
+        return 0
+    fi
+    echo "share $share all $all" >"$pw/alone"
+    echo "==> mutation: $p: $why"
+}
+# others_s <index...>: the seconds the packages take in the slots: their slot costs over the
+# slots, rounded up, or the longest of them when that is more (delta review 2 of #236, finding 1).
+others_s() {
+    for i; do cat "$work/p/$i/slot_cost"; done | awk -v k="$at_once" '
+        { s += $1; n++; if ($1 > most) most = $1 }
+        END { if (n < k) k = n; if (k < 1) k = 1; e = int(s / k); if (e * k < s) e++; if (most > e) e = most; printf "%d", e }'
+}
+alone=""
+if [ "$at_once" -gt 1 ] && [ -n "$deadline" ]; then
+    for i in $run; do alone_look "$i"; done
+    # Each package that may run alone, in the order of the scope, runs alone when it, those
+    # already taken to run alone, and every other package in slots fit the time left.
+    taken=0
+    for i in $run; do
+        [ -e "$work/p/$i/alone" ] || continue
+        p=$(cat "$work/p/$i/name")
+        read -r _ _ _ all_i <"$work/p/$i/alone"
+        rest=$(for j in $run; do case " $alone $i " in *" $j "*) ;; *) printf ' %s' "$j" ;; esac; done)
+        # shellcheck disable=SC2086
+        o=$(others_s $rest)
+        if fits $((taken + all_i + o)); then
+            alone="$alone $i"
+            taken=$((taken + all_i))
+            echo "==> mutation: $p: it runs alone with all $yaml_workers workers, before the others: its $all_i s and the others' $o s in slots fit the $(left_s) s left"
+        else
+            echo "==> mutation: $p: alone with all $yaml_workers workers its $all_i s and the others' $o s in slots would not fit the $(left_s) s left, so it runs in a slot"
+        fi
+    done
+fi
+
+# run_one <index>: the package alone, with its memory line.
+run_one() {
+    pw=$work/p/$1
+    p=$(cat "$pw/name")
+    memory_start "$pw/memory"
+    unleash "$p" || failed=1
+    memory_stop "$pw/memory"
+    memory_line "$p" "$pw/memory" | tee "$pw/memory.line"
+}
 memory_note
 failed=0
+if [ -n "$alone" ]; then
+    pkg_workers=$yaml_workers
+    for i in $alone; do run_one "$i"; done
+    # The others run at once as before, the share taken again from those left.
+    run=$(for i in $run; do case " $alone " in *" $i "*) ;; *) printf ' %s' "$i" ;; esac; done)
+    count=$(echo $run | wc -w)
+    [ "$at_once" -le "$count" ] || at_once=$count
+    [ "$at_once" -ge 1 ] || at_once=1
+    pkg_workers=$((yaml_workers / at_once))
+fi
 if [ "$at_once" -le 1 ]; then
-    for i in $run; do
-        pw=$work/p/$i
-        p=$(cat "$pw/name")
-        memory_start "$pw/memory"
-        unleash "$p" || failed=1
-        memory_stop "$pw/memory"
-        memory_line "$p" "$pw/memory" | tee "$pw/memory.line"
-    done
+    for i in $run; do run_one "$i"; done
 else
     # run_slot: run the packages no other slot has claimed, one after the other. A claim is a
     # directory, which mkdir makes for one caller only. Each package runs in a copy of the tree
@@ -991,19 +1291,39 @@ else
             echo "$status" >"$pw/status"
             echo "==> mutation: $p: ended"
         done
+        date +%s >"$work/slots/$1"
+    }
+    # idle_line: the workers the slots that ended first left idle until the last one ended
+    # (#236, review of #151, F7). A gremlins pass keeps the workers it started with to its end,
+    # so a package still running when the others have ended keeps its share and the rest sit
+    # idle; workers cannot be handed on to it. The line measures that cost on every run, so the
+    # pipelines show whether it is worth more than the measurement. The first push that ran
+    # packages at once, pipeline 3010608824 (c2e3d88), ran 8 packages in 467 s, and its two
+    # slots ended 18 s apart: 18 of the 934 worker seconds, 2%. A slot that died wrote no time.
+    idle_line() {
+        set -- "$work"/slots/*
+        [ -e "$1" ] || return 0
+        last=$(cat "$@" | sort -n | tail -n 1)
+        first=$(cat "$@" | sort -n | head -n 1)
+        idle=0
+        for f; do idle=$((idle + (last - $(cat "$f")) * pkg_workers)); done
+        total=$(((last - started) * yaml_workers))
+        echo "==> mutation: workers idle while the last slot ran on: $idle of the $total worker seconds the run took, the first slot ending $((last - first)) s before the last; a gremlins pass keeps the workers it started with"
     }
     echo "==> mutation: $at_once of the $count packages run at once, each with $pkg_workers of the $yaml_workers gremlins workers .gremlins.yaml sets; each package's log follows once all have ended"
-    mkdir "$work/claim"
+    mkdir "$work/claim" "$work/slots"
     memory_start "$work/memory"
+    started=$(date +%s)
     k=0 slots=""
     while [ "$k" -lt "$at_once" ]; do
-        run_slot &
+        run_slot "$k" &
         slots="$slots $!"
         k=$((k + 1))
     done
     # Each slot by its own id, not a bare wait, which would wait for the memory sampler too.
     for id in $slots; do wait "$id" || true; done
     memory_stop "$work/memory"
+    idle_line
     # A package whose run stopped before its verdict, a refusal (exit 2) above all, wrote no
     # summary line: it gets one here, and a refusal makes the run exit 2, as it does when
     # packages run one at a time.
@@ -1040,6 +1360,7 @@ done
 echo "==> mutation scope: $scope"
 sed 's/^/==>   /' "$work/summary"
 memory_summary
+rows_summary
 if [ "$failed" -ne 0 ]; then
     [ -z "$left" ] || echo "==> mutation: left out for time, and judged only by the weekly pass:$left"
     if [ -n "${refused:-}" ]; then

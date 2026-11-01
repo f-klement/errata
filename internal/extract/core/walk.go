@@ -1,13 +1,13 @@
 package core
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	slashpath "path"
-	"path/filepath"
 	"slices"
 
 	"github.com/f-klement/errata/internal/check"
@@ -41,7 +41,8 @@ var DefaultWalk = WalkLimits{Entries: 1_000_000, Dirs: 200_000, Depth: 64, Names
 // downloads, builds or keeps for its tools, not files it writes: a pin
 // there is another project's. A key with a slash names a directory by its
 // parent's name and its own, so .errata/witness is a directory witness in
-// any directory .errata.
+// any directory .errata, in any case of either name (check.WitnessesIn).
+// Every other name matches byte for byte, the same on every OS.
 var SkippedDirs = map[string]string{
 	".git":             "git's own store: objects, refs and hooks, no file of the working tree",
 	"node_modules":     "the packages npm, Yarn and pnpm install, each with pins of its own",
@@ -63,8 +64,12 @@ var SkippedDirs = map[string]string{
 }
 
 // skipped reports whether a walk passes over the directory name in the
-// directory rel: by its name, or by its parent's name and its own.
+// directory rel: by its name, or by its parent's name and its own, and a
+// directory of witnesses in any case.
 func skipped(rel, name string) bool {
+	if check.WitnessesIn(slashpath.Base(rel), name) {
+		return true
+	}
 	if _, skip := SkippedDirs[name]; skip {
 		return true
 	}
@@ -92,19 +97,16 @@ const walkBatch = 1024
 // still to walk, not their paths, so a long path costs its length once. A
 // walk past a limit, a path longer than a file may be, a directory Walk
 // cannot open or read, or an error visit returns ends the walk with that
-// error: a walk is refused, never cut short.
-func Walk(root string, l WalkLimits, want func(dir, name string) bool, visit func(dir string, names []string) error) error {
-	realRoot, err := filepath.EvalSymlinks(root)
+// error: a walk is refused, never cut short. On a witness's run the walk
+// starts at the fixture the engine opened, as a read does (openTree).
+func Walk(ctx context.Context, root string, l WalkLimits, want func(dir, name string) bool, visit func(dir string, names []string) error) error {
+	t, err := openTree(ctx, root)
 	if err != nil {
-		return fmt.Errorf("open the repository root: %w", bare(err))
+		return err
 	}
-	r, err := os.OpenRoot(realRoot)
-	if err != nil {
-		return fmt.Errorf("open the repository root: %w", bare(err))
-	}
-	defer r.Close()
+	defer t.close()
 	w := walker{limits: l, want: want, visit: visit, list: listDir}
-	return w.dir(r, ".", 0)
+	return w.dir(t.Root, ".", 0)
 }
 
 // lister is what a walk reads a directory through: an *os.File, or in a

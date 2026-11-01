@@ -14,7 +14,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -136,12 +135,12 @@ func (x extractor) ExtractWith(ctx context.Context, root string, _ map[string][]
 // dangles inside the repository, and a directory there are passed over. A
 // file that files: names must exist. The files hold at most max_bytes in
 // all, as one file does.
-func (x extractor) Extract(_ context.Context, root string) ([]check.Value, error) {
+func (x extractor) Extract(ctx context.Context, root string) ([]check.Value, error) {
 	out := []check.Value{}
 	var present map[string]bool
 	if !x.explicit {
 		var err error
-		if present, err = rootNames(root); err != nil {
+		if present, err = rootNames(ctx, root); err != nil {
 			return nil, err
 		}
 	}
@@ -150,7 +149,7 @@ func (x extractor) Extract(_ context.Context, root string) ([]check.Value, error
 		if !x.explicit && !present[f.File] {
 			continue
 		}
-		data, err := f.Read(root)
+		data, err := f.Read(ctx, root)
 		if !x.explicit && (errors.Is(err, fs.ErrNotExist) || errors.Is(err, core.ErrDirectory)) {
 			continue
 		}
@@ -174,10 +173,10 @@ func (x extractor) Extract(_ context.Context, root string) ([]check.Value, error
 // and Windows ship theirs, opens a version directory or file by the name
 // VERSION; the names the directory lists are as they were written, so only
 // the table's own spelling is read.
-func rootNames(root string) (map[string]bool, error) {
-	d, err := os.Open(root)
+func rootNames(ctx context.Context, root string) (map[string]bool, error) {
+	d, err := core.OpenDir(ctx, root)
 	if err != nil {
-		return nil, fmt.Errorf("open the repository root: %w", bare(err))
+		return nil, err
 	}
 	defer d.Close()
 	present := map[string]bool{}

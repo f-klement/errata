@@ -31,7 +31,10 @@ from the real root with `ERRATA_ROOT` at the fixture. Globs and walks of a real 
   not a directory, or is reached through a symlink, wherever the symlink leads, makes the witness
   unknown: a symlink at `.errata`, at `.errata/witness` or at the fixture. A symlink that stays
   inside the repository would put the fixtures at a path the index lists under another name,
-  which a real run's globs and walks do not pass over.
+  which a real run's globs and walks do not pass over. The engine opens the fixture's directory
+  part by part as it checks them, each part opened from the one above it and held to be the
+  directory it looked at, and every read of a rule goes through that open directory, so a
+  symlink swapped in after the check moves no read.
 - Each witness runs after its check, whatever the check's verdict, and adds one result named
   `id [witness name]`: true, which the coverage counts as held, when the check reports false; an
   erratum, `id held on its witness name, so it could not be shown to fail`, when the check holds;
@@ -45,15 +48,32 @@ from the real root with `ERRATA_ROOT` at the fixture. Globs and walks of a real 
   index under `.errata/witness/<name>/`, with that prefix cut off: the files the fixture commits,
   and never an untracked one, as in CI (ADR 0008). The index is read under its own bound, and
   what is left is a part of it, so the bounds of a glob hold too.
+- A witness needs the repository's git index, whatever the kind of check, a program check's
+  too. A fixture the index lists no file below makes the witness unknown before its check runs:
+  CI's clone does not hold it, and a local run would otherwise read an untracked tree and could
+  hold the witness where CI cannot. A rule's reads of the fixture (a `file:`, a glob, `exists`
+  and a generated check's `generated.file`) find only the files the index lists below it, so a
+  file of the fixture that the index does not list reads as not there, and a fixture that
+  commits only some of its files reads the same to a rule in both places.
 - A program check and a generated check's generator start in the repository root, as on any
   run, so `[python3, scripts/x.py]` finds its script, with `ERRATA_ROOT` at the fixture's
   absolute path, under the check's timeout, process group and empty stdin. A generated check
-  reads `generated.file` from the fixture. A program that finds the tree from its working
+  reads `generated.file` from the fixture. A fixture that holds nothing there makes the witness
+  unknown without running the generator, as a rule's missing file does: on the repository the
+  missing file makes the check false, which would hold a witness on which no break was planted.
+  A program that finds the tree from its working
   directory or its own path reads the repository, holds, and its witness is an erratum, which is
-  what a witness is for.
+  what a witness is for. A program or a generator reads the fixture from the disk, not through
+  git's index, so a file the fixture does not commit is read on a local run and is missing in
+  CI: the fixture must commit every file its program or generator reads.
 - The real run passes over every directory `witness` in a directory `.errata`: a glob leaves
   their files out of the index, and a walk such as `tool_version`'s does not enter them, so a
   `**/*.yaml` never reads a planted break. A `file:` that names a path inside still reads it.
+  Each of the two names matches in any case, on every OS: macOS and Windows open
+  `.Errata/Witness/w` as `.errata/witness/w`, so a fixture spelt that way runs as a witness
+  there, and a real run must pass over it on those systems and on Linux alike, or one repository
+  reads a planted break on one OS and not on another. Where a backslash separates names, an
+  index entry that holds a short name Windows may give `.errata`, such as `ERRATA~1`, is refused.
 
 ## Why every run, and not a subcommand or a flag
 
@@ -91,5 +111,6 @@ A config's checks can carry their own planted breaks, and a check that cannot fa
 A program check that reads its working directory where it should read `ERRATA_ROOT` cannot take a
 witness until it is fixed; the README says so in the check protocol. `errata list` gains a
 `witness` key on every check, an empty list when it names none, which the listing's version 1
-allows. The tree `.errata/witness/` is reserved: a repository that kept files there for another
-purpose has them passed over by globs and walks.
+allows. The tree `.errata/witness/` is reserved, in any case of its names: a repository that
+kept files there, or in `.Errata/Witness/`, for another purpose has them passed over by globs and
+walks.

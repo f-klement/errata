@@ -108,3 +108,35 @@ func segmentsOf(glob string) ([]byte, error) {
 	}
 	return json.Marshal([]any{marks.String(), set})
 }
+
+// rootSource gives the regex source and the unescaped body ast.js's
+// toRegExpSource gives on the root, values from minimatch 10.2.6. The
+// root leaves its own startNoTraversal out of the body, as for *a. An
+// unclosed extglob that opens a segment, as in ?(.., is a plain child
+// whose source starts with startNoTraversal, and ast.js copies that into
+// the root's body too. No answer reads the body of a segment with magic,
+// so TestSegmentsAgreeWithMinimatch cannot see the difference.
+func TestRootBodyIsAstJS(t *testing.T) {
+	for _, c := range []struct{ glob, re, body string }{
+		{"?(..", `(?!(?:^|/)\.\.?(?:$|/))[^/]\(\.\.`, `(?!(?:^|/)..?(?:$|/))[^/](..`},
+		{"*(]..}[", `(?!(?:^|/)\.\.?(?:$|/))[^/]*?\(\]\.\.\}\[`, `(?!(?:^|/)..?(?:$|/))[^/]*?(]..}[`},
+		{"*a", `(?!(?:^|/)\.\.?(?:$|/))[^/]*?a`, `[^/]*?a`},
+		{"x?(..", `x[^/]\(\.\.`, `x[^/](..`},
+	} {
+		n := fromGlob(toUnits(c.glob))
+		glob := n.toString()
+		n.flatten()
+		n.fillNegs()
+		re, body, _, _, err := n.rootSource(glob, &sourceBudget{left: maxSource})
+		if err != nil {
+			t.Errorf("%q: %v", c.glob, err)
+			continue
+		}
+		if got := fromUnits(re); got != c.re {
+			t.Errorf("%q: source %q, ast.js gives %q", c.glob, got, c.re)
+		}
+		if got := fromUnits(body); got != c.body {
+			t.Errorf("%q: body %q, ast.js gives %q", c.glob, got, c.body)
+		}
+	}
+}

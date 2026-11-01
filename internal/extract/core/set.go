@@ -149,17 +149,28 @@ func (s FileSet) Extract(ctx context.Context, root string) ([]check.Value, error
 	// The budgets the files so far spent.
 	spent := Spent{stringLimit: s.limit, deadline: time.Now().Add(s.timeLimit), timeLimit: s.timeLimit}
 	read := map[string]bool{} // where each file read so far resolves
+	var files *Reader         // opened at the first file, for them all
+	defer func() {
+		if files != nil {
+			files.Close()
+		}
+	}()
 	for _, n := range named {
+		if files == nil {
+			if files, err = OpenReader(ctx, root); err != nil {
+				return nil, err
+			}
+		}
 		// Two names that resolve to one file, a link and its target, are
 		// one file, read at the first; a name that does not resolve is
 		// refused by the read, with the reason.
-		if at, err := (Source{File: n.File}).Resolved(root); err == nil {
+		if at, err := files.Resolved(Source{File: n.File}); err == nil {
 			if read[at] {
 				continue
 			}
 			read[at] = true
 		}
-		data, err := Source{File: n.File, Limit: left}.Read(root)
+		data, err := files.Read(Source{File: n.File, Limit: left})
 		if errors.Is(err, ErrTooLarge) {
 			// The limit the message names is what the files before left,
 			// or max_bytes for the first.

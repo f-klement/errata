@@ -17,12 +17,31 @@ const WitnessDir = ".errata/witness"
 // MaxWitnesses is the most fixtures one check may name.
 const MaxWitnesses = 8
 
+// WitnessesIn reports whether the directory name in the directory parent
+// is a directory of witnesses: witness in .errata, each name in any case.
+// macOS and Windows open .Errata/Witness as .errata/witness, so a fixture
+// spelt that way runs as a witness there; every OS passes over it, so one
+// repository reads the same everywhere.
+func WitnessesIn(parent, name string) bool {
+	return strings.EqualFold(parent, ".errata") && strings.EqualFold(name, "witness")
+}
+
 // Witnessed reports whether path, relative to a root and written with
-// slashes, is in a directory of witnesses: below a directory witness whose
-// parent is named .errata, wherever that is. A glob of a run leaves such a
-// path out, as a walk does not enter the directory.
+// slashes, is in a directory of witnesses (WitnessesIn), wherever that is.
+// A glob of a run leaves such a path out, as a walk does not enter the
+// directory.
 func Witnessed(p string) bool {
-	return strings.HasPrefix(p, WitnessDir+"/") || strings.Contains(p, "/"+WitnessDir+"/")
+	prev, rest := "", p
+	for {
+		seg, after, below := strings.Cut(rest, "/")
+		if !below {
+			return false
+		}
+		if WitnessesIn(prev, seg) {
+			return true
+		}
+		prev, rest = seg, after
+	}
 }
 
 // Fixture is the directory of the witness name, relative to the

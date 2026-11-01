@@ -41,4 +41,11 @@ curl -sSfL -o "$T/c" "https://github.com/ko-build/ko/releases/download/v$v/check
 set_sum KO_SHA256_linux_amd64 "$(sum "$T/c" "ko_${v}_Linux_x86_64.tar.gz")"
 set_sum KO_SHA256_linux_arm64 "$(sum "$T/c" "ko_${v}_Linux_arm64.tar.gz")"
 
+v=$(ver JQ)
+curl -sSfL -o "$T/c" "https://github.com/jqlang/jq/releases/download/jq-$v/sha256sum.txt"
+set_sum JQ_SHA256_linux_amd64 "$(sum "$T/c" jq-linux-amd64)"
+set_sum JQ_SHA256_linux_arm64 "$(sum "$T/c" jq-linux-arm64)"
+set_sum JQ_SHA256_darwin_amd64 "$(sum "$T/c" jq-macos-amd64)"
+set_sum JQ_SHA256_darwin_arm64 "$(sum "$T/c" jq-macos-arm64)"
+
 echo "checksums match the published files for the pinned versions"

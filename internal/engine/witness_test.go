@@ -2,17 +2,24 @@ package engine
 
 import (
 	"context"
+	"errors"
+	"io"
+	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/f-klement/errata/internal/check"
+	"github.com/f-klement/errata/internal/extract/core"
 	"github.com/f-klement/errata/internal/provider"
 )
 
-// fixtures makes the directory of each witness of names below a new root.
+// fixtures makes the directory of each witness of names below a new
+// root, a git repository whose index lists each fixture's file .keep.
 func fixtures(t *testing.T, names ...string) string {
 	t.Helper()
 	root := t.TempDir()
@@ -23,8 +30,30 @@ func fixtures(t *testing.T, names ...string) string {
 		if err := os.MkdirAll(filepath.Join(root, ".errata", "witness", n), 0o750); err != nil {
 			t.Fatal(err)
 		}
+		if err := os.WriteFile(filepath.Join(root, ".errata", "witness", n, ".keep"), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
+	git(t, root, "init", "-q")
+	track(t, root)
 	return root
+}
+
+// track adds every file below root to git's index.
+func track(t *testing.T, root string) {
+	t.Helper()
+	git(t, root, "add", "-A")
+}
+
+// git runs git with args in dir, away from the machine's config.
+func git(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.CommandContext(t.Context(), "git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
 }
 
 // call is one run the engine asked of the runner: the root it gave and the
@@ -189,5 +218,403 @@ func TestExecuteRefusesAFixtureBehindASymlink(t *testing.T) {
 		if r := rep.Results[1]; r.Verdict != check.VerdictUnknown || r.Message != want || len(calls) != 1 {
 			t.Errorf("%s a symlink: %s %q after %d runs, want unknown %q after the check's own", link, r.Verdict, r.Message, len(calls), want)
 		}
+	}
+}
+
+// The engine hands the runner the fixture it checked, held open: a
+// symlink put at .errata once the check is done, to a tree whose witness
+// holds another x.pin, moves no read of the rule's. Planted breaks: the
+// run given no held fixture, whose read was then refused; core's openTree
+// opening the fixture by its path, which read the symlink's target.
+func TestExecuteReadsTheFixtureItChecked(t *testing.T) {
+	root := fixtures(t, "w")
+	write := func(p, text string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(p), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(filepath.Join(root, ".errata", "witness", "w", "x.pin"), "checked")
+	track(t, root)
+	other := t.TempDir()
+	write(filepath.Join(other, "witness", "w", "x.pin"), "outside")
+	var read string
+	e := &Engine{Root: root, Run: func(ctx context.Context, at string, c check.Check) check.Result {
+		if _, witness := check.RealRoot(ctx); !witness {
+			return check.Result{Check: c, Verdict: check.VerdictTrue}
+		}
+		if err := os.Rename(filepath.Join(root, ".errata"), filepath.Join(root, "moved")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(other, filepath.Join(root, ".errata")); err != nil {
+			t.Fatal(err)
+		}
+		data, err := core.Source{File: "x.pin", Limit: 100}.Read(ctx, at)
+		read = string(data)
+		if err != nil {
+			read = err.Error()
+		}
+		return check.Result{Check: c, Verdict: check.VerdictFalse}
+	}}
+	e.Execute(context.Background(), []check.Check{{ID: "c", Scope: check.ScopeRepo, Witness: []string{"w"}}})
+	if read != "checked" {
+		t.Errorf("the rule read %q, want the checked fixture's x.pin", read)
+	}
+}
+
+// enter opens a part of a fixture's path only when the directory it
+// opened is the one it looked at: here the look is handed b's, as when a
+// symlink to b was swapped in at a between the look and the open. Planted
+// break: the os.SameFile test dropped.
+func TestEnterRefusesADirectoryOtherThanTheOneLookedAt(t *testing.T) {
+	root := t.TempDir()
+	for _, d := range []string{"a", "b"} {
+		if err := os.Mkdir(filepath.Join(root, d), 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cur, err := os.OpenRoot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cur.Close()
+	if _, err := enter(cur, "a", func(string) (fs.FileInfo, error) { return cur.Lstat("b") }); !errors.Is(err, errMoved) {
+		t.Errorf("a opened while b was looked at: %v, want errMoved", err)
+	}
+	next, err := enter(cur, "a", cur.Lstat)
+	if err != nil {
+		t.Fatalf("a: %v", err)
+	}
+	_ = next.Close()
+}
+
+// respelt is a namer that lists a directory's names with each in respell
+// replaced, as a file system that ignores case lists a directory whose
+// entry a lookup of the other spelling finds.
+type respelt struct {
+	namer
+	respell map[string]string
+}
+
+func (r respelt) Readdirnames(n int) ([]string, error) {
+	names, err := r.namer.Readdirnames(n)
+	for i, name := range names {
+		if as, ok := r.respell[name]; ok {
+			names[i] = as
+		}
+	}
+	return names, err
+}
+
+// A fixture is opened only when each part of its path is spelt on disk as
+// errata names it. On macOS or Windows a lookup of .errata finds .Errata,
+// whose files the index lists under .Errata, so a witness there would cut
+// none of them; here a stand-in listing plays that file system. Planted
+// break: the spelling test dropped, which opened the fixture.
+func TestFixtureDirWantsTheNamesSpeltAsWritten(t *testing.T) {
+	root := fixtures(t, "w")
+	for _, c := range []struct{ name, as, want string }{
+		{".errata", ".Errata", "its fixture .errata/witness/w is spelt .Errata on disk"},
+		{"witness", "WITNESS", "its fixture .errata/witness/w is spelt .errata/WITNESS on disk"},
+		{"w", "W", "its fixture .errata/witness/w is spelt .errata/witness/W on disk"},
+	} {
+		list := func(r *os.Root) (namer, error) {
+			d, err := listDir(r)
+			return respelt{d, map[string]string{c.name: c.as}}, err
+		}
+		dir, err := openFixture(root, "w", lookup{respelt: folding, list: list})
+		if err == nil {
+			_ = dir.Close()
+		}
+		if err == nil || !strings.HasPrefix(err.Error(), c.want) {
+			t.Errorf("%s listed as %s: %v, want %q", c.name, c.as, err, c.want)
+		}
+	}
+	dir, err := fixtureDir(root, "w")
+	if err != nil {
+		t.Fatalf("names spelt as written: %v", err)
+	}
+	_ = dir.Close()
+}
+
+// openFixture closes the directory it opened when the listing of its
+// parent fails, and says the fixture is not in the repository. The count
+// of open descriptors needs /proc/self/fd, so it is checked on Linux
+// alone. Planted break: next left open on a failed listing, which kept
+// one descriptor for each run.
+func TestFixtureDirClosesWhatItOpenedWhenTheListingFails(t *testing.T) {
+	root := fixtures(t, "w")
+	open := func() int {
+		fds, err := os.ReadDir("/proc/self/fd")
+		if err != nil {
+			return -1
+		}
+		return len(fds)
+	}
+	failing := func(*os.Root) (namer, error) { return nil, errors.New("the listing failed") }
+	before := open()
+	for range 5 {
+		_, err := openFixture(root, "w", lookup{respelt: folding, list: failing})
+		if err == nil || err.Error() != "its fixture .errata/witness/w is not in the repository: the listing failed" {
+			t.Fatalf("a failed listing: %v", err)
+		}
+	}
+	if after := open(); before >= 0 && after != before {
+		t.Errorf("%d descriptors open after five failed listings, %d before", after, before)
+	}
+}
+
+// folding stands in for a lookup on a file system that ignores case,
+// where the fixtures' names are all lower case: it finds the name in
+// lower case.
+func folding(cur *os.Root, name string) (fs.FileInfo, error) {
+	return cur.Lstat(strings.ToLower(name))
+}
+
+// On a file system that tells case apart, the lookup of a part's name in
+// upper case finds nothing, or another directory such as a .ERRATA beside
+// .errata, so the spelling needs no listing, which costs a pass over the
+// repository's root: the fixture opens without one. Planted breaks: the
+// listing taken whenever the other spelling finds something, which listed
+// beside .ERRATA; the shortcut dropped, which listed always.
+func TestFixtureDirListsNothingWhereCaseTellsNamesApart(t *testing.T) {
+	root := fixtures(t, "w")
+	if _, err := os.Lstat(filepath.Join(root, ".ERRATA")); err == nil {
+		t.Skip("this file system ignores case")
+	}
+	listed := func(r *os.Root) (namer, error) {
+		t.Errorf("listed a directory on a file system that tells case apart")
+		return listDir(r)
+	}
+	for _, beside := range []string{"", ".ERRATA"} {
+		if beside != "" {
+			if err := os.Mkdir(filepath.Join(root, beside), 0o750); err != nil {
+				t.Fatal(err)
+			}
+		}
+		dir, err := openFixture(root, "w", lookup{respelt: onDisk.respelt, list: listed})
+		if err != nil {
+			t.Fatalf("beside %q: %v", beside, err)
+		}
+		_ = dir.Close()
+	}
+}
+
+// A witness whose fixture git's index lists no file below is unknown for
+// every kind of check, before its check runs: a clone in CI holds none of
+// its files. Here the fixture is on disk, untracked, and a rule reading its
+// file: would hold. Planted break: the refusal of core.OnFixture ignored,
+// which ran the check on the untracked fixture.
+func TestExecuteRefusesAFixtureTheIndexDoesNotList(t *testing.T) {
+	root := fixtures(t)
+	if err := os.MkdirAll(filepath.Join(root, ".errata", "witness", "u"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".errata", "witness", "u", "x.yaml"), []byte("v: 2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "x.yaml"), []byte("v: 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	track(t, root)
+	git(t, root, "rm", "-q", "--cached", ".errata/witness/u/x.yaml")
+	var calls []call
+	e := &Engine{Root: root, Run: byRoot(&calls, map[string]check.Verdict{"u": check.VerdictFalse})}
+	rep := e.Execute(context.Background(), []check.Check{{ID: "c", Scope: check.ScopeRepo, Witness: []string{"u"}}})
+	want := `git's index lists no file below the fixture ".errata/witness/u"; a clone holds only the files git tracks, so commit the fixture's files`
+	if r := rep.Results[1]; r.Verdict != check.VerdictUnknown || r.Message != want || len(calls) != 1 {
+		t.Errorf("an untracked fixture: %s %q after %d runs, want unknown %q after the check's own", r.Verdict, r.Message, len(calls), want)
+	}
+}
+
+// On a fixture that commits some of its files, a read of one the index
+// does not list finds nothing, as the read in a clone would: Read refuses
+// it, Resolved refuses it, and Stat, which exists reads, calls it not
+// there, while a committed file reads. A symlink the fixture does not
+// commit is refused before it is followed, though its target is
+// committed: link.yaml to a.yaml, and dir to e, which commits y.yaml. A
+// committed link, kept.yaml to a.yaml, is followed. Where the entry the
+// index lacks is not the file the spec names, the refusal names it as the
+// one to commit: the link dir, the untracked link b that the committed
+// chain.yaml leads to, and the untracked x.yaml that the committed to.yaml
+// leads to. Planted breaks:
+// tree.indexed passing every file, which read the untracked x.yaml;
+// resolve's check of a link dropped, which read both untracked links;
+// resolvedIn's check dropped, which resolved x.yaml; the refusal built
+// from the spec's file alone, which said to commit the committed
+// chain.yaml.
+func TestExecuteReadsOnlyTheFilesTheFixtureCommits(t *testing.T) {
+	root := fixtures(t, "w")
+	w := filepath.Join(root, ".errata", "witness", "w")
+	if err := os.Mkdir(filepath.Join(w, "e"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	for f, text := range map[string]string{"a.yaml": "a\n", "x.yaml": "x\n", "e/y.yaml": "y\n"} {
+		if err := os.WriteFile(filepath.Join(w, f), []byte(text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for link, target := range map[string]string{"kept.yaml": "a.yaml", "link.yaml": "a.yaml", "dir": "e", "chain.yaml": "b", "b": "a.yaml", "to.yaml": "x.yaml"} {
+		if err := os.Symlink(target, filepath.Join(w, link)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git(t, root, "add", ".errata/witness/w/a.yaml", ".errata/witness/w/e/y.yaml", ".errata/witness/w/kept.yaml", ".errata/witness/w/chain.yaml", ".errata/witness/w/to.yaml")
+	read := map[string]string{}
+	var stat, resolved string
+	e := &Engine{Root: root, Run: func(ctx context.Context, at string, c check.Check) check.Result {
+		if _, witness := check.RealRoot(ctx); !witness {
+			return check.Result{Check: c, Verdict: check.VerdictTrue}
+		}
+		for _, f := range []string{"a.yaml", "x.yaml", "kept.yaml", "link.yaml", "dir/y.yaml", "chain.yaml", "to.yaml"} {
+			data, err := core.Source{File: f, Limit: 100}.Read(ctx, at)
+			read[f] = string(data) + said(err)
+		}
+		at2, err := core.Source{File: "x.yaml"}.Resolved(ctx, at)
+		resolved = at2 + said(err)
+		var gone []string
+		for _, f := range []string{"x.yaml", "link.yaml", "dir/y.yaml"} {
+			_, err := core.Source{File: f}.Stat(ctx, at)
+			gone = append(gone, strconv.FormatBool(errors.Is(err, fs.ErrNotExist)))
+		}
+		stat = strings.Join(gone, " ")
+		return check.Result{Check: c, Verdict: check.VerdictFalse}
+	}}
+	e.Execute(context.Background(), []check.Check{{ID: "c", Scope: check.ScopeRepo, Witness: []string{"w"}}})
+	refused := func(f string) string {
+		return "read " + f + ": " + f + " is not in git's index below the fixture, so a clone of the repository does not hold it; commit it"
+	}
+	needs := func(f, entry string) string {
+		return "read " + f + ": " + f + " needs " + entry + ", which is not in git's index below the fixture, so a clone of the repository does not hold it; commit " + entry
+	}
+	for f, want := range map[string]string{
+		"a.yaml":     "a\n<nil>",
+		"kept.yaml":  "a\n<nil>",
+		"x.yaml":     refused("x.yaml"),
+		"link.yaml":  refused("link.yaml"),
+		"dir/y.yaml": needs("dir/y.yaml", "dir"),
+		"chain.yaml": needs("chain.yaml", "b"),
+		"to.yaml":    needs("to.yaml", "x.yaml"),
+	} {
+		if read[f] != want {
+			t.Errorf("Read %s: %q, want %q", f, read[f], want)
+		}
+	}
+	if want := refused("x.yaml"); resolved != want {
+		t.Errorf("Resolved of the untracked x.yaml: %q, want %q", resolved, want)
+	}
+	if stat != "true true true" {
+		t.Errorf("Stat of x.yaml, link.yaml and dir/y.yaml is not there: %s, want true for each", stat)
+	}
+}
+
+// A fixture stands for a repository, so a file: into a fixture nested in
+// it reads the nested fixture's committed file, as a real run's file:
+// into .errata/witness reads it; only a glob passes over the nested
+// fixture. Planted break: the held set built from the glob list, which
+// refused the committed x.yaml as not in the index.
+func TestExecuteReadsAFileOfANestedFixture(t *testing.T) {
+	root := fixtures(t, "w")
+	nested := filepath.Join(root, ".errata", "witness", "w", ".errata", "witness", "b")
+	if err := os.MkdirAll(nested, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "x.yaml"), []byte("v: 2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	track(t, root)
+	var read string
+	e := &Engine{Root: root, Run: func(ctx context.Context, at string, c check.Check) check.Result {
+		if _, witness := check.RealRoot(ctx); !witness {
+			return check.Result{Check: c, Verdict: check.VerdictTrue}
+		}
+		data, err := core.Source{File: ".errata/witness/b/x.yaml", Limit: 100}.Read(ctx, at)
+		read = string(data) + said(err)
+		return check.Result{Check: c, Verdict: check.VerdictFalse}
+	}}
+	e.Execute(context.Background(), []check.Check{{ID: "c", Scope: check.ScopeRepo, Witness: []string{"w"}}})
+	if read != "v: 2\n<nil>" {
+		t.Errorf("the nested fixture's committed x.yaml: %q", read)
+	}
+}
+
+// said is err's text, or <nil>.
+func said(err error) string {
+	if err == nil {
+		return "<nil>"
+	}
+	return err.Error()
+}
+
+// batches is a namer that gives its batches one per call, then each call
+// after them gives end. One with no end ends at an empty batch, so a call
+// after its batches is read past the listing's end: it is counted in
+// past and refused, so a loop that misses the end fails at once and does
+// not run on.
+type batches struct {
+	names [][]string
+	end   error
+	past  int
+}
+
+// errPast is a batches' refusal of a call after its last batch.
+var errPast = errors.New("read past the listing's end")
+
+func (b *batches) Readdirnames(int) ([]string, error) {
+	if len(b.names) == 0 {
+		if b.end == nil {
+			b.past++
+			return nil, errPast
+		}
+		return nil, b.end
+	}
+	n := b.names[0]
+	b.names = b.names[1:]
+	return n, nil
+}
+
+func (b *batches) Close() error { return nil }
+
+// spelling reads every batch a listing gives until io.EOF, stops at a
+// batch that is empty with no error, returns a listing's error as it
+// is, and takes the name as written over another spelling listed first.
+// Planted breaks, the mutants mutation left alive: the exact match negated
+// (n != name), which took W; the loop ended after any batch with no error
+// (len(names) != 0), which missed W in the second batch; an error taken
+// for the end of an empty batch (err != nil), which said w was not listed
+// in place of the listing's error, and read past the empty batch with no
+// error: the read past is refused and counted, so the test fails there at
+// once, where the loop ran on until mutation's limit stopped it.
+func TestSpellingReadsEveryBatch(t *testing.T) {
+	root := fixtures(t, "w")
+	cur, err := os.OpenRoot(filepath.Join(root, ".errata", "witness"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cur.Close()
+	next, err := cur.OpenRoot("w")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer next.Close()
+	run := func(b *batches) (string, error) {
+		return spelling(cur, next, "w", lookup{respelt: folding, list: func(*os.Root) (namer, error) { return b, nil }})
+	}
+	if as, err := run(&batches{names: [][]string{{"W", "x", "w"}}, end: io.EOF}); err != nil || as != "w" {
+		t.Errorf("w beside W and x: %q, %v, want w as written", as, err)
+	}
+	if as, err := run(&batches{names: [][]string{{"a"}, {"b", "W"}}, end: io.EOF}); err != nil || as != "W" {
+		t.Errorf("W in the second batch: %q, %v", as, err)
+	}
+	ended := &batches{names: [][]string{{"a"}, {}}}
+	if as, err := run(ended); err == nil || errors.Is(err, errPast) || as != "" || ended.past != 0 {
+		t.Errorf("an empty batch with no error: %q, %v after %d reads past it, want the end of the listing", as, err, ended.past)
+	}
+	boom := errors.New("the listing failed")
+	if _, err := run(&batches{end: boom}); !errors.Is(err, boom) {
+		t.Errorf("a listing that fails: %v, want its error", err)
 	}
 }

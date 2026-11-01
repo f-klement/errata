@@ -221,8 +221,8 @@ func (e Search) ExtractWith(ctx context.Context, root string, _ map[string][]che
 // Extract returns group 1 of every match in the file under root, at the line
 // where the match starts. A match in which group 1 took no part, such as
 // (a)?b matching b, gives no value.
-func (e Search) Extract(_ context.Context, root string) ([]check.Value, error) {
-	return ExtractOne(root, e.Source, e)
+func (e Search) Extract(ctx context.Context, root string) ([]check.Value, error) {
+	return ExtractOne(ctx, root, e.Source, e)
 }
 
 // FromShared is FromData under the deadline the searches of a set share,

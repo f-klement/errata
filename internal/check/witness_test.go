@@ -44,10 +44,16 @@ func TestValidateWitnesses(t *testing.T) {
 }
 
 // A path is a witness's when it is below a directory witness in a
-// directory .errata, at the root or deeper, and no other. The planted
-// break: only the root's, which kept sub/.errata/witness/x.
+// directory .errata, at the root or deeper, each name in any case, and no
+// other. Planted breaks: only the root's, which kept sub/.errata/witness/x;
+// the names compared byte for byte, which kept .Errata/witness/a/x.
 func TestWitnessed(t *testing.T) {
 	for p, want := range map[string]bool{
+		".Errata/witness/a/x":     true,
+		".errata/WITNESS/a/x":     true,
+		"sub/.ERRATA/Witness/x":   true,
+		".Errata/Witness":         false,
+		"errata/witness/a/x":      false,
 		".errata/witness/a/x":     true,
 		"sub/.errata/witness/a/x": true,
 		".errata/witness":         false,

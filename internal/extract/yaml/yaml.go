@@ -108,8 +108,8 @@ func (e yamlExtractor) ExtractWith(ctx context.Context, root string, _ map[strin
 
 // Extract reads the file under root, selects its documents and returns every
 // scalar the path selects in them.
-func (e yamlExtractor) Extract(_ context.Context, root string) ([]check.Value, error) {
-	return core.ExtractOne(root, e.Source, e)
+func (e yamlExtractor) Extract(ctx context.Context, root string) ([]check.Value, error) {
+	return core.ExtractOne(ctx, root, e.Source, e)
 }
 
 // FromData returns the values in data, the bytes of the file, as Extract

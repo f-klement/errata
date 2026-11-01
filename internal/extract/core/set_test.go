@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -346,5 +348,49 @@ func TestFileSetReadsALinkAndItsTargetOnce(t *testing.T) {
 	}
 	if want := []string{"100@d/again.txt", "200@d/out.txt"}; !slices.Equal(got, want) {
 		t.Errorf("values %q, want %q", got, want)
+	}
+}
+
+// What a file set of 1000 files costs: all in one directory three deep,
+// the chain's best case, and each in a directory of its own eight deep,
+// where the chain closes and opens all but the first directory for each
+// file.
+func BenchmarkFileSet(b *testing.B) {
+	for _, shape := range []struct {
+		name, glob string
+		path       func(i int) string
+	}{
+		{"one-directory", "a/b/c/*.txt", func(i int) string { return fmt.Sprintf("a/b/c/f%d.txt", i) }},
+		{"own-directories", "**/*.txt", func(i int) string { return fmt.Sprintf("d/%d/b/c/d/e/f/g/x.txt", i) }},
+	} {
+		b.Run(shape.name, func(b *testing.B) {
+			root := b.TempDir()
+			for i := range 1000 {
+				p := filepath.Join(root, filepath.FromSlash(shape.path(i)))
+				if err := os.MkdirAll(filepath.Dir(p), 0o750); err != nil {
+					b.Fatal(err)
+				}
+				if err := os.WriteFile(p, []byte("x\n"), 0o600); err != nil {
+					b.Fatal(err)
+				}
+			}
+			for _, args := range [][]string{{"init", "-q"}, {"add", "-A"}} {
+				cmd := exec.CommandContext(b.Context(), "git", args...)
+				cmd.Dir = root
+				cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null")
+				if out, err := cmd.CombinedOutput(); err != nil {
+					b.Fatalf("git %v: %v\n%s", args, err, out)
+				}
+			}
+			s, err := BuildFileSet("fake", []string{shape.glob}, 1<<20, (&built{}).build)
+			if err != nil {
+				b.Fatal(err)
+			}
+			for b.Loop() {
+				if vs, err := s.Extract(b.Context(), root); err != nil || len(vs) != 1000 {
+					b.Fatalf("%d values, %v", len(vs), err)
+				}
+			}
+		})
 	}
 }

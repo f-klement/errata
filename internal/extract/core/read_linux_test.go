@@ -40,7 +40,7 @@ func TestReadRefusesAFIFOAndADevice(t *testing.T) {
 	}
 	for _, name := range []string{"f", "link"} {
 		done := make(chan error, 1)
-		go func() { _, err := (Source{File: name, Limit: 8}).Read(root); done <- err }()
+		go func() { _, err := (Source{File: name, Limit: 8}).Read(t.Context(), root); done <- err }()
 		select {
 		case err := <-done:
 			if err == nil || err.Error() != "read "+name+": it is not a regular file" {
@@ -68,7 +68,7 @@ func TestReadRefusesADeviceUnopened(t *testing.T) {
 	if _, err := os.Lstat("/dev/null"); err != nil {
 		t.Skip("no /dev/null")
 	}
-	_, err := Source{File: "null", Limit: 8}.Read("/dev")
+	_, err := Source{File: "null", Limit: 8}.Read(t.Context(), "/dev")
 	if err == nil || err.Error() != "read null: it is a device, which errata does not open" {
 		t.Errorf("/dev/null: %v", err)
 	}
