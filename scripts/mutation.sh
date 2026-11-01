@@ -2,7 +2,7 @@
 # mutation.sh: run gremlins over each package of a scope, each held to its own floors.
 #
 # Usage: scripts/mutation.sh [--diff <base>] [--deadline <epoch seconds>] [--jobs <n>] [--most <n>]
-#                            all | none | <package directory>...
+#                            [--memory-request <quantity>] all | none | <package directory>...
 #   make mutation                                   every package, as locally and weekly
 #   make mutation MUTATION_SCOPE="internal/config"  the packages listed
 #   make mutation MUTATION_SCOPE="internal/config" MUTATION_DIFF=<commit>
@@ -15,6 +15,7 @@
 #   make mutation ... MUTATION_DIFF=<commit> MUTATION_MOST=<n>
 #                                                   at most n packages, those with the most
 #                                                   changed lines; the rest are left out (#151)
+#   make mutation MUTATION_MEMORY_REQUEST=2Gi       the memory guard (ci/README.md, The weekly pass)
 #
 # Each package is one pass, `gremlins unleash <package directory>`, judged alone against its
 # floors (scripts/mutation-floors.txt, read below). A package directory is one under internal/
@@ -89,9 +90,38 @@ has_go() {
     return 1
 }
 
-diff_base="" deadline="" jobs=1 most=""
+# quantity_bytes <quantity>: the request in bytes, in the forms ci/README.md (The weekly pass)
+# gives; returns 1 on another form and 2 over the 1Ti ceiling, before the product can overflow.
+quantity_bytes() {
+    n=${1%%[!0-9]*}
+    case "$n" in ''|0*) return 1 ;; ???????????????????*) return 2 ;; esac
+    case "${1#"$n"}" in
+        '') m=1 ;;
+        k) m=1000 ;;
+        M) m=1000000 ;;
+        G) m=1000000000 ;;
+        T) m=1000000000000 ;;
+        Ki) m=1024 ;;
+        Mi) m=1048576 ;;
+        Gi) m=1073741824 ;;
+        Ti) m=1099511627776 ;;
+        *) return 1 ;;
+    esac
+    [ "$n" -le $((1099511627776 / m)) ] || return 2
+    echo $((n * m))
+}
+
+diff_base="" deadline="" jobs=1 most="" mem_request=""
 while :; do
     case "${1:-}" in
+        --memory-request)
+            [ "$#" -ge 2 ] || refuse "--memory-request takes the pod's memory request, a Kubernetes quantity such as 2Gi"
+            mem_request=$2
+            shift 2
+            request_bytes=$(quantity_bytes "$mem_request") || case $? in
+                2) refuse "--memory-request takes at most 1Ti, more memory than any node has, not '$mem_request'" ;;
+                *) refuse "--memory-request takes a whole number above 0 with no leading zero, of bytes or with one of the units k M G T Ki Mi Gi Ti, such as 2Gi; the guard reads no decimal, exponent or other unit, not '$mem_request'" ;;
+            esac ;;
         --most)
             [ "$#" -ge 2 ] || refuse "--most takes the number of packages a diff run mutates at most"
             most=$2
@@ -123,7 +153,10 @@ while :; do
         *) break ;;
     esac
 done
-[ "$#" -gt 0 ] || refuse "no scope given. Usage: scripts/mutation.sh [--diff <base>] [--deadline <epoch seconds>] [--jobs <n>] [--most <n>] all | none | <package directory>..."
+[ "$#" -gt 0 ] || refuse "no scope given. Usage: scripts/mutation.sh [--diff <base>] [--deadline <epoch seconds>] [--jobs <n>] [--most <n>] [--memory-request <quantity>] all | none | <package directory>..."
+# The memory guard reads one package's anon, which only a run of one package at a time gives
+# (Memory, below).
+[ -z "$mem_request" ] || [ "$jobs" -le 1 ] || refuse "--memory-request bounds each package's own anon, and with --jobs $jobs the packages that run at once share one figure; run them one at a time"
 # The weekly pass judges every package whole, so only a diff run, a push's, has a cap.
 [ -z "$most" ] || [ -n "$diff_base" ] || refuse "--most caps a diff run's packages; without --diff every package in scope is mutated"
 cd "$(dirname "$0")/.."
@@ -689,8 +722,13 @@ percent() {
 # or ini reached memory.peak at the 4 GiB limit on 2026-10-25 and passed: the page cache may
 # make up much of that, and the anon beside it says how much. When packages run at once the
 # cgroup holds them all, and the one line covers them together.
+#
+# The guard (#152): with --memory-request, memory_guard fails a package whose anon passes half
+# the request. Why, the figures and the job's part: ci/README.md, The weekly pass.
 CGROUP=${MUTATION_CGROUP:-/sys/fs/cgroup}
 sampler=""
+bound=""
+[ -z "$mem_request" ] || bound=$((request_bytes / 2))
 
 # mib <bytes>: in MiB, whole.
 mib() {
@@ -704,7 +742,13 @@ memory_readable() {
 
 # memory_note: once, before the first package, the line that says memory is not measured.
 memory_note() {
-    memory_readable || echo "==> mutation: memory not measured: $CGROUP has no readable memory.current and memory.stat"
+    guard=""
+    [ -z "$bound" ] || guard="; the guard of $(mib "$bound") MiB, half the pod's memory request of $mem_request, checks nothing"
+    if ! memory_readable; then
+        echo "==> mutation: memory not measured: $CGROUP has no readable memory.current and memory.stat$guard"
+    elif [ -n "$bound" ]; then
+        echo "==> mutation: memory guard: a package whose anon passes $(mib "$bound") MiB, half the pod's memory request of $mem_request, fails"
+    fi
 }
 
 # memory_sample <file>: the file holds the highest memory.current and anon seen, in bytes.
@@ -750,6 +794,25 @@ memory_line() {
         *) peak="; the pod's memory.peak so far $(mib "$peak") MiB" ;;
     esac
     echo "==> memory $1: anon at most $(mib "$3") MiB; the pod's memory.current at most $(mib "$2") MiB while it ran, the page cache earlier packages left included; sampled each second, of $limit$peak"
+}
+
+# memory_guard <package> <file>: with a request, fail a package whose highest anon passes the
+# bound, with a line that says so and a FAILED summary line beside its verdict. A package with
+# no samples passes: memory_note has said why.
+memory_guard() {
+    [ -n "$bound" ] && [ -s "$2" ] || return 0
+    anon=$(awk '{ print $2 }' "$2")
+    # [ -gt ] on a value that is not a number exits 2, and `|| return 0` would pass the package,
+    # so such a reading fails it first.
+    case "$anon" in ''|*[!0-9]*)
+        echo "==> memory $1: FAILED: its anon reading '$anon' is not a whole number of bytes, so the guard cannot clear it against half the pod's memory request of $mem_request. Look at memory_sample in scripts/mutation.sh and the cgroup's memory.stat"
+        echo "$1: FAILED for memory, its anon reading '$anon' is not a whole number of bytes." >>"$pw/summary"
+        return 1 ;;
+    esac
+    [ "$anon" -gt "$bound" ] || return 0
+    echo "==> memory $1: FAILED: anon at most $(mib "$anon") MiB passes $(mib "$bound") MiB, half the pod's memory request of $mem_request. Its working set has grown toward an OOM kill: find what grew from its memory lines in earlier weekly passes, and shrink it or take a larger request to the owner (ci/README.md, The weekly pass)"
+    echo "$1: FAILED for memory, anon at most $(mib "$anon") MiB passes $(mib "$bound") MiB, half the pod's memory request of $mem_request." >>"$pw/summary"
+    return 1
 }
 
 # memory_summary: the memory lines again, after the verdicts, one a package in the order of
@@ -1253,6 +1316,7 @@ run_one() {
     unleash "$p" || failed=1
     memory_stop "$pw/memory"
     memory_line "$p" "$pw/memory" | tee "$pw/memory.line"
+    memory_guard "$p" "$pw/memory" || failed=1
 }
 memory_note
 failed=0

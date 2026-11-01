@@ -222,7 +222,8 @@ cover: test
 # mutation job sets it from the job's start and timeout. MUTATION_JOBS is how many packages
 # run at once (scripts/mutation.sh --jobs); CI's mutation job sets it from its pod's CPUs and
 # memory. MUTATION_MOST caps a diff run's packages (--most); CI's mutation job sets
-# it, and the packages over it are left out and named.
+# it, and the packages over it are left out and named. MUTATION_MEMORY_REQUEST is the memory
+# guard's request (--memory-request; ci/README.md, The weekly pass).
 #
 # Only a value given on make's command line counts. make exports command-line variables
 # to every recipe, so `make check MUTATION_SCOPE=x` reaches each make a recipe starts, the
@@ -247,6 +248,9 @@ endif
 ifeq ($(origin MUTATION_MOST),environment)
 override MUTATION_MOST :=
 endif
+ifeq ($(origin MUTATION_MEMORY_REQUEST),environment)
+override MUTATION_MEMORY_REQUEST :=
+endif
 ifeq ($(origin MUTATION_MEASURE_LEAST),environment)
 override MUTATION_MEASURE_LEAST :=
 endif
@@ -259,6 +263,7 @@ MUTATION_DIFF     ?=
 MUTATION_DEADLINE ?=
 MUTATION_JOBS     ?=
 MUTATION_MOST     ?=
+MUTATION_MEMORY_REQUEST ?=
 
 # An empty FUZZ_TARGETS, from a derivation that broke or set on the command line, is refused: it
 # would pass with no target run.
@@ -274,7 +279,7 @@ fuzz:
 # scripts/mutation.sh runs gremlins from a copy of the tracked tree, one pass per package of
 # MUTATION_SCOPE, each held to its own floors; it says why.
 mutation: $(BIN)/gremlins
-	GREMLINS=$(BIN)/gremlins scripts/mutation.sh $(if $(MUTATION_DIFF),--diff $(MUTATION_DIFF) )$(if $(MUTATION_DEADLINE),--deadline $(MUTATION_DEADLINE) )$(if $(MUTATION_JOBS),--jobs $(MUTATION_JOBS) )$(if $(MUTATION_MOST),--most $(MUTATION_MOST) )$(MUTATION_SCOPE)
+	GREMLINS=$(BIN)/gremlins scripts/mutation.sh $(if $(MUTATION_DIFF),--diff $(MUTATION_DIFF) )$(if $(MUTATION_DEADLINE),--deadline $(MUTATION_DEADLINE) )$(if $(MUTATION_JOBS),--jobs $(MUTATION_JOBS) )$(if $(MUTATION_MOST),--most $(MUTATION_MOST) )$(if $(MUTATION_MEMORY_REQUEST),--memory-request $(MUTATION_MEMORY_REQUEST) )$(MUTATION_SCOPE)
 
 vuln: $(BIN)/govulncheck
 	$(BIN)/govulncheck ./...
