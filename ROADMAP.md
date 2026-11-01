@@ -163,6 +163,12 @@ and two items from later releases that touch the same code:
   package, and CI derives its list of slow tests from the tree.
 - errata's own Renovate config is validated in CI, and an image whose registry gives no release
   time still gets its digest updates.
+- A `renovate_match` call prices itself where it ran and returns that cost with its verdict.
+  A regex and a glob sit behind one pattern interface with one cache per evaluation, and the
+  glob engine's checks of the timeout and of its step bound live in one type.
+- git's index is read in one place, which holds every rule on its entries, and every read of a
+  witness goes through one tree that holds the fixture as a clone does, listing a directory
+  included.
 
 ## v0.2.4: CI and supply chain
 
