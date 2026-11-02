@@ -171,7 +171,17 @@ A check is a program check, a rule or a [generated check](#generated-files). A p
 `run`, or takes the file's [default run](#a-default-run); a rule has `extract`; a generated check
 has `generated`. A check with two of them does not load, and neither does a check with none when
 the file sets no default run. A file with no checks does not load
-either: it would run nothing and pass. Every check has these keys:
+either: it would run nothing and pass.
+
+A program check is code. Its `run`, or the [default run](#a-default-run) it takes, is a program
+errata starts, and so is a generated check's generator. Each runs from the repository root with
+the environment of the job that runs errata, secrets included, plus the variables
+[the check protocol](#the-check-protocol) names. A rule's extractors read files and start
+nothing. On a ref you do not trust, such as a merge request from a fork, the config's
+programs, its default `run` and its generators are that ref's, and so are the scripts they start.
+Run errata there with a config of rules only, or in a job without secrets.
+
+Every check has these keys:
 
 | Key | Required | Meaning |
 |---|---|---|
@@ -276,11 +286,8 @@ no argument. The placeholders need no quotes in YAML. A program that reads the i
 `ERRATA_CHECK_ID` needs no placeholder. `errata list` prints each check's `run` with the
 placeholders replaced, as the command errata starts.
 
-A default `run` is a program errata starts, as a check's own `run` is, and as a generated check's
-generator is: each runs from the repository root with the environment of the job that runs
-errata, secrets included. On a ref you do not trust, such as a merge request from a fork, the
-config's programs, its default `run` and its generators are that ref's, and so are the scripts
-they start. Run errata there with a config of rules only, or in a job without secrets.
+A default `run` is a program errata starts with the job's environment, secrets included, as a
+check's own `run` is. [Checks](#checks) says what that means on a ref you do not trust.
 
 #### Generated files
 
@@ -3276,7 +3283,9 @@ the job to see it.
 With Go 1.27 or later:
 
 ```bash
-make tools    # golangci-lint, gremlins, govulncheck, goreleaser, syft, ko and jq into ./bin, at pinned versions
+make tools    # golangci-lint, gremlins, govulncheck, goreleaser, syft, ko and jq into ./bin, at pinned versions;
+              # on Linux each release is checked against its checksums file and any signature by cosign, also
+              # put in ./bin; elsewhere the Go tools are built with go install, and on macOS jq and cosign as on Linux
 make build    # static binary at ./errata
 ./errata check
 ```

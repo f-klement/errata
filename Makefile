@@ -1,8 +1,9 @@
 # One entry point for a developer and for CI. `make check` is the gate.
 # Tools install into ./bin at pinned versions and never enter errata's
-# dependency graph. On Linux they are the projects' released binaries, checked
-# against the SHA-256 written below; elsewhere they are built with go install.
-# CI sets BIN to the CI image's tool directory, where they are already there.
+# dependency graph. On Linux they are the projects' released binaries, each
+# checked against its release's checksums file and, where the release signs,
+# its signature (scripts/fetch-tool.sh); elsewhere they are built with go
+# install. CI sets BIN to the CI image's tool directory, where they are already there.
 
 GO        ?= go
 BIN       ?= $(CURDIR)/bin
@@ -16,53 +17,32 @@ GORELEASER_VERSION    := v2.19.0
 SYFT_VERSION          := v1.55.0
 KO_VERSION            := v0.19.1
 JQ_VERSION            := 1.8.2
+COSIGN_VERSION        := v3.1.4
 
-# SHA-256 of each released archive, from the project's own checksum file at
-# that version. After a version bump, `make tool-sums` rewrites them; until
-# then the download fails its check. Renovate runs it on its own bumps
-# (renovate.json). govulncheck publishes no binaries and is always built. jq's
-# release is the binary itself, not an archive.
-GOLANGCI_LINT_SHA256_linux_amd64 := 9b7fe6a6bf6334b98decf8d86b11415ea7889afdabdd1959fdce23af2a9ebcea
-GOLANGCI_LINT_SHA256_linux_arm64 := b4d8f17068b35ee6060cc2f69a16fb48740d706fbba81661c318649c114a6998
-GREMLINS_SHA256_linux_amd64      := b02a42e47935f891c9a411d68c07e211c7082609e79c2435b67c85ee9658c538
-GREMLINS_SHA256_linux_arm64      := 686542674e54559afb7e86d6994d342c19a856cfd970c315748989537936664c
-GORELEASER_SHA256_linux_amd64    := ebc3194ad1d1b1787614405285a0039665cd4c5bd3305215a1b201600f90630b
-GORELEASER_SHA256_linux_arm64    := ef33741b684c9f62d6a21e7a3c8b051f139ea7b1d301693b67cc819c46226d53
-SYFT_SHA256_linux_amd64          := bb65249542db5fedeeb4d3f9b018b75e7264dbfbbb10486f044581a92f90490d
-SYFT_SHA256_linux_arm64          := 929bd163db2d7cd2255d3bcb8967208079813d7b46b0c952f7b794d8e2c7d304
-KO_SHA256_linux_amd64            := 635ac6ea3fd376c935fee597fbb29ab2c2449f49ef1655085fe3aa9c25fed7a5
-KO_SHA256_linux_arm64            := 4099b2d1170d3b8a70e049237462efc2dd14d5fa30e9d2e5e108fb4f778cdd3f
-JQ_SHA256_linux_amd64            := b1c22172dd303f3be49e935aa56aa48a8b7a46e0bc838b4997d3bb451495870f
-JQ_SHA256_linux_arm64            := 8b85c817833814ddca00a144c33705546355afccf0cf39b188f3cdb48b852309
-JQ_SHA256_darwin_amd64           := e94b266e3c26690550006abe63152b782280f4e14374accdf04cbde844f00bc0
-JQ_SHA256_darwin_arm64           := 2d75340ba57a4b4b4c8708a21c2dc8e958a48aaa8bba13b27f77f6e4c0eca07e
+# The identity each signature must carry, from the publisher's own release workflow or install
+# docs. syft (release.yaml, run from main) and goreleaser (release.yml, run on the tag) sign
+# their checksums file. jq's ci.yml, run on the tag, signs SLSA provenance naming each binary.
+# ko's provenance is signed by the SLSA generator's reusable workflow at a release tag, so its
+# identity is a pattern, and the run must be ko-build/ko's at the version's tag, as ko's
+# install docs check with slsa-verifier. A bump edits none of these: the only version they
+# name comes from the version line. golangci-lint's release.yml, run on the tag, attests build
+# provenance for each archive in GitHub's attestation API rather than in the release (owner
+# decision 2026-11-02). gremlins signs nothing, and govulncheck publishes no binaries and is
+# built.
+SYFT_SIGNER          := https://github.com/anchore/syft/.github/workflows/release.yaml@refs/heads/main
+GORELEASER_SIGNER    := https://github.com/goreleaser/goreleaser/.github/workflows/release.yml@refs/tags/$(GORELEASER_VERSION)
+JQ_SIGNER            := https://github.com/jqlang/jq/.github/workflows/ci.yml@refs/tags/jq-$(JQ_VERSION)
+GOLANGCI_LINT_SIGNER := https://github.com/golangci/golangci-lint/.github/workflows/release.yml@refs/tags/$(GOLANGCI_LINT_VERSION)
+KO_SIGNER            := ^https://github\.com/slsa-framework/slsa-github-generator/\.github/workflows/generator_generic_slsa3\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$$
 
-PLATFORM := $(shell uname -s | tr A-Z a-z)_$(shell uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
-# GoReleaser names its archives Linux_x86_64 and Linux_arm64.
-GORELEASER_ASSET := $(subst linux_amd64,Linux_x86_64,$(subst linux_arm64,Linux_arm64,$(PLATFORM)))
-
-# The checker of a download's SHA-256: sha256sum, or on a system without it, such as macOS
-# without coreutils, shasum -a 256, which reads the same lines with -c.
-SHA256SUM := $(shell command -v sha256sum >/dev/null 2>&1 && echo sha256sum || echo shasum -a 256)
-# fetch <url> <sha256> <path inside the archive> <destination>
-define fetch
-	@tmp=$$(mktemp -d) && trap 'rm -rf "$$tmp"' EXIT && \
-	curl -sSfL -o "$$tmp/a.tar.gz" "$(1)" && \
-	{ echo "$(2)  $$tmp/a.tar.gz" | $(SHA256SUM) -c --quiet - || \
-	  { echo "checksum mismatch for $(1). After a version bump, run make tool-sums." >&2; exit 1; }; } && \
-	tar -xzf "$$tmp/a.tar.gz" -C "$$tmp" "$(3)" && \
-	mkdir -p "$(BIN)" && install -m 0755 "$$tmp/$(3)" "$(4)" && \
-	echo "installed $(4)"
-endef
-# fetch_bin <url> <sha256> <destination>: as fetch, for a release that is the binary itself.
-define fetch_bin
-	@tmp=$$(mktemp -d) && trap 'rm -rf "$$tmp"' EXIT && \
-	curl -sSfL -o "$$tmp/b" "$(1)" && \
-	{ echo "$(2)  $$tmp/b" | $(SHA256SUM) -c --quiet - || \
-	  { echo "checksum mismatch for $(1). After a version bump, run make tool-sums." >&2; exit 1; }; } && \
-	mkdir -p "$(BIN)" && install -m 0755 "$$tmp/b" "$(3)" && \
-	echo "installed $(3)"
-endef
+# cosign checks every signature above, so it is the one tool pinned by hand: the SHA-256 of
+# each binary, from cosign's own checksums file at that version. After a bump, `make
+# tool-sums` rewrites them and checks that file's signature with the cosign already in BIN
+# (ci/README.md, Tool archives and their signatures). Until then the download fails its check.
+COSIGN_SHA256_linux_amd64  := 424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa
+COSIGN_SHA256_linux_arm64  := ade83b7aac62e131cacfe96d958948b2150cc9efec46a570a2649b8e27dedad2
+COSIGN_SHA256_darwin_amd64 := 9d1e4abe2b6be279ed0d2ff706fde1ccd738747c834e3e6d44039c238867334f
+COSIGN_SHA256_darwin_arm64 := 9f9b8cd557cf2e5b3df3373a00baa005a86b02391e3e06dd0ce37b3a1533d3a4
 
 COVERAGE_MIN := 90
 FUZZTIME     ?= 15s
@@ -111,53 +91,105 @@ precheck:
 build:
 	CGO_ENABLED=0 $(GO) build -trimpath -ldflags '$(LDFLAGS)' -o errata ./cmd/errata
 
+# ==> tool recipes begin. ci/image-tag.sh hashes every line from here to the end marker, with
+# the version, pin and signer lines above, into the CI image's tag and the nodes' /cache/tools:
+# a flag or URL here that binds a check, such as ko's --repository, is a new image when it
+# changes. Keep every line of the tools' recipes inside.
+PLATFORM := $(shell uname -s | tr A-Z a-z)_$(shell uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
+# The platforms whose released binaries are installed. Every tool releases for both; elsewhere
+# the Go tools are built with go install, and jq has a case of its own.
+RELEASED := $(filter linux_amd64 linux_arm64,$(PLATFORM))
+# GoReleaser and ko name their archives Linux_x86_64 and Linux_arm64.
+GORELEASER_ASSET := $(subst linux_amd64,Linux_x86_64,$(subst linux_arm64,Linux_arm64,$(PLATFORM)))
+GH    := https://github.com
+FETCH := COSIGN=$(BIN)/cosign JQ=$(BIN)/jq scripts/fetch-tool.sh
+
+# The checker of cosign's SHA-256: sha256sum, or on a system without it, such as macOS
+# without coreutils, shasum -a 256, which reads the same lines with -c.
+SHA256SUM := $(shell command -v sha256sum >/dev/null 2>&1 && echo sha256sum || echo shasum -a 256)
+
 tools: $(BIN)/golangci-lint $(BIN)/gremlins $(BIN)/govulncheck $(BIN)/goreleaser $(BIN)/syft $(BIN)/ko $(BIN)/jq
 
-$(BIN)/golangci-lint:
-ifneq ($(GOLANGCI_LINT_SHA256_$(PLATFORM)),)
-	$(call fetch,https://github.com/golangci/golangci-lint/releases/download/$(GOLANGCI_LINT_VERSION)/golangci-lint-$(GOLANGCI_LINT_VERSION:v%=%)-$(subst _,-,$(PLATFORM)).tar.gz,$(GOLANGCI_LINT_SHA256_$(PLATFORM)),golangci-lint-$(GOLANGCI_LINT_VERSION:v%=%)-$(subst _,-,$(PLATFORM))/golangci-lint,$@)
+# cosign, against its hand pin. It is fetched where a tool's release is, since only those are
+# verified with it.
+$(BIN)/cosign:
+ifneq ($(COSIGN_SHA256_$(PLATFORM)),)
+	@tmp=$$(mktemp -d) && trap 'rm -rf "$$tmp"' EXIT && \
+	curl -sSfL -o "$$tmp/b" "$(GH)/sigstore/cosign/releases/download/$(COSIGN_VERSION)/cosign-$(subst _,-,$(PLATFORM))" && \
+	{ echo "$(COSIGN_SHA256_$(PLATFORM))  $$tmp/b" | $(SHA256SUM) -c --quiet - || \
+	  { echo "checksum mismatch for cosign $(COSIGN_VERSION). After a version bump, run make tool-sums." >&2; exit 1; }; } && \
+	mkdir -p "$(BIN)" && install -m 0755 "$$tmp/b" "$@" && \
+	echo "installed $@, checked against its pin"
+else
+	GOBIN=$(BIN) $(GO) install github.com/sigstore/cosign/v3/cmd/cosign@$(COSIGN_VERSION)
+endif
+
+# golangci-lint: its provenance is in GitHub's attestation API, read with jq. Installs reach
+# api.github.com, which answers 60 calls an hour without a token, and refuse on anything but 200.
+$(BIN)/golangci-lint: | $(if $(RELEASED),$(BIN)/cosign $(BIN)/jq)
+ifneq ($(RELEASED),)
+	@$(FETCH) --sums $(GH)/golangci/golangci-lint/releases/download/$(GOLANGCI_LINT_VERSION)/golangci-lint-$(GOLANGCI_LINT_VERSION:v%=%)-checksums.txt \
+	  --attestations golangci/golangci-lint --type https://slsa.dev/provenance/v1 --identity '$(GOLANGCI_LINT_SIGNER)' \
+	  --member golangci-lint-$(GOLANGCI_LINT_VERSION:v%=%)-$(subst _,-,$(PLATFORM))/golangci-lint \
+	  $(GH)/golangci/golangci-lint/releases/download/$(GOLANGCI_LINT_VERSION)/golangci-lint-$(GOLANGCI_LINT_VERSION:v%=%)-$(subst _,-,$(PLATFORM)).tar.gz $@
 else
 	GOBIN=$(BIN) $(GO) install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 endif
+# gremlins: its release signs nothing, so the checksums file is the check.
 $(BIN)/gremlins:
-ifneq ($(GREMLINS_SHA256_$(PLATFORM)),)
-	$(call fetch,https://github.com/go-gremlins/gremlins/releases/download/$(GREMLINS_VERSION)/gremlins_$(GREMLINS_VERSION:v%=%)_$(PLATFORM).tar.gz,$(GREMLINS_SHA256_$(PLATFORM)),gremlins,$@)
+ifneq ($(RELEASED),)
+	@$(FETCH) --unsigned --sums $(GH)/go-gremlins/gremlins/releases/download/$(GREMLINS_VERSION)/checksums.txt \
+	  --member gremlins $(GH)/go-gremlins/gremlins/releases/download/$(GREMLINS_VERSION)/gremlins_$(GREMLINS_VERSION:v%=%)_$(PLATFORM).tar.gz $@
 else
 	GOBIN=$(BIN) $(GO) install github.com/go-gremlins/gremlins/cmd/gremlins@$(GREMLINS_VERSION)
 endif
 $(BIN)/govulncheck:
 	GOBIN=$(BIN) $(GO) install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
-$(BIN)/goreleaser:
-ifneq ($(GORELEASER_SHA256_$(PLATFORM)),)
-	$(call fetch,https://github.com/goreleaser/goreleaser/releases/download/$(GORELEASER_VERSION)/goreleaser_$(GORELEASER_ASSET).tar.gz,$(GORELEASER_SHA256_$(PLATFORM)),goreleaser,$@)
+$(BIN)/goreleaser: | $(if $(RELEASED),$(BIN)/cosign)
+ifneq ($(RELEASED),)
+	@$(FETCH) --sums $(GH)/goreleaser/goreleaser/releases/download/$(GORELEASER_VERSION)/checksums.txt \
+	  --signed-sums $(GH)/goreleaser/goreleaser/releases/download/$(GORELEASER_VERSION)/checksums.txt.sigstore.json \
+	  --identity '$(GORELEASER_SIGNER)' --member goreleaser \
+	  $(GH)/goreleaser/goreleaser/releases/download/$(GORELEASER_VERSION)/goreleaser_$(GORELEASER_ASSET).tar.gz $@
 else
 	GOBIN=$(BIN) $(GO) install github.com/goreleaser/goreleaser/v2@$(GORELEASER_VERSION)
 endif
 # syft writes the SPDX SBOM GoReleaser attaches to each release archive.
-$(BIN)/syft:
-ifneq ($(SYFT_SHA256_$(PLATFORM)),)
-	$(call fetch,https://github.com/anchore/syft/releases/download/$(SYFT_VERSION)/syft_$(SYFT_VERSION:v%=%)_$(PLATFORM).tar.gz,$(SYFT_SHA256_$(PLATFORM)),syft,$@)
+$(BIN)/syft: | $(if $(RELEASED),$(BIN)/cosign)
+ifneq ($(RELEASED),)
+	@$(FETCH) --sums $(GH)/anchore/syft/releases/download/$(SYFT_VERSION)/syft_$(SYFT_VERSION:v%=%)_checksums.txt \
+	  --signed-sums $(GH)/anchore/syft/releases/download/$(SYFT_VERSION)/syft_$(SYFT_VERSION:v%=%)_checksums.txt.sigstore.json \
+	  --identity '$(SYFT_SIGNER)' --member syft \
+	  $(GH)/anchore/syft/releases/download/$(SYFT_VERSION)/syft_$(SYFT_VERSION:v%=%)_$(PLATFORM).tar.gz $@
 else
 	GOBIN=$(BIN) $(GO) install github.com/anchore/syft/cmd/syft@$(SYFT_VERSION)
 endif
 # ko builds the release image; make image-dry runs it the way GoReleaser does.
-$(BIN)/ko:
-ifneq ($(KO_SHA256_$(PLATFORM)),)
-	$(call fetch,https://github.com/ko-build/ko/releases/download/$(KO_VERSION)/ko_$(KO_VERSION:v%=%)_$(GORELEASER_ASSET).tar.gz,$(KO_SHA256_$(PLATFORM)),ko,$@)
+$(BIN)/ko: | $(if $(RELEASED),$(BIN)/cosign)
+ifneq ($(RELEASED),)
+	@$(FETCH) --sums $(GH)/ko-build/ko/releases/download/$(KO_VERSION)/checksums.txt \
+	  --provenance $(GH)/ko-build/ko/releases/download/$(KO_VERSION)/multiple.intoto.jsonl --type slsaprovenance02 \
+	  --identity-regexp '$(KO_SIGNER)' --repository ko-build/ko --ref refs/tags/$(KO_VERSION) --member ko \
+	  $(GH)/ko-build/ko/releases/download/$(KO_VERSION)/ko_$(KO_VERSION:v%=%)_$(GORELEASER_ASSET).tar.gz $@
 else
 	GOBIN=$(BIN) $(GO) install github.com/google/ko@$(KO_VERSION)
 endif
 # jq reads renovate.json in ci/tests/tool-sums.sh as Renovate parses it, JSON escapes included.
-# jq publishes binaries for Linux and macOS (named jq-macos-*), each checked against its sum.
-# jq is not written in Go, so elsewhere it is the system's own, and only at the pinned version.
-$(BIN)/jq:
-ifneq ($(JQ_SHA256_$(PLATFORM)),)
-	$(call fetch_bin,https://github.com/jqlang/jq/releases/download/jq-$(JQ_VERSION)/jq-$(subst darwin,macos,$(subst _,-,$(PLATFORM))),$(JQ_SHA256_$(PLATFORM)),$@)
+# jq publishes binaries for Linux and macOS (named jq-macos-*), each checked against its
+# release's sha256sum.txt and its signed provenance. jq is not written in Go, so elsewhere it
+# is the system's own, and only at the pinned version.
+JQ_ASSET := $(filter jq-linux-amd64 jq-linux-arm64 jq-macos-amd64 jq-macos-arm64,jq-$(subst darwin,macos,$(subst _,-,$(PLATFORM))))
+$(BIN)/jq: | $(if $(JQ_ASSET),$(BIN)/cosign)
+ifneq ($(JQ_ASSET),)
+	@$(FETCH) --sums $(GH)/jqlang/jq/releases/download/jq-$(JQ_VERSION)/sha256sum.txt \
+	  --provenance $(GH)/jqlang/jq/releases/download/jq-$(JQ_VERSION)/jq-attestation.json --type https://slsa.dev/provenance/v1 \
+	  --identity '$(JQ_SIGNER)' $(GH)/jqlang/jq/releases/download/jq-$(JQ_VERSION)/$(JQ_ASSET) $@
 else
 	@j=$$(command -v jq) || { echo "no jq release for $(PLATFORM): install jq $(JQ_VERSION)" >&2; exit 1; }; \
 	[ "$$("$$j" --version)" = "jq-$(JQ_VERSION)" ] || { echo "$$j is $$("$$j" --version), not jq-$(JQ_VERSION): install jq $(JQ_VERSION)" >&2; exit 1; }; \
 	mkdir -p "$(BIN)" && ln -sf "$$j" "$@"
 endif
+# <== tool recipes end.
 
 # Lint runs once for each GOOS the release builds. A file named _windows.go
 # or _darwin.go is outside a linux build, so linux alone would not see what
@@ -303,10 +335,11 @@ public-dry: build
 	ci/public-tree.sh $$tree public && ./errata check --root public
 
 # The publish and autopatch scripts, against local repositories only. Gremlins too: one test
-# runs it on a module of its own, to show what a diff run mutates. jq reads renovate.json.
-ci-test: $(BIN)/gremlins $(BIN)/jq
+# runs it on a module of its own, to show what a diff run mutates. jq reads renovate.json,
+# and cosign checks the signatures in the tests of scripts/fetch-tool.sh.
+ci-test: $(BIN)/gremlins $(BIN)/jq $(BIN)/cosign
 	cd ci/autopatch && $(GO) vet ./... && $(GO) test -count=1 ./...
-	GREMLINS=$(BIN)/gremlins JQ=$(BIN)/jq ci/test-ci.sh
+	GREMLINS=$(BIN)/gremlins JQ=$(BIN)/jq COSIGN=$(BIN)/cosign ci/test-ci.sh
 
 # The release image, built by ko with .goreleaser.yaml's base image and user
 # into a tarball, pushed nowhere, and its config checked against what the
@@ -335,9 +368,15 @@ image-dry: $(BIN)/ko
 # builds write their temporary files there, and `make mutation` run the same
 # way copies the tracked tree into it once per worker, which on a tmpfs /tmp
 # would sit in memory.
+# The in-tree module cache is filled first from the one go would use outside this target, the
+# node's /cache in a runner's pod, so the gate does not download every module again, and then
+# verified, as CI's .go job verifies the cache it restores. The build and lint caches start cold
+# (ci/README.md, The gate in CI).
 CI_LOCAL_TMP ?= $(HOME)/.cache/errata-ci-local
 ci-local:
 	@mkdir -p $(CI_LOCAL_TMP)
+	GO=$(GO) scripts/seed-modcache.sh "$$($(GO) env GOMODCACHE)" $(CURDIR)/.gopath/pkg/mod
+	GOPATH=$(CURDIR)/.gopath GOFLAGS=-modcacherw $(GO) mod verify
 	TMPDIR=$(CI_LOCAL_TMP) GOPATH=$(CURDIR)/.gopath GOCACHE=$(CURDIR)/.cache/go-build \
 	GOLANGCI_LINT_CACHE=$(CURDIR)/.cache/golangci-lint GOFLAGS=-modcacherw \
 	$(MAKE) gate FUZZTIME=5s
@@ -354,9 +393,10 @@ hooks:
 	git config core.hooksPath .githooks
 	@echo "commit messages are now checked by ci/check-commit-msg.sh"
 
-# Rewrite the archive checksums for the pinned tool versions.
-tool-sums:
-	scripts/tool-sums.sh
+# Rewrite cosign's pinned sums for COSIGN_VERSION, from its checksums file, checked with the
+# cosign already in BIN (scripts/tool-sums.sh says why that one).
+tool-sums: | $(BIN)/cosign
+	COSIGN=$(BIN)/cosign scripts/tool-sums.sh
 
 clean:
 	rm -rf errata bin coverage.out coverage.product.out public dist

@@ -250,9 +250,8 @@ checks:
     run: [test, -f, ansible/roles/node/files/99-node.conf]
 ```
 
-It holds while the file is there and is an erratum once it is gone. A program check (see
-[Checks](../README.md#checks)) runs its command from the repository root with the environment of
-the job that runs errata, plus the variables [the check protocol](../README.md#the-check-protocol)
-names, so a check in a config from an untrusted branch runs with that job's secrets. `test -f` is
-not held to the repository as an extractor's `file` is: it takes an absolute path and a `..` that
-leaves the root, and follows a symlink wherever it points. Name a path inside the repository.
+It holds while the file is there and is an erratum once it is gone. A program check is code:
+[Checks](../README.md#checks) says what it runs with, and what that means on a ref you do not
+trust. `test -f` is not held to the repository as an extractor's `file` is: it takes an absolute
+path and a `..` that leaves the root, and follows a symlink wherever it points. Name a path inside
+the repository.
