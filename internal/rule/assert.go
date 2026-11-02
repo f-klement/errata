@@ -16,6 +16,7 @@ import (
 	"cel.dev/cel-go/cel"
 	"cel.dev/cel-go/common"
 	celast "cel.dev/cel-go/common/ast"
+	"cel.dev/cel-go/common/cost"
 	"cel.dev/cel-go/common/operators"
 	"cel.dev/cel-go/common/types"
 	"cel.dev/cel-go/common/types/ref"
@@ -513,7 +514,7 @@ const (
 
 // noteCost charges a note nothing, so the cost limit counts the
 // expression's own work. Reading the log variable still costs 1 per note.
-var noteCost = interpreter.OverloadCostTracker(noteOverload, func([]ref.Val, ref.Val) *uint64 {
+var noteCost = cost.OverloadTracker(noteOverload, func([]ref.Val, ref.Val) *uint64 {
 	var zero uint64
 	return &zero
 })

@@ -6,12 +6,12 @@ import (
 	"reflect"
 
 	"cel.dev/cel-go/cel"
+	"cel.dev/cel-go/common/cost"
 	"cel.dev/cel-go/common/operators"
 	"cel.dev/cel-go/common/overloads"
 	"cel.dev/cel-go/common/types"
 	"cel.dev/cel-go/common/types/ref"
 	"cel.dev/cel-go/common/types/traits"
-	"cel.dev/cel-go/interpreter"
 
 	"github.com/f-klement/errata/internal/semver"
 )
@@ -109,7 +109,7 @@ func semverHelpers() []cel.EnvOption {
 // semverCosts charges semver() and semver_satisfies() 1 and the bytes they
 // read, so the cost limit counts their parsing as it counts a
 // comprehension's steps (security review, finding 4).
-func semverCosts() []interpreter.CostTrackerOption {
+func semverCosts() []cost.TrackerOption {
 	charge := func(args []ref.Val, _ ref.Val) *uint64 {
 		cost := uint64(1)
 		for _, a := range args {
@@ -119,9 +119,9 @@ func semverCosts() []interpreter.CostTrackerOption {
 		}
 		return &cost
 	}
-	return []interpreter.CostTrackerOption{
-		interpreter.OverloadCostTracker("errata_semver_string", charge),
-		interpreter.OverloadCostTracker("errata_semver_satisfies_string_string", charge),
+	return []cost.TrackerOption{
+		cost.OverloadTracker("errata_semver_string", charge),
+		cost.OverloadTracker("errata_semver_satisfies_string_string", charge),
 	}
 }
 

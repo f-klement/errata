@@ -151,14 +151,15 @@ func TestRenovateMatchCostsWhatItDid(t *testing.T) {
 }
 
 // A call whose argument is an error is charged nothing, and never the
-// price the call before it stored on the log. cel-go v0.32.0 stops
-// evaluating a strict call's arguments at the first error, before it
-// reads the log variable, and its cost observer then charges no call at
-// all. Over a list holding a glob call of 299, v[9] is out of range, and
-// the second call adds only the three of its two index reads and the list
-// member. Were cel-go to run the tracker for such a call, it would read
-// the log's price, which hiddenCallCost clears once read, so it would
-// read 0 and not 299 again.
+// price the call before it stored on the log. cel-go stops evaluating a
+// strict call's arguments at the first error, before it reads the log
+// variable, and its cost observer then charges no call at all. Over a list
+// holding a glob call of 299, v[9] is out of range: on cel-go v0.33.1 the
+// pair costs 309, the first call's 299 and the reads around it, and never
+// a second 299 (v0.32.0 charged the same call and 319 for the pair, since
+// it priced the list's operations otherwise). Were cel-go to run the
+// tracker for such a call, it would read the log's price, which
+// hiddenCallCost clears once read, so it would read 0 and not 299 again.
 func TestRenovateMatchChargesNoPriceForAnErrorArgument(t *testing.T) {
 	values := []string{"infra/a.yaml", "x", "infra/**/*.yaml"}
 	for _, c := range []struct {
@@ -166,7 +167,7 @@ func TestRenovateMatchChargesNoPriceForAnErrorArgument(t *testing.T) {
 		cost uint64
 	}{
 		{"[renovate_match(v[0], v[2])].size() == 1", 316},
-		{"[renovate_match(v[0], v[2]), renovate_match(v[0], v[9])].size() == 2", 319},
+		{"[renovate_match(v[0], v[2]), renovate_match(v[0], v[9])].size() == 2", 309},
 	} {
 		a, err := compile(c.expr, []string{"v"}, limits{cost: 1 << 62, timeout: time.Minute, grace: stopGrace})
 		if err != nil {

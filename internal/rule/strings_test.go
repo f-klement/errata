@@ -71,7 +71,10 @@ func TestStringsLeavesTheRestOut(t *testing.T) {
 		if !o.IsMemberFunction() {
 			expr = fmt.Sprintf("dyn(%s(v[0])) == 1", name)
 		}
-		if _, err := compileNamed(expr, []string{"v"}, nil); err == nil || !strings.Contains(err.Error(), "undeclared reference to '"+name[strings.LastIndex(name, ".")+1:]+"'") {
+		// cel-go 0.32 names the function without its namespace, 0.33 with it.
+		short := name[strings.LastIndex(name, ".")+1:]
+		if _, err := compileNamed(expr, []string{"v"}, nil); err == nil ||
+			!strings.Contains(err.Error(), "undeclared reference to '"+name+"'") && !strings.Contains(err.Error(), "undeclared reference to '"+short+"'") {
 			t.Errorf("%s: load error = %v, want an undeclared reference", expr, err)
 		}
 	}

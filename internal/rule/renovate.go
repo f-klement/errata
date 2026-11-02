@@ -7,10 +7,10 @@ import (
 
 	"cel.dev/cel-go/cel"
 	celast "cel.dev/cel-go/common/ast"
+	"cel.dev/cel-go/common/cost"
 	"cel.dev/cel-go/common/decls"
 	"cel.dev/cel-go/common/types"
 	"cel.dev/cel-go/common/types/ref"
-	"cel.dev/cel-go/interpreter"
 )
 
 // renovate_match(s, p) is whether Renovate's matchRegexOrGlob(s, p) holds:
@@ -70,9 +70,9 @@ func renovateHelpers() []cel.EnvOption {
 // it is rewritten as the hidden call before a program is planned
 // (renovateThroughLog), and only the hidden call carries the log its
 // binding stores the price on.
-func renovateCost() []interpreter.CostTrackerOption {
-	return []interpreter.CostTrackerOption{
-		interpreter.OverloadCostTracker(renovateHiddenOverload, func(args []ref.Val, _ ref.Val) *uint64 {
+func renovateCost() []cost.TrackerOption {
+	return []cost.TrackerOption{
+		cost.OverloadTracker(renovateHiddenOverload, func(args []ref.Val, _ ref.Val) *uint64 {
 			cost := hiddenCallCost(args)
 			return &cost
 		}),

@@ -713,7 +713,7 @@ Here the first line of the assert above reads `treshold`:
 
 ```console
 $ errata check -c errata.yaml
-errata: load errata.yaml: checks[0]: check "staleness-threshold": assert: undeclared reference to 'treshold', at line 1 column 10 of the expression:
+errata: load errata.yaml: checks[0]: check "staleness-threshold": assert: undeclared reference to 'treshold' (did you mean 'threshold'?), at line 1 column 10 of the expression:
     duration(treshold[0]) >= cron_interval(schedule[0]) &&
              ^
 ```

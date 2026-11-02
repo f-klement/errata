@@ -27,7 +27,7 @@ checks:
       duration(treshold[0]) >= cron_interval(schedule[0]) &&
       duration(threshold[0]) <= cron_interval(schedule[0]) * 2
 -- staleness.txt --
-errata: load errata.yaml: checks[0]: check "staleness-threshold": assert: undeclared reference to 'treshold', at line 1 column 10 of the expression:
+errata: load errata.yaml: checks[0]: check "staleness-threshold": assert: undeclared reference to 'treshold' (did you mean 'threshold'?), at line 1 column 10 of the expression:
     duration(treshold[0]) >= cron_interval(schedule[0]) &&
              ^
 -- pytest.yaml --

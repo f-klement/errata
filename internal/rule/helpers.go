@@ -11,13 +11,13 @@ import (
 	"time"
 
 	"cel.dev/cel-go/cel"
+	"cel.dev/cel-go/common/cost"
 	"cel.dev/cel-go/common/env"
 	"cel.dev/cel-go/common/operators"
 	"cel.dev/cel-go/common/overloads"
 	"cel.dev/cel-go/common/types"
 	"cel.dev/cel-go/common/types/ref"
 	"cel.dev/cel-go/common/types/traits"
-	"cel.dev/cel-go/interpreter"
 )
 
 // Every extractor reaches CEL as list(string), so a relation over numbers,
@@ -172,11 +172,11 @@ func setOverload(fn string, t *cel.Type) string { return "errata_" + fn + "_list
 
 // setCosts charges same_set and subset the size of both lists, so the cost
 // limit counts their work as it counts a comprehension's.
-func setCosts() []interpreter.CostTrackerOption {
-	var opts []interpreter.CostTrackerOption
+func setCosts() []cost.TrackerOption {
+	var opts []cost.TrackerOption
 	for _, t := range setElements {
 		for _, fn := range []string{"same_set", "subset"} {
-			opts = append(opts, interpreter.OverloadCostTracker(setOverload(fn, t), func(args []ref.Val, _ ref.Val) *uint64 {
+			opts = append(opts, cost.OverloadTracker(setOverload(fn, t), func(args []ref.Val, _ ref.Val) *uint64 {
 				cost := uint64(1)
 				for _, a := range args {
 					// An argument that is an error has no size; the call
