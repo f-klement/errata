@@ -186,6 +186,24 @@ repository.
 - The cluster runner reuses the node's caches for the full local CI run, measures its run time,
   and states how it retries a run the memory limit killed.
 
+## Before v0.2.5: follow-ups
+
+No release of its own. These are the findings the reviews of v0.2.1 to v0.2.4 left open, fixed on
+main before the docs claims work starts.
+
+- Readers: a file set in a sparse checkout is unknown instead of passing on the files the checkout
+  holds, and the GitLab CI, GitHub Actions and Jenkins readers refuse or resolve the forms their
+  reviews found them reading wrong, local includes written with `*` and `**` among them.
+- Rules, checks and the CLI: a misspelt record field, a bound literal's member an assert cannot
+  match, and an extractor name that is not a CEL identifier are refused at load. A program check's
+  output is bounded, and its process group is killed once its direct child exits. Semver ranges
+  blame the range where the overlap ends, a regex's context and its search agree on a file's last
+  line, and `--output` refuses the config file through a symbolic link too.
+- Tests and CI: fuzzing checks that an embedded value's text is on its reported line, an end to
+  end test pins the lines the YAML walker reports for block scalars, and a lowering line in the
+  mutation floors excuses a drop for one release only. The README's XML parse times come from a
+  repeated measurement.
+
 ## v0.2.5: docs claims
 
 The claims documentation makes, read by its structure.
@@ -199,21 +217,6 @@ The claims documentation makes, read by its structure.
 - Attested facts: a documented convention for a value no tool can read, such as a setting in a
   device's web interface, recorded with its source and date, and an example check that fails
   once the fact is older than its stated lifetime.
-
-It also closes findings the reviews of v0.2.1 to v0.2.3 left:
-
-- A file set in a sparse checkout is unknown, instead of passing on the files the checkout holds.
-- A program check's output is held up to a bound and the rest is dropped; its exit code stays the
-  verdict. A check's process group is killed once its direct child exits.
-- `--output` refuses the config file through a symbolic link too.
-- A record field or a bound literal's member that an assert misspells or cannot match is refused
-  at load, and an extractor's name must be a CEL identifier.
-- A regex's context and its search agree on a file's last line.
-- Under `compare: semver`, ranges that no release satisfies blame the range where the overlap
-  ends.
-- A lowering line in the mutation floors excuses a drop for one release only.
-- Fuzzing checks that an embedded value's text is on its reported line, and a size test pins the
-  YAML walker's single pass.
 
 ## v0.2.6: literals and dependencies
 
