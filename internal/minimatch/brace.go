@@ -1,7 +1,6 @@
 package minimatch
 
 import (
-	"context"
 	"errors"
 	"math"
 	"slices"
@@ -49,44 +48,29 @@ var (
 )
 
 // expansion is one run of the expander, with whether a bound stopped it,
-// and the context it looks at, with the error of a look that found it
-// done.
+// and the meter whose context it looks at.
 type expansion struct {
-	cut     bool
-	ctx     context.Context
-	stopped error
+	cut   bool
+	meter *meter
 }
 
 // braceExpand is minimatch's braceExpand: the glob alone unless it holds a
 // { with a } after it and no { or line terminator between, and otherwise
-// brace-expansion's expand.
-func braceExpand(glob units) ([]units, error) {
-	return braceExpandContext(context.Background(), glob)
-}
-
-// braceExpandContext is braceExpand, stopped once ctx is done: it looks at
-// ctx at each brace set it expands.
-func braceExpandContext(ctx context.Context, glob units) ([]units, error) {
+// brace-expansion's expand, stopped once w's context is done: it looks at
+// w at each brace set it expands.
+func braceExpand(w *meter, glob units) ([]units, error) {
 	if !hasBraceSet(glob) {
 		return []units{glob}, nil
 	}
-	e := &expansion{ctx: ctx}
+	e := &expansion{meter: w}
 	out := e.expand(glob)
 	switch {
-	case e.stopped != nil:
-		return nil, e.stopped
+	case w.err != nil:
+		return nil, w.err
 	case e.cut:
 		return nil, errExpansion
 	}
 	return out, nil
-}
-
-// done looks at the expansion's context, and is whether it is done.
-func (e *expansion) done() bool {
-	if e.stopped == nil {
-		e.stopped = stopped(e.ctx)
-	}
-	return e.stopped != nil
 }
 
 // hasBraceSet is /\{(?:(?!\{).)*\}/.test(glob).
@@ -452,7 +436,7 @@ func (e *expansion) expandOne(s units, depth, maxRewrites int, isTop bool) []uni
 	rewrites := 0
 	dropEmpties, firstGroup := false, true
 	for {
-		if e.done() {
+		if !e.meter.look() {
 			return acc
 		}
 		m, ok := balanced(s)

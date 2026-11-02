@@ -618,3 +618,77 @@ func writeFile(t interface{ Fatal(...any) }, root, name, body string) {
 		t.Fatal(err)
 	}
 }
+
+// On a witness the walk lists only what git's index lists below the
+// fixture, so the untracked .node-version and u/ are never listed, and do
+// not count against the walk's limits, which they would pass on the disk:
+// the skip does not hang on a read finding the file not there. Failed on
+// 6f2f58a, whose walk listed the disk and stopped at the limit. Planted
+// break: core's walk of a witness reading the disk.
+func TestToolVersionWalksOnlyWhatAWitnessCommits(t *testing.T) {
+	root := extracttest.Tracked(t, map[string]string{
+		".errata/witness/w/.nvmrc":   "20\n",
+		".errata/witness/w/a/.nvmrc": "18\n",
+	})
+	fixture := filepath.Join(root, ".errata", "witness", "w")
+	if err := os.MkdirAll(filepath.Join(fixture, "u", "v"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{".node-version", "u/v/.nvmrc"} {
+		if err := os.WriteFile(filepath.Join(fixture, f), []byte("16\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	held, err := os.OpenRoot(fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	ctx, err := core.OnFixture(check.OnWitness(t.Context(), root), fixture, held)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e, err := build(Spec{Tool: "node"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	x := e.(extractor)
+	// .nvmrc, a and a/.nvmrc: three entries below the fixture, one deep.
+	x.walk = core.WalkLimits{Entries: 3, Dirs: 1, Depth: 1, Names: 10}
+	if got, err := x.Extract(ctx, fixture); err != nil || marked(got) != "20@.nvmrc:1 18@a/.nvmrc:1" {
+		t.Errorf("on the witness: %s, %v", marked(got), err)
+	}
+}
+
+// On a witness a pin the fixture commits and the disk does not hold makes
+// the walk's extractor unknown, not passed over: a clone holds it. Failed
+// on dfc8360, which gave 20@.nvmrc:1 alone. Planted break: core's refusal
+// of a committed file missing from the disk read as not there.
+func TestToolVersionRefusesAWitnessFileMissingFromTheDisk(t *testing.T) {
+	root := extracttest.Tracked(t, map[string]string{
+		".errata/witness/w/.nvmrc":   "20\n",
+		".errata/witness/w/a/.nvmrc": "18\n",
+	})
+	fixture := filepath.Join(root, ".errata", "witness", "w")
+	if err := os.Remove(filepath.Join(fixture, "a", ".nvmrc")); err != nil {
+		t.Fatal(err)
+	}
+	held, err := os.OpenRoot(fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	ctx, err := core.OnFixture(check.OnWitness(t.Context(), root), fixture, held)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e, err := build(Spec{Tool: "node"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := e.Extract(ctx, fixture)
+	if err == nil {
+		t.Fatalf("no error, values %s", marked(got))
+	}
+	extracttest.WantError(t, err, "read a/.nvmrc: a/.nvmrc is a file in git's index below the fixture, and the disk does not hold it as one")
+}

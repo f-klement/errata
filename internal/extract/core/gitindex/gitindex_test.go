@@ -1,4 +1,4 @@
-package core
+package gitindex
 
 import (
 	"bytes"
@@ -12,8 +12,22 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/f-klement/errata/internal/extract/core/clip"
 	"github.com/f-klement/errata/internal/extract/extracttest"
 )
+
+// testLimits are the bounds core reads the index under.
+var testLimits = Limits{Bytes: 64 << 20, Entries: 1_000_000, Name: 4096}
+
+// The bounds of testLimits, as the tests name them.
+const (
+	maxPathBytes = 64 << 20
+	maxFileName  = 4096
+	maxGitFile   = maxFileName + 64
+)
+
+// readIndex is Read under testLimits.
+func readIndex(root string) (Index, error) { return Read(root, testLimits) }
 
 // git runs git in dir with a fixed identity and no user or system config,
 // and fails the test on an error.
@@ -50,13 +64,47 @@ func lsFiles(t *testing.T, root string) []string {
 	return strings.Split(out, "\x00")
 }
 
+// tracked is the paths of every entry of git's index at root, the
+// fixtures of witnesses' included.
 func tracked(t *testing.T, root string) []string {
 	t.Helper()
 	got, err := readIndex(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return got
+	return entryPaths(got.entries)
+}
+
+// entryPaths is the path of each of entries.
+func entryPaths(entries []Entry) []string {
+	out := []string{}
+	for _, e := range entries {
+		out = append(out, e.Path)
+	}
+	return out
+}
+
+// parsed is the paths parseIndex lists.
+func parsed(data []byte, hash, budget int) ([]string, error) {
+	entries, err := parseIndex(data, hash, Limits{Bytes: int64(budget), Entries: testLimits.Entries, Name: testLimits.Name})
+	if err != nil {
+		return nil, err
+	}
+	return entryPaths(entries), nil
+}
+
+// memIndex is the Index of files, each a regular file, in their order.
+func memIndex(t *testing.T, files ...string) Index {
+	t.Helper()
+	var entries []Entry
+	for _, f := range files {
+		entries = append(entries, Entry{Path: f, Mode: 0o100644})
+	}
+	ix, err := New(entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ix
 }
 
 var indexFiles = map[string]string{
@@ -68,7 +116,7 @@ var indexFiles = map[string]string{
 // writes and with either object format. Planted breaks: the padding of
 // versions 2 and 3 rounded from the path's start, which misread the second
 // entry; version 4's drop taken from the start of the path before.
-func TestTrackedFilesIsLsFiles(t *testing.T) {
+func TestReadIsLsFiles(t *testing.T) {
 	for _, c := range []struct {
 		name    string
 		init    []string
@@ -100,7 +148,7 @@ func TestTrackedFilesIsLsFiles(t *testing.T) {
 }
 
 // A repository with no index has added nothing, and lists no file.
-func TestTrackedFilesOfAnEmptyRepository(t *testing.T) {
+func TestReadOfAnEmptyRepository(t *testing.T) {
 	root := extracttest.Repo(t, map[string]string{"a": "x"})
 	git(t, root, "init", "-q")
 	if got := tracked(t, root); len(got) != 0 {
@@ -111,7 +159,7 @@ func TestTrackedFilesOfAnEmptyRepository(t *testing.T) {
 // A worktree's .git is a file naming its git directory, where its index
 // is. Planted break: the index read from the main repository's .git, which
 // listed the main checkout's files.
-func TestTrackedFilesOfAWorktree(t *testing.T) {
+func TestReadOfAWorktree(t *testing.T) {
 	root := repo(t, map[string]string{"a": "x"})
 	git(t, root, "commit", "-q", "-m", "a")
 	wt := filepath.Join(t.TempDir(), "wt")
@@ -130,7 +178,7 @@ func TestTrackedFilesOfAWorktree(t *testing.T) {
 // and each stage. Planted breaks: the mode test dropped, which listed the
 // submodule; the skip-worktree test dropped; the dedupe dropped, which
 // listed the conflicted file three times.
-func TestTrackedFilesLeavesOutWhatIsNoFile(t *testing.T) {
+func TestReadLeavesOutWhatIsNoFile(t *testing.T) {
 	root := repo(t, map[string]string{"a": "x", "skip": "x"})
 	blob := strings.TrimSpace(git(t, root, "hash-object", "-w", "a"))
 	git(t, root, "update-index", "--add", "--cacheinfo", "160000,"+blob+",sub")
@@ -149,7 +197,7 @@ func TestTrackedFilesLeavesOutWhatIsNoFile(t *testing.T) {
 // Refusals, each by its reason: no .git, a .git file that names no
 // directory, and a split index. Planted break: the link extension read
 // past, which listed only the split index's own few entries.
-func TestTrackedFilesRefuses(t *testing.T) {
+func TestReadRefuses(t *testing.T) {
 	_, err := readIndex(extracttest.Repo(t, map[string]string{"a": "x"}))
 	extracttest.WantError(t, err, "the repository root holds no .git")
 
@@ -175,7 +223,7 @@ func TestParseIndexOfBrokenIndexes(t *testing.T) {
 			t.Fatal(err)
 		}
 		for n := range data {
-			if _, err := parseIndex(data[:n], sha1Size, maxPathBytes); err == nil {
+			if _, err := parsed(data[:n], sha1Size, maxPathBytes); err == nil {
 				t.Errorf("v%s cut to %d bytes: read", v, n)
 			}
 		}
@@ -183,7 +231,7 @@ func TestParseIndexOfBrokenIndexes(t *testing.T) {
 			for _, b := range []byte{0, 0x7f, 0xff} {
 				broken := slices.Clone(data)
 				broken[i] = b
-				_, _ = parseIndex(broken, sha1Size, maxPathBytes)
+				_, _ = parsed(broken, sha1Size, maxPathBytes)
 			}
 		}
 	}
@@ -281,14 +329,14 @@ func TestParseIndexBoundaries(t *testing.T) {
 		want string
 	}{
 		{"a header alone", header(2, 0), "it does not end with the object name of its content"},
-		{"count at the limit", header(2, uint32(DefaultWalk.Entries)), "an entry runs past the end of the file"},
+		{"count at the limit", header(2, uint32(testLimits.Entries)), "an entry runs past the end of the file"},
 		{"cut after the fixed part", one[:fixed], "an entry's path runs past the end of the file"},
 		{"cut after the extended flags", ext[:fixed+2], "an entry's path runs past the end of the file"},
 		{"cut inside the extended flags", ext[:fixed+1], "an entry's extended flags are not where its version puts them"},
 		{"cut after the padding", one[:padded], "it does not end with the object name of its content"},
 		{"cut inside the padding", one[:padded-1], "an entry's padding runs past the end of the file"},
 	} {
-		_, err := parseIndex(c.data, sha1Size, maxPathBytes)
+		_, err := parsed(c.data, sha1Size, maxPathBytes)
 		if err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: %v, want %q", c.name, err, c.want)
 		}
@@ -296,41 +344,38 @@ func TestParseIndexBoundaries(t *testing.T) {
 	// An extension of no data, its header and the trailer ending the file.
 	withExt := append(slices.Clone(one[:padded]), "TREE\x00\x00\x00\x00"...)
 	withExt = append(withExt, make([]byte, sha1Size)...)
-	if got, err := parseIndex(withExt, sha1Size, maxPathBytes); err != nil || !slices.Equal(got, []string{"abc"}) {
+	if got, err := parsed(withExt, sha1Size, maxPathBytes); err != nil || !slices.Equal(got, []string{"abc"}) {
 		t.Errorf("an empty extension: %q, %v", got, err)
 	}
-	if got, err := parseIndex(ext, sha1Size, maxPathBytes); err != nil || !slices.Equal(got, []string{"abc"}) {
+	if got, err := parsed(ext, sha1Size, maxPathBytes); err != nil || !slices.Equal(got, []string{"abc"}) {
 		t.Errorf("version 3 with extended flags: %q, %v", got, err)
 	}
 	// An extension of 4 bytes of data, skipped whole.
 	withData := append(slices.Clone(one[:padded]), "TREE\x00\x00\x00\x04abcd"...)
 	withData = append(withData, make([]byte, sha1Size)...)
-	if got, err := parseIndex(withData, sha1Size, maxPathBytes); err != nil || !slices.Equal(got, []string{"abc"}) {
+	if got, err := parsed(withData, sha1Size, maxPathBytes); err != nil || !slices.Equal(got, []string{"abc"}) {
 		t.Errorf("an extension of 4 bytes: %q, %v", got, err)
 	}
 	// An extension whose size runs 4 bytes past its data, into the trailer.
 	short := append(slices.Clone(one[:padded]), "TREE\x00\x00\x00\x04"...)
 	short = append(short, make([]byte, sha1Size)...)
-	if _, err := parseIndex(short, sha1Size, maxPathBytes); err == nil || err.Error() != "an extension runs past the end of the file" {
+	if _, err := parsed(short, sha1Size, maxPathBytes); err == nil || err.Error() != "an extension runs past the end of the file" {
 		t.Errorf("an extension past its data: %v", err)
 	}
 	// A link extension cut before its size is reached is cut, not a split
 	// index, which would send the user to git update-index.
 	cutLink := append(slices.Clone(one[:padded]), "link\x00\x00\x00\x08"...)
 	cutLink = append(cutLink, make([]byte, sha1Size)...)
-	if _, err := parseIndex(cutLink, sha1Size, maxPathBytes); err == nil || err.Error() != "an extension runs past the end of the file" {
+	if _, err := parsed(cutLink, sha1Size, maxPathBytes); err == nil || err.Error() != "an extension runs past the end of the file" {
 		t.Errorf("a cut link extension: %v", err)
 	}
 	// A version 4 path that keeps part of the one before and adds nothing.
-	if got, err := parseIndex(gitIndex(4, indexEntry{path: "ab"}, indexEntry{path: "a", drop: 1}), sha1Size, maxPathBytes); err != nil || !slices.Equal(got, []string{"ab", "a"}) {
+	if got, err := parsed(gitIndex(4, indexEntry{path: "ab"}, indexEntry{path: "a", drop: 1}), sha1Size, maxPathBytes); err != nil || !slices.Equal(got, []string{"ab", "a"}) {
 		t.Errorf("a version 4 path with no suffix: %q, %v", got, err)
 	}
 	// Paths of exactly the budget are read.
-	if got, err := parseIndex(gitIndex(2, indexEntry{path: "abc"}, indexEntry{path: "de"}), sha1Size, 5); err != nil || len(got) != 2 {
+	if got, err := parsed(gitIndex(2, indexEntry{path: "abc"}, indexEntry{path: "de"}), sha1Size, 5); err != nil || len(got) != 2 {
 		t.Errorf("paths of exactly the budget: %q, %v", got, err)
-	}
-	if maxGitFile != maxFileName+64 {
-		t.Errorf("maxGitFile is %d, want maxFileName and 64", maxGitFile)
 	}
 }
 
@@ -346,13 +391,13 @@ func TestParseIndexHeader(t *testing.T) {
 		{header(2, 0)[:11], "does not start with DIRC"},
 		{withTrailer(header(1, 0)), "it is version 1"},
 		{withTrailer(header(5, 0)), "it is version 5"},
-		{withTrailer(header(2, uint32(DefaultWalk.Entries+1))), "entries, over the limit of"},
+		{withTrailer(header(2, uint32(testLimits.Entries+1))), "entries, over the limit of"},
 	} {
-		_, err := parseIndex(c.data, sha1Size, maxPathBytes)
+		_, err := parsed(c.data, sha1Size, maxPathBytes)
 		extracttest.WantError(t, err, c.want)
 	}
 	for _, v := range []uint32{2, 3, 4} {
-		if got, err := parseIndex(withTrailer(header(v, 0)), sha1Size, maxPathBytes); err != nil || len(got) != 0 {
+		if got, err := parsed(withTrailer(header(v, 0)), sha1Size, maxPathBytes); err != nil || len(got) != 0 {
 			t.Errorf("version %d with no entry: %q, %v", v, got, err)
 		}
 	}
@@ -366,15 +411,15 @@ func TestParseIndexHeader(t *testing.T) {
 // repository, the empty path, and the 300 copies of a 4000 byte path.
 func TestParseIndexPathBounds(t *testing.T) {
 	long := strings.Repeat("a", maxFileName)
-	if got, err := parseIndex(gitIndex(4, indexEntry{path: long}), sha1Size, maxPathBytes); err != nil || len(got) != 1 {
+	if got, err := parsed(gitIndex(4, indexEntry{path: long}), sha1Size, maxPathBytes); err != nil || len(got) != 1 {
 		t.Errorf("a path of %d bytes: %v", maxFileName, err)
 	}
-	_, err := parseIndex(gitIndex(4, indexEntry{path: long + "b"}), sha1Size, maxPathBytes)
+	_, err := parsed(gitIndex(4, indexEntry{path: long + "b"}), sha1Size, maxPathBytes)
 	extracttest.WantError(t, err, "an entry's path is 4097 bytes long, over the limit of 4096")
-	_, err = parseIndex(gitIndex(2, indexEntry{path: ""}), sha1Size, maxPathBytes)
+	_, err = parsed(gitIndex(2, indexEntry{path: ""}), sha1Size, maxPathBytes)
 	extracttest.WantError(t, err, "an entry has no path")
 	for _, p := range []string{"../x", "/etc/passwd", "a/../../x"} {
-		_, err := parseIndex(gitIndex(2, indexEntry{path: p}), sha1Size, maxPathBytes)
+		_, err := parsed(gitIndex(2, indexEntry{path: p}), sha1Size, maxPathBytes)
 		extracttest.WantError(t, err, "leaves the repository, which git does not write")
 	}
 	// 300 entries that each drop the last byte of a 4000 byte path and add
@@ -385,7 +430,7 @@ func TestParseIndexPathBounds(t *testing.T) {
 		entries = append(entries, indexEntry{path: base + string(rune('0'+i%10)), drop: 1})
 	}
 	data := gitIndex(4, entries...)
-	if _, err := parseIndex(data, sha1Size, 1<<20); err == nil || !strings.Contains(err.Error(), "its paths hold more than 1048576 bytes in all") {
+	if _, err := parsed(data, sha1Size, 1<<20); err == nil || !strings.Contains(err.Error(), "its paths hold more than 1048576 bytes in all") {
 		t.Errorf("1.2 MB of paths under a budget of 1 MiB: %v", err)
 	}
 	if len(data) > 1<<15 {
@@ -408,20 +453,20 @@ func TestParseIndexPathBounds(t *testing.T) {
 // called b/c:d outside.
 func TestParseIndexWindowsDevice(t *testing.T) {
 	device := "a name Windows keeps for a device, which a read would open in place of a file; git for Windows does not write it"
-	_, err := parseIndex(gitIndex(2, indexEntry{path: "dir/aux"}), sha1Size, maxPathBytes)
+	_, err := parsed(gitIndex(2, indexEntry{path: "dir/aux"}), sha1Size, maxPathBytes)
 	if runtime.GOOS == "windows" {
 		extracttest.WantError(t, err, `an entry's path "dir/aux" holds "aux", `+device)
 	} else if err != nil {
 		t.Errorf("dir/aux on %s: %v", runtime.GOOS, err)
 	}
 	for p, n := range map[string]string{"aux": "aux", "NUL": "NUL", `a\COM1`: "COM1", "x/conout$": "conout$", "a/zzz/b": "zzz"} {
-		extracttest.WantError(t, notLocal(p, windowsLocal), "an entry's path "+Quote(p)+" holds "+Quote(n)+", "+device)
+		extracttest.WantError(t, notLocal(p, windowsLocal), "an entry's path "+clip.Quote(p)+" holds "+clip.Quote(n)+", "+device)
 	}
 	for _, p := range []string{"b/c:d", "1:x", "a/../x/b:c"} {
-		extracttest.WantError(t, notLocal(p, windowsLocal), "an entry's path "+Quote(p)+" holds a colon, which Windows reads as a drive or a stream; git for Windows does not write it")
+		extracttest.WantError(t, notLocal(p, windowsLocal), "an entry's path "+clip.Quote(p)+" holds a colon, which Windows reads as a drive or a stream; git for Windows does not write it")
 	}
 	for _, p := range []string{"../aux", "/nul", "a/../../con", `..\prn`, "../c:d"} {
-		extracttest.WantError(t, notLocal(p, windowsLocal), "an entry's path "+Quote(p)+" leaves the repository, which git does not write")
+		extracttest.WantError(t, notLocal(p, windowsLocal), "an entry's path "+clip.Quote(p)+" leaves the repository, which git does not write")
 	}
 }
 
@@ -452,7 +497,7 @@ func windowsLocal(p string) bool {
 func TestCheckEntryBackslash(t *testing.T) {
 	backslash := "a backslash, which Windows reads as a separator, so the path would name another file than the one git tracks; git for Windows does not write it"
 	for _, p := range []string{`.errata\witness\w\y.yaml`, `a\b`, `dir/x\y.yaml`} {
-		extracttest.WantError(t, checkEntry(p, windowsLocal), "an entry's path "+Quote(p)+" holds "+backslash)
+		extracttest.WantError(t, checkEntry(p, windowsLocal), "an entry's path "+clip.Quote(p)+" holds "+backslash)
 		if runtime.GOOS != "windows" {
 			if err := checkEntry(p, filepath.IsLocal); err != nil {
 				t.Errorf("%s on %s: %v", p, runtime.GOOS, err)
@@ -461,7 +506,7 @@ func TestCheckEntryBackslash(t *testing.T) {
 	}
 	for _, n := range []string{"ERRATA~1", "errata~12", "errata~0", "ERRATA~9", "ER1A2B~1", "erffff~5"} {
 		p := n + "/witness/w/y.yaml"
-		extracttest.WantError(t, checkEntry(p, windowsLocal), "an entry's path "+Quote(p)+" holds "+Quote(n)+", which Windows may open as .errata by its short name, so the path could name a witness's file; git for Windows does not write it")
+		extracttest.WantError(t, checkEntry(p, windowsLocal), "an entry's path "+clip.Quote(p)+" holds "+clip.Quote(n)+", which Windows may open as .errata by its short name, so the path could name a witness's file; git for Windows does not write it")
 		if err := checkEntry(p, filepath.IsLocal); runtime.GOOS != "windows" && err != nil {
 			t.Errorf("%s on %s: %v", p, runtime.GOOS, err)
 		}
@@ -471,15 +516,15 @@ func TestCheckEntryBackslash(t *testing.T) {
 			t.Errorf("%s under windowsLocal: %v", p, err)
 		}
 	}
-	extracttest.WantError(t, checkEntry(`a\..\..\x`, windowsLocal), "an entry's path "+Quote(`a\..\..\x`)+" leaves the repository, which git does not write")
+	extracttest.WantError(t, checkEntry(`a\..\..\x`, windowsLocal), "an entry's path "+clip.Quote(`a\..\..\x`)+" leaves the repository, which git does not write")
 	for _, p := range []string{"a/b", ".errata/witness/w/y.yaml"} {
 		if err := checkEntry(p, windowsLocal); err != nil {
 			t.Errorf("%s under windowsLocal: %v", p, err)
 		}
 	}
-	_, err := parseIndex(gitIndex(2, indexEntry{path: `.errata\witness\w\y.yaml`}), sha1Size, maxPathBytes)
+	_, err := parsed(gitIndex(2, indexEntry{path: `.errata\witness\w\y.yaml`}), sha1Size, maxPathBytes)
 	if runtime.GOOS == "windows" {
-		extracttest.WantError(t, err, "an entry's path "+Quote(`.errata\witness\w\y.yaml`)+" holds "+backslash)
+		extracttest.WantError(t, err, "an entry's path "+clip.Quote(`.errata\witness\w\y.yaml`)+" holds "+backslash)
 	} else if err != nil {
 		t.Errorf("a backslash on %s: %v", runtime.GOOS, err)
 	}
@@ -524,7 +569,7 @@ func TestIndexVarint(t *testing.T) {
 // absolute; a .git file of maxGitFile bytes is read and one byte more is
 // refused. Planted breaks: the gitdir's check dropped, which listed no
 // file; readCapped's limit taken as >=.
-func TestTrackedFilesRefusesWhatIsNotThere(t *testing.T) {
+func TestReadRefusesWhatIsNotThere(t *testing.T) {
 	for _, gitdir := range []string{"/nonexistent/repo/.git/worktrees/x", "../.git/modules/sub"} {
 		_, err := readIndex(extracttest.Repo(t, map[string]string{".git": "gitdir: " + gitdir + "\n"}))
 		extracttest.WantError(t, err, "the file .git names the git directory "+strconv.Quote(gitdir)+", which is not there")
@@ -535,8 +580,8 @@ func TestTrackedFilesRefusesWhatIsNotThere(t *testing.T) {
 	// drops from the end.
 	line := "gitdir: " + filepath.Join(main, ".git")
 	exact := line + strings.Repeat("\n", maxGitFile-len(line))
-	if got, err := readIndex(extracttest.Repo(t, map[string]string{".git": exact})); err != nil || !slices.Equal(got, []string{"a"}) {
-		t.Errorf("a .git file of %d bytes: %q, %v", maxGitFile, got, err)
+	if got, err := readIndex(extracttest.Repo(t, map[string]string{".git": exact})); err != nil || !slices.Equal(entryPaths(got.entries), []string{"a"}) {
+		t.Errorf("a .git file of %d bytes: %q, %v", maxGitFile, entryPaths(got.entries), err)
 	}
 	_, err := readIndex(extracttest.Repo(t, map[string]string{".git": exact + "\n"}))
 	extracttest.WantError(t, err, "read .git: the file is over the limit of")
@@ -552,7 +597,7 @@ func FuzzParseIndex(f *testing.F) {
 	f.Add(header(2, 0))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		for _, hash := range []int{sha1Size, sha256Size} {
-			files, err := parseIndex(data, hash, 1<<16)
+			files, err := parsed(data, hash, 1<<16)
 			if err != nil {
 				continue
 			}
@@ -578,7 +623,7 @@ func FuzzParseIndex(f *testing.F) {
 // HEAD's check dropped; any HEAD that is no symlink taken, which read the
 // directory; commondir not followed, which refused the worktree; the second
 // line passed over.
-func TestTrackedFilesRefusesWhatIsNoGitDir(t *testing.T) {
+func TestReadRefusesWhatIsNoGitDir(t *testing.T) {
 	gitFile := func(t *testing.T, files map[string]string, gitdir string) error {
 		t.Helper()
 		files[".git"] = "gitdir: " + gitdir + "\n"
@@ -624,7 +669,7 @@ func TestTrackedFilesRefusesWhatIsNoGitDir(t *testing.T) {
 // breaks: HEAD followed by Stat, which refused the dangling link; any
 // symlink taken, which read the one that leads to ../other/HEAD; the
 // prefix without its slash, which read the refsX link.
-func TestTrackedFilesTakesAHEADLinkIntoRefs(t *testing.T) {
+func TestReadTakesAHEADLinkIntoRefs(t *testing.T) {
 	files := map[string]string{".git/objects/x": "", ".git/refs/x": "", ".git/packed-refs": "0000000000000000000000000000000000000000 refs/heads/main\n", "other/HEAD": "ref: refs/heads/main\n"}
 	packed := extracttest.Repo(t, files)
 	extracttest.Symlink(t, "refs/heads/main", filepath.Join(packed, ".git", "HEAD"))

@@ -19,22 +19,9 @@ package minimatch
 import (
 	"context"
 	"errors"
-	"fmt"
 	"slices"
-	"strconv"
 	"unicode/utf8"
 )
-
-// MaxSteps is the most steps one Match may take: each try of a regex
-// node, and each segment the globstar matcher compares. A class test
-// counts more steps for a class that takes it more work (classWork).
-const MaxSteps = 1 << 17
-
-// maxSource is the most regex source the segments of one glob may build
-// in all, its brace expansions' included.
-const maxSource = 1 << 15
-
-var errSource = errors.New("its segments build more than " + strconv.Itoa(maxSource) + " characters of regex source")
 
 // globstar stands for a segment that is exactly **.
 type segment struct {
@@ -98,20 +85,8 @@ type mm struct {
 	negate  bool
 	comment bool
 	empty   bool
-	steps   *budget
-	// source is what the glob's segments have spent of maxSource.
-	source sourceBudget
-}
-
-// sourceBudget is the regex source one glob's segments may build: left is
-// what maxSource leaves for their regexes, and written counts every unit
-// their builds appended, refused ones included, which a test holds to the
-// bound.
-type sourceBudget struct {
-	left    int
-	written int
-	// ctx, when set, stops the build once it is done.
-	ctx context.Context
+	// steps is the meter of the match under way (matchWith).
+	steps *meter
 }
 
 // Match is whether minimatch matches file with glob under dot and nocase,
@@ -143,7 +118,7 @@ func CompileContext(ctx context.Context, glob string) *Glob {
 	if !utf8.ValidString(glob) {
 		return &Glob{err: errUTF8}
 	}
-	m, err := compileContext(ctx, toUnits(glob))
+	m, err := compile(newMeter(ctx), toUnits(glob))
 	if err != nil {
 		return &Glob{err: err}
 	}
@@ -163,10 +138,9 @@ func (g *Glob) MatchSteps(ctx context.Context, file string) (bool, int, error) {
 	if g.err != nil {
 		return false, 0, g.err
 	}
-	m := *g.m
-	m.steps = &budget{left: MaxSteps, ctx: ctx}
-	match, err := m.match(toUnits(file))
-	return match, MaxSteps - m.steps.left, err
+	w := newMeter(ctx)
+	match, err := g.m.matchWith(w, toUnits(file))
+	return match, MaxSteps - w.steps, err
 }
 
 // Size is the code units g holds, its segments' literals and the sources
@@ -194,22 +168,10 @@ func (g *Glob) Size() int {
 	return n
 }
 
-// stopped is the error of a call whose context is done, or nil.
-func stopped(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("the match was stopped: %w", err)
-	}
-	return nil
-}
-
-func compile(pattern units) (*mm, error) {
-	return compileContext(context.Background(), pattern)
-}
-
-// compileContext is compile, stopped once ctx is done; the mm it returns
-// stops its match then too.
-func compileContext(ctx context.Context, pattern units) (*mm, error) {
-	m := &mm{steps: &budget{left: MaxSteps, ctx: ctx}}
+// compile parses pattern, spending its regex source from w, and stops
+// once w's context is done.
+func compile(w *meter, pattern units) (*mm, error) {
+	m := &mm{}
 	if len(pattern) > 0 && pattern[0] == '#' {
 		m.comment = true
 		return m, nil
@@ -225,7 +187,7 @@ func compileContext(ctx context.Context, pattern units) (*mm, error) {
 		i++
 	}
 	pattern = pattern[i:]
-	expanded, err := braceExpandContext(ctx, pattern)
+	expanded, err := braceExpand(w, pattern)
 	if err != nil {
 		return nil, err
 	}
@@ -235,18 +197,15 @@ func compileContext(ctx context.Context, pattern units) (*mm, error) {
 			globSet = append(globSet, g)
 		}
 	}
-	m.source.left = maxSource
-	m.source.ctx = ctx
 	for _, g := range globSet {
 		var segs []segment
 		for _, s := range levelOneOptimize(slashSplit(g)) {
-			if err := stopped(ctx); err != nil {
-				return m, err
+			if !w.look() {
+				return nil, w.err
 			}
-			seg, err := parseSegment(s, &m.source)
+			seg, err := parseSegment(s, w)
 			if err != nil {
-				// m is returned for what it spent, which a test reads.
-				return m, err
+				return nil, err
 			}
 			segs = append(segs, seg)
 		}
@@ -297,7 +256,7 @@ func levelOneOptimize(parts []units) []units {
 }
 
 // parseSegment is Minimatch.parse.
-func parseSegment(s units, sb *sourceBudget) (segment, error) {
+func parseSegment(s units, w *meter) (segment, error) {
 	if slices.Equal(s, units{'*', '*'}) {
 		return segment{globstar: true}, nil
 	}
@@ -305,7 +264,7 @@ func parseSegment(s units, sb *sourceBudget) (segment, error) {
 		return segment{literal: units{}}, nil
 	}
 	fast := fastTest(s)
-	p, err := fromGlob(s).toMMPattern(sb)
+	p, err := fromGlob(s).toMMPattern(w)
 	if err != nil {
 		return segment{}, err
 	}
@@ -327,6 +286,12 @@ func (m *mm) test(p segment, f units) (bool, error) {
 		return p.fast(f), nil
 	}
 	return p.re.test(f, m.steps)
+}
+
+// matchWith is match on a copy of m that spends its steps from w.
+func (m mm) matchWith(w *meter, f units) (bool, error) {
+	m.steps = w
+	return m.match(f)
 }
 
 // match is Minimatch.match without partial, matchBase or flipNegate.

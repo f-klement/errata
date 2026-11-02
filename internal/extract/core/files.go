@@ -6,14 +6,13 @@ import (
 	"path"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strings"
 
-	"github.com/f-klement/errata/internal/check"
+	"github.com/f-klement/errata/internal/extract/core/gitindex"
 )
 
 // A files: key lists entries, each a file or a glob. A glob is matched
-// against the files git tracks (trackedFiles), so it names the files a
+// against the files git tracks (runIndex), so it names the files a
 // clone holds, in git's order, and never one that is not checked in. env
 // and the extractors that take a file set (FileSet) read it the same way.
 
@@ -24,7 +23,7 @@ const MaxEntries = 64
 // matched against in all: each glob's weight (globWeight) times the bytes
 // of the paths it is matched against, which are the files git tracks under
 // its literal directory, or every one for a glob whose first segment holds
-// a wildcard (span). path.Match costs time in proportion to the path,
+// a wildcard (gitindex.Paths.Span). path.Match costs time in proportion to the path,
 // about 33 ns a byte on a 3 core worker node, and the index may hold 64
 // MiB of paths, so 64 globs over it took 167 s. The sum is known once the
 // index is read, so a spec over the bound is refused before any glob is
@@ -113,65 +112,15 @@ func globSegments(glob string) []string {
 // literalDir is the leading segments of a glob that hold no *, ?, [ or \,
 // joined with /: "deploy" for deploy/*.env, "" for one whose first segment
 // holds one, such as */*.env or **/x. Such a segment matches only itself,
-// so every path the glob matches is the directory or below it (span). A
-// glob holds a segment with *, ? or [ (HasGlob), so the loop stops there.
+// so every path the glob matches is the directory or below it
+// (gitindex.Paths.Span). A glob holds a segment with *, ? or [ (HasGlob), so
+// the loop stops there.
 func literalDir(segs []string) string {
 	k := 0
 	for k < len(segs) && !strings.ContainsAny(segs[k], `*?[\`) {
 		k++
 	}
 	return strings.Join(segs[:k], "/")
-}
-
-// span is the paths of git's index a glob is matched against and charged
-// for: its literal directory, when the index holds it as a file, which
-// only a glob whose segments after it are all ** matches, and the paths
-// below it, in git's order.
-type span struct {
-	self, under []string
-}
-
-// spanOf is the span of a glob of literal directory dir in tracked, which
-// sorted says is in git's order: the paths below dir are a range of it,
-// found by binary search. A glob with no literal directory, or an index
-// out of git's order, which git refuses to read, spans every path.
-func spanOf(dir string, tracked []string, sorted bool) span {
-	if dir == "" || !sorted {
-		return span{under: tracked}
-	}
-	var s span
-	if i, found := slices.BinarySearch(tracked, dir); found {
-		s.self = tracked[i : i+1]
-	}
-	prefix := dir + "/"
-	lo, _ := slices.BinarySearch(tracked, prefix)
-	hi := lo + sort.Search(len(tracked)-lo, func(j int) bool { return !strings.HasPrefix(tracked[lo+j], prefix) })
-	s.under = tracked[lo:hi]
-	return s
-}
-
-// bytes is the bytes of the paths s holds.
-func (s span) bytes() int {
-	n := 0
-	for _, part := range [][]string{s.self, s.under} {
-		for _, t := range part {
-			n += len(t)
-		}
-	}
-	return n
-}
-
-// matches is the paths of s the glob of e matches, in git's order.
-func (e FileEntry) matches(s span) []string {
-	var out []string
-	for _, part := range [][]string{s.self, s.under} {
-		for _, t := range part {
-			if matchGlob(e.segs, t) {
-				out = append(out, t)
-			}
-		}
-	}
-	return out
 }
 
 // globWeight is how many times matching a glob may read a path's bytes:
@@ -290,36 +239,32 @@ type Named struct {
 
 // List is the files the entries name, each once, in the entries' order: a
 // file, which need not exist until it is read, or the files git tracks that
-// a glob matches, in git's order, but those of witnesses (trackedFiles),
-// each glob matched only against its span. The index is read once, and only
-// when an entry is a glob. A glob that matches no file names none. A glob
-// that matches a path holding a control character, a direction control or a
-// line or paragraph separator is refused, so no reader opens the file or
-// names it in an error (check.HoldsControl); a file: entry was checked at
-// load (CheckSource).
+// a glob matches, in git's order, but those of witnesses (Index), each
+// glob matched only against its span. The index is read once, and only
+// when an entry is a glob. A glob that matches no file names none, and one
+// that matches a path holding a control character is refused
+// (gitindex.Span.Match); a file: entry was checked at load (CheckSource).
 func (f Files) List(ctx context.Context, root string) ([]Named, error) {
-	var spans []span         // each entry's, nil until the index is read
-	seen := map[string]int{} // each file's index in out
+	var spans []gitindex.Span // each entry's, nil until the index is read
+	seen := map[string]int{}  // each file's index in out
 	var out []Named
 	for k, e := range f.Entries {
 		files := []string{e.Clean}
 		if e.Glob {
 			if spans == nil {
-				tracked, err := trackedFiles(ctx, root)
+				ix, err := runIndex(ctx, root)
 				if err != nil {
 					return nil, fmt.Errorf("%s: files lists the glob %s: %w", f.kind, Quote(e.Clean), err)
 				}
 				var whole bool
-				spans, whole = f.spans(tracked)
+				spans, whole = f.spans(ix.Paths())
 				if err := f.checkMatch(spans, whole); err != nil {
 					return nil, err
 				}
 			}
-			files = e.matches(spans[k])
-			for _, t := range files {
-				if check.HoldsControl(t) {
-					return nil, fmt.Errorf("%s: files lists the glob %s, which matches %s, a tracked path that holds a control character, a direction control or a line or paragraph separator, which a terminal or a report viewer would act on; rename the file", f.kind, Quote(e.Clean), Quote(t))
-				}
+			var err error
+			if files, err = spans[k].Match(func(t string) bool { return matchGlob(e.segs, t) }); err != nil {
+				return nil, fmt.Errorf("%s: files lists the glob %s, which %w", f.kind, Quote(e.Clean), err)
 			}
 		}
 		for _, file := range files {
@@ -338,21 +283,16 @@ func (f Files) List(ctx context.Context, root string) ([]Named, error) {
 	return out, nil
 }
 
-// spans is the span of each entry that is a glob in tracked, by the
-// entry's index; an entry that is a file has none. The index is tested for
-// git's order once, and only when a glob has a literal directory. whole
-// reports an index out of git's order, in which a glob with a literal
-// directory spans every path too (spanOf).
-func (f Files) spans(tracked []string) (out []span, whole bool) {
-	sorted := false
-	if slices.ContainsFunc(f.Entries, func(e FileEntry) bool { return e.dir != "" }) {
-		sorted = slices.IsSorted(tracked)
-		whole = !sorted
-	}
-	out = make([]span, len(f.Entries))
+// spans is the span of each entry that is a glob in t, by the entry's
+// index; an entry that is a file has none. whole reports an index out of
+// git's order where a glob has a literal directory, which then spans every
+// path too (gitindex.Paths.Span).
+func (f Files) spans(t gitindex.Paths) (out []gitindex.Span, whole bool) {
+	whole = !t.Sorted() && slices.ContainsFunc(f.Entries, func(e FileEntry) bool { return e.dir != "" })
+	out = make([]gitindex.Span, len(f.Entries))
 	for k, e := range f.Entries {
 		if e.Glob {
-			out[k] = spanOf(e.dir, tracked, sorted)
+			out[k] = t.Span(e.dir)
 		}
 	}
 	return out, whole
@@ -363,12 +303,12 @@ func (f Files) spans(tracked []string) (out []span, whole bool) {
 // matched: the bytes are each glob's weight times its span's bytes. whole
 // says the index is out of git's order, so each glob was charged for every
 // path, and the message says so rather than naming a directory.
-func (f Files) checkMatch(spans []span, whole bool) error {
+func (f Files) checkMatch(spans []gitindex.Span, whole bool) error {
 	globs, read := 0, 0
 	for k, e := range f.Entries {
 		if e.Glob {
 			globs++
-			read += globWeight(e.segs) * spans[k].bytes()
+			read += globWeight(e.segs) * spans[k].Bytes()
 		}
 	}
 	if read > f.MatchLimit && whole {

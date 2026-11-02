@@ -1,7 +1,6 @@
 package minimatch
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -15,7 +14,7 @@ import (
 // with ranges, escapes and \p{..}, and the i and u flags), read and matched
 // by the specification's rules. A source that is no valid ECMAScript regex
 // for its flags is an error, as new RegExp throws. Every match counts its
-// steps against the budget of the Match call, so no glob runs on without
+// steps against the meter of the Match call, so no glob runs on without
 // bound.
 
 // regex is a compiled JavaScript regex.
@@ -30,56 +29,13 @@ type regex struct {
 // order the specification tries them, until k returns true.
 type matcher func(m *machine, pos int, k func(int) bool) bool
 
-// machine is one search: the input, the flags and the step budget.
+// machine is one search: the input, the flags and the meter it spends
+// steps from.
 type machine struct {
 	in    units
 	icase bool
 	uflag bool
-	steps *budget
-}
-
-// budget is the steps one Match call may take, shared by every regex and
-// segment it matches.
-type budget struct {
-	left int
-	err  error
-	// ctx, when set, ends the match once it is done.
-	ctx context.Context
-}
-
-// errBudget is the error of a match that ran out of steps.
-var errBudget = errors.New("matching takes more than the step budget")
-
-// checkEvery is how many steps a match takes between two looks at its
-// context. Through the CI runner on the build node the slowest step
-// measured took 134 ns (classWork), so 1024 steps take about 0.14 ms.
-const checkEvery = 1 << 10
-
-// step spends one step, and reports false once none is left or the
-// budget's context is done.
-func (b *budget) step() bool { return b.spend(1) }
-
-// spend spends n steps, and reports false once fewer than n are left or
-// the budget's context is done. It looks at the context each time what is
-// left reaches or passes a multiple of checkEvery.
-func (b *budget) spend(n int) bool {
-	if n <= 0 {
-		return true
-	}
-	if b.left < n {
-		b.left = 0
-		b.err = errBudget
-		return false
-	}
-	before := b.left
-	b.left -= n
-	if b.ctx != nil && b.left <= (before-1)/checkEvery*checkEvery {
-		if err := stopped(b.ctx); err != nil {
-			b.err = err
-			return false
-		}
-	}
-	return true
+	steps *meter
 }
 
 // SyntaxError is a source new RegExp refuses.
@@ -119,7 +75,7 @@ func compileJS(src units, icase, uflag bool) (*regex, error) {
 
 // test is RegExp.prototype.test from lastIndex 0: a match starting at any
 // place in s.
-func (r *regex) test(s units, steps *budget) (bool, error) {
+func (r *regex) test(s units, steps *meter) (bool, error) {
 	m := &machine{in: s, icase: r.icase, uflag: r.uflag, steps: steps}
 	accept := func(int) bool { return true }
 	for start := 0; start <= len(s); {

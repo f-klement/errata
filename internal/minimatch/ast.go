@@ -1,7 +1,6 @@
 package minimatch
 
 import (
-	"context"
 	"errors"
 	"slices"
 	"strconv"
@@ -459,7 +458,7 @@ type mmPattern struct {
 
 // toMMPattern is the segment's regex if it has magic, or if nocase finds a
 // letter in it, and otherwise its unescaped text.
-func (n *node) toMMPattern(sb *sourceBudget) (mmPattern, error) {
+func (n *node) toMMPattern(w *meter) (mmPattern, error) {
 	glob := n.toString()
 	n.flatten()
 	n.fillNegs()
@@ -468,7 +467,7 @@ func (n *node) toMMPattern(sb *sourceBudget) (mmPattern, error) {
 	if *n.count > maxNodes {
 		return mmPattern{}, errNodes
 	}
-	re, body, hasMagic, uflag, err := n.rootSource(glob, sb)
+	re, body, hasMagic, uflag, err := n.rootSource(glob, w)
 	if err != nil {
 		return mmPattern{}, err
 	}
@@ -477,7 +476,8 @@ func (n *node) toMMPattern(sb *sourceBudget) (mmPattern, error) {
 		return mmPattern{literal: body}, nil
 	}
 	src := concat(units{'^'}, re, units{'$'})
-	if sb.left -= len(src); sb.left < 0 {
+	if w.source -= len(src); w.source < 0 {
+		w.err = errSource
 		return mmPattern{}, errSource
 	}
 	r, err := compileJS(src, true, uflag)
@@ -503,27 +503,33 @@ type source struct {
 	// noTrav are the offsets in buf where startNoTraversal goes. A plain
 	// node knows whether it needs it only once its parts are written, and
 	// the offsets keep it from moving them.
-	noTrav  []int
-	err     error
-	written int
-	// ctx, when set, is looked at once for each node the build writes,
-	// and stops it once it is done.
-	ctx context.Context
+	noTrav []int
+	// meter counts what the build writes, is looked at once for each node
+	// the build writes, and holds the error that stops the build.
+	meter *meter
 }
 
 // size is the length the source will have.
 func (b *source) size() int { return len(b.buf) + len(b.noTrav)*len(startNoTraversal) }
 
-// write appends u, and sets err once the source passes limit.
+// write appends u, and stops the meter once the source passes limit.
 func (b *source) write(u ...rune) {
-	if b.err != nil {
+	if b.meter.err != nil {
 		return
 	}
 	b.buf = append(b.buf, u...)
-	b.written += len(u)
+	b.meter.written += len(u)
+	b.fits()
+}
+
+// fits reports whether the source is within limit, and stops the meter
+// with errSource once it is not. Every growth of the source checks here.
+func (b *source) fits() bool {
 	if b.size() > b.limit {
-		b.err = errSource
+		b.meter.err = errSource
+		return false
 	}
+	return true
 }
 
 // truncate drops what was written from mark on.
@@ -551,14 +557,13 @@ func (b *source) from(mark int) units {
 
 // rootSource is ast.js's toRegExpSource on the root, with dot set: the
 // regex source, the unescaped body, whether it has magic, and whether it
-// needs the u flag. glob is the segment's text; sb.written gains the units
+// needs the u flag. glob is the segment's text; w.written gains the units
 // the build appended.
-func (n *node) rootSource(glob units, sb *sourceBudget) (units, units, bool, bool, error) {
-	b := &source{limit: max(sb.left, 2*len(glob)), ctx: sb.ctx}
+func (n *node) rootSource(glob units, w *meter) (units, units, bool, bool, error) {
+	b := &source{limit: max(w.source, 2*len(glob)), meter: w}
 	hasMagic, uflag := n.writeSource(b)
-	sb.written += b.written
-	if b.err != nil {
-		return nil, nil, false, false, b.err
+	if w.err != nil {
+		return nil, nil, false, false, w.err
 	}
 	body := b.from(0)
 	re := body
@@ -579,12 +584,10 @@ func (n *node) rootSource(glob units, sb *sourceBudget) (units, units, bool, boo
 // node's regex source to b, and returns whether it has magic and whether
 // it needs the u flag.
 func (n *node) writeSource(b *source) (bool, bool) {
-	if b.ctx != nil && b.err == nil {
-		// Each node reads its ancestors, so a segment of a few thousand
-		// nodes builds for tens of milliseconds.
-		if b.err = stopped(b.ctx); b.err != nil {
-			return false, false
-		}
+	// Each node reads its ancestors, so a segment of a few thousand nodes
+	// builds for tens of milliseconds.
+	if !b.meter.look() {
+		return false, false
 	}
 	if !isExtglobType(n.typ) {
 		noEmpty := n.isStart() && n.isEnd() && !slices.ContainsFunc(n.parts, func(p part) bool { return p.a != nil })
@@ -598,7 +601,7 @@ func (n *node) writeSource(b *source) (bool, bool) {
 			} else {
 				magic, uflag = p.a.writeSource(b)
 			}
-			if b.err != nil {
+			if b.meter.err != nil {
 				return false, false
 			}
 			if n.hasMagic != 1 {
@@ -621,8 +624,7 @@ func (n *node) writeSource(b *source) (bool, bool) {
 					(hasPrefixAt(src, units{'\\', '.', '\\', '.'}, 0) && aps(charAt(src, 4)))
 				if needNoTrav {
 					b.noTrav = append(b.noTrav, mark)
-					if b.size() > b.limit {
-						b.err = errSource
+					if !b.fits() {
 						return false, false
 					}
 				}
@@ -644,7 +646,7 @@ func (n *node) writeSource(b *source) (bool, bool) {
 	}
 	bodyMark := len(b.buf)
 	n.writeParts(b)
-	if b.err != nil {
+	if b.meter.err != nil {
 		return false, false
 	}
 	if n.isStart() && n.isEnd() && len(b.buf) == bodyMark && n.typ != '!' {
@@ -701,7 +703,7 @@ func (n *node) writeParts(b *source) {
 		}
 		start := len(b.buf)
 		_, uflag := p.a.writeSource(b)
-		if b.err != nil {
+		if b.meter.err != nil {
 			return
 		}
 		n.uflag = n.uflag || uflag

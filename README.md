@@ -381,14 +381,24 @@ named `id [witness name]` in the text report and in JUnit:
 |---|---|
 | false | holds; the coverage line counts it, as `1 witness held.` |
 | true | an erratum: `go-toolchain-agrees held on its witness toolchain-drifts, so it could not be shown to fail`. SARIF puts it at the check in the config |
-| unknown, or the fixture is not a directory, or is reached through a symlink, wherever it leads, or git's index lists no file below it | unknown, which fails the run |
+| unknown, or the fixture is not a directory, or is reached through a symlink, wherever it leads, or git's index lists no file below it, or lists one below its path spelt in another case | unknown, which fails the run |
 
 The exit codes do not change. A clone in CI holds only the files git's index lists, so every kind
 of check needs the repository's git index on a witness, a program check's included: a fixture the
 index lists no file below makes the witness unknown before its check runs. A rule's reads of the
 fixture (a `file:`, a glob, `exists` and a generated check's `generated.file`) then find only the
 files the index lists below it, so a file the fixture does not commit reads as not there, as in a
-clone. Each kind of check runs on the fixture this way:
+clone. A walk, such as `tool_version`'s without `files:`, and `package_version`'s look at the
+root list what the index lists below the fixture and never the disk, so neither finds an
+untracked file. A file, a symlink or a directory the index lists that the disk does not hold as
+one, such as a committed file deleted from the working tree, is unknown, since a clone holds it,
+as ADR 0008 has it for a glob. A read through a committed directory the disk lacks is unknown,
+whatever lies below it, even a path the fixture never committed. A symlink on the way is followed
+only where the index lists it as a symlink: a clone checks out a file where the index lists one,
+so a link put in its place on disk leads nowhere a clone's path does. A file on disk where the
+index lists a symlink is unknown, since a clone follows the link there. An index entry below
+`.Errata/witness/w` makes the witness `w` unknown on every OS, since macOS and Windows open that
+directory as `.errata/witness/w`. Each kind of check runs on the fixture this way:
 
 - A rule reads the fixture as its root. A `files:` glob matches the files git's index lists
   below the fixture, with the fixture's path cut off, so a file the fixture does not commit is

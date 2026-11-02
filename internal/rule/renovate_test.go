@@ -7,7 +7,6 @@ import (
 	"math/rand/v2"
 	"os"
 	"regexp/syntax"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -17,19 +16,18 @@ import (
 
 	"cel.dev/cel-go/common/types"
 	"cel.dev/cel-go/common/types/ref"
-
-	"github.com/f-klement/errata/internal/minimatch"
 )
 
 // renovateMatches is renovateMatchesCompiling as renovate_match's binding
-// runs it: in the background, with each glob compiled at each call.
+// runs it: in the background, with each entry compiled at each call (a nil
+// patternCache).
 func renovateMatches(s, pattern string) (bool, error) {
 	return renovateMatchesContext(context.Background(), s, pattern)
 }
 
 // renovateMatchesContext is renovateMatches under ctx.
 func renovateMatchesContext(ctx context.Context, s, pattern string) (bool, error) {
-	match, _, err := renovateMatchesCompiling(ctx, s, pattern, minimatch.CompileContext)
+	match, _, err := renovateMatchesCompiling(ctx, s, pattern, nil)
 	return match, err
 }
 
@@ -104,9 +102,9 @@ func TestRenovateMatchRefuses(t *testing.T) {
 	for _, c := range []struct {
 		s, p, want string
 	}{
-		{"a", "/(?=a)/", `"/(?=a)/" is written as a regex between slashes, and RE2 does not compile it`},
-		{"a", "/\\u0061/", "RE2 does not compile it"},
-		{"a x", "[[:alpha:]] x", `minimatch throws on the glob "[[:alpha:]] x", as JavaScript refuses the regex it builds: invalid regular expression`},
+		{"a", "/(?=a)/", `the regex "/(?=a)/" is not matched against "a": RE2 does not compile the regex, which Renovate would then read as a glob`},
+		{"a", "/\\u0061/", "RE2 does not compile the regex"},
+		{"a x", "[[:alpha:]] x", `the glob "[[:alpha:]] x" is not matched against "a x": minimatch throws on the glob, as JavaScript refuses the regex it builds: invalid regular expression`},
 		{"a", strings.Repeat("{a,b}", 7), `the glob "` + strings.Repeat("{a,b}", 7) + `" is not matched against "a": its braces expand to more than 64 globs`},
 		{"xa", "x" + strings.Repeat("!(a)", 12), "its tree passes 4096 nodes"},
 		{strings.Repeat("a", 1000) + "b", strings.Repeat("*(a|aa)", 140), "matching takes more than the step budget"},
@@ -130,7 +128,7 @@ func TestRenovateMatchRefuses(t *testing.T) {
 
 // A call is charged its bytes and their product over renovateCostDivisor,
 // with renovateCompileWeight for each byte of a glob and the regex term of
-// renovateCallCost for a regex that ran. 100 calls of a string of 1024
+// renovateWork.cost for a regex that ran. 100 calls of a string of 1024
 // bytes and a regex of 1024, which is refused for its length before any
 // parse, cost 204900 for their bytes and 1638400 for their products, so
 // the cost limit stops them: a divisor above about 130 would let them
@@ -141,35 +139,50 @@ func TestRenovateMatchIsCharged(t *testing.T) {
 	long := strings.Repeat("a", MaxArgument)
 	const ten = "[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]"
 	_, err := eval(t, "size(v) == 2 && "+ten+".all(i, "+ten+".all(j, renovate_match(v[0], v[1])))", long, "/["+long[4:]+"]/")
-	want := "the evaluation exceeded the cost limit of 1000000"
-	if err == nil || err.Error() != want {
-		t.Errorf("100 calls of a regex, 2048 bytes: error %v, want %q", err, want)
+	// The regex is past the bound on its text, and each call is refused;
+	// the message names the refusal after the cost limit.
+	want := "the evaluation exceeded the cost limit of 1000000; before it, renovate_match: the regex "
+	if err == nil || !strings.HasPrefix(err.Error(), want) {
+		t.Errorf("100 calls of a regex, 2048 bytes: error %v, want one starting %q", err, want)
 	}
 	if got, err := eval(t, "size(v) == 2 && "+ten+".all(i, renovate_match(v[0], v[1]))", long, "*"+long[1:]); err != nil || !got {
 		t.Errorf("10 calls of a glob, 2048 bytes: %v, %v; want true", got, err)
 	}
 }
 
-// renovateCallCost's terms, each on its own: * pays only its bytes; a glob
-// pays 18 for each byte to compile; a regex that ran pays its string's
-// bytes times its program's 4003 instructions over 160; a regex refused for
-// its program pays none of that, since it did not run.
+// A call's cost, each term on its own, as renovateCall returns it with its
+// verdict: * pays only its bytes; a glob pays 18 for each byte to compile;
+// a regex that ran pays its compile (regexCompileCost) and its string's bytes
+// times its program's 4003 instructions over 160; a regex refused for its
+// text pays none of that, since it neither compiled nor ran, and neither does a glob of an argument over
+// MaxArgument, which is never compiled. A call that returns after the
+// evaluation was stopped pays 1 and its bytes, not the product of its
+// lengths, which is 96 here.
 func TestRenovateCallCost(t *testing.T) {
 	long := strings.Repeat("a", MaxArgument)
 	atBound := "/" + strings.Repeat("(?:a?){1000}", 2) + "b/"
 	pastBound := "/" + strings.Repeat(`(?:\pL?){999}`, 70) + "b/"
+	stopped, stop := context.WithCancel(context.Background())
+	stop()
 	for _, c := range []struct {
 		name, s, p string
-		result     ref.Val
+		ctx        context.Context
+		verdict    ref.Val
 		want       uint64
 	}{
-		{"*", "ab", "*", types.True, 1 + 2 + 1},
-		{"a glob", "ab", "*.yaml", types.False, 1 + 2 + 6 + 6*18},
-		{"a regex that ran", long, atBound, types.False, 1 + 1024 + 27 + 1024*27/64 + 1024*4003/160},
-		{"a regex refused", long, pastBound, types.NewErr("refused"), 1 + 1024 + 913 + 1024*913/64},
+		{"*", "ab", "*", context.Background(), types.True, 1 + 2 + 1},
+		{"a glob", "ab", "*.yaml", context.Background(), types.False, 1 + 2 + 6 + 6*18},
+		{"a regex that ran", long, atBound, context.Background(), types.False, 1 + 1024 + 27 + 1024*27/64 + 27*18 + 4003 + 3 + 1024*4003/160},
+		{"a regex refused", long, pastBound, context.Background(), nil, 1 + 1024 + 913 + 1024*913/64},
+		{"a glob too long", long + "a", "*.yaml", context.Background(), nil, 1 + 1025 + 6 + 1025*6/64},
+		{"a stopped glob", long, "*.yaml", stopped, nil, 1 + 1024 + 6},
 	} {
-		if got := renovateCallCost([]ref.Val{types.String(c.s), types.String(c.p)}, c.result); got != c.want {
+		v, got := renovateCall(c.ctx, types.String(c.s), types.String(c.p), nil)
+		if got != c.want {
 			t.Errorf("%s: cost %d, want %d", c.name, got, c.want)
+		}
+		if _, refused := v.(*types.Err); c.verdict == nil && !refused || c.verdict != nil && v != c.verdict {
+			t.Errorf("%s: verdict %v, want %v", c.name, v, c.verdict)
 		}
 	}
 }
@@ -187,7 +200,7 @@ func TestRenovateMatchRefusesALargeRegex(t *testing.T) {
 	long := strings.Repeat("a", MaxArgument)
 	pastBound := "/" + strings.Repeat("(?:a?){999}", 23) + "b/"
 	inOneStep := "size(v) == 2 && (" + strings.Repeat("renovate_match(v[0], v[1]) || ", 9) + "renovate_match(v[0], v[1]))"
-	want := "is a regex, and its RE2 program would have about 45955 instructions; errata matches at most 4096"
+	want := "its RE2 program would have about 45955 instructions; errata matches at most 4096"
 	// Against b first, so a bound that no longer refuses fails at once
 	// rather than in ten matches of a second each.
 	if _, err := renovateMatches("b", pastBound); err == nil || !strings.Contains(err.Error(), want) {
@@ -258,13 +271,16 @@ func TestRenovateMatchRefusesSlowRegexesInsideTheTimeout(t *testing.T) {
 	for i := range calls {
 		calls[i] = "renovate_match('b', v[" + strconv.Itoa(i) + "])"
 	}
-	for _, c := range []struct{ name, head, tail, want string }{
-		{"20 folded ranges", "/(?i)[" + strings.Repeat(`a-\x{10FFFF}`, 20), "]/", "its ranges fold case over 2503100 code points; errata folds at most 4096"},
-		{"21 ranges of --", "!/(?i)[" + strings.Repeat(`--\x{1E942}`, 21), "]/", "its ranges fold case over 2628906 code points; errata folds at most 4096"},
-		{"the review's folded class", "!/(?i)[" + strings.Repeat(`a-\x{10FFFF}`, 84), "]/", "errata reads a regex of at most 256"},
-		{"40 ranges after \\Q\\x{\\E", `/\Q\x{\E[` + strings.Repeat("a-\U0001E942", 40), "]/i", `it quotes text with \Q`},
-		{"337 of \\pL", "/[^" + strings.Repeat(`\pL`, 337), "]/", "errata reads a regex of at most 256"},
-		{"a large program", "/(?:" + strings.Repeat("a*", 120) + "){1000}", "/", "would have about 36000"},
+	for _, c := range []struct{ name, head, tail, want, many string }{
+		{"20 folded ranges", "/(?i)[" + strings.Repeat(`a-\x{10FFFF}`, 20), "]/", "its ranges fold case over 2503100 code points; errata folds at most 4096", ""},
+		{"21 ranges of --", "!/(?i)[" + strings.Repeat(`--\x{1E942}`, 21), "]/", "its ranges fold case over 2628906 code points; errata folds at most 4096", ""},
+		{"the review's folded class", "!/(?i)[" + strings.Repeat(`a-\x{10FFFF}`, 84), "]/", "errata reads a regex of at most 256", ""},
+		{"40 ranges after \\Q\\x{\\E", `/\Q\x{\E[` + strings.Repeat("a-\U0001E942", 40), "]/i", `it quotes text with \Q`, ""},
+		{"337 of \\pL", "/[^" + strings.Repeat(`\pL`, 337), "]/", "errata reads a regex of at most 256", ""},
+		// Each of these is parsed before the estimate refuses it, and each
+		// call pays 18 a byte for the parse, which leaves the 135 inside
+		// the cost limit.
+		{"a large program", "/(?:" + strings.Repeat("a*", 120) + "){1000}", "/", "would have about 36000", ""},
 	} {
 		patterns := make([]string, 135)
 		for i := range patterns {
@@ -282,14 +298,12 @@ func TestRenovateMatchRefusesSlowRegexesInsideTheTimeout(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			start := time.Now()
-			_, _, err = a.program.ContextEval(ctx, map[string]any{"v": patterns, logVariable: &errorLog{}})
+			_, err = a.Eval(context.Background(), asExtracted(map[string][]string{"v": patterns}, nil, nil))
 			took := time.Since(start)
-			cancel()
 			t.Logf("%s, %.20s: 135 calls took %s", c.name, expr, took)
-			if err == nil || !strings.Contains(err.Error(), c.want) {
-				t.Errorf("%s, %.20s: error %v, want one containing %q", c.name, expr, err, c.want)
+			if err == nil || !strings.Contains(err.Error(), c.want) || !strings.Contains(err.Error(), c.many) {
+				t.Errorf("%s, %.20s: error %v, want one containing %q and %q", c.name, expr, err, c.many, c.want)
 			}
 			if took >= time.Second {
 				t.Errorf("%s, %.20s: 135 refused calls took %s, not inside a second", c.name, expr, took)
@@ -417,55 +431,6 @@ func TestRegexScan(t *testing.T) {
 		if _, _, refused := regexScan(body); refused != want {
 			t.Errorf("regexScan(%q) refuses %q, want %q", body, refused, want)
 		}
-	}
-}
-
-// clearRegexCache empties the cache, which other tests leave as they
-// will, so a test of it holds under -shuffle.
-func clearRegexCache() {
-	regexCache.Lock()
-	clear(regexCache.entries)
-	regexCache.Unlock()
-}
-
-// The cache holds the entry of the last call and no other, and the
-// memory a run of large onepass patterns leaves is that of one entry:
-// ^(?:\pL){200}$ holds about 1.8 MiB, and ten of them, which 256 entries
-// kept, leave less than one and a half of it.
-func TestRegexCacheHoldsOneEntry(t *testing.T) {
-	clearRegexCache()
-	heap := func() int64 {
-		runtime.GC()
-		var m runtime.MemStats
-		runtime.ReadMemStats(&m)
-		return int64(m.HeapAlloc)
-	}
-	pattern := func(i int) string { return `/^(?:\pL){200}` + strconv.Itoa(i) + "$/" }
-	base := heap()
-	compiledRegex(pattern(0))
-	one := heap() - base
-	for i := 1; i <= 10; i++ {
-		compiledRegex(pattern(i))
-		regexCache.Lock()
-		n := len(regexCache.entries)
-		regexCache.Unlock()
-		if n != 1 {
-			t.Fatalf("after %d patterns the cache holds %d entries, not 1", i+1, n)
-		}
-	}
-	ten := heap() - base
-	if one < 1<<20 {
-		t.Fatalf("one entry left %d bytes; the pattern no longer makes a large onepass program", one)
-	}
-	if ten > one*3/2 {
-		t.Errorf("ten patterns left %d bytes, one left %d: the cache holds more than one entry", ten, one)
-	}
-	regexCache.Lock()
-	_, last := regexCache.entries[pattern(10)]
-	n := len(regexCache.entries)
-	regexCache.Unlock()
-	if !last || n != 1 {
-		t.Errorf("the cache holds %d entries, the last call's %v; want only the last", n, last)
 	}
 }
 
@@ -629,7 +594,7 @@ func checkScanAgainstGo(t *testing.T, picks []byte) bool {
 	t.Helper()
 	p := buildScanPattern(picks)
 	body := strings.Join(p.parts, "")
-	if err := scanRegex(body, false); err != nil && !strings.Contains(err.Error(), "fold case") {
+	if _, err := scanRegex(body, false); err != nil && !strings.Contains(err.Error(), "fold case") {
 		return false
 	}
 	least, ok := scanFloorOfGo(p)
@@ -768,8 +733,8 @@ func TestRenovateMatchReadsAnArgumentAtTheBound(t *testing.T) {
 // compiling: 40 calls of distinct globs in one step cost about 779000 and
 // run, and 60 cost about 1168000 and are stopped, which they were not when
 // compiling was free. The two bound renovateCompileWeight to roughly 16 to
-// 23. 60 calls of one glob compile it once (globCache) and run.
-// TestRenovateCallCost holds a regex to no compile weight.
+// 23. 60 calls of one glob compile it once (patternCache) and run.
+// TestRenovateCallCost holds a regex to its own compile cost.
 func TestRenovateMatchChargesCompilingAGlob(t *testing.T) {
 	inOneStep := func(n int, distinct bool) string {
 		calls := make([]string, n)

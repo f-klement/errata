@@ -167,7 +167,7 @@ var markdownParser = func() parser.Parser {
 // markdownDoc is a Markdown file parsed. Every node's offsets index src.
 type markdownDoc struct {
 	// src is the file with every CRLF read as LF, so its lines are the
-	// file's, and with its front matter, if any, written over with spaces.
+	// file's, with its front matter, if any, written over with spaces.
 	src  []byte
 	root ast.Node
 	// front is the front matter's text between its fences, from offset
@@ -193,6 +193,7 @@ func parseMarkdown(file string, data []byte, limit int64, timeLimit time.Duratio
 		data = bytes.ReplaceAll(data, crlf, []byte("\n"))
 	}
 	data = core.DropBOM(data) // three bytes on the first line: the lines stay the file's
+	lines := int64(bytes.Count(data, newline))
 	doc = &markdownDoc{src: data, maxPieces: int(limit / markdownBytesPerPiece)}
 	if at, end, ok := frontMatter(data); ok {
 		doc.front, doc.frontAt = bytes.Clone(data[at:end]), at
@@ -223,7 +224,7 @@ func parseMarkdown(file string, data []byte, limit int64, timeLimit time.Duratio
 	// the line's last inline node, which goldmark starts at a < or another
 	// character for an inline parser that then makes no node. The document is
 	// one node more.
-	g.add(2*int64(bytes.Count(data, newline)) + 3)
+	g.add(2*lines + 3)
 	pc := parser.NewContext()
 	pc.Set(guardKey, g)
 	doc.root = markdownParser.Parse(data, parser.WithContext(pc))

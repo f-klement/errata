@@ -1,11 +1,13 @@
 package rule
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"regexp/syntax"
 	"strings"
-	"sync"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -23,7 +25,7 @@ import (
 //   - The compile, by the program the parsed tree would make (programSize),
 //     and again by the program it made: at most maxRegexInsts.
 //   - The match, by the cost: the string's bytes times the program's
-//     instructions over renovateRegexDivisor (renovateCallCost).
+//     instructions over renovateRegexDivisor (renovateWork.cost).
 //
 // The entries of k3s's renovate.json are at most 43 bytes between the
 // slashes and errata's at most 20; (^|/)values\.ya?ml$ is 20 instructions.
@@ -42,87 +44,270 @@ const (
 // and a call at maxRegexInsts against 1024 bytes takes about 120 ms.
 const renovateRegexDivisor = 160
 
+// regexCompileCost is what a regex's compile costs, once its text has
+// passed scanRegex: renovateCompileWeight for each byte of the entry, as a
+// glob pays; regexNamedWeight for each Unicode class it names, and when it
+// may fold case, the code points its ranges cover over regexFoldDivisor,
+// for what Go's parser does that the program does not show; one for each
+// instruction of its program and each rune the program holds; and for a
+// program Go tries to make onepass, its instructions times its instructions
+// and runes over regexOnepassDivisor. Go's onepass pass merges the rune
+// sets of the program at each instruction, so its time grows with the two:
+// an anchored class and its complement repeated 330 times, 20 bytes, took
+// up to 49 ms a compile on a loaded node. A program of about 1000
+// instructions with no runes takes about 6 ms on its own, and an unanchored
+// one of 2000 about 3 ms, which the instruction term covers. Fitted over
+// 109 shapes, by the mean of compiles back to back on two nodes of the CI
+// runner, the cost limit pays for at most 2.30 s of compiling on the slower
+// node, for ^(?:\pL?){400}$, and 0.86 s on the other, for ^(?:\pL?){497}$;
+// on a node loaded three to four times over, ^(?:\pL*){495}$ came to about
+// 4.2 s. An ordinary entry such as /^apps/[^/]+/helmrelease\.yaml$/, 32
+// bytes, names no class, folds no range, and costs 635. A regex refused
+// after its parse costs its text's share alone, since no program was made.
+func regexCompileCost(entry string, text regexText, prog *syntax.Prog) uint64 {
+	cost := uint64(len(entry)) * renovateCompileWeight
+	cost += uint64(text.named) * regexNamedWeight //nolint:gosec // a count, never below 0
+	if text.folds {
+		cost += uint64(text.folded) / regexFoldDivisor //nolint:gosec // a count, never below 0
+	}
+	if prog == nil {
+		return cost
+	}
+	insts, runes := uint64(len(prog.Inst)), uint64(programRunes(prog)) //nolint:gosec // counts, never below 0
+	cost += insts + runes
+	if onepassTried(prog) {
+		cost += insts * (insts + runes) / regexOnepassDivisor
+	}
+	return cost
+}
+
+// regexFoldDivisor scales the code points a regex's ranges cover, which
+// Go's parser folds one at a time under case folding, into its compile
+// cost (regexCompileCost).
+const regexFoldDivisor = 4
+
+// regexNamedWeight is the compile cost of each Unicode class a regex
+// names, which Go's parser merges into the class around it, and folds
+// under case folding: 16 of \pL in a class took up to 13.5 ms to parse
+// without folding as well as with it (regexCompileCost).
+const regexNamedWeight = 256
+
+// regexOnepassDivisor scales a program's instructions times its
+// instructions and runes into the cost of the onepass pass Go makes of it
+// (regexCompileCost).
+const regexOnepassDivisor = 256
+
 // errRegexBound is a regex refused by one of the bounds above, before the
 // step it bounds runs.
 type errRegexBound struct{ msg string }
 
 func (e errRegexBound) Error() string { return e.msg }
 
-// regexEntry is one regex entry compiled: its program, for the cost, and
-// the matcher, or why it is refused.
-type regexEntry struct {
-	prog *syntax.Prog
-	re   *regexp.Regexp
-	err  error
+// regexPattern is a regex entry compiled: its matcher and the
+// instructions of its program, for the cost, or why it is refused.
+type regexPattern struct {
+	entry string
+	re    *regexp.Regexp
+	insts int
+	units int
+	cost  uint64
+	err   error
 }
 
-// regexCache holds the entry of the call that just returned, which the
-// cost tracker reads, so a call parses its regex once in errata, unless
-// another evaluation runs at the same time and takes the entry first, and
-// a call of the same pattern as the one before parses nothing. It holds no
-// more: regexp.Compile gives an anchored regex under 1000 instructions a
-// onepass program, which copies each instruction's runes, and
-// (?i)^(?:[^\pL\pN]){990}$, 26 bytes, held 9.3 MiB, so 256 entries held
-// 2.39 GiB.
-var regexCache = struct {
-	sync.Mutex
-	entries map[string]regexEntry
-}{entries: map[string]regexEntry{}}
-
-const regexCacheSize = 1
-
-// compiledRegex is the entry for pattern, a regex between slashes, from the
-// cache or compiled now, and then the one the cache holds.
-func compiledRegex(pattern string) regexEntry {
-	regexCache.Lock()
-	e, ok := regexCache.entries[pattern]
-	regexCache.Unlock()
-	if ok {
-		return e
+// match is s matched against the regex, with the instructions of the
+// program that ran. It looks at ctx before the regex runs: Go's regexp
+// takes no context, so a regex that has started runs to its end, at most
+// about 120 ms (maxRegexInsts). A regex RE2 does not compile, and one past
+// a bound, is a refusal.
+func (p *regexPattern) match(ctx context.Context, s string) (bool, matchWork, error) {
+	if p.err != nil {
+		return false, matchWork{}, &refusal{form: "regex", entry: p.entry, s: s, reason: p.err}
 	}
-	e = compileRegex(pattern)
-	regexCache.Lock()
-	if len(regexCache.entries) >= regexCacheSize {
-		clear(regexCache.entries)
+	if err := ctx.Err(); err != nil {
+		return false, matchWork{}, fmt.Errorf("the evaluation was stopped before the regex %q ran: %w", p.entry, err)
 	}
-	regexCache.entries[pattern] = e
-	regexCache.Unlock()
-	return e
+	return p.re.MatchString(s) != strings.HasPrefix(p.entry, "!"), matchWork{insts: p.insts}, nil
+}
+
+// size is the regex's units: three for each instruction of its program,
+// one for each rune its program holds, and one for each rune of the
+// onepass copy regexp.Compile may make of it (onepassRunes). An
+// instruction holds 40 to 50 bytes, and up to about 185 for a capture in
+// an onepass program; a rune holds 4, and about 6 with the onepass table
+// that goes with it. The program shares the runes of a repeated class
+// among its instructions, so each rune slice counts once there. A refused
+// regex holds only its error.
+func (p *regexPattern) size() int { return p.units }
+
+// compileCost is regexCompileCost for a regex whose text scanRegex read,
+// since its parse ran, and 0 for one it refused: the scan is one pass over
+// at most MaxArgument bytes, which the call's own bytes pay for.
+func (p *regexPattern) compileCost() uint64 { return p.cost }
+
+// regexUnits is the units of prog, as regexPattern.size counts them.
+func regexUnits(prog *syntax.Prog) int {
+	return 3*len(prog.Inst) + programRunes(prog) + onepassRunes(prog)
+}
+
+// programRunes is the runes prog holds, each rune slice once: a program
+// shares the runes of a repeated class among its instructions.
+func programRunes(prog *syntax.Prog) int {
+	runes := 0
+	counted := map[*rune]bool{}
+	for _, inst := range prog.Inst {
+		if len(inst.Rune) == 0 || counted[&inst.Rune[0]] {
+			continue
+		}
+		counted[&inst.Rune[0]] = true
+		runes += len(inst.Rune)
+	}
+	return runes
+}
+
+// onepassTried is whether Go's makeOnePass tries a onepass copy of prog:
+// a program under 1000 instructions that starts at an EmptyWidth
+// instruction holding EmptyBeginText, such as an anchored regex.
+func onepassTried(prog *syntax.Prog) bool {
+	start := prog.Inst[prog.Start]
+	begins := syntax.EmptyOp(start.Arg)&syntax.EmptyBeginText != 0 //nolint:gosec // an EmptyWidth instruction's Arg holds its EmptyOp, as regexp/syntax stores it
+	return len(prog.Inst) < 1000 && start.Op == syntax.InstEmptyWidth && begins
+}
+
+// onepassRunes is at most the runes of the onepass copy regexp.Compile
+// makes of prog, or 0 where it makes none. Go's makeOnePass tries one for
+// a program under 1000 instructions that starts at an EmptyWidth
+// instruction holding EmptyBeginText, such as an anchored regex. It gives
+// each instruction a rune set: a consuming instruction its own runes
+// (consumedRunes), a capture, an empty width or a nop instruction a copy
+// of the set of the instruction after it, and an alternation the sets of
+// both its legs merged. So an instruction's set holds at most the sets of
+// the consuming instructions it reaches without consuming, each once: a
+// merge that meets a rune in both legs fails, and Go then drops the copy.
+// That sum is counted for each instruction. 109 empty captures before a
+// class of four Unicode categories copy the class 110 times, where the
+// program holds it once.
+func onepassRunes(prog *syntax.Prog) int {
+	if !onepassTried(prog) {
+		return 0
+	}
+	// seen[pc] is the walk that last reached pc, so each walk counts a
+	// consuming instruction once.
+	seen := make([]int, len(prog.Inst))
+	total := 0
+	for from := range prog.Inst {
+		walk := from + 1
+		stack := []uint32{uint32(from)}
+		for len(stack) > 0 {
+			pc := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+			if seen[pc] == walk {
+				continue
+			}
+			seen[pc] = walk
+			inst := &prog.Inst[pc]
+			switch inst.Op {
+			case syntax.InstAlt, syntax.InstAltMatch:
+				stack = append(stack, inst.Out, inst.Arg)
+			case syntax.InstCapture, syntax.InstEmptyWidth, syntax.InstNop:
+				stack = append(stack, inst.Out)
+			default:
+				total += consumedRunes(inst)
+			}
+		}
+	}
+	return total
+}
+
+// consumedRunes is the length of the rune set makeOnePass gives a
+// consuming instruction: a class its ranges, a folded single rune a pair
+// for each rune of its fold orbit, an unfolded one a pair, and any rune,
+// or any rune but a newline, the ranges that stand for it. Match and Fail
+// have none.
+func consumedRunes(inst *syntax.Inst) int {
+	folded := syntax.Flags(inst.Arg)&syntax.FoldCase != 0 //nolint:gosec // a rune instruction's Arg holds its Flags, as regexp/syntax stores them
+	switch inst.Op {
+	case syntax.InstRune, syntax.InstRune1:
+		// syntax.Compile makes an unfolded single rune an InstRune1.
+		switch {
+		case len(inst.Rune) != 1:
+			return len(inst.Rune)
+		case !folded:
+			return 2
+		}
+		n := 2
+		for r := unicode.SimpleFold(inst.Rune[0]); r != inst.Rune[0]; r = unicode.SimpleFold(r) {
+			n += 2
+		}
+		return n
+	case syntax.InstRuneAny:
+		return 2
+	case syntax.InstRuneAnyNotNL:
+		return 4
+	case syntax.InstAlt, syntax.InstAltMatch, syntax.InstCapture, syntax.InstEmptyWidth, syntax.InstNop,
+		syntax.InstMatch, syntax.InstFail:
+	}
+	return 0
 }
 
 // compileRegex compiles a regex entry as Renovate reads it, with each step
 // bounded before it runs. regexp.Compile takes no parsed tree, so a regex
 // that passes every bound is parsed once more inside it, within the same
 // bound on its text.
-func compileRegex(pattern string) regexEntry {
+func compileRegex(entry string) *regexPattern {
+	re, prog, text, err := compileRegexBounded(entry)
+	var scanned errScanned
+	switch {
+	case errors.As(err, &scanned):
+		return &regexPattern{entry: entry, err: scanned.err}
+	case err != nil:
+		return &regexPattern{entry: entry, err: err, cost: regexCompileCost(entry, text, nil)}
+	}
+	return &regexPattern{entry: entry, re: re, insts: len(prog.Inst), units: regexUnits(prog), cost: regexCompileCost(entry, text, prog)}
+}
+
+// errScanned is a regex scanRegex refused, before any parse ran.
+type errScanned struct{ err error }
+
+func (e errScanned) Error() string { return e.err.Error() }
+
+// compileRegexBounded is compileRegex's matcher and program, or why it is
+// refused: an errRegexBound, or RE2's own error, which Renovate would meet
+// too and then read the entry as a glob.
+func compileRegexBounded(entry string) (*regexp.Regexp, *syntax.Prog, regexText, error) {
 	// Renovate strips the start, then the end of what is left, so "/" is
 	// the empty regex and "/i" the regex i with the i flag.
-	body := regexEnd.ReplaceAllString(regexStart.ReplaceAllString(pattern, ""), "")
-	if err := scanRegex(body, strings.HasSuffix(pattern, "i")); err != nil {
-		return regexEntry{err: err}
+	body := regexEnd.ReplaceAllString(regexStart.ReplaceAllString(entry, ""), "")
+	text, err := scanRegex(body, strings.HasSuffix(entry, "i"))
+	if err != nil {
+		return nil, nil, text, errScanned{err}
 	}
-	if strings.HasSuffix(pattern, "i") {
+	if strings.HasSuffix(entry, "i") {
 		body = "(?i)" + body
 	}
 	parsed, err := syntax.Parse(body, syntax.Perl)
 	if err != nil {
-		return regexEntry{err: err}
+		return nil, nil, text, notCompiled(err)
 	}
 	if n := programSize(parsed); n > maxRegexInsts {
-		return regexEntry{err: errRegexBound{fmt.Sprintf("its RE2 program would have about %d instructions; errata matches at most %d", n, maxRegexInsts)}}
+		return nil, nil, text, errRegexBound{fmt.Sprintf("its RE2 program would have about %d instructions; errata matches at most %d", n, maxRegexInsts)}
 	}
 	prog, err := syntax.Compile(parsed.Simplify())
 	if err != nil {
-		return regexEntry{err: err}
+		return nil, nil, text, notCompiled(err)
 	}
 	if len(prog.Inst) > maxRegexInsts {
-		return regexEntry{err: errRegexBound{fmt.Sprintf("its RE2 program has %d instructions; errata matches at most %d", len(prog.Inst), maxRegexInsts)}}
+		return nil, nil, text, errRegexBound{fmt.Sprintf("its RE2 program has %d instructions; errata matches at most %d", len(prog.Inst), maxRegexInsts)}
 	}
 	re, err := regexp.Compile(body)
 	if err != nil {
-		return regexEntry{err: err}
+		return nil, nil, text, notCompiled(err)
 	}
-	return regexEntry{prog: prog, re: re}
+	return re, prog, text, nil
+}
+
+// notCompiled is RE2's error on a regex, as a refusal gives its reason.
+func notCompiled(err error) error {
+	return fmt.Errorf("RE2 does not compile the regex, which Renovate would then read as a glob: %w", err)
 }
 
 // The code points Go's parser folds one at a time in a class range under
@@ -141,22 +326,33 @@ var foldFlag = regexp.MustCompile(`\(\?[A-Za-z-]*i`)
 // text alone: its length, the Unicode classes it names, and under case
 // folding, the code points its ranges cover between minFold and maxFold,
 // where the parser folds each one.
-func scanRegex(body string, iflag bool) error {
+func scanRegex(body string, iflag bool) (regexText, error) {
 	if len(body) > maxRegexText {
-		return errRegexBound{fmt.Sprintf("its text is %d bytes; errata reads a regex of at most %d", len(body), maxRegexText)}
+		return regexText{}, errRegexBound{fmt.Sprintf("its text is %d bytes; errata reads a regex of at most %d", len(body), maxRegexText)}
 	}
 	named, folded, refused := regexScan(body)
+	text := regexText{named: named, folded: folded, folds: iflag || foldFlag.MatchString(body)}
 	switch {
 	case refused == `\Q`:
-		return errRegexBound{`it quotes text with \Q, which errata does not read in a regex`}
+		return text, errRegexBound{`it quotes text with \Q, which errata does not read in a regex`}
 	case refused != "":
-		return errRegexBound{fmt.Sprintf("its escape %q is malformed", refused)}
+		return text, errRegexBound{fmt.Sprintf("its escape %q is malformed", refused)}
 	case named > maxRegexNamed:
-		return errRegexBound{fmt.Sprintf("it names %d Unicode classes; errata reads at most %d", named, maxRegexNamed)}
-	case folded > maxRegexFolded && (iflag || foldFlag.MatchString(body)):
-		return errRegexBound{fmt.Sprintf("its ranges fold case over %d code points; errata folds at most %d", folded, maxRegexFolded)}
+		return text, errRegexBound{fmt.Sprintf("it names %d Unicode classes; errata reads at most %d", named, maxRegexNamed)}
+	case folded > maxRegexFolded && text.folds:
+		return text, errRegexBound{fmt.Sprintf("its ranges fold case over %d code points; errata folds at most %d", folded, maxRegexFolded)}
 	}
-	return nil
+	return text, nil
+}
+
+// regexText is what scanRegex read of a regex's text: the Unicode classes
+// it names, the code points its ranges cover between minFold and maxFold,
+// and whether it may fold case, which makes Go's parser fold each of those
+// code points and each class one at a time.
+type regexText struct {
+	named  int
+	folded int64
+	folds  bool
 }
 
 // regexScan reads body in one pass, a token at a time, and counts the

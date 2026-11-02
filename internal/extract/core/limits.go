@@ -3,12 +3,12 @@ package core
 import (
 	"errors"
 	"fmt"
-	"strconv"
 	"time"
 	"unicode/utf16"
 	"unicode/utf8"
 
 	"github.com/f-klement/errata/internal/check"
+	"github.com/f-klement/errata/internal/extract/core/clip"
 )
 
 // The limits that keep a hostile or merely large file from stalling or
@@ -305,32 +305,18 @@ func isSpace(b byte) bool {
 // maxQuote is the most bytes of file text one message quotes. A key, an
 // anchor or a number can be as long as the file, and a message goes into a
 // CI log and a JUnit report.
-const maxQuote = 64
+const maxQuote = clip.MaxQuote
 
 // Clip is file text for a message: s, or its first maxQuote bytes and ...
-// when it is longer.
-func Clip(s string) string { return cut(s, maxQuote) }
+// when it is longer (clip.Text).
+func Clip(s string) string { return clip.Text(s) }
 
-// cut is s, or its first n bytes and ... when it is longer. The cut moves
-// back to the start of a rune, at most three bytes, so it splits none.
-func cut(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	for back := 0; back < utf8.UTFMax-1 && !utf8.RuneStart(s[n]); back++ {
-		n--
-	}
-	return s[:n] + "..."
-}
+// cut is clip.Cut.
+func cut(s string, n int) string { return clip.Cut(s, n) }
 
 // Quote is clip in Go's quotes, as %q writes them, with the ... after the
-// closing quote.
-func Quote(s string) string {
-	if c := Clip(s); c != s {
-		return strconv.Quote(c[:len(c)-3]) + "..."
-	}
-	return strconv.Quote(s)
-}
+// closing quote (clip.Quote).
+func Quote(s string) string { return clip.Quote(s) }
 
 // ClipError cuts the message of a library's error, which may quote file
 // text, to four times maxQuote bytes, room for any message that quotes none.

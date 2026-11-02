@@ -108,6 +108,8 @@ internal/extract                   85        85      5
 # covered when their clause runs, and 1 is package level. It had the floor 82 at
 # 82.57% (111 of 637) until env's reader added code its tests reach.
 internal/extract/core              85        85      5      mutant 26.3 measuring 182 measured 3010608824
+internal/extract/core/clip         85        85      5      from internal/extract/core
+internal/extract/core/gitindex     85        85      5      from internal/extract/core
 # env: 100%, efficacy 100%, on 2026-10-25.
 internal/extract/env               85        85      5
 # envfile: 100% on a dry run.

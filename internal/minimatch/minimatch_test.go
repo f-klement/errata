@@ -21,8 +21,23 @@ import (
 // nested extglobs, the fast tests' patterns, final sigma, and a long first
 // section before a short one, which minimatch's section bound refuses. Each
 // holds the answer testdata/oracle.mjs gave from minimatch 10.2.6 under
-// Node. Where minimatch throws, the port returns a SyntaxError.
-func TestMatchAgreesWithMinimatch(t *testing.T) {
+// Node. Where minimatch throws, the port returns a SyntaxError. make test
+// checks every raceSample-th case, and TestMatchAgreesWithMinimatchSlow the
+// rest.
+func TestMatchAgreesWithMinimatch(t *testing.T) { checkMatchCases(t, true) }
+
+// The cases of cases.json that TestMatchAgreesWithMinimatch leaves to make
+// slow: under make test's flags the whole table took 31 s on the slowest
+// node.
+func TestMatchAgreesWithMinimatchSlow(t *testing.T) {
+	slowOnly(t)
+	checkMatchCases(t, false)
+}
+
+// checkMatchCases checks the cases of cases.json that sampled picks, or the
+// others.
+func checkMatchCases(t *testing.T, picked bool) {
+	t.Helper()
 	data, err := os.ReadFile("testdata/cases.json")
 	if err != nil {
 		t.Fatal(err)
@@ -35,7 +50,12 @@ func TestMatchAgreesWithMinimatch(t *testing.T) {
 		t.Fatalf("%d cases; the file holds over 14000", len(cases))
 	}
 	counts := map[any]int{}
-	for _, c := range cases {
+	checked := 0
+	for i, c := range cases {
+		if sampled(i) != picked {
+			continue
+		}
+		checked++
 		file, glob := c[0].(string), c[1].(string)
 		got, err := Match(file, glob)
 		var thrown *SyntaxError
@@ -52,10 +72,15 @@ func TestMatchAgreesWithMinimatch(t *testing.T) {
 			t.Errorf("Match(%q, %q) = %v; minimatch says %v", file, glob, answer, c[2])
 		}
 	}
-	// All three answers are common, so a port that always gives one fails.
+	if checked == 0 {
+		t.Fatal("no case of cases.json was checked: the sample and its twin must split the table")
+	}
+	// All three answers are common, so a port that always gives one fails:
+	// each answers at least 400 cases of the table, in proportion to the
+	// cases checked.
 	for _, a := range []any{true, false, "throw"} {
-		if counts[a] < 400 {
-			t.Errorf("%d cases answer %v", counts[a], a)
+		if want := 400 * checked / len(cases); counts[a] < want {
+			t.Errorf("%d of %d cases answer %v, want at least %d", counts[a], checked, a, want)
 		}
 	}
 }
@@ -123,15 +148,19 @@ func TestTheStepBudgetIsExact(t *testing.T) {
 		t.Fatal(err)
 	}
 	in := toUnits("abababc")
-	full := &budget{left: MaxSteps}
+	full := backgroundMeter()
 	if ok, err := r.test(in, full); !ok || err != nil {
 		t.Fatalf("with the whole budget: %v, %v", ok, err)
 	}
-	spent := MaxSteps - full.left
-	if ok, err := r.test(in, &budget{left: spent}); !ok || err != nil {
+	spent := MaxSteps - full.steps
+	exact := backgroundMeter()
+	exact.steps = spent
+	if ok, err := r.test(in, exact); !ok || err != nil {
 		t.Errorf("with the %d steps it takes: %v, %v", spent, ok, err)
 	}
-	if ok, err := r.test(in, &budget{left: spent - 1}); ok || !errors.Is(err, errBudget) {
+	short := backgroundMeter()
+	short.steps = spent - 1
+	if ok, err := r.test(in, short); ok || !errors.Is(err, errBudget) {
 		t.Errorf("with one step fewer: %v, %v; want %v", ok, err, errBudget)
 	}
 }
@@ -141,7 +170,7 @@ func TestTheStepBudgetIsExact(t *testing.T) {
 // maxNodes nodes before it is refused.
 func TestNegationsStopCopyingAtTheBound(t *testing.T) {
 	n := fromGlob(toUnits("x" + strings.Repeat("!(a)", 16)))
-	if _, err := n.toMMPattern(&sourceBudget{left: maxSource}); !errors.Is(err, errNodes) {
+	if _, err := n.toMMPattern(backgroundMeter()); !errors.Is(err, errNodes) {
 		t.Fatalf("error %v, want %v", err, errNodes)
 	}
 	if *n.count > 2*maxNodes {
@@ -154,14 +183,15 @@ func TestNegationsStopCopyingAtTheBound(t *testing.T) {
 // steps. The bounds row above shows the same at 40, where a matcher that
 // does not charge runs for about a day; this one shows it at 12.
 func TestEveryAlternativeCostsAStep(t *testing.T) {
-	m, err := compile(toUnits("x" + strings.Repeat("@(|)", 12)))
+	m, err := compile(backgroundMeter(), toUnits("x"+strings.Repeat("@(|)", 12)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ok, err := m.match(toUnits("xy")); ok || err != nil {
+	w := backgroundMeter()
+	if ok, err := m.matchWith(w, toUnits("xy")); ok || err != nil {
 		t.Fatalf("match: %v, %v", ok, err)
 	}
-	if spent := MaxSteps - m.steps.left; spent < 1<<12 {
+	if spent := MaxSteps - w.steps; spent < 1<<12 {
 		t.Errorf("2^12 paths spent %d steps", spent)
 	}
 }
@@ -220,7 +250,7 @@ func TestMatchRefusesInvalidUTF8(t *testing.T) {
 func TestNestingCompilesInPolynomialTime(t *testing.T) {
 	for _, depth := range []int{20, 250} {
 		n := fromGlob(toUnits(strings.Repeat("a@(", depth) + "a" + strings.Repeat(")", depth)))
-		if _, err := n.toMMPattern(&sourceBudget{left: maxSource}); err != nil {
+		if _, err := n.toMMPattern(backgroundMeter()); err != nil {
 			t.Fatal(err)
 		}
 		// Every level asks at least once, so fewer calls than levels is a
@@ -234,13 +264,42 @@ func TestNestingCompilesInPolynomialTime(t *testing.T) {
 	}
 }
 
+// The startNoTraversal prefix each alternative of @([ab]|[ab]|...)x needs
+// counts toward the source bound while the source is built: 23 units each,
+// where the alternative itself writes 5. 1170 alternatives make 32766
+// units of regex, 5850 of them written and the rest prefixes, and compile;
+// 1171 pass maxSource on the prefixes alone and are refused. 4000
+// alternatives write about 20000 units, inside the build's limit of two
+// for each character of the segment, and with their prefixes 112000: the
+// build refuses once the prefixes pass that limit, having written well
+// under half of them, where a build that left the prefixes out would write
+// them all before toMMPattern refused.
+func TestNoTraversalPrefixesCountTowardTheSourceBound(t *testing.T) {
+	glob := func(n int) units { return toUnits("@(" + strings.Repeat("[ab]|", n-1) + "[ab])x") }
+	w := backgroundMeter()
+	if _, err := compile(w, glob(1170)); err != nil || maxSource-w.source != 32766 {
+		t.Errorf("1170 alternatives: error %v after %d units of source, want 32766 and none", err, maxSource-w.source)
+	}
+	if _, err := compile(backgroundMeter(), glob(1171)); !errors.Is(err, errSource) {
+		t.Errorf("1171 alternatives: error %v, want %v", err, errSource)
+	}
+	w = backgroundMeter()
+	long := glob(4000)
+	if _, err := compile(w, long); !errors.Is(err, errSource) || w.written > len(long)/2 {
+		t.Errorf("4000 alternatives: error %v after %d units written, want %v before %d", err, w.written, errSource, len(long)/2)
+	}
+}
+
 // Compiling stops as soon as a bound is passed: the node bound refuses
 // before any source is written, and the source bound while it is written.
 // Each glob is 1 KB or so. ast.js builds each node's source and copies it
 // into its parent's, so a negation whose tail fillNegs copies into 4096
 // nodes, or 248 extglobs nested under braces and negations, built
-// megabytes before a bound refused them.
+// megabytes before a bound refused them. Each node of a build reads its
+// ancestors, so under make test's flags the three globs took 10 s on the
+// slowest node; the slow target runs the test, plain.
 func TestCompilingStopsAtTheBound(t *testing.T) {
+	slowOnly(t)
 	tail := strings.Repeat("b*", 500)
 	for _, c := range []struct {
 		name, glob string
@@ -256,13 +315,17 @@ func TestCompilingStopsAtTheBound(t *testing.T) {
 		{"nesting under braces", strings.Repeat("{a,b}", 3) + "x" + strings.Repeat("!(a)", 3) +
 			strings.Repeat("a@(", 248) + "a" + strings.Repeat(")", 248), errSource, maxSource + 64},
 	} {
-		m, err := compile(toUnits(c.glob))
+		w := backgroundMeter()
+		_, err := compile(w, toUnits(c.glob))
 		if !errors.Is(err, c.want) {
 			t.Errorf("%s: error %v, want %v", c.name, err, c.want)
 			continue
 		}
-		if m.source.written > c.most {
-			t.Errorf("%s: wrote %d units of source before the refusal, more than %d", c.name, m.source.written, c.most)
+		if errors.Is(c.want, errSource) && (!errors.Is(w.err, errSource) || w.look()) {
+			t.Errorf("%s: the meter's error %v, want %v and no later look", c.name, w.err, errSource)
+		}
+		if w.written > c.most {
+			t.Errorf("%s: wrote %d units of source before the refusal, more than %d", c.name, w.written, c.most)
 		}
 	}
 }

@@ -11,7 +11,7 @@ itself:
 - When the rule loads, after the notes that keep an error `&&` or `||` absorbed, errata rewrites every call
   `renovate_match(s, p)` as `@errata_renovate_match(s, p, @errata_log)`. A name that starts with
   `@` cannot be written in an expression. `@errata_log` is the hidden variable the notes already
-  read, one per evaluation, and it now carries the evaluation's context as well, and its glob
+  read, one per evaluation, and it now carries the evaluation's context as well, and its pattern
   cache (ADR 0014). The hidden function's first two parameters are dyn, so a value typed dyn that
   is not a string reaches its binding, which refuses it with the message plain CEL gives,
   `no such overload: renovate_match(int, string)`, and not one naming the hidden function.
@@ -107,7 +107,7 @@ call, since its binding never runs.
 
 ## Consequences
 
-The hidden log is the one value each evaluation hands its helpers: the context, and the glob
+The hidden log is the one value each evaluation hands its helpers: the context, and the pattern
 cache of ADR 0014. A helper that has to stop at the timeout takes the same rewrite.
 `internal/minimatch` gains `CompileContext` and `(*Glob).MatchSteps`, which take the context;
 `Match` is the two under a context that is never done. ADR 0014's statement of the overrun points

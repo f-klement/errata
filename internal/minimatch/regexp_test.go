@@ -43,7 +43,7 @@ func TestRegexAgreesWithJavaScript(t *testing.T) {
 			t.Errorf("/%s/%s: %v; JavaScript says %v", c[0], flags, err, want)
 			continue
 		default:
-			answer, err = r.test(in, &budget{left: MaxSteps})
+			answer, err = r.test(in, backgroundMeter())
 			if err != nil {
 				t.Errorf("/%s/%s against %s: %v; JavaScript says %v", c[0], flags, c[2], err, want)
 				continue

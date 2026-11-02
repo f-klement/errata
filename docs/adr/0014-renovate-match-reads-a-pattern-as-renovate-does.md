@@ -82,50 +82,55 @@ assert: size(patterns) > 0 && by_file(apps).all(f, patterns.exists(p, renovate_m
   points against globs that fold case or name a POSIX class, checked by `oracle.mjs` against
   minimatch itself. Before they were cut to those samples, 150000 random globs and 3.7 million
   cases over every code point to U+2FFFF agreed with minimatch, apart from the globs past a bound.
-- **The cost.** Each argument is at most 1024 bytes, as for every helper. A call costs 1, its bytes
+- **The cost.** Each argument is at most 1024 bytes, as for every helper, and a call with a longer
+  one compiles nothing and costs 1, its bytes and their product over 64. A call costs 1, its bytes
   and the product of its two lengths over 64, or for a glob the steps its match took over 8 where
-  that is more. A glob costs 18 more for each of its bytes, for compiling it, and a regex that ran costs the string's bytes times the instructions of its RE2
-  program over 160, for matching it. The slowest glob match measured on a 4 core workstation, 1000
-  bytes against three classes of 165 code points, ran 34 ms before the step bound stopped it, so the
-  cost limit stops 63 calls of that kind, about 2.1 s, inside the five second timeout. Measured
-  through the CI runner on a 4 core node, the 1022 byte glob above compiles in 81 ms and costs about
-  19450 against a string of 2 bytes, so the cost limit stops the 52nd call of such globs, each a
-  different one (an evaluation compiles a glob once, below), after 4.1 s; a
-  short glob compiles slowest for its length, 168 bytes of six brace sets, two negations and 32
-  nested extglobs in 15.9 ms, and the cost limit allows about 312 of those, 5 s of compiling. RE2
-  matches in time proportional to the string times the program, and a counted repetition makes the
-  program up to a thousand times the regex's text: `(?:\pL?){999}` written 70 times, 911 bytes, is
-  139863 instructions, and one call of it against 1024 bytes ran 3.2 s. A regex whose program passes
-  4096 instructions is therefore unknown, naming the count, before it runs. The count is first
-  estimated from the parsed regex by the size rules Go's own parser applies, and checked exactly
-  after the compile: a regex of 1022 bytes such as `(?:a*a*...){1000}` compiles to a million
-  instructions, which took up to 390 ms a call, and 135 such calls refused only after compiling ran
-  21 s past the timeout. Refused from the estimate, the same 135 end in 0.1 s on the 4 core node.
-  The parse that gives the tree is not linear either: under case folding Go's parser folds each code
-  point of a class range one at a time, and it merges the ranges of every `\pL`, so `(?i)[` and
-  `a-\x{10FFFF}` 84 times, 1017 bytes, took 0.79 s to parse, and `[^\pL]` with 339 of them 57 ms. So
-  the parse is bounded by the text before it runs: at most 256 bytes between the slashes, 16 Unicode
-  classes, and under the `i` flag or `(?i)`, ranges over 4096 code points that Go folds one at a
-  time. k3s's renovate.json holds regexes of at most 43 bytes between the slashes, errata's of at
-  most 20, and neither names a Unicode class, quotes with `\Q` or writes `\x{`. The scan reads only
-  what it reads as Go does: it refuses `\Q`, after which Go reads text as literals, and a `\x{` or
-  `\p{` that Go would refuse (a `\p{` name may hold letters, digits, a leading `^`, and `_`, `-`
-  and spaces, which Go ignores), so no token can swallow the text after it. It counts every `-`
-  between two characters as a range, `[--H]` included, which Go reads as the range `-` to `H`. Over
-  generated patterns of classes in context, with escapes, quotes, flags and several classes, a test
-  and a fuzz target find it never counting fewer code points than Go's own parse shows Go folds for
-  ranges; a single character, or a POSIX or Perl class such as `\w`, Go folds in at most 63 code
-  points, which the bound on the text holds. Within those bounds the slowest preparation measured,
-  both parses (errata's, and the one inside `regexp.Compile`, which takes no parsed tree) and the
-  compile, is 5.7 ms on the 4 core node, for `(?i)` and 16 `\pL` in a class, and 7.6 ms on the 2
-  core node, for `^(?:\pL?){495}$`, so a regex call measured under 10 ms to prepare and about 120 ms
-  to match. The entry of the last call is kept for the cost, and no other: an anchored regex of
-  under 1000 instructions gets a onepass program, which copies each instruction's runes, and
-  `(?i)^(?:[^\pL\pN]){990}$` held 9.3 MiB. The slowest rate measured for a regex that runs was 28.7
-  ns for each byte times instruction, for `(?:\pL*){680}b`, so the cost limit pays for about 4.6 s
-  of matching. On the 4 core node one call at the bound, `\pL?` repeated to 4083 instructions,
-  matched 1024 bytes in 96 ms, and the cost limit stopped 150 of them in one step after 3.7 s. A
-  Renovate entry such as `(^|/)values\.ya?ml$` is 20 instructions.
+  that is more. A glob costs 18 more for each of its bytes, for compiling it, and a regex 18 more
+  for each of its bytes, more for each Unicode class it names and each code point it folds, one
+  for each instruction and rune of its program, and more for the onepass pass Go makes of an
+  anchored one, once errata has parsed it (amended 2026-11-01 and 2026-11-02, below). A regex that
+  ran costs the string's bytes times the instructions of its RE2 program over 160, for matching
+  it. The slowest glob match measured on a 4 core workstation, 1000 bytes against three classes of
+  165 code points, ran 34 ms before the step bound stopped it, so the cost limit stops 63 calls of
+  that kind, about 2.1 s, inside the five second timeout. Measured through the CI runner on a 4
+  core node, the 1022 byte glob above compiles in 81 ms and costs about 19450 against a string of
+  2 bytes, so the cost limit stops the 52nd call of such globs, each a different one (an
+  evaluation compiles a glob once, below), after 4.1 s; a short glob compiles slowest for its
+  length, 168 bytes of six brace sets, two negations and 32 nested extglobs in 15.9 ms, and the
+  cost limit allows about 312 of those, 5 s of compiling. RE2 matches in time proportional to the
+  string times the program, and a counted repetition makes the program up to a thousand times the
+  regex's text: `(?:\pL?){999}` written 70 times, 911 bytes, is 139863 instructions, and one call
+  of it against 1024 bytes ran 3.2 s. A regex whose program passes 4096 instructions is therefore
+  unknown, naming the count, before it runs. The count is first estimated from the parsed regex by
+  the size rules Go's own parser applies, and checked exactly after the compile: a regex of 1022
+  bytes such as `(?:a*a*...){1000}` compiles to a million instructions, which took up to 390 ms a
+  call, and 135 such calls refused only after compiling ran 21 s past the timeout. Refused from
+  the estimate, the same 135 end in 0.1 s on the 4 core node. The parse that gives the tree is not
+  linear either: under case folding Go's parser folds each code point of a class range one at a
+  time, and it merges the ranges of every `\pL`, so `(?i)[` and `a-\x{10FFFF}` 84 times, 1017
+  bytes, took 0.79 s to parse, and `[^\pL]` with 339 of them 57 ms. So the parse is bounded by the
+  text before it runs: at most 256 bytes between the slashes, 16 Unicode classes, and under the
+  `i` flag or `(?i)`, ranges over 4096 code points that Go folds one at a time. k3s's
+  renovate.json holds regexes of at most 43 bytes between the slashes, errata's of at most 20, and
+  neither names a Unicode class, quotes with `\Q` or writes `\x{`. The scan reads only what it
+  reads as Go does: it refuses `\Q`, after which Go reads text as literals, and a `\x{` or `\p{`
+  that Go would refuse (a `\p{` name may hold letters, digits, a leading `^`, and `_`, `-` and
+  spaces, which Go ignores), so no token can swallow the text after it. It counts every `-`
+  between two characters as a range, `[--H]` included, which Go reads as the range `-` to `H`.
+  Over generated patterns of classes in context, with escapes, quotes, flags and several classes,
+  a test and a fuzz target find it never counting fewer code points than Go's own parse shows Go
+  folds for ranges; a single character, or a POSIX or Perl class such as `\w`, Go folds in at most
+  63 code points, which the bound on the text holds. Within those bounds the slowest preparation
+  measured, both parses (errata's, and the one inside `regexp.Compile`, which takes no parsed
+  tree) and the compile, is 5.7 ms on the 4 core node, for `(?i)` and 16 `\pL` in a class, and 7.6
+  ms on the 2 core node, for `^(?:\pL?){495}$`, so a regex call measured under 10 ms to prepare
+  and about 120 ms to match. An evaluation keeps the regexes it compiled, bounded by their size
+  (below): an anchored regex of under 1000 instructions gets a onepass program, which copies each
+  instruction's runes, and `(?i)^(?:[^\pL\pN]){990}$` held 9.3 MiB. The slowest rate measured for
+  a regex that runs was 28.7 ns for each byte times instruction, for `(?:\pL*){680}b`, so the cost
+  limit pays for about 4.6 s of matching. On the 4 core node one call at the bound, `\pL?`
+  repeated to 4083 instructions, matched 1024 bytes in 96 ms, and the cost limit stopped 150 of
+  them in one step after 3.7 s. A Renovate entry such as `(^|/)values\.ya?ml$` is 20 instructions.
 
   The weights are in the cost because CEL looks at the timeout only between the steps of a
   comprehension, and checks the cost limit after every call: an expression of 4096 characters
@@ -140,18 +145,68 @@ assert: size(patterns) > 0 && by_file(apps).all(f, patterns.exists(p, renovate_m
 
   An ordinary glob of 38 bytes costs 684 more for compiling, which would leave a rule about 1300
   calls; the example above, 200 files against 10 entries, is 2000. So an evaluation compiles each
-  glob once and charges the compile to the first call of it. It keeps the globs it compiled, at
-  most 256 of them and 65536 units of their size: one for each segment and each code unit of its
-  literal and regex source, and for a glob the port refuses, each byte of the regex source its
-  error keeps. It drops them when it ends, and a glob past either bound is compiled and charged at
-  every call, as every glob was before. Measured through the CI runner, 256 small globs held
-  0.44 MiB, and 107 globs of 200 segments of `/**/1`, the shape that holds the most for each unit,
-  61.7 bytes, held 3.8 MiB, so a full cache holds about 3.9 MiB at most. A glob of 56 bytes, ten
+  entry once and charges its compile to the first call of it. One cache keeps the globs and the
+  regexes an evaluation compiled, at most 256 of them and 65536 units of their size. A glob's
+  units are one for each segment and each code unit of its literal and regex source, and for a
+  glob the port refuses, each byte of the regex source its error keeps. A regex's are three for
+  each instruction of its program, one for each rune the program holds, and one for each rune of
+  the onepass copy Go makes of an anchored program under 1000 instructions. That copy gives each
+  instruction a rune set: a capture, an empty width or a nop instruction copies the set of the
+  instruction after it, and an alternation merges the sets of both its legs, so a chain of
+  captures or carets before a class holds the class once for each link. Each instruction is
+  counted the runes of the consuming instructions it reaches without consuming. It drops them when
+  it ends, and an entry past either bound is compiled and charged at every call, as every glob was
+  before. Measured through the CI runner, 256 small globs held 0.44 MiB, and 107 globs of 200
+  segments of `/**/1`, the shape that holds the most for each unit, 61.7 bytes, held 3.8 MiB, so a
+  full cache holds about 3.9 MiB at most. 256 small regexes held 0.58 MiB, and 56 anchored regexes
+  of 124 empty captures each, the regex shape that holds the most for each unit, 46 bytes, held
+  2.8 MiB, inside the same bound. An anchored class of 200 `\pL`, 1.8 MiB in its onepass copy, is
+  never kept, and neither is 109 empty captures before a class of four Unicode categories, 3.1
+  MiB, which a count of the rune instructions alone kept 19 of, 61 MiB. A glob of 56 bytes, ten
   negations then a class JavaScript refuses, keeps 26092 bytes of source in its error; before the
   size counted it, 256 of them held 6.7 MiB. The example's 2000 calls cost 171053 in all, where a
   compile charged at every call made them 1055807, past the limit. The cache reaches the call
   through the hidden log argument of ADR 0016, and the rewritten call costs what the call did,
-  less the compile on a glob already compiled.
+  less the compile on an entry already compiled.
+
+  **Amended 2026-11-01 and 2026-11-02: a regex's compile is charged.** Until then a regex compiled
+  free, which was safe while a repeated entry stayed compiled. Once the one cache bounds regexes
+  by their size, a regex too big for it compiles at every call, and 27000 calls of
+  `/^(?:\pL){200}$/` (0.7 to 1.2 ms a compile) or `/(?i)^(?:[^\pL\pN]){990}$/` (12.4 ms) against
+  the empty string, about 27 a call, ran to the timeout. A first charge by the entry's bytes alone
+  needed 256 a byte to bound the slowest compile, and at that rate a config of 100 distinct
+  regexes of 30 bytes spent 77% of the cost limit compiling, and 130 passed it, where each compile
+  takes 20 to 50 us. So the call that compiles a regex pays for the work Go's compiler does: 18
+  for each byte of the entry, as a glob pays; 256 for each Unicode class it names, which Go's
+  parser merges into the class around it, and folds under case folding; under case folding, a
+  quarter of the code points its ranges cover, which the parser folds one at a time; one for each
+  instruction of its program and each rune the program holds; and for a program Go tries to make
+  onepass (under 1000 instructions, anchored at the start of the text), its instructions times its
+  instructions and runes over 256. The onepass pass merges the program's rune sets at each
+  instruction, so its time grows with both, and the slowest compiles measured are anchored
+  programs of about 1000 instructions over a large class, such as `^(?:\pL?){400}$` or an anchored
+  class and its complement repeated 330 times, 20 bytes and 10 to 49 ms a compile. The
+  instructions alone cover the fixed cost of a large program: about 6 ms for a onepass try of 1000
+  instructions with no runes, and about 3 ms for an unanchored program of 2000. The parse terms
+  cover what the program does not show: 16 of `\pL` in a class took up to 13.5 ms to parse, with
+  case folding and without, and `(?i)[A-\x{1040}]`, 18 bytes, folds 4096 code points in 1.3 ms,
+  which a first fit without them charged 382 and let the cost limit pay 4.16 s for. The form was
+  fitted over 109 shapes, by the mean of compiles back to back as an evaluation runs them, through
+  the CI runner on two nodes. On the slower node the cost limit pays for at most 2.30 s of
+  compiling, for `^(?:\pL?){400}$`, and on the other for at most 0.86 s, for `^(?:\pL?){497}$`. On
+  a node loaded three to four times over, the onepass shapes came to at most about 4.2 s, for
+  `^(?:\pL*){495}$` at 51 ms a compile and 12113 a call. An ordinary entry of 30 bytes such as
+  `/^apps/000/[^/]+/values\.yml$/` names no class, folds no range, and costs 595, so 100 of them
+  spend 6% of the limit, and 200 leave a rule its verdict. A cache hit pays no compile, and a
+  regex the scan of its text refuses pays none either, since no parse ran; one refused after its
+  parse pays for its text, since an evaluation that cycles through more than 256 of them parses
+  each at every call. The three regexes too big for the cache above, and 2000 distinct regexes of
+  either slow parse, end on the cost limit, inside the timeout. The figures that change:
+  `renovate_match` over `/a\.yaml$/` and the list of ADR 0016's test costs 223, 783 and 824 where
+  it cost 28, 588 and 629, 195 more for the one compile; an ordinary entry such as
+  `/(^|/)values\.ya?ml$/` costs 410 more once in an evaluation. An evaluation that the cost limit
+  stops after an error that `&&`, `||` or `exists` absorbed now names both. The glob figures, and
+  the example's 171053, do not change.
 
   With the compile charged once, a glob's match is the part of its cost that has to grow with the
   work. The product of the lengths does not: `x`, then 16 of `@(|)`, then a class of 450 code
@@ -175,8 +230,8 @@ assert: size(patterns) > 0 && by_file(apps).all(f, patterns.exists(p, renovate_m
   against 1000 bytes where it says 1333. A glob whose segments minimatch tests without a regex,
   such as `**/*.yaml`, costs the product, and so does the example above. Counting a class test's
   work added a step to 13 of the pairs and changed the cost of none. A cache that outlived the
-  evaluation would hold globs from every config errata reads, and a regex cache of 256 entries
-  once held 2.39 GiB.
+  evaluation would hold entries from every config errata reads, and a regex cache of 256 entries
+  for the whole process once held 2.39 GiB.
 
 ## Considered options
 

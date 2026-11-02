@@ -45,11 +45,11 @@ stdout '^0 errata, 0 unknown.'
 cp renovate-lookahead.json renovate.json
 ! exec errata check
 stdout '^UNKNOWN argocd-manager-covers-every-application'
-stdout 'renovate_match: "/\^infra/\(\?=a\)\.\*/" is written as a regex between slashes, and RE2 does not compile it'
+stdout 'renovate_match: the regex "/\^infra/\(\?=a\)\.\*/" is not matched against "[^"]*": RE2 does not compile the regex'
 cp renovate-throws.json renovate.json
 ! exec errata check
 stdout '^UNKNOWN argocd-manager-covers-every-application'
-stdout 'renovate_match: minimatch throws on the glob "infra/argocd/applications/\[\[:alpha:\]\], \*"'
+stdout 'renovate_match: the glob "infra/argocd/applications/\[\[:alpha:\]\], \*" is not matched against "[^"]*": minimatch throws on the glob'
 
 -- errata.yaml --
 checks:

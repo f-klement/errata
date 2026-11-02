@@ -99,11 +99,13 @@ check: gate mutation
 # commit before handing it back. In the two waves up to 2026-10-25 five gates of 12 to 15 minutes
 # went red on one of them: three on lint or on a node name in a public file (public-dry), and two
 # on a new package without its `//go:build mutation` mutation_test.go, which only
-# TestEveryTestedPackageLinksTheWatchdog in make test catches. That test runs first, since it
-# takes seconds where lint takes minutes. The public mirror has no ci/, so there it is the test
-# and lint.
+# TestEveryTestedPackageLinksTheWatchdog in make test catches. A sixth, on 2026-11-01, went red
+# on TestReadersImportNoOtherReader, after a package was split out below core. Those tests run
+# first, since they take seconds where lint takes minutes. The public mirror has no ci/, so there
+# it is the tests and lint.
 precheck:
 	$(GO) test -count=1 -run '^TestEveryTestedPackageLinksTheWatchdog$$' ./internal/heapcap
+	$(GO) test -count=1 -run '^(TestReadersImportNoOtherReader|TestReaderImportsRefuses)$$' ./internal/extract
 	$(MAKE) --no-print-directory lint $(if $(wildcard ci/public-tree.sh),public-dry)
 
 build:
@@ -181,8 +183,10 @@ test:
 	$(GO) test -race -shuffle=on -timeout 2m -count=1 -coverprofile=coverage.out -coverpkg=./internal/... ./...
 
 # Tests too slow for the race detector or for a rerun per mutant: each calls
-# slowOnly, which skips under -race, -short and the mutation tag, and runs
-# here once, plain. SLOW_TESTS comes from the tree (#214): scripts/slowtests
+# slowOnly, which skips under -race, -short and the mutation tag (except
+# internal/minimatch's, which keeps running under mutation since its slow
+# tests hold cases no other test holds, expansionMaxDepth among them), and
+# runs here once, plain. SLOW_TESTS comes from the tree (#214): scripts/slowtests
 # lists every test whose body calls slowOnly, and fails, listing none, on a
 # call it would miss, so a new slow test needs no edit here. go test passes
 # when -run matches nothing, so each must report its own PASS line, and an

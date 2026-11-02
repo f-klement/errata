@@ -237,6 +237,9 @@ func compileWith(expr string, extractors []check.NamedExtractor, lim limits, ext
 	if noted, err = renovateThroughLog(env, noted); err != nil {
 		return nil, fmt.Errorf("assert: %w", err)
 	}
+	if err := renovateAllThroughLog(noted); err != nil {
+		return nil, fmt.Errorf("assert: %w", err)
+	}
 	program, err := env.Program(noted,
 		cel.CostLimit(lim.cost),
 		cel.CostTrackerOptions(append(append(append(setCosts(), semverCosts()...), renovateCost()...), noteCost)...),
@@ -608,11 +611,11 @@ func everyMember(ctx *cel.OptimizerContext, c celast.ComprehensionExpr) {
 type errorLog struct {
 	first *types.Err
 	ctx   context.Context
-	// globs are the globs renovate_match compiled in the evaluation.
-	globs globCache
-	// steps are what the last renovate_match call's glob match took, for
-	// its cost.
-	steps int
+	// patterns are the entries renovate_match compiled in the evaluation.
+	patterns patternCache
+	// cost is what the last renovate_match call costs, which its binding
+	// priced from the work it did, for the cost tracker.
+	cost uint64
 }
 
 // context is the evaluation's context, or the background where Eval set
@@ -741,7 +744,7 @@ type outcome struct {
 // at most 17.6 ms on the build node. So a step of many of them is not. CEL
 // checks the cost limit after each call, and the cost charges a glob's
 // compile and match and a regex's match, whose program is bounded
-// (renovateCallCost, maxRegexInsts), so the limit stops such a step after
+// (renovateWork.cost, maxRegexInsts), so the limit stops such a step after
 // at most about 5 s of work. Through the CI runner on the 4 core node that
 // is 4.1 s of compiles of the slowest glob, 5 s of the short glob slowest
 // to compile for its length, and 3.7 s of regexes at the instruction
@@ -807,6 +810,11 @@ func (a *assertion) Eval(parent context.Context, extracted []check.Extracted) (b
 	}
 	var cancelled interpreter.EvalCancelledError
 	switch {
+	case errors.As(o.err, &cancelled) && cancelled.Cause == interpreter.CostLimitExceeded && log.first != nil:
+		// The cost limit stopped it, and an error that && or || absorbed
+		// came before, such as calls of entries renovate_match refuses,
+		// each charged for its parse. Both are what the author needs.
+		return false, fmt.Errorf("the evaluation exceeded the cost limit of %d; before it, %w", a.limits.cost, *log.first)
 	case errors.As(o.err, &cancelled) && cancelled.Cause == interpreter.CostLimitExceeded:
 		return false, fmt.Errorf("the evaluation exceeded the cost limit of %d", a.limits.cost)
 	case errors.Is(o.err, interpreter.InterruptError{}):

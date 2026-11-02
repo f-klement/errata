@@ -1,6 +1,7 @@
 package packageversion
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -305,4 +306,70 @@ func TestPackageVersionDescribedNotLiteral(t *testing.T) {
 	if !Describe(Spec{}).NotLiteral {
 		t.Error("described as literal only")
 	}
+}
+
+// onWitness is the context of a run on the witness w of a repository
+// whose index lists files, as the engine holds the fixture, and the
+// fixture's path, the root such a run is given.
+func onWitness(t *testing.T, files map[string]string) (context.Context, string) {
+	t.Helper()
+	committed := map[string]string{}
+	for f, body := range files {
+		committed[".errata/witness/w/"+f] = body
+	}
+	root := extracttest.Tracked(t, committed)
+	fixture := filepath.Join(root, ".errata", "witness", "w")
+	held, err := os.OpenRoot(fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = held.Close() })
+	ctx, err := core.OnFixture(check.OnWitness(t.Context(), root), fixture, held)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ctx, fixture
+}
+
+// On a witness the manifests at the root are those git's index lists at
+// the top of the fixture, so an untracked VERSION is never listed, and not
+// passed over as a file a read finds is not there. Failed on 6f2f58a,
+// whose listing named VERSION. Planted break: core's listing of a
+// witness's top read from the disk.
+func TestPackageVersionListsOnlyWhatAWitnessCommits(t *testing.T) {
+	ctx, fixture := onWitness(t, map[string]string{"package.json": `{"version": "1.0.0"}`})
+	if err := os.WriteFile(filepath.Join(fixture, "VERSION"), []byte("9.9.9\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	present, err := rootNames(ctx, fixture)
+	if err != nil || len(present) != 1 || !present["package.json"] {
+		t.Errorf("the names on the witness: %v, %v; want package.json alone", present, err)
+	}
+	e, err := build(Spec{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := e.Extract(ctx, fixture); err != nil || marked(got) != "1.0.0@package.json:1" {
+		t.Errorf("the versions on the witness: %q, %v", marked(got), err)
+	}
+}
+
+// On a witness a manifest the fixture commits and the disk does not hold
+// makes the extractor unknown, not passed over: a clone holds it. Failed
+// on dfc8360, which passed over VERSION. Planted break: core's refusal of
+// a committed file missing from the disk read as not there.
+func TestPackageVersionRefusesAWitnessFileMissingFromTheDisk(t *testing.T) {
+	ctx, fixture := onWitness(t, map[string]string{"package.json": `{"version": "1.0.0"}`, "VERSION": "1.0.0\n"})
+	if err := os.Remove(filepath.Join(fixture, "VERSION")); err != nil {
+		t.Fatal(err)
+	}
+	e, err := build(Spec{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := e.Extract(ctx, fixture)
+	if err == nil {
+		t.Fatalf("no error, values %s", marked(got))
+	}
+	extracttest.WantError(t, err, "read VERSION: VERSION is a file in git's index below the fixture, and the disk does not hold it as one")
 }

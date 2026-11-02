@@ -257,7 +257,7 @@ func TestSpanMatchesAsTheWholeIndex(t *testing.T) {
 	shuffled := slices.Clone(sorted)
 	slices.Reverse(shuffled)
 	for _, tracked := range [][]string{sorted, shuffled} {
-		spans, _ := f.spans(tracked)
+		spans, _ := f.spans(memIndex(t, tracked...).Paths())
 		for k, e := range f.Entries {
 			var whole, byMatch []string
 			for _, p := range tracked {
@@ -268,7 +268,10 @@ func TestSpanMatchesAsTheWholeIndex(t *testing.T) {
 					byMatch = append(byMatch, p)
 				}
 			}
-			got := e.matches(spans[k])
+			got, err := spans[k].Match(func(p string) bool { return matchGlob(e.segs, p) })
+			if err != nil {
+				t.Fatal(err)
+			}
 			if !slices.Equal(got, whole) {
 				t.Errorf("%s: span gives %q, the whole index %q", e.Clean, got, whole)
 			}
@@ -297,11 +300,11 @@ func TestSpanChargeIgnoresPathsOutside(t *testing.T) {
 		slices.Sort(tracked)
 		f, _ := CheckFiles("env", []string{"deploy/*.env"}, 0)
 		f.MatchLimit = 24
-		if err := f.checkMatch(f.spans(tracked)); err != nil {
+		if err := f.checkMatch(f.spans(memIndex(t, tracked...).Paths())); err != nil {
 			t.Errorf("deploy/*.env beside %d paths: %v", 2*n+3, err)
 		}
 		f.MatchLimit = 23
-		extracttest.WantError(t, f.checkMatch(f.spans(tracked)), "reads 24 bytes of path")
+		extracttest.WantError(t, f.checkMatch(f.spans(memIndex(t, tracked...).Paths())), "reads 24 bytes of path")
 
 		wild, _ := CheckFiles("env", []string{"*/*.env"}, 0)
 		all := 0
@@ -309,7 +312,7 @@ func TestSpanChargeIgnoresPathsOutside(t *testing.T) {
 			all += len(p)
 		}
 		wild.MatchLimit = all - 1
-		extracttest.WantError(t, wild.checkMatch(wild.spans(tracked)), fmt.Sprintf("reads %d bytes of path", all))
+		extracttest.WantError(t, wild.checkMatch(wild.spans(memIndex(t, tracked...).Paths())), fmt.Sprintf("reads %d bytes of path", all))
 	}
 }
 
@@ -324,10 +327,7 @@ func TestSpanChargeIgnoresPathsOutside(t *testing.T) {
 // under a limit of 34.
 func TestListBoundOfAnIndexOutOfOrder(t *testing.T) {
 	root := repo(t, map[string]string{"deploy/a.env": "", "z.env": ""})
-	index := gitIndex(2, indexEntry{path: "z.env"}, indexEntry{path: "deploy/a.env"})
-	if err := os.WriteFile(filepath.Join(root, ".git", "index"), index, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	writeIndex(t, root, "z.env", "deploy/a.env")
 	f, _ := CheckFiles("env", []string{"deploy/*.env", "deploy/*.yml"}, 0)
 	f.MatchLimit = 34
 	got, err := f.List(t.Context(), root)

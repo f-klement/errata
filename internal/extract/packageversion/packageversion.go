@@ -172,7 +172,9 @@ func (x extractor) Extract(ctx context.Context, root string) ([]check.Value, err
 // spelled as the table spells them. A file system that folds case, as macOS
 // and Windows ship theirs, opens a version directory or file by the name
 // VERSION; the names the directory lists are as they were written, so only
-// the table's own spelling is read.
+// the table's own spelling is read. On a witness the names are those git's
+// index lists at the top of the fixture (core.OpenDir), so a file the
+// fixture does not commit is never read.
 func rootNames(ctx context.Context, root string) (map[string]bool, error) {
 	d, err := core.OpenDir(ctx, root)
 	if err != nil {
@@ -183,9 +185,9 @@ func rootNames(ctx context.Context, root string) (map[string]bool, error) {
 	for {
 		// In batches, so a root of many entries keeps only the names it
 		// looks for.
-		names, err := d.Readdirnames(1024)
-		for _, name := range names {
-			if kindOf(name) != nil {
+		entries, err := d.ReadDir(1024)
+		for _, e := range entries {
+			if name := e.Name(); kindOf(name) != nil {
 				present[name] = true
 			}
 		}

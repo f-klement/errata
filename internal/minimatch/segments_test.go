@@ -17,40 +17,10 @@ import (
 // SyntaxError. A match can agree by chance where a source differs; this
 // holds every step that builds one. A glob of cases.json with no row here
 // fails, so a case added later is held to its source too: run sources.mjs
-// on the globs of cases.json again.
+// on the globs of cases.json again. make test builds every raceSample-th
+// glob, and TestSegmentsAgreeWithMinimatchSlow the rest.
 func TestSegmentsAgreeWithMinimatch(t *testing.T) {
-	data, err := os.ReadFile("testdata/sources.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var cases [][2]json.RawMessage
-	if err := json.Unmarshal(data, &cases); err != nil {
-		t.Fatal(err)
-	}
-	if len(cases) < 4000 {
-		t.Fatalf("%d globs; the file holds over 4000", len(cases))
-	}
-	built := map[string]bool{}
-	for _, c := range cases {
-		var glob string
-		if err := json.Unmarshal(c[0], &glob); err != nil {
-			t.Fatal(err)
-		}
-		built[glob] = true
-		got, err := segmentsOf(glob)
-		if err != nil {
-			t.Errorf("%q: %v", glob, err)
-			continue
-		}
-		var want any
-		if err := json.Unmarshal(c[1], &want); err != nil {
-			t.Fatal(err)
-		}
-		wantJSON, _ := json.Marshal(want)
-		if string(got) != string(wantJSON) {
-			t.Errorf("%q builds\n  %s\nminimatch builds\n  %s", glob, got, wantJSON)
-		}
-	}
+	built := checkSegmentCases(t, true)
 	matched, err := os.ReadFile("testdata/cases.json")
 	if err != nil {
 		t.Fatal(err)
@@ -67,9 +37,64 @@ func TestSegmentsAgreeWithMinimatch(t *testing.T) {
 	}
 }
 
+// The globs of sources.json that TestSegmentsAgreeWithMinimatch leaves to
+// make slow: under make test's flags the whole table took 15 s on the
+// slowest node.
+func TestSegmentsAgreeWithMinimatchSlow(t *testing.T) {
+	slowOnly(t)
+	checkSegmentCases(t, false)
+}
+
+// checkSegmentCases builds the globs of sources.json that sampled picks,
+// or the others, and is every glob the file holds.
+func checkSegmentCases(t *testing.T, picked bool) map[string]bool {
+	t.Helper()
+	data, err := os.ReadFile("testdata/sources.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cases [][2]json.RawMessage
+	if err := json.Unmarshal(data, &cases); err != nil {
+		t.Fatal(err)
+	}
+	if len(cases) < 4000 {
+		t.Fatalf("%d globs; the file holds over 4000", len(cases))
+	}
+	built := map[string]bool{}
+	checked := 0
+	for i, c := range cases {
+		var glob string
+		if err := json.Unmarshal(c[0], &glob); err != nil {
+			t.Fatal(err)
+		}
+		built[glob] = true
+		if sampled(i) != picked {
+			continue
+		}
+		checked++
+		got, err := segmentsOf(glob)
+		if err != nil {
+			t.Errorf("%q: %v", glob, err)
+			continue
+		}
+		var want any
+		if err := json.Unmarshal(c[1], &want); err != nil {
+			t.Fatal(err)
+		}
+		wantJSON, _ := json.Marshal(want)
+		if string(got) != string(wantJSON) {
+			t.Errorf("%q builds\n  %s\nminimatch builds\n  %s", glob, got, wantJSON)
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no glob of sources.json was built: the sample and its twin must split the table")
+	}
+	return built
+}
+
 // segmentsOf is the port's answer for glob in sources.mjs's form.
 func segmentsOf(glob string) ([]byte, error) {
-	m, err := compile(toUnits(glob))
+	m, err := compile(backgroundMeter(), toUnits(glob))
 	var thrown *SyntaxError
 	switch {
 	case errors.As(err, &thrown):
@@ -127,7 +152,7 @@ func TestRootBodyIsAstJS(t *testing.T) {
 		glob := n.toString()
 		n.flatten()
 		n.fillNegs()
-		re, body, _, _, err := n.rootSource(glob, &sourceBudget{left: maxSource})
+		re, body, _, _, err := n.rootSource(glob, backgroundMeter())
 		if err != nil {
 			t.Errorf("%q: %v", c.glob, err)
 			continue

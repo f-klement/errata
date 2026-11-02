@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path"
@@ -78,15 +77,10 @@ func (e *Engine) witness(ctx context.Context, c check.Check, name string) (out c
 // them under another path, which a real run's globs and walks do not pass
 // over. Each part is opened from the part above it (enter), so what is
 // returned is the directory that was looked at, whatever is put at its
-// path later.
+// path later. On a file system that ignores case a part spelt otherwise on
+// disk opens too; git's index decides whether the fixture is one a clone
+// holds (core.OnFixture), on every OS alike.
 func fixtureDir(root, name string) (*os.Root, error) {
-	return openFixture(root, name, onDisk)
-}
-
-// openFixture is fixtureDir, with each part's spelling checked through
-// look: onDisk in production, and in a test a stand-in for a file system
-// that ignores case.
-func openFixture(root, name string, look lookup) (*os.Root, error) {
 	cur, err := os.OpenRoot(root)
 	if err != nil {
 		return nil, fmt.Errorf("open the repository root: %w", err)
@@ -96,19 +90,8 @@ func openFixture(root, name string, look lookup) (*os.Root, error) {
 	for _, seg := range strings.Split(dir, "/") {
 		part = path.Join(part, seg)
 		next, err := enter(cur, seg, cur.Lstat)
-		var as string
-		if err == nil {
-			if as, err = spelling(cur, next, seg, look); err == nil && as != seg {
-				err = errSpelt
-			}
-			if err != nil {
-				_ = next.Close()
-			}
-		}
 		_ = cur.Close()
 		switch {
-		case errors.Is(err, errSpelt):
-			return nil, fmt.Errorf("its fixture %s is spelt %s on disk, a name that only a file system which ignores case opens as %s; rename it, since the index and every other OS name it as written", dir, path.Join(path.Dir(part), as), seg)
 		case errors.Is(err, errLink):
 			return nil, fmt.Errorf("its fixture %s is reached through the symlink %s", dir, part)
 		case errors.Is(err, errNoDir) && part == dir:
@@ -130,87 +113,7 @@ var (
 	errLink  = errors.New("a symlink")
 	errNoDir = errors.New("no directory")
 	errMoved = errors.New("not the directory looked at")
-	errSpelt = errors.New("spelt otherwise on disk")
 )
-
-// namer lists the names of a directory: an *os.File, or in a test a
-// stand-in.
-type namer interface {
-	Readdirnames(n int) ([]string, error)
-	Close() error
-}
-
-// listDir opens the directory r is open on for listing.
-func listDir(r *os.Root) (namer, error) { return r.Open(".") }
-
-// lookup is how spelling looks at a directory: respelt looks a name up in
-// it, and list lists its names.
-type lookup struct {
-	respelt func(cur *os.Root, name string) (fs.FileInfo, error)
-	list    func(*os.Root) (namer, error)
-}
-
-// onDisk is the lookup of the file system errata runs on.
-var onDisk = lookup{
-	respelt: func(cur *os.Root, name string) (fs.FileInfo, error) { return cur.Lstat(name) },
-	list:    listDir,
-}
-
-// spelling is how the directory cur spells the entry a lookup of name
-// finds, next being that entry opened: name itself when cur holds it as
-// written, else the first entry that matches it in any case, as macOS and
-// Windows look a name up. A fixture found under another spelling would run
-// on those systems while the index, cut at the name as written, lists none
-// of its files, so its verdict would be no fixture's. Listing costs a pass
-// over cur, so it is paid only on a file system that ignores case: a
-// lookup of name in upper case, such as .ERRATA, that finds next itself
-// shows one. Every part is lower case (.errata, witness and a name
-// check.ValidID takes), so a name equal to its upper case has no letter
-// and no other spelling.
-func spelling(cur, next *os.Root, name string, look lookup) (string, error) {
-	other := strings.ToUpper(name)
-	if other == name {
-		return name, nil
-	}
-	info, err := look.respelt(cur, other)
-	if err != nil {
-		return name, nil // nothing at the other spelling: the lookup is exact
-	}
-	mine, err := next.Stat(".")
-	if err != nil {
-		return "", err
-	}
-	if !os.SameFile(info, mine) {
-		return name, nil // another file at the other spelling: the lookup is exact
-	}
-	d, err := look.list(cur)
-	if err != nil {
-		return "", err
-	}
-	defer d.Close()
-	folded := ""
-	for {
-		names, err := d.Readdirnames(1024)
-		for _, n := range names {
-			if n == name {
-				return n, nil
-			}
-			if folded == "" && strings.EqualFold(n, name) {
-				folded = n
-			}
-		}
-		if errors.Is(err, io.EOF) || (err == nil && len(names) == 0) {
-			break
-		}
-		if err != nil {
-			return "", err
-		}
-	}
-	if folded == "" {
-		return "", fmt.Errorf("%s is not among the names its directory lists", name)
-	}
-	return folded, nil
-}
 
 // enter opens the directory name in cur, refusing a symlink and anything
 // that is no directory, as lstat, cur.Lstat in production, gives what is

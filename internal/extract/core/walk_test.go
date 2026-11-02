@@ -283,18 +283,19 @@ func (fakeInfo) ModTime() time.Time { return time.Time{} }
 func (fakeInfo) IsDir() bool        { return false }
 func (fakeInfo) Sys() any           { return nil }
 
+// failingFolder is a directory whose listing fails (failingDir).
+type failingFolder struct{}
+
+func (failingFolder) list() (Listing, error)       { return &failingDir{}, nil }
+func (failingFolder) enter(string) (folder, error) { return failingFolder{}, nil }
+func (failingFolder) close()                       {}
+
 // A directory whose listing fails partway is refused, not read as the
 // entries before the failure. The planted break: read ending the listing at
 // any error.
 func TestWalkRefusesAListingThatFails(t *testing.T) {
-	r, err := os.OpenRoot(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer r.Close()
-	w := walker{limits: DefaultWalk, want: pins, visit: func(string, []string) error { return nil },
-		list: func(*os.Root) (lister, error) { return &failingDir{}, nil }}
-	err = w.dir(r, ".", 0)
+	w := walker{limits: DefaultWalk, want: pins, visit: func(string, []string) error { return nil }}
+	err := w.dir(failingFolder{}, ".", 0)
 	extracttest.WantError(t, err, `walk: read ".": input/output error`)
 }
 

@@ -54,7 +54,14 @@ from the real root with `ERRATA_ROOT` at the fixture. Globs and walks of a real 
   hold the witness where CI cannot. A rule's reads of the fixture (a `file:`, a glob, `exists`
   and a generated check's `generated.file`) find only the files the index lists below it, so a
   file of the fixture that the index does not list reads as not there, and a fixture that
-  commits only some of its files reads the same to a rule in both places.
+  commits only some of its files reads the same to a rule in both places. A walk and a listing
+  of the fixture's root list what the index lists below it, never the disk. A file, a symlink
+  or a directory the index lists that the disk does not hold as one, such as a committed file
+  deleted from the working tree, is unknown, since a clone holds it. A symlink is followed
+  only where the index lists it with a symlink's mode, and a file the index lists as a symlink
+  is unknown. An entry below the fixture's path spelt
+  in another case, such as `.Errata/witness/w/x`, makes the witness unknown on every OS, where
+  macOS and Windows would read it as part of the fixture.
 - A program check and a generated check's generator start in the repository root, as on any
   run, so `[python3, scripts/x.py]` finds its script, with `ERRATA_ROOT` at the fixture's
   absolute path, under the check's timeout, process group and empty stdin. A generated check

@@ -7,28 +7,6 @@ import (
 	"unicode/utf8"
 )
 
-// cut keeps a text of exactly n bytes whole, moves back to the start of a
-// rune, and moves back at most three bytes, as far as a rune can need, even
-// in bytes that are not UTF-8.
-func TestCutEdges(t *testing.T) {
-	for _, c := range []struct {
-		s    string
-		n    int
-		want string
-	}{
-		{"abc", 3, "abc"},
-		{"abcd", 3, "abc..."},
-		{"aé", 2, "a..."},
-		{"a😀", 4, "a..."},
-		{strings.Repeat("\x80", 5), 4, "\x80..."},
-		{strings.Repeat("\x80", 8), 6, "\x80\x80\x80..."},
-	} {
-		if got := cut(c.s, c.n); got != c.want {
-			t.Errorf("cut(%q, %d) = %q, want %q", c.s, c.n, got, c.want)
-		}
-	}
-}
-
 // clipError returns a short error itself, so errors.Is and a wrapped cause
 // still work, and cuts only a message over 4*maxQuote bytes.
 func TestClipErrorEdges(t *testing.T) {

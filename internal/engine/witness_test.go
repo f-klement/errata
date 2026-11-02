@@ -3,7 +3,6 @@ package engine
 import (
 	"context"
 	"errors"
-	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -291,115 +290,30 @@ func TestEnterRefusesADirectoryOtherThanTheOneLookedAt(t *testing.T) {
 	_ = next.Close()
 }
 
-// respelt is a namer that lists a directory's names with each in respell
-// replaced, as a file system that ignores case lists a directory whose
-// entry a lookup of the other spelling finds.
-type respelt struct {
-	namer
-	respell map[string]string
-}
-
-func (r respelt) Readdirnames(n int) ([]string, error) {
-	names, err := r.namer.Readdirnames(n)
-	for i, name := range names {
-		if as, ok := r.respell[name]; ok {
-			names[i] = as
-		}
-	}
-	return names, err
-}
-
-// A fixture is opened only when each part of its path is spelt on disk as
-// errata names it. On macOS or Windows a lookup of .errata finds .Errata,
-// whose files the index lists under .Errata, so a witness there would cut
-// none of them; here a stand-in listing plays that file system. Planted
-// break: the spelling test dropped, which opened the fixture.
-func TestFixtureDirWantsTheNamesSpeltAsWritten(t *testing.T) {
+// A witness whose fixture's path git's index also lists in another case
+// is unknown before its check runs, on Linux too: macOS and Windows open
+// .Errata/witness/w as .errata/witness/w, so a run there would read the
+// files of both as the fixture, which no clone on Linux holds. The rule is
+// core's (Index.Below), and the engine opens the fixture as spelt. Planted
+// break: Below's test of another case dropped, which ran the check.
+func TestExecuteRefusesAFixtureTheIndexListsInAnotherCase(t *testing.T) {
 	root := fixtures(t, "w")
-	for _, c := range []struct{ name, as, want string }{
-		{".errata", ".Errata", "its fixture .errata/witness/w is spelt .Errata on disk"},
-		{"witness", "WITNESS", "its fixture .errata/witness/w is spelt .errata/WITNESS on disk"},
-		{"w", "W", "its fixture .errata/witness/w is spelt .errata/witness/W on disk"},
-	} {
-		list := func(r *os.Root) (namer, error) {
-			d, err := listDir(r)
-			return respelt{d, map[string]string{c.name: c.as}}, err
-		}
-		dir, err := openFixture(root, "w", lookup{respelt: folding, list: list})
-		if err == nil {
-			_ = dir.Close()
-		}
-		if err == nil || !strings.HasPrefix(err.Error(), c.want) {
-			t.Errorf("%s listed as %s: %v, want %q", c.name, c.as, err, c.want)
-		}
+	if err := os.MkdirAll(filepath.Join(root, ".Errata", "witness", "w"), 0o750); err != nil {
+		t.Fatal(err)
 	}
-	dir, err := fixtureDir(root, "w")
-	if err != nil {
-		t.Fatalf("names spelt as written: %v", err)
+	if err := os.WriteFile(filepath.Join(root, ".Errata", "witness", "w", "x.yaml"), nil, 0o600); err != nil {
+		t.Fatal(err)
 	}
-	_ = dir.Close()
-}
-
-// openFixture closes the directory it opened when the listing of its
-// parent fails, and says the fixture is not in the repository. The count
-// of open descriptors needs /proc/self/fd, so it is checked on Linux
-// alone. Planted break: next left open on a failed listing, which kept
-// one descriptor for each run.
-func TestFixtureDirClosesWhatItOpenedWhenTheListingFails(t *testing.T) {
-	root := fixtures(t, "w")
-	open := func() int {
-		fds, err := os.ReadDir("/proc/self/fd")
-		if err != nil {
-			return -1
-		}
-		return len(fds)
-	}
-	failing := func(*os.Root) (namer, error) { return nil, errors.New("the listing failed") }
-	before := open()
-	for range 5 {
-		_, err := openFixture(root, "w", lookup{respelt: folding, list: failing})
-		if err == nil || err.Error() != "its fixture .errata/witness/w is not in the repository: the listing failed" {
-			t.Fatalf("a failed listing: %v", err)
-		}
-	}
-	if after := open(); before >= 0 && after != before {
-		t.Errorf("%d descriptors open after five failed listings, %d before", after, before)
-	}
-}
-
-// folding stands in for a lookup on a file system that ignores case,
-// where the fixtures' names are all lower case: it finds the name in
-// lower case.
-func folding(cur *os.Root, name string) (fs.FileInfo, error) {
-	return cur.Lstat(strings.ToLower(name))
-}
-
-// On a file system that tells case apart, the lookup of a part's name in
-// upper case finds nothing, or another directory such as a .ERRATA beside
-// .errata, so the spelling needs no listing, which costs a pass over the
-// repository's root: the fixture opens without one. Planted breaks: the
-// listing taken whenever the other spelling finds something, which listed
-// beside .ERRATA; the shortcut dropped, which listed always.
-func TestFixtureDirListsNothingWhereCaseTellsNamesApart(t *testing.T) {
-	root := fixtures(t, "w")
-	if _, err := os.Lstat(filepath.Join(root, ".ERRATA")); err == nil {
+	if _, err := os.Stat(filepath.Join(root, ".errata", "witness", "w", "x.yaml")); err == nil {
 		t.Skip("this file system ignores case")
 	}
-	listed := func(r *os.Root) (namer, error) {
-		t.Errorf("listed a directory on a file system that tells case apart")
-		return listDir(r)
-	}
-	for _, beside := range []string{"", ".ERRATA"} {
-		if beside != "" {
-			if err := os.Mkdir(filepath.Join(root, beside), 0o750); err != nil {
-				t.Fatal(err)
-			}
-		}
-		dir, err := openFixture(root, "w", lookup{respelt: onDisk.respelt, list: listed})
-		if err != nil {
-			t.Fatalf("beside %q: %v", beside, err)
-		}
-		_ = dir.Close()
+	track(t, root)
+	var calls []call
+	e := &Engine{Root: root, Run: byRoot(&calls, map[string]check.Verdict{"w": check.VerdictFalse})}
+	rep := e.Execute(context.Background(), []check.Check{{ID: "c", Scope: check.ScopeRepo, Witness: []string{"w"}}})
+	want := `git's index lists ".Errata/witness/w/x.yaml", below the fixture ".errata/witness/w" in another case, and macOS and Windows open the two as one directory, so the fixture would not read there as a clone holds it; rename it to ".errata/witness/w/x.yaml"`
+	if r := rep.Results[1]; r.Verdict != check.VerdictUnknown || r.Message != want || len(calls) != 1 {
+		t.Errorf("a fixture listed in two cases: %s %q after %d runs, want unknown %q after the check's own", r.Verdict, r.Message, len(calls), want)
 	}
 }
 
@@ -547,74 +461,4 @@ func said(err error) string {
 		return "<nil>"
 	}
 	return err.Error()
-}
-
-// batches is a namer that gives its batches one per call, then each call
-// after them gives end. One with no end ends at an empty batch, so a call
-// after its batches is read past the listing's end: it is counted in
-// past and refused, so a loop that misses the end fails at once and does
-// not run on.
-type batches struct {
-	names [][]string
-	end   error
-	past  int
-}
-
-// errPast is a batches' refusal of a call after its last batch.
-var errPast = errors.New("read past the listing's end")
-
-func (b *batches) Readdirnames(int) ([]string, error) {
-	if len(b.names) == 0 {
-		if b.end == nil {
-			b.past++
-			return nil, errPast
-		}
-		return nil, b.end
-	}
-	n := b.names[0]
-	b.names = b.names[1:]
-	return n, nil
-}
-
-func (b *batches) Close() error { return nil }
-
-// spelling reads every batch a listing gives until io.EOF, stops at a
-// batch that is empty with no error, returns a listing's error as it
-// is, and takes the name as written over another spelling listed first.
-// Planted breaks, the mutants mutation left alive: the exact match negated
-// (n != name), which took W; the loop ended after any batch with no error
-// (len(names) != 0), which missed W in the second batch; an error taken
-// for the end of an empty batch (err != nil), which said w was not listed
-// in place of the listing's error, and read past the empty batch with no
-// error: the read past is refused and counted, so the test fails there at
-// once, where the loop ran on until mutation's limit stopped it.
-func TestSpellingReadsEveryBatch(t *testing.T) {
-	root := fixtures(t, "w")
-	cur, err := os.OpenRoot(filepath.Join(root, ".errata", "witness"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cur.Close()
-	next, err := cur.OpenRoot("w")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer next.Close()
-	run := func(b *batches) (string, error) {
-		return spelling(cur, next, "w", lookup{respelt: folding, list: func(*os.Root) (namer, error) { return b, nil }})
-	}
-	if as, err := run(&batches{names: [][]string{{"W", "x", "w"}}, end: io.EOF}); err != nil || as != "w" {
-		t.Errorf("w beside W and x: %q, %v, want w as written", as, err)
-	}
-	if as, err := run(&batches{names: [][]string{{"a"}, {"b", "W"}}, end: io.EOF}); err != nil || as != "W" {
-		t.Errorf("W in the second batch: %q, %v", as, err)
-	}
-	ended := &batches{names: [][]string{{"a"}, {}}}
-	if as, err := run(ended); err == nil || errors.Is(err, errPast) || as != "" || ended.past != 0 {
-		t.Errorf("an empty batch with no error: %q, %v after %d reads past it, want the end of the listing", as, err, ended.past)
-	}
-	boom := errors.New("the listing failed")
-	if _, err := run(&batches{end: boom}); !errors.Is(err, boom) {
-		t.Errorf("a listing that fails: %v, want its error", err)
-	}
 }

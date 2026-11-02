@@ -23,6 +23,10 @@ func (c *lookCounter) Err() error {
 	return nil
 }
 
+// backgroundMeter is a meter whose context is never done, with all of
+// MaxSteps and maxSource left.
+func backgroundMeter() *meter { return newMeter(context.Background()) }
+
 // matchContext is Match under ctx: the compile and the match, as a caller
 // of the package runs them.
 func matchContext(ctx context.Context, file, glob string) (bool, error) {
@@ -37,46 +41,165 @@ var (
 	stepsGlob = strings.Repeat("*(a|aa)", 140)
 )
 
-// A compile and its match look at their context once before each segment
-// the compile parses, once for each node of a segment's tree as it builds
-// the source, and once every 1024 steps of the match: 3 segments; a node each for x and y, and
-// for the root of the third, whose 140 extglobs have two alternatives
-// each; then 128 looks in the 131072 steps before the budget runs out. The
-// count is written out, so a change to checkEvery fails here.
-func TestCompileAndMatchLookAtTheirContext(t *testing.T) {
-	ctx := &lookCounter{Context: context.Background(), doneAfter: -1}
-	_, err := matchContext(ctx, "x/y/"+stepsFile, "x/y/"+stepsGlob)
-	if err == nil || err.Error() != "matching takes more than the step budget" {
-		t.Fatalf("error %v, want the step budget", err)
+// A meter stops at the first look that finds its context done, with an
+// error that wraps the context's, and from then on refuses every look and
+// spend without looking again.
+func TestTheMeterStopsAtTheFirstDoneLook(t *testing.T) {
+	ctx := &lookCounter{Context: context.Background(), doneAfter: 2}
+	w := newMeter(ctx)
+	for i := range 2 {
+		if !w.look() {
+			t.Fatalf("look %d, before the context is done, stopped the meter: %v", i+1, w.err)
+		}
 	}
-	if want := 3 + 1 + 1 + 1 + 140*3 + 128; ctx.looks != want || MaxSteps != 131072 {
-		t.Errorf("%d looks, want %d", ctx.looks, want)
+	if w.look() || !errors.Is(w.err, context.Canceled) || w.err.Error() != "the match was stopped: context canceled" {
+		t.Fatalf("the third look: error %v, want the match stopped", w.err)
+	}
+	if w.look() || w.step() || w.spend(checkEvery) || ctx.looks != 3 {
+		t.Errorf("a stopped meter went on, or looked again: %d looks", ctx.looks)
 	}
 }
 
-// A done context stops the compile before its first segment, before a
-// later one, and the match at its next look, with an error that wraps the
-// context's.
-func TestCompileAndMatchStop(t *testing.T) {
+// A meter spends exactly MaxSteps, and refuses the step after them; a
+// spend of more than is left refuses and leaves none.
+func TestTheMeterHoldsMaxSteps(t *testing.T) {
+	w := backgroundMeter()
+	for range MaxSteps / checkEvery {
+		if !w.spend(checkEvery) {
+			t.Fatalf("refused with %d steps left: %v", w.steps, w.err)
+		}
+	}
+	if w.step() || !errors.Is(w.err, errBudget) {
+		t.Errorf("the step past MaxSteps: error %v, want %v", w.err, errBudget)
+	}
+	w = backgroundMeter()
+	w.steps = 2
+	if w.spend(3) || w.steps != 0 || !errors.Is(w.err, errBudget) {
+		t.Errorf("3 steps of 2: %d left, error %v; want none and %v", w.steps, w.err, errBudget)
+	}
+}
+
+// A match looks at its context at most once every checkEvery steps, and a
+// context done at any point stops it within checkEvery steps, plus the
+// rest of the spend that crosses the look, whatever it spends at a time.
+// ADR 0016 states the cadence as 1024 steps.
+func TestTheMeterLooksEveryCheckEvery(t *testing.T) {
+	if checkEvery != 1024 {
+		t.Errorf("checkEvery is %d, and ADR 0016 says 1024", checkEvery)
+	}
+	for _, n := range []int{1, 3, 7} {
+		counter := &lookCounter{Context: context.Background(), doneAfter: -1}
+		w := newMeter(counter)
+		for w.spend(n) {
+		}
+		if want := MaxSteps / checkEvery; counter.looks > want {
+			t.Errorf("spends of %d: %d looks in MaxSteps, want at most %d", n, counter.looks, want)
+		}
+		for _, at := range []int{0, 1, checkEvery - 1, 5*checkEvery + 17} {
+			ctx, cancel := context.WithCancel(context.Background())
+			w := newMeter(ctx)
+			for MaxSteps-w.steps < at {
+				w.spend(n)
+			}
+			cancel()
+			done := MaxSteps - w.steps
+			for w.spend(n) {
+			}
+			if after := MaxSteps - w.steps - done; !errors.Is(w.err, context.Canceled) || after > checkEvery+n-1 {
+				t.Errorf("spends of %d, done after %d steps: %d more steps, error %v; want at most %d and the stop",
+					n, done, after, w.err, checkEvery+n-1)
+			}
+		}
+	}
+}
+
+// A compile spends from its meter the source of the regexes it keeps, and
+// may spend exactly maxSource: a meter with the source a glob's segments
+// build compiles it, and one with a unit less refuses it. The refusal is
+// the meter's, so its later looks refuse too.
+func TestTheMeterHoldsTheSourceBound(t *testing.T) {
+	glob := toUnits("a*/{b,c}?d/e")
+	w := backgroundMeter()
+	m, err := compile(w, glob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	built := 0
+	for _, segs := range m.set {
+		for _, s := range segs {
+			if s.re != nil {
+				built += len(s.re.source)
+			}
+		}
+	}
+	if spent := maxSource - w.source; spent != built || built == 0 {
+		t.Fatalf("spent %d units of source, and the regexes hold %d", spent, built)
+	}
+	exact := backgroundMeter()
+	exact.source = built
+	if _, err := compile(exact, glob); err != nil {
+		t.Errorf("with the %d units it builds: %v", built, err)
+	}
+	short := backgroundMeter()
+	short.source = built - 1
+	if _, err := compile(short, glob); !errors.Is(err, errSource) || !errors.Is(short.err, errSource) || short.look() {
+		t.Errorf("with one unit fewer: error %v, the meter's %v; want %v on both, and no later look", err, short.err, errSource)
+	}
+}
+
+// Every look stops the work: a compile looks at each brace set it
+// expands, before each segment it parses and at each node of a segment's
+// tree as it builds the source, and a match every checkEvery steps. So a
+// context done from any of the first looks such a glob takes stops it,
+// at that look, whatever looks come before. Each glob has at least looks
+// of its kind: 200 brace sets; 51 segments of ** that build no source,
+// between 50 of x; a segment of 101 nested nodes; and the match of
+// TestMatchBounds that spends every step. The looks of one kind come from
+// one line of code, so make test tries those lookTried picks, and
+// TestEveryLookStopsTheWorkSlow the rest: trying all 128 of the match's
+// took 8 s under make test's flags on the slowest node.
+func TestEveryLookStopsTheWork(t *testing.T) { checkLooks(t, true) }
+
+// The looks of TestEveryLookStopsTheWork that lookTried leaves to the slow
+// target.
+func TestEveryLookStopsTheWorkSlow(t *testing.T) {
+	slowOnly(t)
+	checkLooks(t, false)
+}
+
+// lookTried is whether make test tries look k of n: the first two, every
+// eighth and the last.
+func lookTried(k, n int) bool { return k <= 1 || k%8 == 0 || k == n-1 }
+
+// checkLooks tries the looks of each kind that lookTried picks, or the
+// others.
+func checkLooks(t *testing.T, picked bool) {
+	t.Helper()
+	tried := 0
 	for _, c := range []struct {
-		name      string
-		doneAfter int
-		file      string
-		glob      string
-		maxLooks  int
+		name, file, glob string
+		looks            int
 	}{
-		{"before the first segment", 0, "a", "a*", 1},
-		{"before the third segment", 2, "x/y/z", "x/y/z*", 3},
-		{"in the match", 1, stepsFile, stepsGlob, 2},
+		{"brace sets", "a", strings.Repeat("{a,b}", 200), 200},
+		{"segments", "x", strings.Repeat("**/x/", 50) + "**", 101},
+		{"nodes", "a", strings.Repeat("a@(", 100) + "a" + strings.Repeat(")", 100), 101},
+		{"steps", stepsFile, stepsGlob, MaxSteps / checkEvery},
 	} {
-		ctx := &lookCounter{Context: context.Background(), doneAfter: c.doneAfter}
-		_, err := matchContext(ctx, c.file, c.glob)
-		if !errors.Is(err, context.Canceled) || err.Error() != "the match was stopped: context canceled" {
-			t.Errorf("%s: error %v, want the match stopped", c.name, err)
+		for k := range c.looks {
+			if lookTried(k, c.looks) != picked {
+				continue
+			}
+			tried++
+			ctx := &lookCounter{Context: context.Background(), doneAfter: k}
+			_, err := matchContext(ctx, c.file, c.glob)
+			if !errors.Is(err, context.Canceled) || ctx.looks != k+1 {
+				t.Errorf("%s, done from look %d: error %v after %d looks, want the stop at that look", c.name, k+1, err, ctx.looks)
+				break
+			}
 		}
-		if ctx.looks != c.maxLooks {
-			t.Errorf("%s: %d looks, want %d", c.name, ctx.looks, c.maxLooks)
-		}
+	}
+	if tried == 0 {
+		t.Fatal("no look was tried: the test and its slow twin must split the looks")
 	}
 }
 
@@ -90,30 +213,7 @@ func TestMatchRunsUnderTheBackground(t *testing.T) {
 	}
 }
 
-// Brace expansion looks at its context at each brace set, so a glob of
-// many sets stops before it has expanded them all.
-func TestBraceExpansionLooksAtItsContext(t *testing.T) {
-	ctx := &lookCounter{Context: context.Background(), doneAfter: 1}
-	_, err := braceExpandContext(ctx, toUnits(strings.Repeat("{a,b}", 200)))
-	if !errors.Is(err, context.Canceled) || ctx.looks != 2 {
-		t.Errorf("error %v after %d looks, want the expansion stopped at the second", err, ctx.looks)
-	}
-}
-
-// A segment's source build looks at its context at each node, so one
-// segment of thousands of nodes stops inside its build.
-func TestSourceBuildLooksAtItsContext(t *testing.T) {
-	ctx := &lookCounter{Context: context.Background(), doneAfter: 2}
-	n := fromGlob(toUnits("x!(a)x!(a)" + strings.Repeat("a@(", 100) + "a" + strings.Repeat(")", 100)))
-	n.flatten()
-	n.fillNegs()
-	_, _, _, _, err := n.rootSource(toUnits("x"), &sourceBudget{left: maxSource, ctx: ctx})
-	if !errors.Is(err, context.Canceled) || ctx.looks != 3 {
-		t.Errorf("error %v after %d looks, want the build stopped at the third", err, ctx.looks)
-	}
-}
-
-// A class test can spend several steps at once, so the budget looks at its
+// A class test can spend several steps at once, so the meter looks at its
 // context whenever what is left reaches or passes a multiple of
 // checkEvery, and not only when it lands on one: 3 steps from 1025 or 1026
 // pass 1024, from 1027 they land on it, and from 1024 they pass none.
@@ -122,18 +222,20 @@ func TestSpendLooksPastAMultipleOfCheckEvery(t *testing.T) {
 		{checkEvery + 1, 1}, {checkEvery + 2, 1}, {checkEvery + 3, 1}, {checkEvery, 0}, {checkEvery + 4, 0},
 	} {
 		ctx := &lookCounter{Context: context.Background(), doneAfter: -1}
-		b := &budget{left: c.left, ctx: ctx}
-		if !b.spend(3) || b.left != c.left-3 || ctx.looks != c.looks {
-			t.Errorf("3 steps from %d: %d left after %d looks, want %d looks", c.left, b.left, ctx.looks, c.looks)
+		w := newMeter(ctx)
+		w.steps = c.left
+		if !w.spend(3) || w.steps != c.left-3 || ctx.looks != c.looks {
+			t.Errorf("3 steps from %d: %d left after %d looks, want %d looks", c.left, w.steps, ctx.looks, c.looks)
 		}
 	}
 	// A class test that took little work spends no more steps, and does
 	// not look, even with none left and the context done.
 	for _, left := range []int{0, checkEvery} {
 		ctx := &lookCounter{Context: context.Background(), doneAfter: 0}
-		b := &budget{left: left, ctx: ctx}
-		if !b.spend(0) || b.left != left || ctx.looks != 0 {
-			t.Errorf("no steps from %d: %d left after %d looks, want no look", left, b.left, ctx.looks)
+		w := newMeter(ctx)
+		w.steps = left
+		if !w.spend(0) || w.steps != left || ctx.looks != 0 {
+			t.Errorf("no steps from %d: %d left after %d looks, want no look", left, w.steps, ctx.looks)
 		}
 	}
 }

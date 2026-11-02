@@ -13,8 +13,25 @@ import (
 // testdata/parts.mjs wrote from minimatch 10.2.6: random strings of braces,
 // sets, sequences of every form, escapes and $, and of the brackets and
 // backslashes unescape reads. The brace cases are those inside the port's
-// bounds, where it gives what brace-expansion gives.
-func TestPartsAgreeWithMinimatch(t *testing.T) {
+// bounds, where it gives what brace-expansion gives. make test checks the
+// brace cases shorter than expansionMaxDepth, and
+// TestDeepBracesAgreeWithMinimatch the 14 longer ones, which nest about
+// that deep.
+func TestPartsAgreeWithMinimatch(t *testing.T) { checkPartCases(t, false) }
+
+// The brace sets of parts.json nested within a few levels of
+// brace-expansion's depth bound, which no other test holds: under make
+// test's flags five of them took 50 s on the slowest node, which the
+// package's 2 minute timeout cannot spare.
+func TestDeepBracesAgreeWithMinimatch(t *testing.T) {
+	slowOnly(t)
+	checkPartCases(t, true)
+}
+
+// checkPartCases checks the brace cases longer than expansionMaxDepth, or
+// the shorter ones and every unescape case.
+func checkPartCases(t *testing.T, deep bool) {
+	t.Helper()
 	data, err := os.ReadFile("testdata/parts.json")
 	if err != nil {
 		t.Fatal(err)
@@ -29,13 +46,21 @@ func TestPartsAgreeWithMinimatch(t *testing.T) {
 	if len(cases.BraceExpand) < 1000 || len(cases.Unescape) < 1000 {
 		t.Fatalf("%d brace and %d unescape cases; the file holds over 1000 of each", len(cases.BraceExpand), len(cases.Unescape))
 	}
+	deepCases, checked := 0, 0
 	for _, c := range cases.BraceExpand {
 		s := jsonUnits(t, c[0])
+		if len(s) > expansionMaxDepth {
+			deepCases++
+		}
+		if (len(s) > expansionMaxDepth) != deep {
+			continue
+		}
+		checked++
 		var want []json.RawMessage
 		if err := json.Unmarshal(c[1], &want); err != nil {
 			t.Fatal(err)
 		}
-		got, err := braceExpand(s)
+		got, err := braceExpand(backgroundMeter(), s)
 		if err != nil {
 			t.Errorf("braceExpand(%s): %v", c[0], err)
 			continue
@@ -47,6 +72,15 @@ func TestPartsAgreeWithMinimatch(t *testing.T) {
 			}
 			t.Errorf("braceExpand(%s) = %q; minimatch says %s", c[0], text, c[1])
 		}
+	}
+	if deepCases < 14 {
+		t.Errorf("%d brace cases nest near the depth bound; the file holds 14", deepCases)
+	}
+	if checked == 0 {
+		t.Error("no brace case of parts.json was checked: the deep cases and the others must split the table")
+	}
+	if deep {
+		return
 	}
 	for _, c := range cases.Unescape {
 		if got := unescape(jsonUnits(t, c[0])); !slices.Equal(got, jsonUnits(t, c[1])) {

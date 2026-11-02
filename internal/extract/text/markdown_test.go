@@ -97,6 +97,72 @@ func TestGuardedParseIsGoldmarks(t *testing.T) {
 	}
 }
 
+// A file whose last line has no newline reads as CommonMark reads it, the
+// end of the file ending the line: "<div" there is an HTML block, and so is
+// "<div" ended by a lone CR. goldmark v2.1.9's scan for an HTML block opening
+// indexed past a last line such as "<a" that has no newline, which crashed
+// errata (testdata/fuzz/FuzzText/html-open-at-end-of-file), and errata gave
+// such a file a newline until v2.1.11 fixed the scan. goldmark v2.1.8 does
+// not crash but reads "<div" with a newline as a paragraph, so this test
+// holds each reading: a goldmark that crashes again, or reads one of these
+// otherwise, fails it.
+func TestLastLineWithoutNewlineReads(t *testing.T) {
+	for _, c := range []struct {
+		src   string
+		code  bool
+		block string // the line of the tree for the file's last block
+		prose string
+	}{
+		{"<a", false, "Paragraph@0", "<a"},
+		{"<div", false, "HTMLBlock@0 Kind6", ""},
+		{"<div\r", false, "HTMLBlock@0 Kind6", ""},
+		{"</p", false, "HTMLBlock@0 Kind6", ""},
+		{"   <div", false, "HTMLBlock@3 Kind6", ""},
+		{"> <div", false, "HTMLBlock@2 Kind6", ""},
+		{"- <p", false, "HTMLBlock@2 Kind6", ""},
+		{"x\n\n<div", false, "HTMLBlock@3 Kind6", "x"},
+		{"<div\n\n<a", false, "Paragraph@6", "<a"},
+		{"    code", true, "CodeBlock@4", "code"},
+	} {
+		doc, err := parseMarkdown("f", []byte(c.src), core.DefaultMaxBytes, time.Minute)
+		if err != nil {
+			t.Fatalf("%q: %v", c.src, err)
+		}
+		tree := treeString(doc.root, doc.src)
+		if !strings.Contains(tree, " "+c.block+" ") {
+			t.Errorf("%q: no %s in\n%s", c.src, c.block, tree)
+		}
+		p, err := doc.prose(c.code)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(p.text) != c.prose {
+			t.Errorf("%q: prose %q, want %q", c.src, p.text, c.prose)
+		}
+	}
+}
+
+// An empty file, or one that holds only a BOM, has no last line, and no
+// byte of it is read before the first.
+func TestAnEmptyFileReadsAsEmpty(t *testing.T) {
+	for _, src := range []string{"", "\xef\xbb\xbf"} {
+		doc, err := parseMarkdown("f", []byte(src), core.DefaultMaxBytes, time.Minute)
+		if err != nil {
+			t.Fatalf("%q: %v", src, err)
+		}
+		if len(doc.src) != 0 {
+			t.Errorf("%q: src %q, want it empty", src, doc.src)
+		}
+		p, err := doc.prose(false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(p.text) != 0 {
+			t.Errorf("%q: prose %q, want none", src, p.text)
+		}
+	}
+}
+
 // renderHTML is goldmark's HTML of the tree root of src, rendered as
 // goldmark's own test of the CommonMark spec renders it.
 func renderHTML(t *testing.T, src []byte, root ast.Node) string {

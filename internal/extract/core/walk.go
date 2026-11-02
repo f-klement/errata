@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
-	"os"
 	slashpath "path"
 	"slices"
 
@@ -98,42 +96,31 @@ const walkBatch = 1024
 // walk past a limit, a path longer than a file may be, a directory Walk
 // cannot open or read, or an error visit returns ends the walk with that
 // error: a walk is refused, never cut short. On a witness's run the walk
-// starts at the fixture the engine opened, as a read does (openTree).
+// lists what git's index lists below the fixture, as a clone holds it, and
+// never the disk (tree.top), so it names no untracked file.
 func Walk(ctx context.Context, root string, l WalkLimits, want func(dir, name string) bool, visit func(dir string, names []string) error) error {
 	t, err := openTree(ctx, root)
 	if err != nil {
 		return err
 	}
 	defer t.close()
-	w := walker{limits: l, want: want, visit: visit, list: listDir}
-	return w.dir(t.Root, ".", 0)
+	w := walker{limits: l, want: want, visit: visit}
+	return w.dir(t.top(), ".", 0)
 }
-
-// lister is what a walk reads a directory through: an *os.File, or in a
-// test a reader that fails.
-type lister interface {
-	ReadDir(n int) ([]fs.DirEntry, error)
-	Close() error
-}
-
-// listDir opens the directory r is for reading.
-func listDir(r *os.Root) (lister, error) { return r.Open(".") }
 
 // walker is one walk's state.
 type walker struct {
 	limits  WalkLimits
 	want    func(dir, name string) bool
 	visit   func(dir string, names []string) error
-	list    func(*os.Root) (lister, error)
 	entries int
 	dirs    int // the directories entered
 	names   int // the bytes of the names of the directories waiting
 }
 
-// dir walks the directory r is open on, at rel, depth directories below the
-// root.
-func (w *walker) dir(r *os.Root, rel string, depth int) error {
-	files, dirs, err := w.read(r, rel)
+// dir walks the directory d, at rel, depth directories below the root.
+func (w *walker) dir(d folder, rel string, depth int) error {
+	files, dirs, err := w.read(d, rel)
 	if err != nil {
 		return err
 	}
@@ -152,12 +139,12 @@ func (w *walker) dir(r *os.Root, rel string, depth int) error {
 		if w.dirs++; w.dirs > w.limits.Dirs {
 			return fmt.Errorf("walk: the repository holds more than %d directories outside the directories errata passes over, the limit, and stopped at %s; name the files to read in files", w.limits.Dirs, Quote(p))
 		}
-		child, err := r.OpenRoot(name)
+		child, err := d.enter(name)
 		if err != nil {
 			return fmt.Errorf("walk: read %s: %w", Quote(p), bare(err))
 		}
 		err = w.dir(child, p, depth+1)
-		_ = child.Close()
+		child.close()
 		if err != nil {
 			return err
 		}
@@ -165,12 +152,12 @@ func (w *walker) dir(r *os.Root, rel string, depth int) error {
 	return nil
 }
 
-// read lists the directory r is open on, at rel: the names of the files want
-// accepts and of the subdirectories to walk, each sorted. A directory below
-// the root that holds .git gives neither. The listing is closed before any
+// read lists the directory d, at rel: the names of the files want accepts
+// and of the subdirectories to walk, each sorted. A directory below the
+// root that holds .git gives neither. The listing is closed before any
 // subdirectory is opened.
-func (w *walker) read(r *os.Root, rel string) (files, dirs []string, err error) {
-	f, err := w.list(r)
+func (w *walker) read(d folder, rel string) (files, dirs []string, err error) {
+	f, err := d.list()
 	if err != nil {
 		return nil, nil, fmt.Errorf("walk: read %s: %w", Quote(rel), bare(err))
 	}
