@@ -93,8 +93,9 @@ type Outcome struct {
 	OnlyRanges bool
 	// First and Second index the first two values found not to agree: two
 	// versions, or a version and a range it does not satisfy. Both are -1
-	// when the values hold, and when ranges alone do not overlap, since no
-	// pair is to blame.
+	// when the values hold. When ranges alone do not overlap, no pair is
+	// to blame: First is -1, and Second is the first range at which the
+	// ranges before it, in the values' order, stop overlapping.
 	First, Second int
 }
 
@@ -103,12 +104,12 @@ type Outcome struct {
 //   - every two versions agree at the precision each states (AgreeAt);
 //   - every version satisfies every range (Satisfies);
 //   - with no version among the values, one release satisfies every range
-//     (Overlap).
+//     (Overlapping).
 //
 // Versions that agree pairwise are equal where they state the same numbers,
 // so Agree compares each with the first version stated in full and with the
 // longest partial one, and each range with those two; its time is linear in
-// the values' length, but for the sort in Overlap. A Reader bounds the
+// the values' length, but for the sort in Overlapping. A Reader bounds the
 // intervals it is given.
 func Agree(values []Value) Outcome {
 	// The first version stated in full and the longest partial one, by
@@ -140,7 +141,10 @@ func Agree(values []Value) Outcome {
 		for _, v := range values {
 			rs = append(rs, *v.rng)
 		}
-		return Outcome{Holds: Overlap(rs), OnlyRanges: true, First: -1, Second: -1}
+		if k := Overlapping(rs); k < len(rs) {
+			return Outcome{OnlyRanges: true, First: -1, Second: k}
+		}
+		return Outcome{Holds: true, OnlyRanges: true, First: -1, Second: -1}
 	}
 	for j, v := range values {
 		if v.rng == nil {

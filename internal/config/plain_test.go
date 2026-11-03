@@ -238,14 +238,17 @@ func TestPlainStringsEndsOnACycle(t *testing.T) {
 	}
 }
 
-// An extractor name that loads as its text, such as 1 or 20.04, loads, and
-// agree names it the same way.
-func TestParseKeepsAnExtractorNameThatLoadsAsWritten(t *testing.T) {
-	cfg, err := parseRaw([]byte("checks:\n- id: a\n  reason: r\n  scope: repo\n  extract: {1: {json: {file: f, path: a}}, 20.04: {json: {file: g, path: a}}}\n  agree: [1, 20.04]\n"))
-	if err != nil {
-		t.Fatal(err)
+// An extractor name that YAML reads as a number, such as 1 or 20.04, keeps
+// its text: the name rule refuses it as written, and agree names it the
+// same way, so nothing else refuses it.
+func TestParseKeepsAnExtractorNameAsWritten(t *testing.T) {
+	_, err := parseRaw([]byte("checks:\n- id: a\n  reason: r\n  scope: repo\n  extract: {1: {json: {file: f, path: a}}, 20.04: {json: {file: g, path: a}}}\n  agree: [1, 20.04]\n"))
+	for _, name := range []string{"1", "20.04"} {
+		if want := fmt.Sprintf("extractor %q: a rule refers to an extractor by its name", name); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %v, want it to contain %q", err, want)
+		}
 	}
-	if got := cfg.Checks[0].Rule().Agree; len(got) != 2 || got[0] != "1" || got[1] != "20.04" {
-		t.Fatalf("agree = %q, want [1 20.04]", got)
+	if err != nil && (strings.Contains(err.Error(), "agree names") || strings.Contains(err.Error(), "agree does not name")) {
+		t.Errorf("error = %v, want agree to name the extractors as written", err)
 	}
 }

@@ -74,7 +74,7 @@ func TestValuesYAMLRetypes(t *testing.T) {
 func TestVariableLongForm(t *testing.T) {
 	files := main("variables:\n  A:\n    value: staging\n    description: where\n    options: [staging, prod]\n  B:\n    description: none\njob:\n  script: [x]\n")
 	want(t, see(t, files, "job", "A"), "staging@.gitlab-ci.yml:3")
-	want(t, see(t, files, "job", "B"), "@.gitlab-ci.yml:7")
+	want(t, see(t, files, "job", "B"), "@.gitlab-ci.yml:6")
 	for body, msg := range map[string]string{
 		"variables:\n  A: [x]\njob:\n  script: [x]\n":           "a variable's value is a string, not a sequence",
 		"variables:\n  A: {value: [x]}\njob:\n  script: [x]\n":  "a variable's value is a string, not a sequence",
@@ -92,6 +92,20 @@ func TestVariableLongForm(t *testing.T) {
 		_, err := extracttest.Run(t, build, Spec{File: ".gitlab-ci.yml", Job: "job", Variable: "A"}, extracttest.Repo(t, main(body)))
 		extracttest.WantError(t, err, msg)
 	}
+}
+
+// A long form with no value reports the line of its variable's key, not
+// that of its first subkey, where the mapping starts: when an include's
+// long form is merged with the main file's, and when the long form is an
+// alias of one written under another key.
+func TestVariableLongFormWithoutValueNamesItsKey(t *testing.T) {
+	files := map[string]string{
+		".gitlab-ci.yml": "include: b.yml\nvariables:\n  B:\n    description: here\njob:\n  script: [x]\n",
+		"b.yml":          "variables:\n\n  B:\n    description: there\n",
+	}
+	want(t, see(t, files, "job", "B"), "@b.yml:3")
+	want(t, see(t, main(".d:\n  C: &c\n    description: d\nvariables:\n  B: *c\njob:\n  script: [x]\n"), "job", "B"), "@.gitlab-ci.yml:2")
+	want(t, see(t, main(".d:\n  C:\n    &c\n    description: d\nvariables:\n  B: *c\njob:\n  script: [x]\n"), "job", "B"), "@.gitlab-ci.yml:2")
 }
 
 // A key names a keyword, or a key below one: a list gives each item, a
@@ -302,4 +316,18 @@ func TestRefusedAsGitLabRefuses(t *testing.T) {
 	extracttest.WantError(t, err, `variable "ON" is no name GitLab accepts: its YAML loader reads it as a boolean or null`)
 	want(t, see(t, main(".v:\n  T: x\njob:\n  variables: !reference [.v]\n  script: [x]\n"), "job", "T"), "x@.gitlab-ci.yml:2")
 	want(t, see(t, main("variables: {T: {value: v, description: d, options: [v, w], expand: true}}\njob:\n  script: [x]\n"), "job", "T"), "v@.gitlab-ci.yml:1")
+}
+
+// A scalar tagged !!bool holds one of the words Psych reads as a boolean,
+// as GitLab loads it, where YAML 1.2 takes only true and false: !!bool On
+// and yes are true and !!bool off false, and a word Psych does not take
+// either is refused with its line. Planted break: the gitlab-ci parser's
+// !!bool words dropped, so the shared check refused !!bool yes.
+func TestBoolTagTakesPsychWords(t *testing.T) {
+	files := main("variables:\n  TAG: top\nnone:\n  inherit:\n    variables: !!bool off\n  script: [make]\nall:\n  inherit:\n    variables: !!bool On\n  variables:\n    FLAG: !!bool yes\n  script: [make]\n")
+	want(t, see(t, files, "none", "TAG"), "")
+	want(t, see(t, files, "all", "TAG"), "top@.gitlab-ci.yml:2")
+	want(t, see(t, files, "all", "FLAG"), "yes!@.gitlab-ci.yml:11")
+	err := refused(t, main("job:\n  variables:\n    FLAG: !!bool maybe\n  script: [make]\n"), "job", "FLAG")
+	extracttest.WantError(t, err, `line 3: "maybe" is not a valid !!bool`)
 }

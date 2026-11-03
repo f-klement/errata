@@ -3,7 +3,9 @@ package gitlabci
 import (
 	"errors"
 	"fmt"
+	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/f-klement/errata/internal/extract/core"
@@ -33,6 +35,7 @@ func (l *loader) isReference(n *core.Node) bool { return l.info[n].tag == "!refe
 // them as GitLab does.
 type loader struct {
 	read        func(core.Source) ([]byte, error)
+	list        func(core.Files) ([]core.Named, error) // the tracked files a wildcard include matches (core.Tracked)
 	parse       Parser
 	limit       int64 // max_bytes, which the files read hold at most in all
 	left        int64 // the bytes the files read may still hold
@@ -209,8 +212,8 @@ func (l *loader) includes(file string, inc *core.Node) ([]string, error) {
 		default:
 			return nil, fmt.Errorf("%s: line %d: an include is a file or a mapping, not a sequence", file, it.Line)
 		}
-		if strings.ContainsAny(local, "*$") {
-			l.unreachable = append(l.unreachable, fmt.Sprintf("the %s, whose file %s a wildcard or a variable names", at, core.Quote(local)))
+		if strings.Contains(local, "$") {
+			l.unreachable = append(l.unreachable, fmt.Sprintf("the %s, whose file %s a variable names", at, core.Quote(local)))
 			continue
 		}
 		// "include:local" names a file of the project's repository; a
@@ -223,13 +226,140 @@ func (l *loader) includes(file string, inc *core.Node) ([]string, error) {
 		if _, err := core.CheckSource("include", name, 0); err != nil {
 			return nil, fmt.Errorf("%s: line %d: %w", file, it.Line, err)
 		}
-		// GitLab reads only YAML: "does not have YAML extension!"
-		if ext := filepath.Ext(name); ext != ".yml" && ext != ".yaml" {
-			return nil, fmt.Errorf("%s: line %d: include %s is not a .yml or .yaml file, which GitLab refuses", file, it.Line, core.Quote(local))
+		names := []string{name}
+		if strings.Contains(name, "*") {
+			var err error
+			if names, err = l.wildcard(file, name); err != nil {
+				return nil, fmt.Errorf("%s: line %d: include %s %w", file, it.Line, core.Quote(local), err)
+			}
 		}
-		files = append(files, name)
+		for _, n := range names {
+			// GitLab reads only YAML: "does not have YAML extension!", of
+			// each file a wildcard matches too.
+			if ext := filepath.Ext(n); ext != ".yml" && ext != ".yaml" {
+				return nil, fmt.Errorf("%s: line %d: include %s is not a .yml or .yaml file, which GitLab refuses", file, it.Line, core.Quote(n))
+			}
+		}
+		files = append(files, names...)
 	}
 	return files, nil
+}
+
+// wildcard is the files git tracks that the include:local name, which
+// holds a *, matches as GitLab matches it, in git's order, but the file
+// that includes it. GitLab writes the name as a regular expression over
+// each path of the repository and matches the whole path
+// (Repository#search_files_by_wildcard_path, wildcardGlobs), and leaves out
+// the including file: "Prevent self-inclusion: skip paths matching the
+// parent file that triggered this wildcard expansion"
+// (Mapper::LocationExpander#expand_wildcard_paths), which errata applies to
+// the main file too. GitLab strips the leading slashes only, so a name with
+// a . or .. name or an empty one, such as ./ci/*.yml or ci//*.yml, matches
+// no path, and includes none, rather than the paths core's cleaning would
+// give it. The files come from core's listing (core.Files), through the
+// globs wildcardGlobs gives, so its bounds, its witness filter, which no
+// fixture of a witness passes, and its sparse checkout rule hold. A name
+// that matches no file includes none, as GitLab's expansion gives none.
+func (l *loader) wildcard(file, name string) ([]string, error) {
+	if path.Clean(name) != name {
+		return nil, nil
+	}
+	globs, err := wildcardGlobs(name)
+	if err != nil {
+		return nil, err
+	}
+	f, err := core.CheckFiles("include", globs, 0)
+	if err != nil {
+		return nil, fmt.Errorf("is no wildcard errata reads: %w", err)
+	}
+	named, err := l.list(f)
+	if err != nil {
+		return nil, fmt.Errorf("matches files errata cannot list: %w", err)
+	}
+	self := path.Clean(filepath.ToSlash(file))
+	out := make([]string, 0, len(named))
+	for _, n := range named {
+		if n.File != self {
+			out = append(out, n.File)
+		}
+	}
+	// Each glob's files are in git's order, and the globs one after
+	// another; GitLab lists the repository's files in git's order once.
+	slices.Sort(out)
+	return out, nil
+}
+
+// wildcardGlobs is globs of core's files: key that together match the paths
+// GitLab's include:local wildcard name matches, and no other. GitLab
+// (Repository#search_files_by_wildcard_path) escapes the name as a regular
+// expression and replaces, in this order, **/ with (.*?/)?, any other **
+// with .*? and * with ([^/])*?, and matches the whole path. This is the one
+// place where GitLab's matching and core's differ:
+//
+//   - **/ matches zero or more whole directories, as GitLab's spec has it
+//     for **/*.md, which matches README.md at the root. At the start of a
+//     name it is core's ** segment: configs/**/*.yml is every .yml in
+//     configs and below it. Inside a name, as in a**/b, it is two globs:
+//     nothing (ab) or a * that ends the name, a ** segment and the rest
+//     (a*/**/b). GitLab's documentation says configs/**/*.yml reads the
+//     files "only in subfolders of configs"; its code reads configs/a.yml
+//     too, and errata follows the code, since the set is the one GitLab
+//     includes.
+//   - Any other ** matches across slashes, within a name too, so it is two
+//     globs: a * within one name, and a * that ends its name, a ** segment
+//     and a * that starts a later name. configs/**.yml is configs/*.yml
+//     and configs/*/**/*.yml, every .yml below configs.
+//   - ?, [ and \ are literal to GitLab, and core's patterns, so each is
+//     escaped with a \.
+//
+// A star after a star within one name adds nothing and is dropped, so a
+// run of stars never makes a ** segment of its own. The globs are at most
+// core.MaxEntries, so a name with more than 6 ** that each make two globs
+// is refused.
+func wildcardGlobs(name string) ([]string, error) {
+	globs := []string{""}
+	for i := 0; i < len(name); i++ {
+		dirs := strings.HasPrefix(name[i:], "**/")
+		var add []string
+		switch c := name[i]; {
+		case dirs:
+			i += 2
+		case c == '*' && strings.HasPrefix(name[i+1:], "**/"):
+			// GitLab replaces the leftmost **/ first, so in ***/ the
+			// first star is one on its own.
+			add = []string{"*"}
+		case strings.HasPrefix(name[i:], "**"):
+			i++
+			add = []string{"*", "*/**/*"}
+		case c == '*':
+			add = []string{"*"}
+		case strings.IndexByte(`?[\`, c) >= 0:
+			add = []string{`\` + string(c)}
+		default:
+			add = []string{string(c)}
+		}
+		var next []string
+		for _, g := range globs {
+			alts := add
+			if dirs && (g == "" || strings.HasSuffix(g, "/")) {
+				alts = []string{"**/"} // at the start of a name
+			} else if dirs {
+				alts = []string{"", "*/**/"} // inside a name
+			}
+			for _, a := range alts {
+				if strings.HasSuffix(g, "*") && strings.HasPrefix(a, "*") {
+					a = a[1:] // a star after a star in one name adds nothing
+				}
+				next = append(next, g+a)
+			}
+		}
+		if len(next) > core.MaxEntries {
+			return nil, fmt.Errorf("holds more than 6 **, each of which errata matches as two globs, over the limit of %d globs", core.MaxEntries)
+		}
+		globs = next
+	}
+	slices.Sort(globs)
+	return slices.Compact(globs), nil
 }
 
 // includeKind names an include errata cannot read by its key.
@@ -275,6 +405,7 @@ func (l *loader) mergeKey(t *target, dst *core.Node, k string, v *core.Node, lin
 				return err
 			}
 			o = core.NewMapping(old.Line)
+			o.KeyLine = old.KeyLine
 			idx := make(map[string]int, len(old.Keys))
 			for i, ok := range old.Keys {
 				idx[ok] = i

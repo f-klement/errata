@@ -39,7 +39,19 @@ What ADR 0001 protects still holds, because `exists` is unknown wherever it trul
 - a loop of links, and a root that is not there or is no directory. The root is opened before
   any name is looked up, since a file as the root would otherwise read as a name below a file,
   which is `false`;
-- a FIFO, a socket or a device at the name, which git never checks out and every reader refuses.
+- a FIFO, a socket or a device at the name, which git never checks out and every reader refuses;
+- a file a sparse checkout leaves out of the working tree: one git's index marks skip-worktree, or
+  one below a directory a sparse index lists as one entry. A clone holds the file, so finding
+  nothing at the name answers nothing, and the message names the sparse checkout. The owner chose
+  unknown on 2026-11-02. errata reads the index only when a name finds nothing, once for each tree
+  a read opens, and every such miss pays that read, in a sparse checkout or not. It is the index of
+  the repository that holds the root, found as git's discovery finds it: the nearest `.git` in
+  the root or a directory above it, at most 64 up, passing over a `.git` directory git would not
+  take for one and stopping where the file system changes, on Linux and macOS. The name is looked
+  up both as written and where its symlinks lead. A root that no repository holds has no sparse
+  checkout, and the file stays `false` there; an index that cannot be read cannot say, and the
+  file is unknown. A file git marks skip-worktree that the working tree holds is there, and
+  `true`.
 
 Only "nothing at the name" (`ENOENT`) and "a name on the way is a file, not a directory"
 (`ENOTDIR`, as for `f/x` where `f` is a file) are `false`. A link that dangles inside the

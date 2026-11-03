@@ -172,7 +172,7 @@ func TestParseRejectsAsserts(t *testing.T) {
 		},
 		"extractor name CEL cannot read": {
 			"checks:\n- id: bad-assert\n  reason: r\n  scope: repo\n  extract: {s3-endpoint: {json: {file: f.json, path: a}}}\n  assert: 'true'\n",
-			`checks[0]: check "bad-assert": extractor "s3-endpoint": assert refers to an extractor by its name`,
+			`checks[0]: check "bad-assert": extractor "s3-endpoint": a rule refers to an extractor by its name`,
 		},
 	}
 	for name, tc := range cases {
@@ -201,6 +201,36 @@ func TestParseAssertErrorsOnePass(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("error = %v, want it to contain %q", err, want)
 		}
+	}
+}
+
+// An extractor's name that is no CEL identifier does not load under agree
+// or assert, and is refused once: validation refuses it, and the expression
+// is not compiled into a second refusal of the same name.
+func TestParseRefusesAnExtractorNameOnce(t *testing.T) {
+	const head = "checks:\n- id: bad-name\n  reason: r\n  scope: repo\n"
+	cases := map[string]struct{ yaml, name string }{
+		"empty under agree":   {head + "  extract: {'': {json: {file: f.json, path: a}}, w: {json: {file: g.json, path: a}}}\n  agree: [w, '']\n", ""},
+		"dot under agree":     {head + "  extract: {s3.endpoint: {json: {file: f.json, path: a}}, w: {json: {file: g.json, path: a}}}\n  agree: [w, s3.endpoint]\n", "s3.endpoint"},
+		"hyphen under agree":  {head + "  extract: {s3-endpoint: {json: {file: f.json, path: a}}, w: {json: {file: g.json, path: a}}}\n  agree: [w, s3-endpoint]\n", "s3-endpoint"},
+		"space under agree":   {head + "  extract: {'s3 endpoint': {json: {file: f.json, path: a}}, w: {json: {file: g.json, path: a}}}\n  agree: [w, 's3 endpoint']\n", "s3 endpoint"},
+		"hyphen under assert": {head + "  extract: {s3-endpoint: {json: {file: f.json, path: a}}}\n  assert: 'true'\n", "s3-endpoint"},
+		"empty under assert":  {head + "  extract: {'': {json: {file: f.json, path: a}}, w: {json: {file: g.json, path: a}}}\n  assert: size(w) > 0\n", ""},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := parseRaw([]byte(tc.yaml))
+			want := fmt.Sprintf("extractor %q: a rule refers to an extractor by its name", tc.name)
+			if err == nil || strings.Count(err.Error(), want) != 1 {
+				t.Fatalf("error:\n%v\nwant it to contain once:\n%s", err, want)
+			}
+			if !strings.Contains(err.Error(), `checks[0]: check "bad-name"`) {
+				t.Fatalf("error = %v, want it to name the check", err)
+			}
+			if strings.Contains(err.Error(), "agree names") || strings.Contains(err.Error(), "agree does not name") {
+				t.Fatalf("error = %v, want agree's entry for the refused name refused no further", err)
+			}
+		})
 	}
 }
 

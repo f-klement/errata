@@ -32,8 +32,8 @@ var (
 // whose string form is text: a string, or a decimal integer.
 func psychString(text string) bool {
 	switch {
-	case text == "", text == "~", strings.EqualFold(text, "null"):
-		return false // nil
+	case isPsychNull(text):
+		return false
 	case isPsychBool(text):
 		return false
 	case strings.HasPrefix(text, ":") && len(text) > 1:
@@ -42,6 +42,25 @@ func psychString(text string) bool {
 		return true
 	}
 	return !psychInt.MatchString(text) && !psychFloat.MatchString(text) && !psychSexa.MatchString(text) && !psychDate.MatchString(text)
+}
+
+// isPsychNull reports whether Psych reads the plain scalar text as nil:
+// empty, ~ or null, in any case.
+func isPsychNull(text string) bool {
+	return text == "" || text == "~" || strings.EqualFold(text, "null")
+}
+
+// psychBoolOrNull reports whether Psych loads the scalar n as a boolean or
+// as nil: a plain one of a word isPsychBool or isPsychNull takes, or one
+// tagged !!bool or !!null. A quoted "true" or a !!str one is a string.
+func (c *config) psychBoolOrNull(n *core.Node) bool {
+	switch info := c.info[n]; info.tag {
+	case "":
+		return info.plain && (isPsychBool(n.Text) || isPsychNull(n.Text))
+	case "!!bool", "!!null":
+		return true
+	}
+	return false
 }
 
 // isPsychBool reports whether Psych reads text as a boolean: yes, true or
@@ -54,6 +73,10 @@ func isPsychBool(text string) bool {
 	}
 	return false
 }
+
+// PsychBool is isPsychBool, for the facade, which hands the gitlab-ci
+// reader a YAML parser that loads a !!bool scalar of these words too.
+func PsychBool(text string) bool { return isPsychBool(text) }
 
 // psychTrue reports whether a text isPsychBool takes is Psych's true:
 // yes, true or on, in any case.
@@ -68,21 +91,16 @@ func references(text string) bool {
 	return nameReference.MatchString(text)
 }
 
-// psychText is the text of the value Psych loads from the scalar n, as
-// Ruby's to_s writes it, for the values errata can write: a boolean is true
-// or false, and an integer in another base, with a sign or with , or _ in
-// it is written in decimal, so 010 is 8. Any other value is its text: a
-// float, date or null among them, which errata reads as not literal.
+// psychText is the text of the value Psych loads from the scalar n, a
+// parallel:matrix value, as Ruby's to_s writes it, for the values errata
+// can write: an integer in another base, with a sign or with , or _ in it
+// is written in decimal, so 010 is 8. Any other value is its text: a float
+// or a date among them, which errata reads as not literal. A boolean or a
+// null never reaches it, since GitLab refuses one in a matrix.
 func (c *config) psychText(n *core.Node) string {
 	text := n.Text
 	if len(text) > maxCondition || !c.retyped(n, text) {
 		return text
-	}
-	if isPsychBool(text) {
-		if psychTrue(text) {
-			return "true"
-		}
-		return "false"
 	}
 	if !psychInt.MatchString(text) {
 		return text

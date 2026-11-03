@@ -159,11 +159,44 @@ func TestJenkinsDefOnlyWithoutEnv(t *testing.T) {
 		{"def X = 'a'\npipeline {\n  stages {\n    stage('s') { environment { X = 'b' } }\n    stage('t') { }\n  }\n}\n", "t", "none: no file sets X: errata read the environment blocks of stage \"t\", the stages around it and the pipeline, and every env.X = and def X = in Jenkinsfile; it may come from Jenkins, such as BUILD_NUMBER, from the controller's, a folder's or a node's settings, or from a plugin, which errata cannot read"},
 		{"def X = 'a'\nX = 'b'\n", "", "error: Jenkinsfile: line 2: X = changes what def X = set, and errata does not follow which value a step sees"},
 		{"def X = 'a'\nX += 'b'\n", "", "error: Jenkinsfile: line 2: X += changes what def X = set, and errata does not follow which value a step sees"},
+		// An X = that starts no statement changes X too.
+		{"def X = 'a'\nif (c) X = 'b'\n", "", "error: Jenkinsfile: line 2: X = changes what def X = set, and errata does not follow which value a step sees"},
+		{"def X = 'a'\ndef Y = X = 'b'\n", "", "error: Jenkinsfile: line 2: X = changes what def X = set, and errata does not follow which value a step sees"},
+		{"def X = 'a'\nf(X *= 2)\n", "", "error: Jenkinsfile: line 2: X *= changes what def X = set, and errata does not follow which value a step sees"},
+		{"def X = 'a'\nString Y = 'c'; a.X = 'b'; def Z = (X == 'b'); y = [X: 'b']\n", "", "a@1"},
+		{"pipeline { environment { Y = 1; X = 'b' } }\n", "", "b@1"},
+		// A command call's argument assigns X; a declaration does not: the
+		// delta review's G1.
+		{"def X = 'a'\necho X = 'b'\n", "", "error: Jenkinsfile: line 2: X = changes what def X = set, and errata does not follow which value a step sees"},
+		{"def X = 'a'\nprintln X += 'b'\n", "", "error: Jenkinsfile: line 2: X += changes what def X = set, and errata does not follow which value a step sees"},
+		{"def X = 'a'\nnode { echo X = 'b' }\n", "", "error: Jenkinsfile: line 2: X = changes what def X = set, and errata does not follow which value a step sees"},
+		{"def X = 'a'\n@Field def Y = 'c'; final Z = X; int I = 1; String S = X\n", "", "a@1"},
+		{"String X = 'a'\n", "", "a@1"},
+		{"int X = 1\n", "", "1@1"},
+		{"final X = 'a'\n", "", "a@1"},
+		// A modifier before X declares a class's field, another variable:
+		// the delta review's G3.
+		{"def X = 'a'\nclass C { private X = 1 }\n", "", "a@1"},
+		// A group that holds X alone, assigned: the review's F2.
+		{"def X = 'a'\n(X) = 'b'\n", "", "error: Jenkinsfile: line 2: X = changes what def X = set, and errata does not follow which value a step sees"},
+		{"def X = 'a'\n((X)) += 'b'\n", "", "error: Jenkinsfile: line 2: X += changes what def X = set, and errata does not follow which value a step sees"},
+		{"def X = 'a'\n(y, X) = ['p', 'q']\n", "", "error: Jenkinsfile: line 2: X = changes what def X = set, and errata does not follow which value a step sees"},
+		{"def X = 'a'\n(X, y) = ['p', 'q']\n", "", "error: Jenkinsfile: line 2: X = changes what def X = set, and errata does not follow which value a step sees"},
+		{"def X = 'a'\n(y, X, z) = f()\n", "", "error: Jenkinsfile: line 2: X = changes what def X = set, and errata does not follow which value a step sees"},
+		{"def X = 'a'\nif (c) { (y, (X)) = g() }\n", "", "error: Jenkinsfile: line 2: X = changes what def X = set, and errata does not follow which value a step sees"},
+		{"def X = 'a'\n(a, Y) = ['p', 'q']; (X.y) = 'b'; y = f(X) == 1; (X + 1) == 2; g(X); f([X, 1]); (X, y)\n(a.X) = 'b'; y = [f(X, 1), (z) = 2]\n", "", "a@1"},
+		// A keyword an expression follows declares nothing: the review's F1.
+		{"def X = 'a'\nif (c) f() else X = 'b'\n", "", "error: Jenkinsfile: line 2: X = changes what def X = set, and errata does not follow which value a step sees"},
+		{"def X = 'a'\ndef g() { return X = 'b' }\n", "", "error: Jenkinsfile: line 2: X = changes what def X = set, and errata does not follow which value a step sees"},
+		{"def X = 'a'\nassert X += 'b'\n", "", "error: Jenkinsfile: line 2: X += changes what def X = set, and errata does not follow which value a step sees"},
+		{"def X = 'a'\nthrow X = 'b'\n", "", "error: Jenkinsfile: line 2: X = changes what def X = set, and errata does not follow which value a step sees"},
+		{"def X = 'a'\nswitch (a) { case X = 'b': y }\n", "", "error: Jenkinsfile: line 2: X = changes what def X = set, and errata does not follow which value a step sees"},
+		{"def X = 'a'\ny = a in X = 'b'\n", "", "error: Jenkinsfile: line 2: X = changes what def X = set, and errata does not follow which value a step sees"},
 		{"X = 'b'\nenv.X = 'a'\n", "", "a@2"},
 		{"def X = 1\nX++\n", "", "error: Jenkinsfile: line 2: X++ changes what def X = set, and errata does not follow which value a step sees"},
 		{"def X = 1\nX--\n", "", "error: Jenkinsfile: line 2: X-- changes what def X = set, and errata does not follow which value a step sees"},
 		{"def X = 1\n++X\n", "", "error: Jenkinsfile: line 2: ++X changes what def X = set, and errata does not follow which value a step sees"},
-		{"def X = 1\nsh \"${--X}\"; y = --X\n", "", "error: Jenkinsfile: line 2: --X changes what def X = set, and errata does not follow which value a step sees"},
+		{"def X = 1\nsh \"${--X}\"\n", "", "error: Jenkinsfile: line 2: --X changes what def X = set, and errata does not follow which value a step sees"},
 		{"def X = 1\ndef Y = X++\n", "", "error: Jenkinsfile: line 2: X++ changes what def X = set, and errata does not follow which value a step sees"},
 		{"def X = 1\na.X++; x++; ++a.X; X\n++y; ++\nX\n", "", "error: Jenkinsfile: line 4: ++X changes what def X = set, and errata does not follow which value a step sees"},
 		// Round 3: a prefix ++ or -- at a line's end goes on to its
@@ -172,6 +205,20 @@ func TestJenkinsDefOnlyWithoutEnv(t *testing.T) {
 		{"def X = 1\ny = ++\nX\n", "", "error: Jenkinsfile: line 3: ++X changes what def X = set, and errata does not follow which value a step sees"},
 		{"def X = 1\n--\n  X\n", "", "error: Jenkinsfile: line 3: --X changes what def X = set, and errata does not follow which value a step sees"},
 		{"def X = 1\ny++\nX\n", "", "1@1"},
+		// #141: a line-end ++ or -- after a keyword an expression follows,
+		// or after the ) of an if, a while or a for, is a prefix too; a
+		// keyword after a . is a property's name, and a call's ) a value.
+		{"def X = 1\nif (true) ++\nX\n", "", "error: Jenkinsfile: line 3: ++X changes what def X = set, and errata does not follow which value a step sees"},
+		{"def X = 1\nwhile (f(a)) --\nX\n", "", "error: Jenkinsfile: line 3: --X changes what def X = set, and errata does not follow which value a step sees"},
+		{"def X = 1\nfor (i = 0; i < 2; i++) ++\nX\n", "", "error: Jenkinsfile: line 3: ++X changes what def X = set, and errata does not follow which value a step sees"},
+		{"def X = 1\nif (a) y else --\nX\n", "", "error: Jenkinsfile: line 3: --X changes what def X = set, and errata does not follow which value a step sees"},
+		{"def X = 1\nreturn ++\nX\n", "", "error: Jenkinsfile: line 3: ++X changes what def X = set, and errata does not follow which value a step sees"},
+		{"def X = 1\nassert ++\nX\n", "", "error: Jenkinsfile: line 3: ++X changes what def X = set, and errata does not follow which value a step sees"},
+		{"def X = 1\nthrow --\nX\n", "", "error: Jenkinsfile: line 3: --X changes what def X = set, and errata does not follow which value a step sees"},
+		{"def X = 1\nswitch (a) {\ncase ++\nX: y\n}\n", "", "error: Jenkinsfile: line 4: ++X changes what def X = set, and errata does not follow which value a step sees"},
+		{"def X = 1\ny = a in --\nX\n", "", "error: Jenkinsfile: line 3: --X changes what def X = set, and errata does not follow which value a step sees"},
+		{"env.X = 'a'\nif (true) ++\nenv.X\n", "", "error: Jenkinsfile: line 3: ++ env.X changes X; errata does not read it"},
+		{"def X = 1\na.in ++\nX\nf(a) --\nX\nif (a) y++\nX\n", "", "1@1"},
 		// An operand in parentheses is the same operand (groovy.g 2866 to
 		// 2887); R2-N1, which gave 1@1.
 		{"def X = 1\n(X)++\n", "", "error: Jenkinsfile: line 2: X++ changes what def X = set, and errata does not follow which value a step sees"},
@@ -180,6 +227,49 @@ func TestJenkinsDefOnlyWithoutEnv(t *testing.T) {
 	} {
 		if g := got(t, c.body, Spec{Variable: "X", Stage: c.stage}); g != c.want {
 			t.Errorf("%q: got %q, want %q", c.body, g, c.want)
+		}
+	}
+}
+
+// #142: the code inside a GString's ${ } changes the variable as it would
+// outside a string, at every depth the lexer reads. A read there, a
+// member's assignment and another variable's env['Y'] change nothing,
+// and an assignment there sets no value.
+func TestJenkinsCodeInStrings(t *testing.T) {
+	const changes = "changes what def X = set, and errata does not follow which value a step sees"
+	nest := func(n int, code string) string {
+		return "def X = 1\nsh " + strings.Repeat(`"${`, n) + code + strings.Repeat(`}"`, n) + "\n"
+	}
+	for _, c := range []struct{ body, want string }{
+		{"def X = 1\nsh \"echo ${X++}\"\n", "error: Jenkinsfile: line 2: X++ " + changes},
+		{"def X = 1\nsh \"${(X)--}\"\n", "error: Jenkinsfile: line 2: X-- " + changes},
+		{"def X = 'a'\nsh \"${X = 'b'}\"\n", "error: Jenkinsfile: line 2: X = " + changes},
+		{"def X = 'a'\nsh \"\"\"${y; X += 'b'}\"\"\"\n", "error: Jenkinsfile: line 2: X += " + changes},
+		{"def X = 1\nsh \"\"\"${\n  ++\n  X\n}\"\"\"\n", "error: Jenkinsfile: line 4: ++X " + changes},
+		{"def X = 1\nsh \"a ${ \"b ${ /c ${[1].each { X++ }}/ }\" }\"\n", "error: Jenkinsfile: line 2: X++ " + changes},
+		{"def X = 'a'\nsh \"${ if (c) f() else X = 'b' }\"\n", "error: Jenkinsfile: line 2: X = " + changes},
+		{"def X = 'a'\nsh \"${ return X = 'b' }\"\n", "error: Jenkinsfile: line 2: X = " + changes},
+		{"def X = 'a'\nsh \"${ assert X = 'b' }\"\n", "error: Jenkinsfile: line 2: X = " + changes},
+		{"def X = 'a'\nsh \"${ throw X -= 'b' }\"\n", "error: Jenkinsfile: line 2: X -= " + changes},
+		{"def X = 'a'\nsh \"${ echo X = 'b' }\"\n", "error: Jenkinsfile: line 2: X = " + changes},
+		{"def X = 'a'\nsh \"${ println X += 'b' }\"\n", "error: Jenkinsfile: line 2: X += " + changes},
+		{"def X = 'a'\nsh \"${ (y, X) = [1, 2] }\"\n", "error: Jenkinsfile: line 2: X = " + changes},
+		{"def X = 'a'\nsh \"${ ((X)) = 1 }\"\n", "error: Jenkinsfile: line 2: X = " + changes},
+		{"def X = 'a'\nsh \"${ f(X) == 1 }\"\n", "a@1"},
+		{"env.X = 'a'\nsh \"${env.X = 'b'}\"\n", "error: Jenkinsfile: line 2: this assignment to env.X may set X; errata does not read it"},
+		{"env.X = 'a'\nsh \"${env.X++}\"\n", "error: Jenkinsfile: line 2: env.X ++ changes X; errata does not read it"},
+		{"env.X = 'a'\nsh \"${env['X'] = 'b'}\"\n", "error: Jenkinsfile: line 2: the env[...], env.\"...\", env.setProperty or env.putAt here may set X; errata does not read it"},
+		{"env.X = 'a'\nsh \"${env.setProperty(\"${'X'}\", 1)}\"\n", "error: Jenkinsfile: line 2: the env[...], env.\"...\", env.setProperty or env.putAt here may set X; errata does not read it"},
+		{"env.X = 'a'\nsh \"${withEnv(['X=1']) { 'y' }}\"\n", "error: Jenkinsfile: line 2: withEnv sets X for the steps inside it, which errata does not read"},
+		{"env.X = 'a'\nsh \"${env['Y'] = 1; withEnv(['Y=1']) { }; f('X=1')}\"\n", "a@1"},
+		{"def X = 1\nsh \"${X} ${X + 1} ${a.X = 2} ${X == 2} ${y = X}\"\n", "1@1"},
+		{"def X = 1\ny = \"${a}\"\nX\n", "1@1"},
+		{"def X = 1\nsh '${X++}'\n", "1@1"},
+		{nest(core.MaxDepth/2, "X++"), "error: Jenkinsfile: line 2: X++ " + changes},
+		{nest(core.MaxDepth/2+1, "X++"), fmt.Sprintf("error: Jenkinsfile: line 2: nested more than %d levels deep, the limit; %s", core.MaxDepth, core.OtherWay)},
+	} {
+		if g := got(t, c.body, Spec{Variable: "X"}); g != c.want {
+			t.Errorf("%.200q:\n got %.300q\nwant %.300q", c.body, g, c.want)
 		}
 	}
 }

@@ -331,6 +331,17 @@ func TestMapsRefuseComparisonsTheyNeverEqual(t *testing.T) {
 		"cel.bind(a, [1, 'x'], cel.bind(b, a, m[0].z in b))":                             "the number 1 is compared",
 		"[[1, 'x']].exists(l, m[0].z in l)":                                              "the number 1 is compared",
 		"cel.bind(mixed, [1, 'a'], m[0].z in mixed)":                                     "the number 1 is compared",
+		// A field or a literal index of a followed literal, followed to the
+		// member, and a comprehension variable over a bound list.
+		"cel.bind(want, {'name': 'x', 'replicas': 3}, m.exists(r, r.name == want.name && r.replicas == want.replicas))": "the number 3 is compared",
+		"cel.bind(want, {'name': 'x', 'replicas': 3}, m.exists(r, r.replicas == want['replicas']))":                     "the number 3 " + never + "compare with the string '3', or convert the value with int(), uint() or double()" + escape + ", at line 1 column 42",
+		"[{'name': 'a', 'port': 80}].exists(a, m[0].port == a.port)":                                                    "the number 80 is compared",
+		"cel.bind(ws, [{'name': 'x', 'automerge': true}], ws.exists(w, m[0] == w))":                                     "the bool true is compared",
+		"cel.bind(ws, [{'name': 'x', 'automerge': true}], m[0] == ws[0])":                                               "the bool true is compared",
+		"cel.bind(want, {'name': 'x', 'spec': {'name': 'y', 'replicas': 3}}, m[0].z == want.spec.replicas)":             "the number 3 is compared",
+		"cel.bind(want, {'name': 'x', 'ports': [80, 'a']}, m[0].z in want.ports)":                                       "the number 80 is compared",
+		"cel.bind(want, {'name': 'x', 'ports': [80, 'a']}, want.ports.exists(p, m[0].z == p))":                          "the number 80 is compared",
+		"cel.bind(w, {'name': 'x', 'n': 3}, cel.bind(want, w, m[0].z == want.n))":                                       "the number 3 is compared",
 	} {
 		// The refusal comes before the test that each extractor is used.
 		_, err := compileNamed(expr, []string{"m", "v"}, []string{"m"})
@@ -360,6 +371,12 @@ func TestMapsRefuseComparisonsTheyNeverEqual(t *testing.T) {
 		"cel.bind(none, [], m[0].a.b == none) && [[]].exists(w, m[0].a.b == w)",
 		"m.exists(r, r.z in ['1', '2'].map(x, x))",
 		"type(m[0].z) == int && 'f' in by_file(m) && by_file(m).size() == 1 && m[0].z == string(5)",
+		"cel.bind(want, {'name': 'x', 'replicas': '3'}, m.exists(r, r.replicas == want.replicas && r.name == want['name']))",
+		"cel.bind(want, {'name': 'x', 'n': 3}, m.exists(r, r.name == want.name) && has(want.n) && 'n' in want)",
+		"cel.bind(ws, [{'name': 'x', 'n': 3}], ws.exists(w, m[0].z == w.name) && m[0].z == ws[0].name)",
+		"cel.bind(want, {'name': 'x', 'n': 3}, m[0].z == dyn(want.n))",
+		"[{'a': 1}, {'a': 'x'}].filter(x, type(x.a) == string).exists(y, m[0].z == y.a)",
+		"[{'a': 1}, {'a': 'x'}].filter(x, type(x.a) == string)[0].a == m[0].z",
 	} {
 		if _, err := compileNamed(expr+" && size(m) + size(v) >= 0", []string{"m", "v"}, []string{"m"}); err != nil {
 			t.Errorf("%s: %v", expr, err)
@@ -367,15 +384,16 @@ func TestMapsRefuseComparisonsTheyNeverEqual(t *testing.T) {
 	}
 }
 
-// visits is the number of nodes the refusal pass visits in expr, over m, a
-// list of maps.
-func visits(t *testing.T, expr string) int {
+// visits is the number of nodes the refusal pass and the field pass visit
+// in expr, over m, a list of maps, and e, a list of records with the field
+// a, and the work their tracer does.
+func visits(t *testing.T, expr string) (nodes, work int) {
 	t.Helper()
 	base, err := baseEnv()
 	if err != nil {
 		t.Fatal(err)
 	}
-	env, err := base.Extend(cel.Variable("m", cel.ListType(mapType)))
+	env, err := base.Extend(cel.Variable("m", cel.ListType(mapType)), cel.Variable("e", cel.ListType(mapType)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -383,21 +401,27 @@ func visits(t *testing.T, expr string) int {
 	if iss.Err() != nil {
 		t.Fatal(iss.Err())
 	}
-	_, n := refusals(expr, ast.NativeRep())
-	return n
+	tr := newTracer(ast.NativeRep())
+	_, n := refusals(expr, tr)
+	undeclaredFields(expr, tr, map[string][]string{"e": {"a"}})
+	return n, tr.work
 }
 
 // chain is a name followed through depth levels, each naming the last k
 // times: binds compared with ==, the same searched with in, and
-// comprehension variables over list literals, compared and searched.
+// comprehension variables over list literals, compared, searched and read
+// by a field.
 func chain(shape string, k, depth int) string {
 	names := func(prefix string, i int) string {
 		return strings.TrimSuffix(strings.Repeat(prefix+strconv.Itoa(i)+", ", k), ", ")
 	}
-	if shape == "iter" || shape == "in iter" {
+	if shape == "iter" || shape == "in iter" || shape == "iter field" {
 		expr, first := "m[0].z == x"+strconv.Itoa(depth), "['x']"
-		if shape == "in iter" {
+		switch shape {
+		case "in iter":
 			expr, first = "m[0].z in x"+strconv.Itoa(depth), "[['x']]"
+		case "iter field":
+			expr, first = "m[0].z == x"+strconv.Itoa(depth)+".f", "[{'f': 'x'}]"
 		}
 		for i := depth; i >= 1; i-- {
 			expr = "[" + names("x", i-1) + "].exists(x" + strconv.Itoa(i) + ", " + expr + ")"
@@ -418,16 +442,94 @@ func chain(shape string, k, depth int) string {
 // work grows with the expression, not with the paths through it: a chain
 // one level deeper adds the same few visits, where a pass that walked a
 // value again at every read multiplied them by k, and a 400 byte chain
-// took 56 s to load. Planted breaks: the set of compared nodes left out,
-// and the set of searched nodes left out, each of which made a level
-// multiply the visits by 8.
+// took 56 s to load. The tracer's work grows as the square of the
+// expression: a read of a comprehension variable takes the members of its
+// range from one expansion for each comprehension, so doubling the
+// literals, the range and the reads at most quadruples the work. When each
+// read expanded the range again, the work grew as the cube, and 4 KiB took
+// 4.8 s to load. Planted breaks: the set of compared nodes left out, and
+// the set of searched nodes left out, each of which made a level multiply
+// the visits by 8; the tracer's memo left out, which did the same to iter
+// field; the expansion kept per read instead of per comprehension, which
+// multiplied the work of ranges by 8; the memo keyed by node instead of by
+// access path, which did the same to selects, since each x.a walked every
+// source of x again; a range keyed by its node instead of its path, which
+// did the same to binds, since each comprehension expanded l2 again.
 func TestMapsRefusalVisitsEachNodeOnce(t *testing.T) {
-	for _, shape := range []string{"bind", "in", "iter", "in iter"} {
-		shallow, deep := visits(t, chain(shape, 8, 5)), visits(t, chain(shape, 8, 6))
+	for name, shape := range map[string]func(int) string{"ranges": ranges, "selects": selects, "binds": func(n int) string { return binds(n, false) }} {
+		_, small := visits(t, shape(20))
+		_, large := visits(t, shape(40))
+		t.Logf("%s: work %d at 20, %d at 40", name, small, large)
+		if large >= 6*small {
+			t.Errorf("%s: work %d at 20, %d at 40", name, small, large)
+		}
+	}
+	for _, shape := range []string{"bind", "in", "iter", "in iter", "iter field"} {
+		shallow, _ := visits(t, chain(shape, 8, 5))
+		deep, _ := visits(t, chain(shape, 8, 6))
 		t.Logf("%s: %d visits at depth 5, %d at depth 6", shape, shallow, deep)
 		if deep >= 2*shallow {
 			t.Errorf("%s: %d visits at depth 5, %d at depth 6", shape, shallow, deep)
 		}
+	}
+}
+
+// ranges is a comprehension variable read reads times, over a list of size
+// reads of reads of an outer variable that runs over as many map literals:
+// compared with a map's value, and read as a field.
+func ranges(reads int) string {
+	repeat := func(s string) string { return strings.TrimSuffix(strings.Repeat(s+", ", reads), ", ") }
+	return "cel.bind(l, [" + repeat("{'a': 'x'}") + "], l.all(w, [" + repeat("w") + "].all(v, m.exists(r, [" + repeat("r.z == v.a") + "].size() > 0))))"
+}
+
+// binds is as many comprehensions over one bound name, each reading x.a.b
+// of its members, which are map literals that hold an outer variable. With
+// filter, each reads it through a filter() of its own.
+func binds(reads int, filter bool) string {
+	repeat := func(s, sep string) string { return strings.TrimSuffix(strings.Repeat(s+sep, reads), sep) }
+	over := "l2"
+	if filter {
+		over = "l2.filter(y, true)"
+	}
+	return "cel.bind(l, [" + repeat("{}", ", ") + "], l.all(w, cel.bind(l2, [" + repeat("{'a': w}", ", ") + "], " + repeat(over+".all(x, x.a.b == 'y')", " && ") + ")))"
+}
+
+// selects is a field read through a field, x.a.b, reads times, over a
+// variable x that runs over as many map literals, each holding an outer
+// variable that runs over as many literals of its own.
+func selects(reads int) string {
+	repeat := func(s string) string { return strings.TrimSuffix(strings.Repeat(s+", ", reads), ", ") }
+	return "cel.bind(l, [" + repeat("{}") + "], l.all(w, [" + repeat("{'a': w}") + "].all(x, [" + repeat("x.a.b") + "].size() > 0)))"
+}
+
+// Past its budget the tracer stops, and the assert does not load: the
+// refusal says the expression is too intricate to check, so no shape can
+// make the load trace for longer and none loads unchecked. ranges is driven
+// past a budget of half its work. At the largest ranges that fits in
+// MaxLength the work is under a tenth of MaxTraceWork, the headroom the
+// budget was set with. Planted break: the budget's check left out of
+// compileWith, which loaded the expression.
+func TestAnExpressionPastTheTraceBudgetDoesNotLoad(t *testing.T) {
+	xs := []check.NamedExtractor{
+		{Name: "m", Description: check.Description{Shape: check.ShapeMap}},
+		{Name: "e", Description: check.Description{Shape: check.ShapeRecord, Fields: []string{"a"}}},
+	}
+	expr := ranges(40)
+	_, work := visits(t, expr)
+	if _, err := compileWith(expr+" && size(e) >= 0", xs, limits{trace: work}); err != nil {
+		t.Fatalf("within the budget: %v", err)
+	}
+	_, err := compileWith(expr+" && size(e) >= 0", xs, limits{trace: work / 2})
+	want := "assert: the expression is too intricate to check within errata's load bound: following its names to their values took more than " + strconv.Itoa(work/2) + " steps"
+	if err == nil || !strings.HasPrefix(err.Error(), want) {
+		t.Errorf("past the budget: %v, want %q", err, want)
+	}
+	n := 1
+	for len(ranges(n+1)) <= MaxLength {
+		n++
+	}
+	if _, largest := visits(t, ranges(n)); 10*largest > MaxTraceWork {
+		t.Errorf("ranges(%d) does %d work, more than a tenth of MaxTraceWork, %d", n, largest, MaxTraceWork)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -221,14 +222,14 @@ func TestCandidatesCountedAsMade(t *testing.T) {
 // An entry's instances run in the order of Ruby's product, the last key
 // varying fastest, and each is named by its values as GitLab writes them,
 // Array(value).map(&:to_s) (entry/product/variables.rb) of what Psych
-// loads: the octal 010 is 8 and yes is true. Planted breaks: the first key
+// loads: the octal 010 is 8. Planted breaks: the first key
 // varying fastest; each value named by its text, which gave [010]; 1,
 // read as Psych's integer 1.
 func TestMatrixInstanceNames(t *testing.T) {
 	want(t, see(t, main("build:\n  parallel:\n    matrix:\n      - {A: [1, 2], B: [x, y]}\n  script: [s]\n"), "build", "A"),
 		"1@.gitlab-ci.yml:4[build: [1, x]] 1@.gitlab-ci.yml:4[build: [1, y]] 2@.gitlab-ci.yml:4[build: [2, x]] 2@.gitlab-ci.yml:4[build: [2, y]]")
-	want(t, see(t, main("build:\n  parallel:\n    matrix:\n      - V: [010, '1', yes, 0x1f, -0b11, +1_000, \"010\", 3.10, !!str 07]\n  script: [s]\n"), "build", "V"),
-		"010!@.gitlab-ci.yml:4[build: [8]] 1@.gitlab-ci.yml:4[build: [1]] yes!@.gitlab-ci.yml:4[build: [true]] 0x1f!@.gitlab-ci.yml:4[build: [31]] -0b11!@.gitlab-ci.yml:4[build: [-3]] +1_000!@.gitlab-ci.yml:4[build: [1000]] 010@.gitlab-ci.yml:4[build: [010]] 3.10!@.gitlab-ci.yml:4[build: [3.10]] 07@.gitlab-ci.yml:4[build: [07]]")
+	want(t, see(t, main("build:\n  parallel:\n    matrix:\n      - V: [010, '1', 0x1f, -0b11, +1_000, \"010\", 3.10, !!str 07]\n  script: [s]\n"), "build", "V"),
+		"010!@.gitlab-ci.yml:4[build: [8]] 1@.gitlab-ci.yml:4[build: [1]] 0x1f!@.gitlab-ci.yml:4[build: [31]] -0b11!@.gitlab-ci.yml:4[build: [-3]] +1_000!@.gitlab-ci.yml:4[build: [1000]] 010@.gitlab-ci.yml:4[build: [010]] 3.10!@.gitlab-ci.yml:4[build: [3.10]] 07@.gitlab-ci.yml:4[build: [07]]")
 	// An integer Ruby's Integer() refuses keeps its text, and so does one
 	// longer than a condition keeps, which the name would cut anyway.
 	octal := "0" + strings.Repeat("7", maxCondition-1)
@@ -245,10 +246,11 @@ func TestMatrixInstanceNames(t *testing.T) {
 // A report quotes 64 bytes of a condition (check.Value.ConditionNote), and
 // GitLab's name puts the varying values last, so two instances of a long
 // name could print the same note. Such a name writes the values no
-// instance differs in as "...". Planted breaks: no value elided, which
-// printed "build: [aws, europe-west-1-a-long-zone-name, monitoring-and-aler"
-// twice; aws elided though another entry sets gcp; a key of two values
-// elided; the name of a lone instance elided.
+// instance differs in as "...": a key every entry sets to one value.
+// Planted breaks: no value elided, which printed "build: [aws,
+// europe-west-1-a-long-zone-name, monitoring-and-aler" twice; aws elided
+// though another entry sets gcp; a key of two values elided; the name of a
+// lone instance elided; a key elided that only some entries set (below).
 func TestMatrixLongNamesTellInstancesApart(t *testing.T) {
 	notes := func(body string) []string {
 		got, err := extracttest.Run(t, build, spec("build", "V"), extracttest.Repo(t, main(body)))
@@ -261,9 +263,9 @@ func TestMatrixLongNamesTellInstancesApart(t *testing.T) {
 		}
 		return out
 	}
-	const one = "build:\n  variables: {V: v}\n  parallel:\n    matrix:\n      - {PROVIDER: aws, REGION: [europe-west-1-a-long-zone-name], STACK: [monitoring-and-alerting-one, monitoring-and-alerting-two]}\n      - {V: [w]}\n"
+	const one = "build:\n  variables: {V: v}\n  parallel:\n    matrix:\n      - {PROVIDER: aws, REGION: [europe-west-1-a-long-zone-name], STACK: [monitoring-and-alerting-one, monitoring-and-alerting-two]}\n      - {PROVIDER: aws, REGION: europe-west-1-a-long-zone-name, V: [w]}\n"
 	got := notes(one + "  script: [s]\n")
-	if strings.Join(got, " | ") != "build: [..., ..., monitoring-and-alerting-one] | build: [..., ..., monitoring-and-alerting-two] | build: [w]" {
+	if strings.Join(got, " | ") != "build: [..., ..., monitoring-and-alerting-one] | build: [..., ..., monitoring-and-alerting-two] | build: [aws, europe-west-1-a-long-zone-name, w]" {
 		t.Errorf("conditions %q", got)
 	}
 	if a, b := (check.Value{Condition: got[0]}).ConditionNote(), (check.Value{Condition: got[1]}).ConditionNote(); a == b {
@@ -272,7 +274,7 @@ func TestMatrixLongNamesTellInstancesApart(t *testing.T) {
 	// An entry that sets PROVIDER apart keeps it in every name, and a
 	// short name is GitLab's whole.
 	got = notes(one + "      - {PROVIDER: gcp, REGION: europe-west-1-a-long-zone-name, STACK: monitoring-and-alerting-one}\n  script: [s]\n")
-	if strings.Join(got, " | ") != "build: [aws, ..., monitoring-and-alerting-one] | build: [aws, ..., monitoring-and-alerting-two] | build: [w] | build: [gcp, ..., monitoring-and-alerting-one]" {
+	if strings.Join(got, " | ") != "build: [aws, ..., monitoring-and-alerting-one] | build: [aws, ..., monitoring-and-alerting-two] | build: [aws, europe-west-1-a-long-zone-name, w] | build: [gcp, ..., monitoring-and-alerting-one]" {
 		t.Errorf("conditions %q", got)
 	}
 	got = notes("build:\n  variables: {V: v}\n  parallel:\n    matrix:\n      - {P: aws, S: [a, b]}\n      - {V: [w]}\n  script: [s]\n")
@@ -285,6 +287,94 @@ func TestMatrixLongNamesTellInstancesApart(t *testing.T) {
 	if strings.Join(got, " | ") != "build: [aws, europe-west-1-a-long-zone-name, monitoring-and-alerting-one]" {
 		t.Errorf("conditions %q", got)
 	}
+}
+
+// A key that only some entries set is not the same in every instance: an
+// entry without it differs. Read as the same, A, B and C here were elided,
+// both instances that take the job's V were named "build: [..., ...]", and
+// that value under that condition was kept once. Planted break: only the
+// entries that set a key compared.
+func TestMatrixElidesOnlyKeysEveryEntrySets(t *testing.T) {
+	a, c := strings.Repeat("a", 61), strings.Repeat("c", 61)
+	body := "build:\n  variables: {V: v}\n  parallel:\n    matrix:\n      - {A: [" + a + "], B: [one]}\n      - {B: [one], C: [" + c + "]}\n      - {V: [w]}\n  script: [s]\n"
+	want(t, see(t, main(body), "build", "V"), "v@.gitlab-ci.yml:2[build: ["+a+", one]] v@.gitlab-ci.yml:2[build: [one, "+c+"]] w@.gitlab-ci.yml:7[build: [w]]")
+}
+
+// An entry of long values beside one that sets none of those keys elides
+// nothing, since the keys are not the same in every instance, and its two
+// names differ only past the 64 bytes a report quotes. Each such name is
+// cut and numbered by its place in the matrix, so the notes differ; a short
+// name stays GitLab's. Planted
+// break: apart dropped, which printed "build: [aws,
+// europe-west-1-a-long-zone-name, monitoring-and-aler" twice.
+func TestMatrixNotesNeverCoincide(t *testing.T) {
+	body := "build:\n  variables: {V: v}\n  parallel:\n    matrix:\n      - {PROVIDER: aws, REGION: [europe-west-1-a-long-zone-name], STACK: [monitoring-and-alerting-one, monitoring-and-alerting-two]}\n      - {V: [w]}\n  script: [s]\n"
+	got, err := extracttest.Run(t, build, spec("build", "V"), extracttest.Repo(t, main(body)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var notes []string
+	for _, v := range got {
+		notes = append(notes, v.ConditionNote())
+	}
+	want(t, strings.Join(notes, " |"), ` when "build: [aws, europe-west-1-a-long-zone-name, monitoring-and-a #1" | when "build: [aws, europe-west-1-a-long-zone-name, monitoring-and-a #2" | when "build: [w]"`)
+}
+
+// Two entries of one instance each that GitLab names alike keep main's
+// reading: one name, and the job's value under it once. Planted break:
+// every group of notes numbered, which gave the value twice, as "#1" and
+// "#2".
+func TestMatrixNamesAlikeStayOne(t *testing.T) {
+	entry := "      - {PROVIDER: aws, REGION: europe-west-1-a-long-zone-name, STACK: monitoring-and-alerting-one}\n"
+	body := "build:\n  variables: {V: v}\n  parallel:\n    matrix:\n" + entry + entry + "      - {V: [w]}\n  script: [s]\n"
+	want(t, see(t, main(body), "build", "V"), "v@.gitlab-ci.yml:2[build: [aws, europe-west-1-a-long-zone-name, monitoring-and-alerting-one]] w@.gitlab-ci.yml:7[build: [w]]")
+}
+
+// apart numbers only the names whose notes are another's, by the place of
+// the first instance of each name, counting every instance of the matrix
+// from 1, cuts on a character's start, and goes on until no two notes are
+// one. Names GitLab writes alike are left alike, alone or beside another.
+// Planted breaks: the rounds stopped after the first; the cut on a byte
+// inside the é; every group numbered, which made two of one name differ.
+func TestApart(t *testing.T) {
+	long := strings.Repeat("x", 60)
+	for _, c := range []struct{ in, want []string }{
+		{[]string{"a", "b"}, []string{"a", "b"}},
+		{[]string{"a", "a", "b"}, []string{"a", "a", "b"}},
+		{[]string{long + "éab1", long + "éab2"}, []string{long + " #1", long + " #2"}},
+		{[]string{long + "éab1", long + "éab2", long + "éab1"}, []string{long + " #1", long + " #2", long + " #1"}},
+		{[]string{long + "éab1", long + "éab1"}, []string{long + "éab1", long + "éab1"}},
+		// The suffix gives the first name the note of the third, which is
+		// then numbered too.
+		{[]string{long + "xxxx1", long + "xxxx2", long + "x #1"}, []string{long + "x #1", long + "x #2", long + "x #3"}},
+	} {
+		got := slices.Clone(c.in)
+		apart(got)
+		if !slices.Equal(got, c.want) {
+			t.Errorf("apart(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// A parallel:matrix value Psych loads as a boolean or a null is refused, as
+// GitLab refuses it, alone or in a list: yes, false, an empty value, ~,
+// null and a !!bool or !!null one. A quoted or !!str "true" is a string.
+// Planted break: the check of the value dropped, which named an instance
+// [true] or [].
+func TestMatrixRefusesBooleansAndNulls(t *testing.T) {
+	// [x, ] is [x], so an empty item is the block list below.
+	for _, v := range []string{"yes", "False", "~", "Null", "!!bool On", "!!null ''"} {
+		for _, value := range []string{v, "[x, " + v + "]"} {
+			body := "build:\n  parallel:\n    matrix:\n      - V: " + value + "\n  script: [s]\n"
+			extracttest.WantError(t, refused(t, main(body), "build", "V"), `.gitlab-ci.yml:4: parallel:matrix variable "V" is`)
+		}
+	}
+	extracttest.WantError(t, refused(t, main("build:\n  parallel:\n    matrix:\n      - V:\n  script: [s]\n"), "build", "V"),
+		`.gitlab-ci.yml:4: parallel:matrix variable "V" is "", which GitLab's loader reads as a boolean or a null`)
+	extracttest.WantError(t, refused(t, main("build:\n  parallel:\n    matrix:\n      - V:\n          - a\n          -\n  script: [s]\n"), "build", "V"),
+		`.gitlab-ci.yml:6: parallel:matrix variable "V" is "", which GitLab's loader reads as a boolean or a null`)
+	want(t, see(t, main("build:\n  parallel:\n    matrix:\n      - V: ['true', !!str null, \"\"]\n  script: [s]\n"), "build", "V"),
+		"true@.gitlab-ci.yml:4[build: [true]] null@.gitlab-ci.yml:4[build: [null]] @.gitlab-ci.yml:4[build: []]")
 }
 
 // A condition is cut at maxCondition bytes where a character starts, as a

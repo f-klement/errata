@@ -88,35 +88,59 @@ func TestValidateRule(t *testing.T) {
 			`agree names "secret.group", but extractor "secret" returns no record, so it has no field "group"`},
 		{"agree names a field twice", func(c *Check) { record(c); c.Rule().Agree = []string{"service", "secret.name", "secret.name"} },
 			`agree names "secret.name" twice`},
-		{"an extractor's name with a dot that is no field wins", func(c *Check) {
-			record(c)
-			c.Rule().Extractors = append(c.Rule().Extractors, NamedExtractor{Name: "secret.url", Extractor: noValues{}})
-			c.Rule().Agree = []string{"service", "secret.url", "secret.group"}
-		}, ""},
-		{"an extractor's name that is also a field of records", func(c *Check) {
-			record(c)
-			c.Rule().Extractors = append(c.Rule().Extractors, NamedExtractor{Name: "secret.name", Extractor: noValues{}})
-			c.Rule().Agree = []string{"service", "secret.name", "secret.group"}
-		}, `agree names "secret.name", which is both an extractor and field "name" of the records of extractor "secret"; rename the extractor, so each entry names one`},
-		// A dot at the start of an entry still splits it: the extractor
-		// named "" that errata.yaml's key "" declares has the field.
-		{"a record extractor named the empty string", func(c *Check) {
+		// Every name that is no CEL identifier is refused, under agree and
+		// assert alike, the empty one among them. No name holds a dot, so
+		// x.f always splits at its first dot.
+		{"an extractor named the empty string", func(c *Check) {
 			record(c)
 			c.Rule().Extractors[0].Name = ""
 			c.Rule().Agree = []string{"service", ".group"}
-		}, ""},
-		{"an extractor's name that is also a field of records named the empty string", func(c *Check) {
-			record(c)
+		}, `extractor "": a rule refers to an extractor by its name, so the name must be letters, digits and _, must not start with a digit and must not be one of CEL's reserved words`},
+		{"an extractor named the empty string under assert", func(c *Check) {
 			c.Rule().Extractors[0].Name = ""
-			c.Rule().Extractors = append(c.Rule().Extractors, NamedExtractor{Name: ".group", Extractor: noValues{}})
-			c.Rule().Agree = []string{"service", ".group", ".name"}
-		}, `agree names ".group", which is both an extractor and field "group" of the records of extractor ""`},
-		{"a record extractor's name with a dot splits at the last dot", func(c *Check) {
-			record(c)
-			c.Rule().Extractors[0].Name = "a.b"
-			c.Rule().Extractors[0].Description.Fields = []string{"c"}
-			c.Rule().Agree = []string{"service", "a.b.c"}
+			c.Rule().Agree = nil
+			c.Rule().Assert = "service.size() > 0"
+		}, `extractor "": a rule refers to an extractor by its name`},
+		{"an extractor's name with a dot", func(c *Check) {
+			c.Rule().Extractors[0].Name = "secret.url"
+			c.Rule().Agree = []string{"service", "secret.url"}
+		}, `extractor "secret.url": a rule refers to an extractor by its name`},
+		{"an extractor's name with a hyphen", func(c *Check) {
+			c.Rule().Extractors[0].Name = "s3-endpoint"
+			c.Rule().Agree = []string{"service", "s3-endpoint"}
+		}, `extractor "s3-endpoint": a rule refers to an extractor by its name`},
+		{"an extractor's name with a space", func(c *Check) {
+			c.Rule().Extractors[0].Name = "the secret"
+			c.Rule().Agree = []string{"service", "the secret"}
+		}, `extractor "the secret": a rule refers to an extractor by its name`},
+		{"an extractor's name that starts with a digit", func(c *Check) {
+			c.Rule().Extractors[0].Name = "3d"
+			c.Rule().Agree = []string{"service", "3d"}
+		}, `extractor "3d": a rule refers to an extractor by its name`},
+		{"an extractor named by a reserved word", func(c *Check) {
+			c.Rule().Extractors[0].Name = "in"
+			c.Rule().Agree = []string{"service", "in"}
+		}, `extractor "in": a rule refers to an extractor by its name`},
+		{"valid extractor names of letters, digits and _", func(c *Check) {
+			c.Rule().Extractors[0].Name = "_s3_Endpoint9"
+			c.Rule().Agree = []string{"service", "_s3_Endpoint9"}
 		}, ""},
+		{"agree names a field that holds a dot", func(c *Check) { record(c); c.Rule().Agree = []string{"service", "secret.name.group"} },
+			`agree names "secret.name.group", but the records of extractor "secret" have no field "name.group"`},
+		{"agree names an entry that ends in its dot", func(c *Check) { c.Rule().Agree = []string{"service", "secret."} },
+			`agree names "secret.", which ends in a dot and so names no field; write "secret" for the extractor, or secret.<field> for a field of its records`},
+		{"agree names a record extractor's entry that ends in its dot", func(c *Check) { record(c); c.Rule().Agree = []string{"service", "secret."} },
+			`agree names "secret.", which ends in a dot and so names no field; name one field, such as secret.name`},
+		{"agree names a map extractor's entry that ends in its dot", func(c *Check) {
+			c.Rule().Extractors[0].Description.Shape = ShapeMap
+			c.Rule().Agree = []string{"service", "secret."}
+		}, `agree names "secret.", which ends in a dot and so names no field; its extractor hands assert each mapping whole (as: map), so write an assert, or leave as: map out`},
+		{"agree names an entry that ends in its dot twice", func(c *Check) { c.Rule().Agree = []string{"service", "secret.", "secret."} },
+			`agree names "secret." twice`},
+		{"agree names an undeclared entry that ends in its dot", func(c *Check) { c.Rule().Agree = []string{"service", "secret", "nope."} },
+			`agree names "nope.", which extract does not declare`},
+		{"agree names an entry that starts with a dot", func(c *Check) { record(c); c.Rule().Agree = []string{"service", ".group"} },
+			`agree names ".group", which extract does not declare`},
 		{"valid assert over a map extractor", func(c *Check) {
 			c.Rule().Extractors[0].Description.Shape = ShapeMap
 			c.Rule().Agree = nil
@@ -151,6 +175,23 @@ func TestValidateRule(t *testing.T) {
 				t.Fatalf("error = %v, want it to name the check", err)
 			}
 		})
+	}
+}
+
+// An agree entry that ends in its dot is refused once, for the dot: its
+// extractor counts as named, so it is not also refused as left out, and the
+// entry is not refused as one extract does not declare.
+func TestValidateRefusesAnEntryEndingInADotOnce(t *testing.T) {
+	c := validRule()
+	c.Rule().Agree = []string{"service", "secret."}
+	err := c.Validate()
+	if err == nil || !strings.Contains(err.Error(), `agree names "secret.", which ends in a dot`) {
+		t.Fatalf("error = %v, want the entry refused for its dot", err)
+	}
+	for _, not := range []string{"declared but agree does not name it", "which extract does not declare"} {
+		if strings.Contains(err.Error(), not) {
+			t.Errorf("error = %v, want it not to contain %q", err, not)
+		}
 	}
 }
 

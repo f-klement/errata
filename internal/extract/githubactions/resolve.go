@@ -113,11 +113,48 @@ func (e extractor) parseWorkflow(data []byte) (w *workflow, top, jobs *core.Node
 		return nil, nil, nil, fmt.Errorf("%s: line %d: the workflow is %s, not a mapping", e.File, docs[0].Line, shapeName(docs[0]))
 	}
 	top = docs[0]
+	if err := w.checkKeys(top); err != nil {
+		return nil, nil, nil, err
+	}
 	jobs = top.Field["jobs"]
 	if jobs == nil || jobs.Shape != core.Mapping {
 		return nil, nil, nil, fmt.Errorf("%s: has no jobs: mapping, which a workflow needs", e.File)
 	}
 	return w, top, jobs, nil
+}
+
+// checkKeys refuses a mapping of the workflow that holds two keys GitHub
+// reads as one. Its TemplateReader keeps a mapping's keys as the runner
+// keeps a context's, ignoring case as foldKey does, and refuses a key
+// "already defined", so the workflow does not run: os beside OS, or é
+// beside É. Each mapping and sequence is looked at once, however many
+// aliases name it.
+func (w *workflow) checkKeys(top *core.Node) error {
+	seen := map[*core.Node]bool{}
+	stack := []*core.Node{top}
+	for len(stack) > 0 {
+		n := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if n.Shape == core.Scalar || seen[n] {
+			continue
+		}
+		seen[n] = true
+		if n.Shape == core.Sequence {
+			stack = append(stack, n.Items...)
+			continue
+		}
+		first := make(map[string]int, len(n.Keys))
+		for i, k := range n.Keys {
+			f := foldKey(k)
+			if j, ok := first[f]; ok {
+				return fmt.Errorf("%s:%d: the key %s and the key %s at line %d are one key to GitHub, which reads a mapping's keys in any case and refuses the workflow",
+					w.file, n.Vals[i].LineOfKey(), core.Quote(k), core.Quote(n.Keys[j]), n.Vals[j].LineOfKey())
+			}
+			first[f] = i
+		}
+		stack = append(stack, n.Vals...)
+	}
+	return nil
 }
 
 // jobMatrix builds the combinations of a job's matrix. A matrix that

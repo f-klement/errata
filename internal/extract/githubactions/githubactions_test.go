@@ -551,3 +551,26 @@ func TestEnvChooses(t *testing.T) {
 		}
 	}
 }
+
+// GitHub refuses a workflow whose mapping holds two keys equal ignoring
+// case, as foldKey compares them, so errata refuses it too, naming both
+// keys at their own lines: in a matrix's include: entry, in an env: block
+// asked for another variable, and in a job, whose two env: keys stand
+// above the lines their values start on. Planted breaks: the check
+// dropped, which read each workflow; a key named at its value's line;
+// strings.EqualFold for foldKey, which refused k beside the Kelvin sign.
+func TestCaseEqualKeysAreRefused(t *testing.T) {
+	for _, c := range []struct{ body, want string }{
+		{"jobs:\n  j:\n    env: {V: '${{ matrix.v }}'}\n    strategy:\n      matrix:\n        v: [1]\n        include:\n          - {v: 1, x: 2, X: 3}\n",
+			`ci.yml:8: the key "X" and the key "x" at line 8 are one key to GitHub, which reads a mapping's keys in any case and refuses the workflow`},
+		{"jobs:\n  j:\n    env:\n      X: 1\n      V: v\n      x: 2\n",
+			`ci.yml:6: the key "x" and the key "X" at line 4 are one key to GitHub`},
+		{"jobs:\n  j:\n    env:\n      V: v\n    ENV:\n      W: w\n",
+			`ci.yml:5: the key "ENV" and the key "env" at line 3 are one key to GitHub`},
+	} {
+		extracttest.WantError(t, refused(t, c.body, "j", "", "V"), c.want)
+	}
+	// The runner's fold keeps the Kelvin sign apart from k, where
+	// strings.EqualFold makes them one.
+	want(t, see(t, "jobs:\n  j:\n    env: {k: 1, \u212a: 2, V: v}\n", "j", "", "V"), "v@3")
+}

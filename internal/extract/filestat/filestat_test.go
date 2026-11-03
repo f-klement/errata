@@ -153,3 +153,23 @@ func TestBuildRefuses(t *testing.T) {
 		}
 	}
 }
+
+// A file a sparse checkout leaves out, marked skip-worktree or below a
+// directory a sparse index lists as one entry, is unknown for exists and
+// size, naming the sparse checkout, and never false: a clone holds it.
+// Planted break: core's read of a missed file passing over the index
+// (core.tree.leftOut), which read each as false.
+func TestASparseCheckoutLeavesOut(t *testing.T) {
+	files := map[string]string{"top": "", "b/y": "x"}
+	for _, index := range []bool{false, true} {
+		root := extracttest.Sparse(t, files, index)
+		for kind, build := range builds {
+			got, err := extracttest.Run(t, build, Spec{File: "b/y"}, root)
+			if got != nil {
+				t.Errorf("sparse index %v: %s: %+v, want no value", index, kind, got)
+			}
+			extracttest.WantError(t, err, "stat b/y: ")
+			extracttest.WantError(t, err, "sparse checkout")
+		}
+	}
+}

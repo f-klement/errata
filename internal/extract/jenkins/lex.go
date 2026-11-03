@@ -87,15 +87,30 @@ type lexer struct {
 	// (groovy.g, rule NLS).
 	parens []int
 	m      *core.Meter
+	// code, when set, is handed the tokens of the code inside each ${ },
+	// which next does not return.
+	code codeWatcher
+}
+
+// codeWatcher is told of the code inside a string's ${ }: enterCode when
+// a ${ opens, codeToken for each token of its code in order, a string
+// inside it once the string is read whole, and leaveCode at the } that
+// closes it.
+type codeWatcher interface {
+	enterCode()
+	codeToken(t token)
+	leaveCode()
 }
 
 // frame is one level of the stack: a string of form q, or, when q is 0,
 // the code of a ${ }, with the braces open inside it and whether a / there
-// starts a slashy string.
+// starts a slashy string. tok is a string's token when the string is in
+// the code of a ${ }, for the code watcher once it is read whole.
 type frame struct {
 	q       quote
 	braces  int
 	regexOK bool
+	tok     token
 }
 
 func newLexer(data []byte, m *core.Meter) *lexer {
@@ -112,7 +127,7 @@ func (l *lexer) lineOf(off int) int {
 // next is the next token. A string is read whole, with what it
 // interpolates.
 func (l *lexer) next() (token, error) {
-	t, err := l.code(&l.regexOK)
+	t, err := l.read(&l.regexOK)
 	if err != nil || t.kind != tokString {
 		return t, err
 	}
@@ -129,11 +144,11 @@ func (l *lexer) lexError(off int, format string, args ...any) error {
 	return core.LineError(l.lineOf(off), format, args...)
 }
 
-// code reads one token of code at pos, skipping blanks and comments. A
+// read reads one token of code at pos, skipping blanks and comments. A
 // string token stops after its opening delimiter, for the caller to read
 // the rest. regexOK is the code's state of whether a / starts a slashy
-// string, which code updates for the token it reads.
-func (l *lexer) code(regexOK *bool) (token, error) {
+// string, which read updates for the token it reads.
+func (l *lexer) read(regexOK *bool) (token, error) {
 	d := l.data
 	for {
 		if err := l.m.Charge(1); err != nil {
@@ -252,7 +267,7 @@ func (l *lexer) enter(off int) error {
 	return nil
 }
 
-// inside reads the rest of a string token whose opening delimiter code
+// inside reads the rest of a string token whose opening delimiter read
 // has read, to its closing delimiter, with the code of each ${ } inside it
 // and the strings inside that code.
 func (l *lexer) inside() error {
@@ -288,7 +303,12 @@ func (l *lexer) inside() error {
 			}
 			if bytes.HasPrefix(d[l.pos:], []byte(closing[q])) {
 				l.pos += len(closing[q])
+				t := top.tok
 				l.stack = l.stack[:len(l.stack)-1]
+				if len(l.stack) > 0 && l.code != nil {
+					t.end = l.pos
+					l.code.codeToken(t)
+				}
 				break
 			}
 			if c == '$' && interpolates(q) && l.pos+1 < len(d) {
@@ -298,6 +318,9 @@ func (l *lexer) inside() error {
 					}
 					l.pos += 2
 					l.stack = append(l.stack, frame{regexOK: true})
+					if l.code != nil {
+						l.code.enterCode()
+					}
 					break
 				}
 				if isNameStart(d[l.pos+1]) && d[l.pos+1] != '$' {
@@ -312,9 +335,10 @@ func (l *lexer) inside() error {
 }
 
 // interpolated reads one token of the code of a ${ }, which ends at the }
-// that closes it, and enters a string the token starts.
+// that closes it, and enters a string the token starts. The code watcher
+// is handed every token but that }.
 func (l *lexer) interpolated(top *frame) error {
-	t, err := l.code(&top.regexOK)
+	t, err := l.read(&top.regexOK)
 	if err != nil {
 		return err
 	}
@@ -322,13 +346,21 @@ func (l *lexer) interpolated(top *frame) error {
 	case t.kind == tokEOF:
 		return l.lexError(l.pos, "a ${ in a string is not closed: errata looked for its } to the end of the file")
 	case t.kind == tokString:
-		l.stack = append(l.stack, frame{q: t.quote})
+		l.stack = append(l.stack, frame{q: t.quote, tok: t})
+		return nil
 	case t.is("{"):
 		top.braces++
 	case t.is("}") && top.braces == 0:
 		l.stack = l.stack[:len(l.stack)-1]
+		if l.code != nil {
+			l.code.leaveCode()
+		}
+		return nil
 	case t.is("}"):
 		top.braces--
+	}
+	if l.code != nil {
+		l.code.codeToken(t)
 	}
 	return nil
 }

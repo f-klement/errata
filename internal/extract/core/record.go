@@ -10,31 +10,18 @@ import (
 	"github.com/f-klement/errata/internal/check"
 )
 
-// fieldName is the form of a record's field name: what agree names after
-// the extractor's name, and what CEL reads after a dot, r.name, unless it
-// is one of celReserved.
-var fieldName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
-
-// fieldNameRule is how a refusal of a field name words the form.
+// fieldNameRule is how a refusal of a field name words the form, which
+// check.IdentifierForm holds: what agree names after the extractor's name,
+// and what CEL reads after a dot, r.name.
 const fieldNameRule = "a field name is a letter or _, then letters, digits and _, so assert reads it as r.name"
-
-// celReserved are the words CEL's language definition reserves. It keeps
-// false, in, null and true out of field names, so r.in is a syntax error,
-// and reserves the rest for the languages that embed CEL, advising against
-// them as field names; cel-go v0.32 reads those after a dot, and a later
-// one may not.
-var celReserved = []string{
-	"as", "break", "const", "continue", "else", "false", "for", "function", "if", "import",
-	"in", "let", "loop", "namespace", "null", "package", "return", "true", "var", "void", "while",
-}
 
 // checkFieldName refuses a name that is no field name, saying why, after
 // what, which names where it was found.
 func checkFieldName(what, name string) error {
-	if !fieldName.MatchString(name) {
+	if !check.IdentifierForm(name) {
 		return fmt.Errorf("%s %s is no field name; %s", what, Quote(name), fieldNameRule)
 	}
-	if slices.Contains(celReserved, name) {
+	if check.Reserved(name) {
 		return fmt.Errorf("%s %s is a word CEL reserves, which its language definition keeps out of field names, so assert may not read it as r.%s; name the field otherwise", what, Quote(name), name)
 	}
 	return nil

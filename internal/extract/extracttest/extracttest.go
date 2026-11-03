@@ -50,6 +50,31 @@ func Tracked(t *testing.T, files map[string]string) string {
 	return root
 }
 
+// Sparse writes files into a new git repository, commits them, and sets a
+// sparse checkout in cone mode that holds the root's files and the
+// directories keep names, and returns its root. git marks every other file
+// skip-worktree and takes it out of the working tree; with index, it
+// writes a sparse index, which lists each directory the checkout leaves
+// out as one entry.
+func Sparse(t *testing.T, files map[string]string, index bool, keep ...string) string {
+	t.Helper()
+	root := Repo(t, files)
+	set := append([]string{"sparse-checkout", "set", "--cone"}, keep...)
+	if index {
+		set = append([]string{"sparse-checkout", "set", "--cone", "--sparse-index"}, keep...)
+	}
+	for _, args := range [][]string{{"init", "-q"}, {"add", "-A"}, {"commit", "-q", "-m", "files"}, set} {
+		cmd := exec.CommandContext(t.Context(), "git", args...)
+		cmd.Dir = root
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null",
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	return root
+}
+
 // Run builds s with build and extracts from root.
 func Run[S any](t *testing.T, build func(S) (check.Extractor, error), s S, root string) ([]check.Value, error) {
 	t.Helper()

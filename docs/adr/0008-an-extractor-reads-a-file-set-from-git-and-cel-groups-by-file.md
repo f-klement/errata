@@ -30,8 +30,15 @@ assert: by_file(ignores).all(f, f in by_file(options) && 'RespectIgnoreDifferenc
   `infra/a/b/c.yaml`, and `a/**` matches `a` and everything below it. A `**` inside a segment,
   such as `a**`, is a `*`, as `.gitignore` reads it.
 - A glob matches the files git's index lists, read from `.git/index` without running git: the files
-  a clone holds, never an untracked or ignored one, a submodule, or a file a sparse checkout leaves
-  out. A glob needs the root to be the top of a git repository, or the rule is unknown.
+  a clone holds, never an untracked or ignored one or a submodule. A glob needs the root to be the
+  top of a git repository, or the rule is unknown.
+- A sparse checkout makes a rule unknown wherever it cuts the set, and the message names the
+  sparse checkout: a glob that would match a file git marks skip-worktree that the working tree
+  lacks, or may match a path below a directory a sparse index lists as one entry. A skip-worktree
+  file the working tree holds is matched as any other. A glob that meets neither reads as in a full
+  checkout. A file an entry names outright that the checkout leaves out is unknown when it is read,
+  never missing. The owner chose this on 2026-10-30: the set the run would read lacks files a
+  clone holds, so the empty or short set is no true answer (below).
 - The order is fixed: the entries in the order `files:` lists them, and a glob's files in the order
   of git's index, which sorts paths byte by byte. A file two entries name, or two names that
   resolve to one file, such as a tracked symlink and its target, is read once, at its first name.
@@ -87,7 +94,8 @@ assert: by_file(ignores).all(f, f in by_file(options) && 'RespectIgnoreDifferenc
 
 ADR 0001 makes a check that could not evaluate unknown, so the run fails without an erratum. A
 glob that matches nothing has evaluated: errata read the index and found no file, which is a true
-answer. Making it unknown would also refuse a claim of the form "every X, if there is one", such
+answer. A sparse checkout is the exception: there the index lists files the working tree lacks, so
+a glob that meets one is unknown rather than a set without it. Making it unknown would also refuse a claim of the form "every X, if there is one", such
 as "every Application that ignores a Secret's data syncs with RespectIgnoreDifferences" in a
 repository where none does yet. The case ADR 0001 guards against, a glob gone wrong that silently
 reads nothing, is already caught one level up: an extractor that finds no value makes its rule

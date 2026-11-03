@@ -165,7 +165,7 @@ func TestBelowAnIndexOutOfOrder(t *testing.T) {
 			t.Errorf("%s below the fixture of a reversed index: %v, %v", p, e, ok)
 		}
 	}
-	if got, err := below.Paths().Span("b").Match(func(p string) bool { return strings.HasPrefix(p, "b/") }); err != nil || !slices.Equal(got, []string{"b/c"}) {
+	if got, err := below.Paths().Span("b").Match(func(p string) bool { return strings.HasPrefix(p, "b/") }, func(string) bool { return true }, func(string) bool { return false }); err != nil || !slices.Equal(got, []string{"b/c"}) {
 		t.Errorf("the span of b: %q, %v", got, err)
 	}
 }
@@ -368,5 +368,111 @@ func TestIndexForm(t *testing.T) {
 				t.Errorf("Form(%q) of %v: %q at %q, want %q", p, ix.entries, got, e.Path, want)
 			}
 		}
+	}
+}
+
+// sparseIndex is the Index of files, each a regular file, and of left,
+// what a sparse checkout leaves out, in their order.
+func sparseIndex(t *testing.T, files []string, left ...string) Index {
+	t.Helper()
+	var entries []Entry
+	for _, f := range files {
+		entries = append(entries, Entry{Path: f, Mode: 0o100644})
+	}
+	ix, err := New(entries, left...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ix
+}
+
+// LeftOut finds what a sparse checkout leaves out at a path: a file git
+// marks skip-worktree, a directory a sparse index lists as one entry, a
+// path below one, in an index in git's order and in one out of it, and
+// nothing at a file the checkout holds, at one beside a directory left
+// out, or at one whose name only starts with a file left out. Planted
+// breaks: the directories above the path not searched, which missed
+// d/e/f; the path itself not searched as a directory, which missed d.
+func TestLeftOut(t *testing.T) {
+	for _, order := range []string{"sorted", "reversed"} {
+		left := []string{"b/y", "d/"}
+		if order == "reversed" {
+			slices.Reverse(left)
+		}
+		ix := sparseIndex(t, []string{"a", "b/x"}, left...)
+		for p, want := range map[string]string{"b/y": "b/y", "d": "d/", "d/e": "d/", "d/e/f": "d/", "a": "", "b/x": "", "b/y/z": "", "d.txt": "", "b": ""} {
+			got, ok := ix.LeftOut(p)
+			if got != want || ok != (want != "") {
+				t.Errorf("%s: LeftOut(%s) is %q, %v, want %q", order, p, got, ok, want)
+			}
+		}
+	}
+}
+
+// A glob's span holds what a sparse checkout leaves out where the glob
+// may match: below its literal directory, at it, and a directory left out
+// above it; a glob with no literal directory spans all of it, and a
+// witness's fixture is never in it. Planted breaks: the directories above
+// not searched, which left d/ out of the span of d/e; the range below not
+// taken, which left b/y out of the span of b; the Witnessed test dropped.
+func TestASpanHoldsWhatASparseCheckoutLeavesOut(t *testing.T) {
+	ix := sparseIndex(t, []string{"a", "b/x"}, ".errata/witness/w/f", "b/y", "c", "d/")
+	for dir, want := range map[string][]string{
+		"":    {"b/y", "c", "d/"},
+		"b":   {"b/y"},
+		"c":   {"c"},
+		"d":   {"d/"},
+		"d/e": {"d/"},
+		"a":   nil,
+	} {
+		got := ix.Paths().Span(dir).left
+		slices.Sort(got)
+		if !slices.Equal(got, want) {
+			t.Errorf("the span of %q leaves out %q, want %q", dir, got, want)
+		}
+	}
+	if got := ix.Paths().Span("b").Bytes(); got != len("b/x")+len("b/y") {
+		t.Errorf("the span of b is charged %d bytes, want %d", got, len("b/x")+len("b/y"))
+	}
+}
+
+// Match refuses a glob that matches a file git marks skip-worktree that the
+// working tree lacks, and one that may match a path below a directory a
+// sparse index lists as one entry, by the reason, and passes one that does
+// neither. A skip-worktree file the working tree holds, as after git
+// update-index --skip-worktree in a full checkout, is matched as any other,
+// in git's order. Planted breaks: the loop over what is left out dropped;
+// the directory test reading match and not under, which passed a glob over
+// d/ since d/ itself is no file; present not asked, which refused b/y on
+// disk; the sort dropped, which listed b/y after b/z.
+func TestMatchRefusesWhatASparseCheckoutLeavesOut(t *testing.T) {
+	ix := sparseIndex(t, []string{"a", "b/x", "b/z"}, "b/y", "d/")
+	never := func(string) bool { return false }
+	_, err := ix.Paths().Span("b").Match(func(p string) bool { return p == "b/y" }, never, never)
+	extracttest.WantError(t, err, `matches "b/y", which git marks skip-worktree and the working tree does not hold, as a sparse checkout leaves a file out`)
+	_, err = ix.Paths().Span("").Match(never, func(d string) bool { return d == "d" }, never)
+	extracttest.WantError(t, err, `may match files below "d/", a directory the sparse checkout leaves out of the working tree, which git's sparse index lists as one entry`)
+	got, err := ix.Paths().Span("").Match(func(p string) bool { return p == "b/x" }, never, never)
+	if err != nil || !slices.Equal(got, []string{"b/x"}) {
+		t.Errorf("a glob that meets nothing left out: %q, %v", got, err)
+	}
+	inB := func(p string) bool { return strings.HasPrefix(p, "b/") }
+	got, err = ix.Paths().Span("b").Match(inB, never, func(p string) bool { return p == "b/y" })
+	if err != nil || !slices.Equal(got, []string{"b/x", "b/y", "b/z"}) {
+		t.Errorf("a skip-worktree file on disk: %q, %v; want it matched in git's order", got, err)
+	}
+}
+
+// Below keeps what a sparse checkout leaves out below the fixture, with
+// the fixture's path cut, so a witness's glob and read meet it as a real
+// run's do. Planted break: Below dropping it.
+func TestBelowKeepsWhatASparseCheckoutLeavesOut(t *testing.T) {
+	ix := sparseIndex(t, []string{".errata/witness/w/a"}, ".errata/witness/w/b", ".errata/witness/w/d/", "x")
+	below, err := ix.Below(".errata/witness/w")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(below.left, []string{"b", "d/"}) {
+		t.Errorf("below the fixture a sparse checkout leaves out %q, want b and d/", below.left)
 	}
 }

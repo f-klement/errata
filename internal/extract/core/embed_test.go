@@ -131,6 +131,69 @@ func TestEmbeddedBlockLinesFromTheIndicator(t *testing.T) {
 	}
 }
 
+// Every block scalar a path can select has its values at the lines they
+// stand on, in files where the yaml walker could ask about a node after one
+// on a later line. k1.yaml's key is a block too, and no row asserts it,
+// since a path selects values, not keys. The walker's cursor
+// finds the | going forward only, so a node asked about out of the file's
+// order gets Block 0 and its values the line where the string starts, and
+// TestBlocksLineOf calls lineOf in the order it picks, not the walker's. The
+// files: a merge key's source and the merging mapping each with a block, a
+// block merge value written inline between two blocks, a merge of a
+// sequence of anchors, a complex key that is a block with a block value, an
+// alias of a block used after a later block, a !!set before a block, an
+// anchor in one document and its alias in the next, a flow mapping holding
+// an alias of a block, and an alias key naming a block anchor. The planted
+// breaks, each asking lineOf about a node out of the file's order: a
+// mapping asking about its last value before its first pair, which put
+// a1's b at line 3, and an alias converting its anchor again in place of
+// the node already built, which put a1's c at line 1.
+func TestEmbeddedBlockLinesInTheWalkersOrder(t *testing.T) {
+	root := extracttest.Repo(t, map[string]string{
+		"m1.yaml":   "base: &b\n  p: |\n    y = 1\nm:\n  <<: *b\n  q: |\n    y = 2\n",
+		"m2.yaml":   "m:\n  a: |\n    y = 1\n  <<:\n    p: |\n      y = 2\n  z: |\n    y = 3\n",
+		"m3.yaml":   "x: &x\n  p: |\n    y = 1\nw: &w {r: 1}\nm:\n  <<: [*x, *w]\n  q: |\n    y = 2\n",
+		"k1.yaml":   "? |\n  y = 1\n: |\n  y = 2\nn: |\n  y = 3\n",
+		"a1.yaml":   "a: &a |\n  y = 1\nb: |\n  y = 2\nc: *a\nd: |\n  y = 3\n",
+		"set.yaml":  "s: !!set\n  ? a\n  ? b\nt: |\n  y = 2\n",
+		"docs.yaml": "kind: A\na: &a |\n  y = 1\n---\nkind: B\nc: *a\nd: |\n  y = 2\n",
+		"flow.yaml": "a: &a |\n  y = 1\nf: {b: *a}\ng: |\n  y = 2\n",
+		"ak.yaml":   "k: &k |\n  y = 1\n*k : |\n  y = 2\nz: |\n  y = 3\n",
+	})
+	for _, c := range []struct{ file, kind, path, want string }{
+		{"m1.yaml", "", "base.p", "1@3"},
+		{"m1.yaml", "", "m.p", "1@3"},
+		{"m1.yaml", "", "m.q", "2@7"},
+		{"m2.yaml", "", "m.a", "1@3"},
+		{"m2.yaml", "", "m.p", "2@6"},
+		{"m2.yaml", "", "m.z", "3@8"},
+		{"m3.yaml", "", "x.p", "1@3"},
+		{"m3.yaml", "", "m.p", "1@3"},
+		{"m3.yaml", "", "m.q", "2@8"},
+		{"k1.yaml", "", `["y = 1\n"]`, "2@4"},
+		{"k1.yaml", "", "n", "3@6"},
+		{"a1.yaml", "", "a", "1@2"},
+		{"a1.yaml", "", "b", "2@4"},
+		{"a1.yaml", "", "c", "1@2"},
+		{"a1.yaml", "", "d", "3@7"},
+		{"set.yaml", "", "t", "2@5"},
+		{"docs.yaml", "A", "a", "1@3"},
+		{"docs.yaml", "B", "c", "1@3"},
+		{"docs.yaml", "B", "d", "2@8"},
+		{"flow.yaml", "", "a", "1@2"},
+		{"flow.yaml", "", "f.b", "1@2"},
+		{"flow.yaml", "", "g", "2@5"},
+		{"ak.yaml", "", "k", "1@2"},
+		{"ak.yaml", "", `["y = 1\n"]`, "2@4"},
+		{"ak.yaml", "", "z", "3@6"},
+	} {
+		got := mustRun(t, extract.Of(yaml.Kind, yaml.Spec{File: c.file, Kind: c.kind, Path: c.path, Embedded: steps("toml", "y")}), root)
+		if extracttest.Texts(got) != c.want {
+			t.Errorf("%s %s: got %q, want %q", c.file, c.path, extracttest.Texts(got), c.want)
+		}
+	}
+}
+
 // An empty JSON string, or one of white space, is refused as a string that
 // holds no JSON value, not as a file that ends early. The planted break:
 // the test removed, which gave the file's message.

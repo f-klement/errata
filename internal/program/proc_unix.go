@@ -16,3 +16,17 @@ func isolate(cmd *exec.Cmd) {
 		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
 }
+
+// reap kills what is left of the program's process group once Run's Wait
+// has returned, so a child the program left behind does not run on after
+// errata. ESRCH, a group with nothing left in it, is the common case and
+// is no error. The group's id is the program's pid, which Wait has freed;
+// the kernel hands that pid to no new process while a member of the group
+// lives, so the kill reaches no stranger's group unless the group is
+// already empty and the pid comes round again in the moment between Wait
+// and the kill.
+func reap(cmd *exec.Cmd) {
+	if cmd.Process != nil {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+}

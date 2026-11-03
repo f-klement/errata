@@ -3,7 +3,19 @@ package core
 import (
 	"errors"
 	"testing"
+	"unsafe"
 )
+
+// The memory figures beside the node limit in limits.go were measured with
+// a node of 128 bytes, a size class of Go's allocator. A field that grows
+// the node moves it to the 144 byte class and makes those figures wrong, so
+// a new field fits in the space the node has or the figures are measured
+// again.
+func TestNodeStays128Bytes(t *testing.T) {
+	if got := unsafe.Sizeof(Node{}); got != 128 {
+		t.Errorf("a node is %d bytes, not the 128 the memory figures in limits.go were measured with", got)
+	}
+}
 
 func TestLineAt(t *testing.T) {
 	data := []byte("ab\ncd\n\nx")
@@ -40,5 +52,21 @@ func TestEvalStopsAtTheValueLimit(t *testing.T) {
 	list.Items = list.Items[:MaxValues]
 	if got, err := p.Eval(list); err != nil || len(got) != 0 {
 		t.Errorf("a step of 100000 nodes: %d, %v", len(got), err)
+	}
+}
+
+// LineOfKey is KeyLine when the node has one, and Line when it has none.
+// Planted breaks: KeyLine ignored; Line returned whatever KeyLine holds.
+func TestLineOfKey(t *testing.T) {
+	for _, c := range []struct {
+		n    Node
+		want int
+	}{
+		{Node{KeyLine: 3, Line: 4}, 3},
+		{Node{Line: 4}, 4},
+	} {
+		if got := c.n.LineOfKey(); got != c.want {
+			t.Errorf("LineOfKey of KeyLine %d, Line %d = %d, want %d", c.n.KeyLine, c.n.Line, got, c.want)
+		}
 	}
 }

@@ -15,6 +15,15 @@
 // errata uses that string instead, which leaves room to add fields later
 // without breaking a check that prints plain text.
 //
+// errata holds at most check.DefaultMaxBytes of a program check's stdout,
+// and of its stderr apart. It reads what the program writes past that and
+// drops it, without stopping the program, and the message then says which
+// stream it cut and at what bound. The verdict is still the exit code. A
+// cut stdout is no longer a whole JSON object, so its message is the held
+// text as it is, and an unknown quotes the last lines of the held part of
+// stderr, not of all of it. A generator's bound is generated.max_bytes, and
+// the byte past it stops the generator (generated.go).
+//
 // The program runs with its working directory at the repository root and
 // receives ERRATA_ROOT, ERRATA_CHECK_ID and ERRATA_SCOPE in its environment.
 // On a witness ERRATA_ROOT is the fixture, and the working directory stays
@@ -42,9 +51,10 @@ func Run(ctx context.Context, root string, c check.Check) (res check.Result) {
 	// res is a named result so this assignment reaches the caller.
 	defer func() { res.Duration = time.Since(start) }()
 
-	// A program check's output has no bound yet, unlike a generator's: a
-	// bound would make a check that prints past it unknown.
-	p := run(ctx, root, c, c.Program().Run, 0)
+	// The bound drains: a check that prints past it is cut, never stopped
+	// or made unknown for its output alone, since its exit is its verdict.
+	bound := int64(check.DefaultMaxBytes)
+	p := run(ctx, root, c, c.Program().Run, bound, true)
 	res.Message = message(p.Stdout)
 
 	var exitErr *exec.ExitError
@@ -60,6 +70,7 @@ func Run(ctx context.Context, root string, c check.Check) (res check.Result) {
 		res.Verdict = check.VerdictUnknown
 		res.Message = strings.TrimSpace(strings.Join([]string{p.Err.Error(), res.Message, tail(string(p.Stderr))}, "\n"))
 	}
+	res.Message = withCut(res.Message, p.Cut, bound)
 	return res
 }
 
@@ -70,11 +81,12 @@ func Run(ctx context.Context, root string, c check.Check) (res check.Result) {
 // timeout, a timeout of 0 being none; the environment of errata with
 // ERRATA_ROOT, ERRATA_CHECK_ID and ERRATA_SCOPE added; no stdin, so a
 // program that reads it reads an empty file at once; and a process group
-// of its own, which a timeout kills whole. A bound above 0 is the most
-// bytes errata holds of stdout, and of stderr apart, and the byte after it
-// stops the program; a bound of 0 holds all of both, as a program check's
-// run does.
-func run(ctx context.Context, root string, c check.Check, argv []string, bound int64) program.Ended {
+// of its own, which a timeout kills whole. bound is the most bytes errata
+// holds of stdout, and of stderr apart. When drain is set errata drops what
+// the program writes past it and lets it run on, as a program check's run
+// does; otherwise the byte after it stops the program, as a generator's
+// does.
+func run(ctx context.Context, root string, c check.Check, argv []string, bound int64, drain bool) program.Ended {
 	return program.Run(ctx, program.Spec{
 		Argv: argv,
 		Dir:  check.WorkDir(ctx, root),
@@ -85,7 +97,19 @@ func run(ctx context.Context, root string, c check.Check, argv []string, bound i
 		},
 		Timeout: c.Timeout,
 		Bound:   bound,
+		Drain:   drain,
 	})
+}
+
+// withCut is msg followed by a line for each stream in cut, the streams
+// whose bytes past bound, the bound the run held them to, errata dropped.
+func withCut(msg string, cut []string, bound int64) string {
+	var b strings.Builder
+	b.WriteString(msg)
+	for _, stream := range cut {
+		fmt.Fprintf(&b, "\n(errata cut %s at %d bytes, the most it holds of a program check's stream, and dropped the rest)", stream, bound)
+	}
+	return strings.TrimSpace(b.String())
 }
 
 func message(stdout []byte) string {

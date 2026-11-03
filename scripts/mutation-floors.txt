@@ -16,9 +16,13 @@
 # A lowering the owner approved passes when the comment line directly above the
 # row names the tag's row and the new row, three figures each, and the reason:
 #   # lowered from 85 80 5 to 85 72 5 by owner 2026-11-02: <why>
-# It excuses exactly that change of that row: a further drop, a drop in another
-# column, or the same line left in place after the next tag carries the new row
-# is not excused. This is the one place the line's form is written out.
+# It excuses exactly that change of that row: a further drop or a drop in
+# another column is not excused. The line is stale once the tag the ratchet
+# compares with holds the same line directly above the same package's row; its
+# date is not read for this, nor blanks at its end. A stale line fails the
+# ratchet where it stands, whether or not it would excuse a drop, so the first
+# push after the tag that carries the lines removes them (#216). This is the one
+# place the line's form is written out.
 #
 # A package renamed, or split out of another, names the package it came from
 # after its figures (#215):

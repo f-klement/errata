@@ -696,8 +696,8 @@ var newSemverReader = func() semverReader { return new(semver.Reader) }
 // what it was read as, each clipped as the quoter clips a value. A rule that
 // held on ranges alone says so in its note. blamed is the group a false
 // rule blames: of the two semver.Agree found not to agree, the later, which
-// disagrees with a value before it; -1 for any other verdict, and for
-// ranges alone, where no pair is to blame.
+// disagrees with a value before it; for ranges alone, the first range at
+// which the ranges before it stop overlapping; -1 for any other verdict.
 func agreeSemver(groups []distinct) (verdict check.Verdict, message, note string, blamed int) {
 	texts := make([]string, len(groups))
 	for i, g := range groups {

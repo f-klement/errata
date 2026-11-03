@@ -235,7 +235,7 @@ func TestMatrixRefusals(t *testing.T) {
 		{"{matrix: {v: '${{ github.event.client_payload.versions }}'}}", `the matrix variable "v" of job "j" is an expression`},
 		{"{matrix: {v: 1}}", `the matrix variable "v" is a scalar, not a list of values`},
 		{"{matrix: {v: []}}", `the matrix variable "v" holds no value, which GitHub refuses`},
-		{"{matrix: {os: [a], OS: [b]}}", `has the variables "os" and "OS", which GitHub reads as one`},
+		{"{matrix: {os: [a], OS: [b]}}", `ci.yml:3: the key "OS" and the key "os" at line 3 are one key to GitHub`},
 		{"{matrix: {v: [1], include: '${{ x }}'}}", `the matrix's include: of job "j" is an expression`},
 		{"{matrix: {v: [1], exclude: {v: 1}}}", `the matrix's exclude: is a mapping, not a list`},
 		{"{matrix: {v: [1], include: ['${{ x }}']}}", `an entry of the matrix's include: of job "j" is an expression`},
@@ -598,7 +598,7 @@ func TestFold(t *testing.T) {
 func TestMatrixKeysFoldOutsideASCII(t *testing.T) {
 	head := "jobs:\n  t:\n    env: {V: '${{ matrix.x }}'}\n    strategy:\n      matrix:\n"
 	want(t, see(t, head+"        a: [1]\n        é: [1]\n        include:\n          - {a: 1, É: 2, x: new}\n", "t", "", "V"), "@3[t (1, 1)] new@9[t (1, 2, new)]")
-	extracttest.WantError(t, refused(t, head+"        é: [1]\n        É: [2]\n", "t", "", "V"), `ci.yml:7: the matrix of job "t" has the variables "é" and "É", which GitHub reads as one`)
+	extracttest.WantError(t, refused(t, head+"        é: [1]\n        É: [2]\n", "t", "", "V"), `ci.yml:7: the key "É" and the key "é" at line 6 are one key to GitHub`)
 }
 
 // GitHub reads a mapping's keys in any case and does not document how it

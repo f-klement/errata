@@ -11,8 +11,10 @@ import (
 )
 
 // The regex extractor finds exactly the matches FindAllSubmatchIndex finds,
-// though it runs each search itself through a clocked reader, and every value it returns is text of
-// the file, with CRLF read as LF, at a line inside it.
+// though it runs each search itself through a clocked reader, but for the
+// empty match at the end of a text that ends with a newline, which is on no
+// line. Every value it returns is text of the file, with CRLF read as LF, at
+// a line inside it, a final newline ending the last line.
 func FuzzRegex(f *testing.F) {
 	f.Add(`^FROM (\S+)`, dockerfile)
 	f.Add(`(x*)$`, "a\n\nb\n")
@@ -65,6 +67,9 @@ func FuzzRegex(f *testing.F) {
 		lf := strings.ReplaceAll(data, "\r\n", "\n")
 		got, err := r.Matches([]byte(lf))
 		want := r.re.FindAllSubmatchIndex([]byte(lf), MaxValues+1)
+		if n := len(want); n > 0 && want[n-1][0] == len(lf) && strings.HasSuffix(lf, "\n") {
+			want = want[:n-1]
+		}
 		if err != nil {
 			if len(want) <= MaxValues || !strings.Contains(err.Error(), "values, the limit") {
 				t.Fatalf("error %v with %d matches", err, len(want))
@@ -83,7 +88,13 @@ func FuzzRegex(f *testing.F) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		count := strings.Count(data, "\n") + 1
+		// The lines of the file, counted here rather than by fileLines, so
+		// the oracle does not move with the code under test: one for each
+		// newline, and one for the text after the last unless it ends one.
+		count := strings.Count(lf, "\n")
+		if lf == "" || !strings.HasSuffix(lf, "\n") {
+			count++
+		}
 		for _, v := range values {
 			if v.At.Line < 1 || v.At.Line > count || !strings.Contains(lf, v.Text) {
 				t.Fatalf("value %q at line %d of %d", v.Text, v.At.Line, count)

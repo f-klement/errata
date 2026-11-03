@@ -2,6 +2,9 @@ package protocol
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -48,6 +51,47 @@ func TestRunEnvironmentAndDir(t *testing.T) {
 	c := sh(`[ "$PWD" = "$ERRATA_ROOT" ] && [ "$ERRATA_CHECK_ID" = c ] && [ "$ERRATA_SCOPE" = repo ]`)
 	if res := Run(context.Background(), root, c); res.Verdict != check.VerdictTrue {
 		t.Fatalf("environment not as documented: %+v", res)
+	}
+}
+
+// A program check that prints past check.DefaultMaxBytes and exits 0 is
+// true: errata holds the bound's worth of stdout, drops the rest, lets the
+// program run on to write ran-on, and marks the message cut. Planted
+// breaks: the bound made to stop the program, which killed it before
+// ran-on and made it unknown; the cut line left off the message.
+func TestRunCutsAProgramCheckPastTheBound(t *testing.T) {
+	root := t.TempDir()
+	c := sh(fmt.Sprintf("head -c %d /dev/zero | tr '\\0' x; echo ran on > ran-on", check.DefaultMaxBytes+1))
+	c.Timeout = 30 * time.Second
+	res := Run(context.Background(), root, c)
+	want := fmt.Sprintf("(errata cut stdout at %d bytes, the most it holds of a program check's stream, and dropped the rest)", check.DefaultMaxBytes)
+	if res.Verdict != check.VerdictTrue || !strings.HasSuffix(res.Message, "\n"+want) {
+		t.Fatalf("verdict %s, message ending %q, want true ending %q", res.Verdict, res.Message[max(0, len(res.Message)-200):], want)
+	}
+	if held := strings.TrimSuffix(res.Message, "\n"+want); held != strings.Repeat("x", check.DefaultMaxBytes) {
+		t.Fatalf("held %d bytes of stdout, want %d", len(held), check.DefaultMaxBytes)
+	}
+	if _, err := os.Stat(filepath.Join(root, "ran-on")); err != nil {
+		t.Fatalf("the check did not run on past the bound: %v", err)
+	}
+}
+
+// The cut line names each stream errata cut and the bound it was given,
+// after whatever the message said, and a run that cut nothing keeps its
+// message. Planted breaks: the stream's name left out of the line; the
+// line naming check.DefaultMaxBytes in place of the bound passed.
+func TestWithCut(t *testing.T) {
+	line := func(s string) string {
+		return fmt.Sprintf("(errata cut %s at 1000 bytes, the most it holds of a program check's stream, and dropped the rest)", s)
+	}
+	if got := withCut("exit status 2\nboom", []string{"stderr"}, 1000); got != "exit status 2\nboom\n"+line("stderr") {
+		t.Fatalf("stderr cut: %q", got)
+	}
+	if got := withCut("", []string{"stdout", "stderr"}, 1000); got != line("stdout")+"\n"+line("stderr") {
+		t.Fatalf("both cut: %q", got)
+	}
+	if got := withCut("fine", nil, 1000); got != "fine" {
+		t.Fatalf("none cut: %q", got)
 	}
 }
 

@@ -11,8 +11,8 @@ import (
 )
 
 // Shape is what a node holds: one scalar, a mapping from keys to nodes, or a
-// sequence of nodes.
-type Shape int
+// sequence of nodes. It is a byte, so that Node keeps room for KeyLine.
+type Shape uint8
 
 // The shapes of a node.
 const (
@@ -57,13 +57,31 @@ type Node struct {
 	// breaks the file's lines on and keeps in the text. An int32 sits beside
 	// Type in the space Text's alignment leaves, so the node is no larger.
 	Block int32
-	Text  string // the scalar's string form
-	Line  int    // where the value starts, counted from 1
-	Keys  []string
-	Field map[string]*Node
-	Vals  []*Node // field's values in the order of keys
-	Items []*Node
-	num   *number // a number scalar's value, once a filter has compared it
+	// KeyLine is the line of the key the value stands under, counted from
+	// 1, where Line is the line the value starts on: for a mapping written
+	// below its key they differ. The yaml reader sets it on every value of
+	// a mapping, and an alias keeps its anchor's, as it keeps its Line. It
+	// is 0 for a document, an item, a key, and every node of a JSON or TOML
+	// file, whose readers leave it unset. Shape, Type, Block and KeyLine fit
+	// in the 16 bytes before Text, so the node stays 128 bytes.
+	KeyLine int32
+	Text    string // the scalar's string form
+	Line    int    // where the value starts, counted from 1
+	Keys    []string
+	Field   map[string]*Node
+	Vals    []*Node // field's values in the order of keys
+	Items   []*Node
+	num     *number // a number scalar's value, once a filter has compared it
+}
+
+// LineOfKey is the line of the key n stands under, KeyLine, or the line n
+// starts on when it has none, as a node of JSON or TOML, an item or a
+// document does.
+func (n *Node) LineOfKey() int {
+	if n.KeyLine > 0 {
+		return int(n.KeyLine)
+	}
+	return n.Line
 }
 
 // number is the value of a number scalar, and whether it has one.

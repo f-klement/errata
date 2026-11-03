@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -550,6 +551,9 @@ func (c *config) matrix(jobName string, job *core.Node, name string, below []can
 				if val.Shape != core.Scalar {
 					return nil, fmt.Errorf("%s: a parallel:matrix value is a string, not %s", c.at(val), shapeName(val))
 				}
+				if c.psychBoolOrNull(val) {
+					return nil, fmt.Errorf("%s: parallel:matrix variable %s is %s, which GitLab's loader reads as a boolean or a null, and GitLab refuses; quote it, without a tag, to give the text", c.at(val), core.Quote(k), core.Quote(val.Text))
+				}
 			}
 			if len(vals) > 1 {
 				en.multi = append(en.multi, i)
@@ -576,11 +580,22 @@ func (c *config) matrix(jobName string, job *core.Node, name string, below []can
 	if total > 1 {
 		same = c.sameInEvery(es)
 	}
-	var out []candidate
+	var names []string
 	for _, en := range es {
 		at := make([]int, len(en.lists))
 		for range en.count {
-			cond := c.instanceName(jobName, en.keys, en.lists, at, same)
+			names = append(names, c.instanceName(jobName, en.keys, en.lists, at, same))
+			en.next(at)
+		}
+	}
+	apart(names)
+	var out []candidate
+	i := 0
+	for _, en := range es {
+		at := make([]int, len(en.lists))
+		for range en.count {
+			cond := names[i]
+			i++
 			if en.setKey >= 0 {
 				if out, err = c.add(out, candidate{n: en.lists[en.setKey][at[en.setKey]], cond: cond, from: fromMatrix}); err != nil {
 					return nil, err
@@ -592,16 +607,99 @@ func (c *config) matrix(jobName string, job *core.Node, name string, below []can
 					}
 				}
 			}
-			for j := len(en.multi) - 1; j >= 0; j-- {
-				k := en.multi[j]
-				if at[k]++; at[k] < len(en.lists[k]) {
-					break
-				}
-				at[k] = 0
-			}
+			en.next(at)
 		}
 	}
 	return out, nil
+}
+
+// next moves at to the entry's next instance, the last key of more than
+// one value varying fastest.
+func (en matrixEntry) next(at []int) {
+	for j := len(en.multi) - 1; j >= 0; j-- {
+		k := en.multi[j]
+		if at[k]++; at[k] < len(en.lists[k]) {
+			return
+		}
+		at[k] = 0
+	}
+}
+
+// apart rewrites the instance names whose notes, the first noteBytes bytes
+// a report quotes, are another's, so that no two instances print one note.
+// Eliding what every instance holds alike does not ensure it: an entry of
+// long values beside one that sets none of those keys elides nothing, and
+// its instances' names differ only past the cut. Each such name is cut to
+// leave room for " #k", which no other name ends its note with: k is the
+// place in the matrix, counted from 1, of the first instance of that name.
+// Instances whose names GitLab writes alike share k, so they keep one name
+// and one note, and the values they give are merged as before; a group of
+// such names alone is left as it is. A name a suffix made the same as
+// another's note is rewritten in the next round, until none is; each round
+// suffixes one name more at least, so there are at most as many rounds as
+// instances.
+func apart(names []string) {
+	written := slices.Clone(names) // GitLab's names, as instanceName wrote them
+	first := map[string]int{}
+	for i, n := range written {
+		if _, ok := first[n]; !ok {
+			first[n] = i
+		}
+	}
+	suffixed := make([]bool, len(names))
+	for {
+		at := map[string][]int{}
+		for i, n := range names {
+			k := noteOf(n)
+			at[k] = append(at[k], i)
+		}
+		changed := false
+		for _, is := range at {
+			if !severalNames(written, is) {
+				continue
+			}
+			for _, i := range is {
+				if suffixed[i] {
+					continue
+				}
+				suffix := fmt.Sprintf(" #%d", first[written[i]]+1)
+				names[i] = names[i][:cutAt(names[i], noteBytes-len(suffix))] + suffix
+				suffixed[i], changed = true, true
+			}
+		}
+		if !changed {
+			return
+		}
+	}
+}
+
+// severalNames reports whether the instances at the indices in is hold more
+// than one name of written.
+func severalNames(written []string, is []int) bool {
+	for _, i := range is[1:] {
+		if written[i] != written[is[0]] {
+			return true
+		}
+	}
+	return false
+}
+
+// noteOf is the part of name a report quotes: its first noteBytes bytes,
+// cut back to the start of a character (check.Value.ConditionNote).
+func noteOf(name string) string {
+	return name[:cutAt(name, noteBytes)]
+}
+
+// cutAt is the length of s cut to at most n bytes, back to the start of a
+// character.
+func cutAt(s string, n int) int {
+	if len(s) <= n {
+		return len(s)
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return n
 }
 
 // matrixEntry is one entry of a parallel:matrix: its keys, each key's
@@ -615,13 +713,16 @@ type matrixEntry struct {
 }
 
 // sameInEvery is the keys that hold one value, the same text, in every
-// entry of a matrix that sets them: no instance differs from another in
-// them.
+// instance of every entry of a matrix: no instance differs from another in
+// them. An entry that does not set a key differs in it from one that does,
+// so the key is not one of them.
 func (c *config) sameInEvery(es []matrixEntry) map[string]bool {
 	text := map[string]string{}
 	same := map[string]bool{}
+	setIn := map[string]int{}
 	for _, en := range es {
 		for j, k := range en.keys {
+			setIn[k]++
 			was, seen := same[k]
 			switch {
 			case seen && !was:
@@ -634,6 +735,11 @@ func (c *config) sameInEvery(es []matrixEntry) map[string]bool {
 			}
 		}
 	}
+	for k, n := range setIn {
+		if n < len(es) {
+			same[k] = false
+		}
+	}
 	return same
 }
 
@@ -644,8 +750,9 @@ const noteBytes = 64
 // instanceName is GitLab's name for the instance whose values at gives,
 // "build: [a, x]": each value as Psych loads it, as GitLab writes it with
 // to_s, cut at maxCondition bytes. A name longer than a report quotes
-// writes the values no instance differs in as "...", so the part of it a
-// report shows tells the instances apart.
+// writes as "..." the values of the keys every entry sets to one value
+// (sameInEvery), which no instance differs in. That alone does not tell
+// every two instances apart in the part a report shows; apart does.
 func (c *config) instanceName(jobName string, keys []string, lists [][]*core.Node, at []int, same map[string]bool) string {
 	write := func(elide bool) string {
 		var b strings.Builder
@@ -1240,7 +1347,7 @@ func (c *config) values(cands []candidate, variable, expands bool, name string) 
 	var out []check.Value
 	var total int64
 	for _, cd := range kept {
-		add := func(n *core.Node, text string, expand bool) error {
+		add := func(n *core.Node, line int, text string, expand bool) error {
 			if len(out) == core.MaxValues {
 				return core.TooManyValues(c.main)
 			}
@@ -1249,7 +1356,7 @@ func (c *config) values(cands []candidate, variable, expands bool, name string) 
 			}
 			out = append(out, check.Value{
 				Text:       text,
-				At:         check.Location{File: c.fileOf(n), Line: n.Line},
+				At:         check.Location{File: c.fileOf(n), Line: line},
 				NotLiteral: c.retyped(n, text) || (expand && references(text)),
 				Condition:  cd.cond,
 			})
@@ -1284,11 +1391,11 @@ func (c *config) retyped(n *core.Node, text string) bool {
 // list, or a variable's long form, in the forms GitLab takes where it was
 // set: a long form of value and expand in a job, of value, description,
 // options and expand at the top level, and none in a rule.
-func (c *config) value(cd candidate, variable, expands bool, add func(*core.Node, string, bool) error) error {
+func (c *config) value(cd candidate, variable, expands bool, add func(n *core.Node, line int, text string, expand bool) error) error {
 	n := cd.n
 	switch {
 	case n.Shape == core.Scalar:
-		return add(n, n.Text, expands)
+		return add(n, n.Line, n.Text, expands)
 	case variable && n.Shape == core.Sequence:
 		return fmt.Errorf("%s: a variable's value is a string, not a sequence", c.at(n))
 	case n.Shape == core.Sequence:
@@ -1300,7 +1407,7 @@ func (c *config) value(cd candidate, variable, expands bool, add func(*core.Node
 			if it.Shape != core.Scalar {
 				return fmt.Errorf("%s: the list holds %s; name a key below it", c.at(it), shapeName(it))
 			}
-			if err := add(it, it.Text, expands); err != nil {
+			if err := add(it, it.Line, it.Text, expands); err != nil {
 				return err
 			}
 		}
@@ -1332,13 +1439,16 @@ func (c *config) value(cd candidate, variable, expands bool, add func(*core.Node
 			expands = false
 		}
 	}
+	// A long form with no value is a variable no file sets, reported at
+	// its key: the mapping starts at its first subkey. A mapping no key
+	// holds, such as an alias of a sequence's item, has no key line.
 	if val == nil {
-		return add(n, "", false)
+		return add(n, n.LineOfKey(), "", false)
 	}
 	if val.Shape != core.Scalar {
 		return fmt.Errorf("%s: a variable's value is a string, not %s", c.at(val), shapeName(val))
 	}
-	return add(val, val.Text, expands)
+	return add(val, val.Line, val.Text, expands)
 }
 
 // takes lists the keys a long form takes, for a message.

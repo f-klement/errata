@@ -64,8 +64,8 @@ var kinds = registry(
 	register(packageversion.Kind, with(packageversion.Build, parsers)),
 	register(envfile.Kind, envfile.Build),
 	// gitlab-ci and github-actions read their YAML with the yaml reader's
-	// parser.
-	register(gitlabci.Kind, with(gitlabci.Build, yaml.ParseNoted)),
+	// parser, gitlab-ci's reading a !!bool scalar as Psych does.
+	register(gitlabci.Kind, with(gitlabci.Build, parsers.NotedYAML11Bools)),
 	register(shell.Kind, shell.Build),
 	register(githubactions.Kind, with(githubactions.Build, yaml.ParseNoted)),
 	register(jenkins.Kind, jenkins.Build),
@@ -121,9 +121,10 @@ var parsers = core.Parsers{
 	YAML: func(data []byte, expanded int) ([]*core.Node, int, error) {
 		return yaml.ParseNoted(data, expanded, nil)
 	},
-	JSON:  ejson.Parse,
-	TOML:  toml.Parse,
-	Noted: yaml.ParseNoted,
+	JSON:             ejson.Parse,
+	TOML:             toml.Parse,
+	Noted:            yaml.ParseNoted,
+	NotedYAML11Bools: yaml.ParseNotedBools(gitlabci.PsychBool),
 }
 
 // with is build given w, the parsers or readers it takes beside its spec.

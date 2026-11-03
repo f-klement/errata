@@ -514,3 +514,25 @@ func TestPlaceAndResolve(t *testing.T) {
 		t.Errorf("Build: %v, or no not literal value", err)
 	}
 }
+
+// env's files: reads a sparse checkout as every file set does: a glob that
+// would match a file the checkout leaves out, or a path below a directory
+// a sparse index lists as one entry, is refused, naming the sparse
+// checkout, and so is a file named outright that the checkout leaves out,
+// which is never read as missing. Planted break: the glob match passing
+// over what the checkout leaves out (gitindex.Span.Match).
+func TestASparseCheckoutIsUnknown(t *testing.T) {
+	files := map[string]string{"a.sh": "A=1\n", "sub/c.sh": "A=3\n"}
+	for _, index := range []bool{false, true} {
+		root := extracttest.Sparse(t, files, index)
+		_, _, err := run(t, Spec{Name: "A", Files: []string{"**/*.sh"}}, root)
+		extracttest.WantError(t, err, `env: files lists the glob "**/*.sh", which`)
+		extracttest.WantError(t, err, "sparse checkout")
+		_, _, err = run(t, Spec{Name: "A", Files: []string{"sub/c.sh"}}, root)
+		extracttest.WantError(t, err, "sub/c.sh: ")
+		extracttest.WantError(t, err, "sparse checkout")
+		if got, _, err := run(t, Spec{Name: "A", Files: []string{"*.sh"}}, root); err != nil || got != "1@a.sh:1 [shell]" {
+			t.Errorf("sparse index %v: a glob beside what is left out: %q, %v", index, got, err)
+		}
+	}
+}

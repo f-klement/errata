@@ -61,7 +61,7 @@ func RunGenerated(ctx context.Context, root string, c check.Check) (res check.Re
 		return res
 	}
 
-	p := run(ctx, root, c, g.Run, g.MaxBytes)
+	p := run(ctx, root, c, g.Run, g.MaxBytes, false)
 	if msg := generatorFailed(p, c); msg != "" {
 		res.Verdict, res.Message = check.VerdictUnknown, msg
 		return res

@@ -199,6 +199,8 @@ func TestYAMLThatDoesNotDecodeIsAnError(t *testing.T) {
 		"x: &k {a: 1}\nm: {*k: 1}\n":            "line 2: a key is a mapping or a sequence; errata reads only scalar keys",
 		"a: !!int x\n":                          `line 1: "x" is not a valid !!int`,
 		"!!bool maybe: 1\n":                     `line 1: "maybe" is not a valid !!bool`,
+		"a: !!bool yes\n":                       `line 1: "yes" is not a valid !!bool`,
+		"a: !!bool On\n":                        `line 1: "On" is not a valid !!bool`,
 		"a: !!binary '%%%'\n":                   `line 1: "%%%" is not a valid !!binary`,
 		"a: &x [*x]\n":                          "line 1: alias *x is inside the anchor it names",
 		"a: &x {<<: *x}\n":                      "line 1: alias *x is inside the anchor it names",
@@ -421,6 +423,28 @@ func TestYAMLBuildAndReadRefuse(t *testing.T) {
 	extracttest.WantError(t, err, "read f.yaml: no such file or directory")
 	_, err = run(t, Spec{File: "f.yaml", Path: "a", MaxBytes: 70}, extracttest.Repo(t, map[string]string{"f.yaml": strings.Repeat("[", 60)}))
 	extracttest.WantError(t, err, "f.yaml: the file can hold up to 124 nodes, over the limit of 10")
+}
+
+// ParseNotedBools loads a value tagged !!bool whose text its words take, as
+// a boolean that keeps its text, and refuses any other word, and a key
+// tagged !!bool with one of its words, as ParseNoted does.
+func TestParseNotedBoolsTakesItsWords(t *testing.T) {
+	parse := ParseNotedBools(func(text string) bool { return text == "yes" })
+	docs, _, err := parse([]byte("a: !!bool yes\nb: !!bool true\n"), 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a := docs[0].Field["a"]; a.Type != core.TypeBool || a.Text != "yes" {
+		t.Errorf("a: type %d, text %q; want a boolean, yes", a.Type, a.Text)
+	}
+	for body, want := range map[string]string{
+		"a: !!bool no\n":  `line 1: "no" is not a valid !!bool`,
+		"!!bool yes: 1\n": `line 1: "yes" is not a valid !!bool`,
+	} {
+		if _, _, err := parse([]byte(body), 0, nil); err == nil || err.Error() != want {
+			t.Errorf("%q: error %v, want %q", body, err, want)
+		}
+	}
 }
 
 // ParseNoted notes each node once, an anchor's for its aliases too, with

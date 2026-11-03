@@ -37,6 +37,12 @@ func FuzzJenkins(f *testing.F) {
 	f.Add("pipeline { environment {\n Y = 1 )\n H = (T\n / 2)\n X = 'b'\n Z = 3 /)\n } }\n", "X", "")
 	f.Add("def X = 1\nX++\nenv?.X = 'b'; ++this.env.X; env.putAt('X', 1)\n", "X", "")
 	f.Add("pipeline { stages { stage('m') { matrix { axes { axis { name 'X'; values 'a' } }\n stages { stage('b') { } } } } } }\n", "X", "b")
+	// #142: the code of nested ${ } that changes the variable, at the
+	// depth limit and past it.
+	f.Add("def X = 1\nsh \"a ${ \"b ${X++}\" } ${env['X'] = 'c'} ${X += 1}\"\n", "X", "")
+	f.Add("env.X = 'a'\nsh \"\"\"${\n env.X = \"${ ++X }\"; --\n X\n}\"\"\"; y = \"${withEnv(['X=1']) { load 'f' }}\"\n", "X", "")
+	f.Add("a = "+strings.Repeat(`"${X++ + `, 499)+"1"+strings.Repeat(`}"`, 499)+"\n", "X", "")
+	f.Add("a = "+strings.Repeat(`"${env.X = `, 501), "X", "")
 	f.Fuzz(func(t *testing.T, data, name, stage string) {
 		checkTokens(t, []byte(data))
 		e, err := Build(Spec{File: "Jenkinsfile", Variable: name, Stage: stage, MaxBytes: 16 << 10})

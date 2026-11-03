@@ -41,10 +41,12 @@ The limits are what keep that honest:
 - **The rules of a program check, through the same code.** The generator and a program check
   start through one function, `Run` in `internal/program`: the repository root as the working
   directory; errata's environment with `ERRATA_ROOT`, `ERRATA_CHECK_ID` and `ERRATA_SCOPE` added;
-  the check's `timeout`, 30 seconds when it sets none; a process group of its own, which the
-  timeout kills while the program runs. A child left running after the program exits runs on,
-  for both kinds. Stdin is the null device for both, so a generator that reads stdin reads
-  an empty file at once and does not wait for the timeout.
+  the check's `timeout`, 30 seconds when it sets none; on Linux and macOS a process group of its
+  own, which the timeout kills while the program runs and errata kills once the program exits, so
+  a child left running does not outlive the check unless it leaves the group, as `setsid` does,
+  for both kinds. On Windows errata starts no process group, and a child left running there runs
+  on. Stdin is the null device for both, so a generator that reads stdin reads an empty file at
+  once and does not wait for the timeout.
 - **The output compared, never run.** errata does not execute, parse, evaluate or write
   what the generator prints. It compares the bytes with the file's, and quotes at most 64 bytes of
   each side in a message. A failing generator's message ends with its stderr's last lines, cut
@@ -52,7 +54,10 @@ The limits are what keep that honest:
 - **A bound on what errata holds.** `generated.max_bytes`, 32 MiB when left out and at most
   64 MiB as for an extractor, bounds the committed file, the generator's stdout and its stderr,
   each on its own. The byte after the bound on either stream stops the generator, as a timeout
-  does. A program check's output has no bound yet; that is a separate change.
+  does. A program check's output is bounded too, at 32 MiB a stream, but the bound drains
+  rather than stops: errata drops the bytes past it and lets the program run to its exit,
+  whose code is the verdict, and the message says which stream it cut. A generator is
+  stopped because errata could not compare a cut output with the file.
 
 ## What each outcome is
 

@@ -30,6 +30,44 @@ func TestRegexReadsRunesAsRegexpDoes(t *testing.T) {
 	}
 }
 
+// A final newline ends the last line and starts no empty one, for the
+// search as for the context, so no regex reports the empty match after it:
+// values with and without a context, and records. An empty line before the
+// final newline is still one, and a file without a final newline keeps its
+// empty match at the end, on its last line. The text extractor's prose ends
+// in no newline, so its search never meets one. The first case is the probe of the #160
+// delta review, which found "" at f:2 of "a\n" with or without
+// without: '^$'. The planted break: Search.each accepting the match at
+// len(data) after a final newline (#205).
+func TestNoEmptyMatchAfterTheFinalNewline(t *testing.T) {
+	without := &core.Context{Without: `^$`}
+	for _, c := range []struct {
+		body    string
+		context *core.Context
+		want    string
+	}{
+		{"a\n", nil, "a@1"},
+		{"a\n", without, "a@1"},
+		{"a\n\n", nil, "a@1 @2"},
+		{"a\n\n", without, "a@1"},
+		{"a", nil, "a@1"},
+		{"a\nb", nil, "a@1 b@2"},
+		{"\n", nil, "@1"},
+		{"", nil, "@1"},
+	} {
+		root := extracttest.Repo(t, map[string]string{"Dockerfile": c.body})
+		s := extract.Of(regex.Kind, regex.Spec{File: "Dockerfile", Pattern: `^(.*)$`, Context: c.context})
+		if got := extracttest.Texts(mustRun(t, s, root)); got != c.want {
+			t.Errorf("^(.*)$ over %q, context %+v: got %q, want %q", c.body, c.context, got, c.want)
+		}
+	}
+	root := extracttest.Repo(t, map[string]string{"Dockerfile": "a\n"})
+	records := mustRun(t, extract.Of(regex.Kind, regex.Spec{File: "Dockerfile", Pattern: `^(?P<line>.*)$`, As: "record"}), root)
+	if len(records) != 1 || records[0].Text != `{"line": "a"}` {
+		t.Errorf("records over \"a\\n\": %v, want the one of line 1", records)
+	}
+}
+
 func regexSpec(pattern string) extract.Spec {
 	return extract.Of(regex.Kind, regex.Spec{File: "Dockerfile", Pattern: pattern})
 }
@@ -84,14 +122,15 @@ func TestBuildRefusesPattern(t *testing.T) {
 }
 
 // A CRLF line ending reads as LF: $ matches before it, no value ends in its
-// CR, and the lines are those of the file. A lone CR is kept. The planted
-// break is the CRLF file itself, which gave 1.2\r before.
+// CR, and the lines are those of the file: ^()$ finds the empty line 3, and
+// nothing after the final CRLF, which ends line 4 (#205). A lone CR is kept.
+// The planted break is the CRLF file itself, which gave 1.2\r before.
 func TestRegexReadsCRLFAsLF(t *testing.T) {
 	root := extracttest.Repo(t, map[string]string{"Dockerfile": "v=1.2\r\nw=x\r\n\r\nv=3\rx\r\n"})
 	for pattern, want := range map[string]string{
 		`^v=(.*)$`:     "1.2@1 3\rx@4",
 		`(?s)w=(.*)v=`: "x\n\n@2",
-		`^()$`:         "@3 @5",
+		`^()$`:         "@3",
 	} {
 		if got := extracttest.Texts(mustRun(t, regexSpec(pattern), root)); got != want {
 			t.Errorf("%s: got %q, want %q", pattern, got, want)

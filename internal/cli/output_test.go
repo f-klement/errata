@@ -152,9 +152,16 @@ func TestOutputReplacesAnExistingFile(t *testing.T) {
 
 // An output that names the config file is refused with exit 2 before
 // anything runs, whether errata found the config in the root or was given it
-// with --config, and spelled another way. Without the refusal a passing run
-// would replace the config with its report and exit 0. The planted break:
-// refuseConfigOutput's comparison made false.
+// with --config, spelled another way, given through a symbolic link with the
+// output naming the file it links to or the link itself, named by the output
+// through a hard link, or through a symbolic link to its directory, which
+// os.Lstat follows since it is not the last component. Without the refusal a
+// passing run would replace the config, or the link it was read through, with
+// its report and exit 0.
+// The planted breaks: refuseConfigOutput's path comparison made false, which
+// passes the config that is not there and the link named twice; and its
+// os.SameFile made false, which passes the link, the hard link and the
+// linked directory (#183).
 func TestOutputRefusesTheConfigFile(t *testing.T) {
 	root := t.TempDir()
 	cfg := filepath.Join(root, "errata.yaml")
@@ -162,15 +169,32 @@ func TestOutputRefusesTheConfigFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	other := filepath.Join(root, "other.yaml")
+	link := filepath.Join(root, "link.yaml")
+	if err := os.Symlink(cfg, link); err != nil {
+		t.Fatal(err)
+	}
+	hard := filepath.Join(root, "hard.yaml")
+	if err := os.Link(cfg, hard); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "dir")
+	if err := os.Symlink(root, dir); err != nil {
+		t.Fatal(err)
+	}
 	for _, args := range [][]string{
 		{"-o", "text=" + cfg},
 		{"-o", "text=" + filepath.Join(root, ".", "errata.yaml")},
 		{"-c", other, "-o", "junit=" + other},
+		{"-c", link, "-o", "text=" + cfg},
+		{"-c", link, "-o", "text=" + link},
+		{"-o", "sarif=" + hard},
+		{"-o", "text=" + filepath.Join(dir, "errata.yaml")},
 	} {
 		checks := []check.Check{programCheck("touch", "touch", "ran")}
 		r := runCheck(t, root, checks, args...)
 		if r.code != ExitUsage {
-			t.Fatalf("%v: exit %d, want %d", args, r.code, ExitUsage)
+			t.Errorf("%v: exit %d, want %d", args, r.code, ExitUsage)
+			continue
 		}
 		value := args[len(args)-1]
 		if want := fmt.Sprintf("errata: --output %q names the config file", value); !strings.Contains(r.stderr, want) {
@@ -182,6 +206,32 @@ func TestOutputRefusesTheConfigFile(t *testing.T) {
 		if got := readFile(t, cfg); got != "checks: []\n" {
 			t.Errorf("%v: the config is now %q", args, got)
 		}
+	}
+}
+
+// An output that is a symbolic link to the config is not refused: the
+// rename replaces the link and does not write through it, so the run leaves
+// the config as it was. The planted break: os.Lstat on the output made
+// os.Stat, which refuses this run (#183).
+func TestOutputLinkToTheConfigIsReplaced(t *testing.T) {
+	root := t.TempDir()
+	cfg := filepath.Join(root, "errata.yaml")
+	if err := os.WriteFile(cfg, []byte("checks: []\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "link.yaml")
+	if err := os.Symlink(cfg, link); err != nil {
+		t.Fatal(err)
+	}
+	r := runCheck(t, root, []check.Check{programCheck("good", "true")}, "-o", "text="+link)
+	if r.code != ExitOK {
+		t.Fatalf("exit %d; stderr %q", r.code, r.stderr)
+	}
+	if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink != 0 {
+		t.Errorf("link.yaml is still a link (%v), want the report in its place", err)
+	}
+	if got := readFile(t, cfg); got != "checks: []\n" {
+		t.Errorf("the config is now %q", got)
 	}
 }
 

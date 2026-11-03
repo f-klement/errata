@@ -39,6 +39,9 @@ type Limits struct {
 // and a path, which is at most l.Name long.
 func (l Limits) gitFile() int64 { return int64(l.Name) + 64 }
 
+// ErrNoRepository refuses a root that holds no .git.
+var ErrNoRepository = errors.New("the repository root holds no .git, so errata cannot list the files git tracks; run errata at the top of a git repository")
+
 // ErrDevice refuses a device, such as /dev/null, before it is opened.
 var ErrDevice = errors.New("it is a device, which errata does not open")
 
@@ -87,14 +90,14 @@ func Read(root string, l Limits) (Index, error) {
 	}
 	// The object format is tried, not read from the config: an index read
 	// with the wrong one fails the path length and trailer checks.
-	entries, err := parseIndex(data, sha1Size, l)
+	entries, left, err := parseIndex(data, sha1Size, l)
 	if err != nil {
 		var again error
-		if entries, again = parseIndex(data, sha256Size, l); again != nil {
+		if entries, left, again = parseIndex(data, sha256Size, l); again != nil {
 			return Index{}, fmt.Errorf("read git's index: %w", err)
 		}
 	}
-	return New(entries)
+	return New(entries, left...)
 }
 
 // Entry is one file of git's index: its path, relative to the
@@ -114,33 +117,72 @@ func (e Entry) Dir() bool { return e.Mode&modeType == modeTree }
 // Index is the files of git's index that a run reads, each rule on the
 // entries applied once, where the index is read: those git ls-files lists,
 // in the index's order, but each once, a file in conflict too, and without
-// a submodule or a file a sparse checkout leaves out (skip-worktree), each
-// path inside the repository and in the form git writes (parseIndex,
-// checkEntry, New). On a witness it is the entries below the fixture
-// (Below). Every list of its paths leaves out the fixtures of witnesses
-// (check.Witnessed), so whoever reads the index, no glob of a real run
-// reads a planted break (ADR 0015); a lookup of one path (Lookup) finds
-// any entry, as a read of a file: a spec names finds it.
+// a submodule or what a sparse checkout leaves out, each path inside the
+// repository and in the form git writes (parseIndex, checkEntry, New). What
+// a sparse checkout leaves out is kept apart, as left: a file git marks
+// skip-worktree, and a directory a sparse index writes as one entry, with
+// the slash git ends it with. A glob that would match one of them, or a
+// path below one, is refused (Span.Match), and so is a read of a file one
+// of them holds (LeftOut): the working tree lacks what a clone holds
+// there, so the run cannot know the set or the file. On a witness it is
+// the entries below the fixture (Below). Every list of its paths leaves
+// out the fixtures of witnesses (check.Witnessed), so whoever reads the
+// index, no glob of a real run reads a planted break (ADR 0015); a lookup
+// of one path (Lookup) finds any entry, as a read of a file: a spec names
+// finds it.
 type Index struct {
 	entries []Entry
-	sorted  bool // whether entries are in git's order, which git itself refuses to read without
+	left    []string // what a sparse checkout leaves out, in the index's order
+	sorted  bool     // whether entries and left are each in git's order, which git itself refuses to read without
 }
 
 // New is the Index of entries, as parseIndex lists them or a test writes
-// them, in their order, refusing an entry with a . or .. name or an empty one
-// though it stays inside the repository: git writes none (verify_path),
-// and the tests of a fixture's files read the path as written. On a real
-// run .errata/./witness/w/y would pass check.Witnessed and name a
-// fixture's file; on a witness .errata/witness/w/a/../../../x would leave
-// the fixture once its prefix is cut.
-func New(entries []Entry) (Index, error) {
+// them, in their order, and of left, what a sparse checkout leaves out,
+// each a file's path or a directory's with a slash after it. It refuses an
+// entry with a . or .. name or an empty one though it stays inside the
+// repository: git writes none (verify_path), and the tests of a fixture's
+// files read the path as written. On a real run .errata/./witness/w/y
+// would pass check.Witnessed and name a fixture's file; on a witness
+// .errata/witness/w/a/../../../x would leave the fixture once its prefix
+// is cut.
+func New(entries []Entry, left ...string) (Index, error) {
 	for _, e := range entries {
 		if path.Clean(e.Path) != e.Path {
 			return Index{}, fmt.Errorf("git's index lists %s, a path with a . or .. name or an empty one, which git does not write; errata does not read such an index, since the path may name a file of a witness's fixture in a form that is not its own", clip.Quote(e.Path))
 		}
 	}
-	sorted := slices.IsSortedFunc(entries, func(a, b Entry) int { return strings.Compare(a.Path, b.Path) })
-	return Index{entries: entries, sorted: sorted}, nil
+	for _, p := range left {
+		if name := strings.TrimSuffix(p, "/"); path.Clean(name) != name {
+			return Index{}, fmt.Errorf("git's index lists %s, a path with a . or .. name or an empty one, which git does not write; errata does not read such an index, since the path may name a file of a witness's fixture in a form that is not its own", clip.Quote(p))
+		}
+	}
+	sorted := slices.IsSortedFunc(entries, func(a, b Entry) int { return strings.Compare(a.Path, b.Path) }) && slices.IsSorted(left)
+	return Index{entries: entries, left: left, sorted: sorted}, nil
+}
+
+// LeftOut is what a sparse checkout leaves out at p, a path relative to
+// ix's root written with slashes, or above it, and whether it leaves out
+// anything there: p itself, a file git marks skip-worktree or a directory a
+// sparse index lists as one entry, or a directory p is below. A directory
+// is named with the slash git ends it with. Like Lookup it finds any
+// entry, in the fixture of a witness too.
+func (ix Index) LeftOut(p string) (string, bool) {
+	has := func(q string) bool {
+		if ix.sorted {
+			_, found := slices.BinarySearch(ix.left, q)
+			return found
+		}
+		return slices.Contains(ix.left, q)
+	}
+	if has(p) {
+		return p, true
+	}
+	for dir := p; dir != "." && dir != "/"; dir = path.Dir(dir) {
+		if has(dir + "/") {
+			return dir + "/", true
+		}
+	}
+	return "", false
 }
 
 // Below is the entries of ix below the directory dir, relative to ix's
@@ -178,6 +220,12 @@ func (ix Index) Below(dir string) (Index, error) {
 			return Index{}, fmt.Errorf("git's index lists %s, below the fixture %s in another case, and macOS and Windows open the two as one directory, so the fixture would not read there as a clone holds it; rename it to %s", clip.Quote(e.Path), clip.Quote(dir), clip.Quote(prefix+in))
 		}
 	}
+	var left []string
+	for _, p := range ix.left {
+		if in, ok := strings.CutPrefix(p, prefix); ok && in != "" {
+			left = append(left, in)
+		}
+	}
 	if len(below) == 0 {
 		return Index{}, fmt.Errorf("git's index lists no file below the fixture %s; a clone holds only the files git tracks, so commit the fixture's files", clip.Quote(dir))
 	}
@@ -186,7 +234,7 @@ func (ix Index) Below(dir string) (Index, error) {
 	}
 	// A part of entries in git's order is in it, and so is what is left once
 	// one prefix is cut from every path.
-	return Index{entries: below, sorted: ix.sorted}, nil
+	return Index{entries: below, left: left, sorted: ix.sorted}, nil
 }
 
 // fileAndDir is a path entries list both as an entry and with entries
@@ -326,9 +374,9 @@ func (ix Index) Form(p string) (Entry, bool) {
 	return Entry{}, false
 }
 
-// Paths is the paths of ix a glob matches against, but those in the
-// fixtures of witnesses (check.Witnessed), and whether they are in git's
-// order.
+// Paths is the paths of ix a glob matches against, and what a sparse
+// checkout leaves out of them, but those in the fixtures of witnesses
+// (check.Witnessed), and whether they are in git's order.
 func (ix Index) Paths() Paths {
 	paths := make([]string, 0, len(ix.entries))
 	for _, e := range ix.entries {
@@ -336,49 +384,83 @@ func (ix Index) Paths() Paths {
 			paths = append(paths, e.Path)
 		}
 	}
-	return Paths{paths: paths, sorted: ix.sorted}
+	var left []string
+	for _, p := range ix.left {
+		if !check.Witnessed(p) {
+			left = append(left, p)
+		}
+	}
+	return Paths{paths: paths, left: left, sorted: ix.sorted}
 }
 
-// Paths is the paths of an Index a glob matches against, and whether they
-// are in git's order.
+// Paths is the paths of an Index a glob matches against, what a sparse
+// checkout leaves out of them (Index), and whether both are in git's
+// order.
 type Paths struct {
-	paths  []string
-	sorted bool
+	paths, left []string
+	sorted      bool
 }
 
 // Span is the paths of Paths a glob is matched against and charged for: its literal directory, when the index holds it as a file, which
 // only a glob whose segments after it are all ** matches, and the paths
-// below it, in git's order.
+// below it, in git's order; and what a sparse checkout leaves out at the
+// directory, below it or above it, which Match refuses the glob for, and
+// whether t is in git's order.
 type Span struct {
-	self, under []string
+	self, under, left []string
+	sorted            bool
 }
 
 // Span is the span of a glob of literal directory dir in t: the paths
-// below dir are a range of it, found by binary search. A glob with no
-// literal directory, or an index out of git's order, spans every path.
+// below dir are a range of it, found by binary search, and so are those a
+// sparse checkout leaves out below it; a directory it leaves out above dir
+// is found by a search for each. A glob with no literal directory, or an
+// index out of git's order, spans every path.
 func (t Paths) Span(dir string) Span {
 	if dir == "" || !t.sorted {
-		return Span{under: t.paths}
+		return Span{under: t.paths, left: t.left, sorted: t.sorted}
 	}
-	var s Span
+	s := Span{sorted: true}
 	if i, found := slices.BinarySearch(t.paths, dir); found {
 		s.self = t.paths[i : i+1]
 	}
-	prefix := dir + "/"
-	lo, _ := slices.BinarySearch(t.paths, prefix)
-	hi := lo + sort.Search(len(t.paths)-lo, func(j int) bool { return !strings.HasPrefix(t.paths[lo+j], prefix) })
-	s.under = t.paths[lo:hi]
+	s.under = below(t.paths, dir)
+	for up := dir; up != "."; up = path.Dir(up) {
+		if _, found := slices.BinarySearch(t.left, up+"/"); found {
+			s.left = append(s.left, up+"/")
+		}
+	}
+	if _, found := slices.BinarySearch(t.left, dir); found {
+		s.left = append(s.left, dir)
+	}
+	// A directory left out at dir is below it too, as dir/, so the range
+	// holds it; it was added above, and is not added twice.
+	for _, p := range below(t.left, dir) {
+		if p != dir+"/" {
+			s.left = append(s.left, p)
+		}
+	}
 	return s
+}
+
+// below is the paths of sorted, in git's order, that start with dir and a
+// slash: a range, found by binary search.
+func below(sorted []string, dir string) []string {
+	prefix := dir + "/"
+	lo, _ := slices.BinarySearch(sorted, prefix)
+	hi := lo + sort.Search(len(sorted)-lo, func(j int) bool { return !strings.HasPrefix(sorted[lo+j], prefix) })
+	return sorted[lo:hi]
 }
 
 // Sorted reports whether t is in git's order. An index out of it, which
 // git refuses to read, spans every path for every glob (Span).
 func (t Paths) Sorted() bool { return t.sorted }
 
-// Bytes is the bytes of the paths s holds.
+// Bytes is the bytes of the paths s holds, those a sparse checkout leaves
+// out included, since Match matches them too.
 func (s Span) Bytes() int {
 	n := 0
-	for _, part := range [][]string{s.self, s.under} {
+	for _, part := range [][]string{s.self, s.under, s.left} {
 		for _, t := range part {
 			n += len(t)
 		}
@@ -391,21 +473,55 @@ func (s Span) Bytes() int {
 // control or a line or paragraph separator is refused, so no reader opens
 // the file or names it in an error (check.HoldsControl); one that no glob
 // matches is passed over, so such a file elsewhere in the index breaks no
-// glob.
-func (s Span) Match(match func(string) bool) ([]string, error) {
+// glob. A file git marks skip-worktree that match takes is matched as any
+// other when present reports the working tree holds it, as after git
+// update-index --skip-worktree in a full checkout, and refused when it
+// does not, as a sparse checkout leaves it out; a directory a sparse index
+// lists as one entry that under reports the glob may match a path below is
+// refused: the working tree lacks the files a clone holds there, so the
+// run cannot know the set the glob names. under gets the directory without
+// its slash.
+func (s Span) Match(match, under, present func(string) bool) ([]string, error) {
 	var out []string
+	mixed := false // whether out holds a file of left
 	for _, part := range [][]string{s.self, s.under} {
 		for _, t := range part {
 			if !match(t) {
 				continue
 			}
 			if check.HoldsControl(t) {
-				return nil, fmt.Errorf("matches %s, a tracked path that holds a control character, a direction control or a line or paragraph separator, which a terminal or a report viewer would act on; rename the file", clip.Quote(t))
+				return nil, controlPath(t)
 			}
 			out = append(out, t)
 		}
 	}
+	for _, t := range s.left {
+		dir, isDir := strings.CutSuffix(t, "/")
+		if isDir && !under(dir) || !isDir && !match(t) {
+			continue
+		}
+		if check.HoldsControl(t) {
+			return nil, controlPath(t)
+		}
+		if isDir {
+			return nil, fmt.Errorf("may match files below %s, a directory the sparse checkout leaves out of the working tree, which git's sparse index lists as one entry, so errata cannot list the files the glob names; add the directory to the sparse checkout (git sparse-checkout add), or run errata in a full checkout", clip.Quote(t))
+		}
+		if !present(t) {
+			return nil, fmt.Errorf("matches %s, which git marks skip-worktree and the working tree does not hold, as a sparse checkout leaves a file out, so errata cannot read every file the glob names; add it to the sparse checkout (git sparse-checkout add), or run errata in a full checkout", clip.Quote(t))
+		}
+		out = append(out, t)
+		mixed = true
+	}
+	// A file matched from left goes into git's order among the others.
+	if mixed && s.sorted {
+		slices.Sort(out)
+	}
 	return out, nil
+}
+
+// controlPath refuses a tracked path t that holds a control character.
+func controlPath(t string) error {
+	return fmt.Errorf("matches %s, a tracked path that holds a control character, a direction control or a line or paragraph separator, which a terminal or a report viewer would act on; rename the file", clip.Quote(t))
 }
 
 // The sizes of an object name: SHA-1, and SHA-256, which a repository made
@@ -421,7 +537,7 @@ func gitDir(root string, l Limits) (string, error) {
 	dot := filepath.Join(root, ".git")
 	info, err := os.Lstat(dot)
 	if errors.Is(err, fs.ErrNotExist) {
-		return "", errors.New("the repository root holds no .git, so errata cannot list the files git tracks; run errata at the top of a git repository")
+		return "", ErrNoRepository
 	}
 	if err != nil {
 		return "", fmt.Errorf("read .git: %w", bare(err))
@@ -471,6 +587,11 @@ func gitDir(root string, l Limits) (string, error) {
 	}
 	return dir, nil
 }
+
+// IsGitDir reports whether dir is a directory git takes for a git
+// directory (isGitDir), read under l: git's discovery passes over a .git
+// directory that is not one and looks further up.
+func IsGitDir(dir string, l Limits) bool { return isGitDir(dir, l) == nil }
 
 // isGitDir refuses a directory git does not take for a git directory, as
 // setup.c's is_git_directory tests it: HEAD a file, or a symlink whose
@@ -561,18 +682,21 @@ func readCapped(name string, limit int64) ([]byte, error) {
 // verify_path holds them, and the paths in all to l.Bytes. Of a file in
 // conflict, whose stages follow one another, the first entry is kept with
 // its mode: stage 1's, the merge base, or stage 2's, ours, when the file
-// has no base.
-func parseIndex(data []byte, hash int, l Limits) ([]Entry, error) {
+// has no base. What a sparse checkout leaves out is the second list (Index):
+// each file git marks skip-worktree, once, and each directory a sparse
+// index writes as one entry, of mode tree and marked skip-worktree, with
+// the slash git ends its path with.
+func parseIndex(data []byte, hash int, l Limits) ([]Entry, []string, error) {
 	if len(data) < 12 || string(data[:4]) != "DIRC" {
-		return nil, errors.New("it does not start with DIRC, git's signature")
+		return nil, nil, errors.New("it does not start with DIRC, git's signature")
 	}
 	version := binary.BigEndian.Uint32(data[4:8])
 	if version < 2 || version > 4 {
-		return nil, fmt.Errorf("it is version %d; errata reads versions 2, 3 and 4", version)
+		return nil, nil, fmt.Errorf("it is version %d; errata reads versions 2, 3 and 4", version)
 	}
 	count := int(binary.BigEndian.Uint32(data[8:12]))
 	if count > l.Entries {
-		return nil, fmt.Errorf("it lists %d entries, over the limit of %d", count, l.Entries)
+		return nil, nil, fmt.Errorf("it lists %d entries, over the limit of %d", count, l.Entries)
 	}
 	fixed := 40 + hash + 2
 	pos := 12
@@ -580,11 +704,12 @@ func parseIndex(data []byte, hash int, l Limits) ([]Entry, error) {
 	unnamed := false
 	entries := []Entry{}
 	var prev []byte
-	var last string
+	var leftOut []string
+	var last, lastLeft string
 	for range count {
 		start := pos
 		if len(data)-pos < fixed {
-			return nil, errors.New("an entry runs past the end of the file")
+			return nil, nil, errors.New("an entry runs past the end of the file")
 		}
 		mode := binary.BigEndian.Uint32(data[pos+24 : pos+28])
 		flags := binary.BigEndian.Uint16(data[pos+40+hash:])
@@ -592,7 +717,7 @@ func parseIndex(data []byte, hash int, l Limits) ([]Entry, error) {
 		var extended uint16
 		if flags&flagExtended != 0 {
 			if version < 3 || len(data)-pos < 2 {
-				return nil, errors.New("an entry's extended flags are not where its version puts them")
+				return nil, nil, errors.New("an entry's extended flags are not where its version puts them")
 			}
 			extended = binary.BigEndian.Uint16(data[pos:])
 			pos += 2
@@ -601,12 +726,12 @@ func parseIndex(data []byte, hash int, l Limits) ([]Entry, error) {
 		if version == 4 {
 			drop, n := indexVarint(data[pos:])
 			if n == 0 || drop > len(prev) {
-				return nil, errors.New("an entry's path drops more than the path before holds")
+				return nil, nil, errors.New("an entry's path drops more than the path before holds")
 			}
 			pos += n
 			end := bytes.IndexByte(data[pos:], 0)
 			if end < 0 {
-				return nil, errors.New("an entry's path runs past the end of the file")
+				return nil, nil, errors.New("an entry's path runs past the end of the file")
 			}
 			// A new slice, since prev is the path before.
 			keep := len(prev) - drop
@@ -617,22 +742,22 @@ func parseIndex(data []byte, hash int, l Limits) ([]Entry, error) {
 		} else {
 			end := bytes.IndexByte(data[pos:], 0)
 			if end < 0 {
-				return nil, errors.New("an entry's path runs past the end of the file")
+				return nil, nil, errors.New("an entry's path runs past the end of the file")
 			}
 			name = data[pos : pos+end]
 			pos = start + (pos-start+end+8)&^7
 			if pos > len(data) {
-				return nil, errors.New("an entry's padding runs past the end of the file")
+				return nil, nil, errors.New("an entry's padding runs past the end of the file")
 			}
 		}
 		if want := int(flags & nameMask); want != min(len(name), nameMask) {
-			return nil, errors.New("an entry's path is not the length its flags give")
+			return nil, nil, errors.New("an entry's path is not the length its flags give")
 		}
 		if len(name) > l.Name {
-			return nil, fmt.Errorf("an entry's path is %d bytes long, over the limit of %d", len(name), l.Name)
+			return nil, nil, fmt.Errorf("an entry's path is %d bytes long, over the limit of %d", len(name), l.Name)
 		}
 		if left -= int64(len(name)); left < 0 {
-			return nil, fmt.Errorf("its paths hold more than %d bytes in all, the limit; a version 4 index repeats the path before in each entry", l.Bytes)
+			return nil, nil, fmt.Errorf("its paths hold more than %d bytes in all, the limit; a version 4 index repeats the path before in each entry", l.Bytes)
 		}
 		prev = name
 		// A split index's entries that replace a shared one's have no
@@ -642,25 +767,38 @@ func parseIndex(data []byte, hash int, l Limits) ([]Entry, error) {
 			continue
 		}
 		if err := checkEntry(string(name), filepath.IsLocal); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		if mode&modeType != modeFile && mode&modeType != modeSymlink || extended&flagSkipWorktree != 0 {
-			continue
-		}
-		// A file in conflict has an entry for each stage, one after another.
-		// No path is empty, so the first is never last's "".
-		if s := string(name); s != last {
+		kind := mode & modeType
+		file := kind == modeFile || kind == modeSymlink
+		s := string(name)
+		switch {
+		case extended&flagSkipWorktree != 0 && kind == modeTree:
+			// A sparse index's directory: its path ends with a slash.
+			if !strings.HasSuffix(s, "/") {
+				s += "/"
+			}
+			leftOut = append(leftOut, s)
+		case extended&flagSkipWorktree != 0 && file:
+			// A file in conflict has an entry for each stage, one after
+			// another, and each names the path once.
+			if s != lastLeft {
+				leftOut = append(leftOut, s)
+				lastLeft = s
+			}
+		case file && s != last:
+			// No path is empty, so the first is never last's "".
 			entries = append(entries, Entry{Path: s, Mode: mode})
 			last = s
 		}
 	}
 	if err := checkExtensions(data[pos:], hash); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if unnamed {
-		return nil, errors.New("an entry has no path")
+		return nil, nil, errors.New("an entry has no path")
 	}
-	return entries, nil
+	return entries, leftOut, nil
 }
 
 // checkEntry refuses an entry's path that local, filepath.IsLocal in

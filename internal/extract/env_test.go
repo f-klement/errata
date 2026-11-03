@@ -7,6 +7,7 @@ import (
 
 	"github.com/f-klement/errata/internal/extract/env"
 	"github.com/f-klement/errata/internal/extract/extracttest"
+	"github.com/f-klement/errata/internal/extract/gitlabci"
 )
 
 // The env kind asks each reader through envReaders: one file of each,
@@ -44,6 +45,36 @@ func TestEnvAsksEachReader(t *testing.T) {
 		`4@.github/workflows/ci.yml:7 [github-actions job "test" step "up"]; 5@Jenkinsfile:2 [jenkins pipeline]`
 	if g := strings.Join(got, "; "); g != want {
 		t.Errorf("got  %s\nwant %s", g, want)
+	}
+}
+
+// The facade hands gitlab-ci, as a kind and as an env reader, the YAML
+// parser that loads !!bool yes as Psych does, and github-actions the shared
+// one, which refuses it. Planted break: NotedYAML11Bools set to yaml.ParseNoted.
+func TestOnlyGitLabTakesPsychBools(t *testing.T) {
+	root := extracttest.Repo(t, map[string]string{
+		".gitlab-ci.yml":           "build:\n  variables: {PORT: !!bool yes}\n  script: [b]\n",
+		".github/workflows/ci.yml": "on: push\njobs:\n  test:\n    runs-on: x\n    env: {PORT: !!bool yes}\n    steps: [{run: up}]\n",
+	})
+	for _, c := range []struct {
+		spec Spec
+		want string
+	}{
+		{Of(gitlabci.Kind, gitlabci.Spec{File: ".gitlab-ci.yml", Job: "build", Variable: "PORT"}), ""},
+		{Of(env.Kind, env.Spec{Name: "PORT", Files: []string{".gitlab-ci.yml"}}), ""},
+		{Of(env.Kind, env.Spec{Name: "PORT", Files: []string{".github/workflows/ci.yml"}}), `"yes" is not a valid !!bool`},
+	} {
+		x, err := Build(c.spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = x.Extract(t.Context(), root)
+		if c.want == "" && err != nil {
+			t.Errorf("%s: %v", c.spec.Describe().Label, err)
+		}
+		if c.want != "" {
+			extracttest.WantError(t, err, c.want)
+		}
 	}
 }
 

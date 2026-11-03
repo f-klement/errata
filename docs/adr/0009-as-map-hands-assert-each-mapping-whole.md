@@ -46,17 +46,27 @@ The `exists` holds the rule to the never-automerge rule itself, since `all` over
   The pass over the checked expression goes by type, not spelling, so `size(l)`, `int('5')`, a
   ternary and `v.map(x, int(x))` are refused as a literal is, and it looks at each element, key and
   value of a list or map literal, so an empty one loads. It follows a `cel.bind` name to the value
-  it binds, and a comprehension variable to the list literal it runs over, and looks into those
-  literals the same way: a literal that mixes types is a `map(string, dyn)`, which no type check
-  refuses. Any other operand is checked by its type alone. It refuses at the operand, or the
-  member, and says to write the string, such as `'true'`, or to convert with `int()`. A value the
-  expression writes as `dyn()` itself is left alone, since its author chose the type. The pass
-  cannot tell a map's `dyn` from another, such as a member of `[1, 'a']`, so it refuses that too,
-  in any rule, and the message names `dyn()` as the way out. It visits each node at most twice,
-  once for `==` and once for `in`, so its visits stay linear in the expression however often a
-  followed name is read. Its work is not: each read of a comprehension variable follows it to every
-  element of its range, so the work grows as the reads times the range's length, about 0.1 s at the
-  4096 byte limit on an expression.
+  it binds, a comprehension variable to the members of the list literal it runs over, a bound one
+  included, and a field or a literal index of such a literal, `want.replicas` or `ws[0]`, to the
+  member it selects. It looks into those literals the same way: a literal that mixes types is a
+  `map(string, dyn)`, which no type check refuses. Any other operand is checked by its type alone.
+  It refuses at the operand, or the member, and says to write the string, such as `'true'`, or to
+  convert with `int()`. A value the expression writes as `dyn()` itself is left alone, since its
+  author chose the type. The pass cannot tell a map's `dyn` from another, such as a member of
+  `[1, 'a']`, so it refuses that too, in any rule, and the message names `dyn()` as the way out. It
+  visits each node at most three times, once for `==`, once for `in` and once to trace what a name
+  stands for, so its visits stay linear in the expression however often a followed name is read.
+  Its work is bounded: past `MaxTraceWork`, 4194304 steps, it stops and the assert does not load,
+  with a refusal that says the expression is too intricate to check. So the tracing costs at most
+  what the budget costs, 158 ms on the build node. The pass traces each access path, a name and
+  the fields and literal indexes read from it, once, so on the shapes measured the work grows as
+  the square of the expression: at the 4096 byte limit the most was 311335 steps and the slowest
+  load 27 ms on the build node, over every split of nine shapes that read comprehension variables
+  over ranges of other variables, through fields, fields of fields, literal indexes and filters.
+  A rule built to defeat the sharing, such as many comprehensions over paths that alias one bound
+  list (`M[0]`, `M[1]`, ... of `cel.bind(M, [Q, Q, ...], ...)`), grows as the cube and can reach
+  the budget within the length limit. The refusal fails closed: an expression too intricate to
+  check is never loaded unchecked.
 - Each map and each node under it keeps its file and line in errata, through the lines of a
   document in a string as ADR 0007 gives them. The message of a false or unknown assert shows each
   map at its own file and line, shown close to JSON and cut at `check.ShownBytes`, 256 bytes, so

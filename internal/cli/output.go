@@ -55,18 +55,34 @@ func parseOutputs(values []string) ([]output, error) {
 
 // refuseConfigOutput refuses an output that names the config file, which
 // errata would otherwise replace with a report after a run that passes.
-// config is the path the config was loaded from.
+// config is the path the config was loaded from. An output is refused when
+// its absolute path is the config's, or when it is the file the config was
+// read from: os.Stat follows the config's links, as the load did, and
+// os.Lstat does not follow the output's, as the rename that writes it does
+// not. So `-c link.yaml -o text=real.yaml` is refused, and
+// `-o text=link.yaml`, which replaces the link and leaves the config alone,
+// is not. A hard link to the config is refused too, though the rename would
+// replace only that name: it is the config under another name, and whatever
+// reads it there would read a report. An output that does not exist yet is
+// no config.
 func refuseConfigOutput(outs []output, config string) error {
 	configAbs, err := filepath.Abs(config)
 	if err != nil {
 		return err
 	}
+	configInfo, configErr := os.Stat(config)
 	for _, o := range outs {
 		abs, err := filepath.Abs(o.path)
 		if err != nil {
 			return fmt.Errorf("--output %q: %w", o, err)
 		}
 		if abs == configAbs {
+			return fmt.Errorf("--output %q names the config file", o)
+		}
+		if configErr != nil {
+			continue
+		}
+		if info, err := os.Lstat(o.path); err == nil && os.SameFile(info, configInfo) {
 			return fmt.Errorf("--output %q names the config file", o)
 		}
 	}

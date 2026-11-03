@@ -1,7 +1,10 @@
 package core_test
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
 	"regexp"
 	"strconv"
 	"strings"
@@ -11,6 +14,7 @@ import (
 	"github.com/pelletier/go-toml/v2"
 	"go.yaml.in/yaml/v3"
 
+	"github.com/f-klement/errata/internal/check"
 	"github.com/f-klement/errata/internal/extract"
 	"github.com/f-klement/errata/internal/extract/core"
 	"github.com/f-klement/errata/internal/extract/extracttest"
@@ -120,8 +124,10 @@ func FuzzNumber(f *testing.F) {
 // document selection, the path, up to two embedded steps and the values.
 // Whatever the file, the paths and the steps' formats, it returns values at
 // lines inside the file and no more than maxValues of them, or an error and
-// no values. steps picks how many embedded steps the spec takes, 0, 1 or 2,
-// and f1 and f2 their formats.
+// no values. A value that comes through YAML literal block scalars alone
+// is reported at the line that holds it, as checkOwnLines says. steps picks
+// how many embedded steps the spec takes, 0, 1 or 2, and f1 and f2 their
+// formats.
 func FuzzExtract(f *testing.F) {
 	embedFormats := [3]string{"yaml", "json", "toml"}
 	f.Add(uint8(0), []byte(extracttest.Manifests), "spec.replicas", "Deployment", "", uint8(0), "", uint8(0), "", uint8(0))
@@ -143,6 +149,16 @@ func FuzzExtract(f *testing.F) {
 	f.Add(uint8(0), []byte("a: 0\ns: &a\n  |\n  x = 1\nt: *a\n"), "t", "", "", uint8(2), "x", uint8(0), "", uint8(1))
 	f.Add(uint8(1), []byte(`{"cfg": "a: |\n  x = 1\n", "e": ""}`), "cfg", "", "", uint8(0), "a", uint8(2), "x", uint8(2))
 	f.Add(uint8(2), []byte("cfg = '''\n{\"a\": [\"b: 1\"]}\n'''\n"), "cfg", "", "", uint8(1), "a[*]", uint8(0), "b", uint8(2))
+	f.Add(uint8(0), []byte("a: 0\ns: &a\n  |\n  x: 0\n  y: 2\nt: [*a]\n"), "s", "", "", uint8(0), "y", uint8(0), "", uint8(1))
+	f.Add(uint8(0), []byte("a: 0\ns: &a\n  |\n  x: 0\n  y: 2\nt: [*a]\n"), "t[*]", "", "", uint8(0), "y", uint8(0), "", uint8(1))
+	f.Add(uint8(0), []byte("a: 0\nc: !!str\n\n  |\n  x: 0\n  a: |\n    b: 1\n    v: [3, 4]\n"), "c", "", "", uint8(0), "a", uint8(0), "v[*]", uint8(2))
+	// The line under the | holds the value, and the | line a comment of
+	// the same text, which a test for the text alone would accept.
+	f.Add(uint8(0), []byte("s: &a\n  | # 2\n  y: 2\n"), "s", "", "", uint8(0), "y", uint8(0), "", uint8(1))
+	// A TOML document in a block whose | stands below its anchor, read
+	// through an alias; and a file of CR LF lines.
+	f.Add(uint8(0), []byte("a: 0\ns: &a\n  |\n  x = 1\n  y = 2\nt: *a\n"), "t", "", "", uint8(2), "y", uint8(0), "", uint8(1))
+	f.Add(uint8(0), []byte("a: 0\r\ns: |\r\n  x: 0\r\n  y: 2\r\n"), "s", "", "", uint8(0), "y", uint8(0), "", uint8(1))
 	f.Fuzz(func(t *testing.T, format uint8, data []byte, path, kind, name string, f1 uint8, p1 string, f2 uint8, p2 string, steps uint8) {
 		var embedded []core.Embedded
 		if steps%3 > 0 {
@@ -152,9 +168,10 @@ func FuzzExtract(f *testing.F) {
 			embedded = append(embedded, core.Embedded{Format: embedFormats[f2%3], Path: p2})
 		}
 		var s extract.Spec
+		ys := yamlreader.Spec{File: "f", Path: path, Kind: kind, Name: name, Embedded: embedded}
 		switch format % 3 {
 		case 0:
-			s = extract.Of(yamlreader.Kind, yamlreader.Spec{File: "f", Path: path, Kind: kind, Name: name, Embedded: embedded})
+			s = extract.Of(yamlreader.Kind, ys)
 		case 1:
 			s = extract.Of(jsonreader.Kind, jsonreader.Spec{File: "f", Path: path, Embedded: embedded})
 		default:
@@ -184,7 +201,190 @@ func FuzzExtract(f *testing.F) {
 				t.Fatalf("value %q at %s:%d of %d lines", v.Text, v.At.File, v.At.Line, count)
 			}
 		}
+		if format%3 == 0 {
+			checkOwnLines(t, data, ys, got)
+		}
 	})
+}
+
+// checkOwnLines checks that got, the values of the yaml spec s on data,
+// stand on the lines of data they are reported at, where errata reports a
+// value at its own line: every string on its way is a YAML literal block
+// scalar, so every step but the last reads YAML, and the last reads any
+// format. A literal block keeps its lines and strips only their indentation,
+// so the file's line is spaces followed by the line of the document the
+// value was read at, at any depth. It checks a file whose lines break at \n,
+// CR LF among them, and leaves out a file with a lone CR, a NEL, an LS or a
+// PS: yaml.v3 breaks a line at each, errata counts none, and the reading
+// clamps a line they push past the file's end to its last line. It leaves
+// out a UTF-16 file too, in which errata looks for no |.
+//
+// It reads the chain again a step at a time, each document parsed alone.
+// Whether a string is a literal block comes from yaml.v3, not from errata's
+// Block, and a literal block whose node has a Block of 0 fails the check,
+// since its values would then be reported at the string's start. The
+// values come in the order of got, so it checks got only when the two
+// agree in number and in text.
+func checkOwnLines(t *testing.T, data []byte, s yamlreader.Spec, got []check.Value) {
+	t.Helper()
+	if len(s.Embedded) == 0 || bytes.Contains(bytes.ReplaceAll(data, []byte("\r\n"), nil), []byte("\r")) ||
+		bytes.ContainsAny(data, "\u0085  ") || bytes.HasPrefix(data, []byte{0xff, 0xfe}) || bytes.HasPrefix(data, []byte{0xfe, 0xff}) {
+		return
+	}
+	paths := make([]core.Path, len(s.Embedded))
+	for i, st := range s.Embedded {
+		p, err := core.ParsePath(st.Path)
+		if err != nil || (i < len(s.Embedded)-1 && st.Format != "yaml") {
+			return
+		}
+		paths[i] = p
+	}
+	outer := s
+	outer.Embedded = nil
+	e, err := extract.Build(extract.Of(yamlreader.Kind, outer))
+	if err != nil {
+		return
+	}
+	vals, err := e.(fromData).FromData(data)
+	if err != nil {
+		return
+	}
+	_, nodes, err := parseDocument("yaml", string(data))
+	if err != nil {
+		return
+	}
+	reached := make([]reachedValue, len(vals))
+	for i, v := range vals {
+		reached[i] = reachedValue{v: v, doc: string(data), nodes: nodes, blocks: true}
+	}
+	for i, p := range paths {
+		var next []reachedValue
+		for _, r := range reached {
+			literal, ok := r.literal(t)
+			if !ok {
+				return
+			}
+			docs, nodes, err := parseDocument(s.Embedded[i].Format, r.v.Text)
+			if err != nil {
+				return
+			}
+			sel, err := (core.Source{File: "f", Limit: core.DefaultMaxBytes}).Values(p, docs...)
+			if err != nil {
+				return
+			}
+			for _, v := range sel {
+				next = append(next, reachedValue{v: v, doc: r.v.Text, nodes: nodes, blocks: r.blocks && literal})
+			}
+		}
+		reached = next
+	}
+	if len(reached) != len(got) {
+		return
+	}
+	lines := strings.Split(string(data), "\n")
+	for i, r := range reached {
+		if got[i].Text != r.v.Text {
+			return
+		}
+		if !r.blocks {
+			continue
+		}
+		fl, dl := strings.TrimSuffix(lines[got[i].At.Line-1], "\r"), lineOf(r.doc, r.v.At.Line)
+		if !strings.HasSuffix(fl, dl) || strings.Trim(fl[:len(fl)-len(dl)], " ") != "" {
+			t.Fatalf("value %q reported at line %d, which reads %q, not its document's line %q", got[i].Text, got[i].At.Line, fl, dl)
+		}
+	}
+}
+
+// reachedValue is a value checkOwnLines read at one step: its document's
+// text, the nodes errata built for it when it is YAML, and whether every
+// string on its way is a literal block scalar.
+type reachedValue struct {
+	v      check.Value
+	doc    string
+	nodes  []*core.Node
+	blocks bool
+}
+
+// literal is whether the value, a string of a YAML document, is a literal
+// block scalar as yaml.v3 reads the document: the one scalar of its text is
+// written with |. It fails t when errata gave that scalar a Block of 0. ok
+// is false when yaml.v3 does not read the document, when scalars of the
+// text differ in style, or when the block holds an LS or a PS, which errata
+// reports at the string's start by design.
+func (r reachedValue) literal(t *testing.T) (literal, ok bool) {
+	t.Helper()
+	dec := yaml.NewDecoder(strings.NewReader(r.doc))
+	styles := map[bool]int{}
+	for {
+		var doc yaml.Node
+		err := dec.Decode(&doc)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return false, false
+		}
+		countStyles(&doc, r.v.Text, styles)
+	}
+	if len(styles) != 1 {
+		return false, false
+	}
+	if styles[false] != 0 {
+		return false, true
+	}
+	if styles[true] != 1 || strings.ContainsAny(r.v.Text, "  ") {
+		return false, false
+	}
+	for _, n := range r.nodes {
+		if n.Shape == core.Scalar && n.Text == r.v.Text && n.Line == r.v.At.Line && n.Block == 0 {
+			t.Fatalf("value %q at line %d is a literal block scalar with a Block of 0", r.v.Text, r.v.At.Line)
+		}
+	}
+	return true, true
+}
+
+// countStyles counts the scalars under y whose value is text, by whether
+// each is a literal block scalar. An alias is counted where its anchor
+// stands.
+func countStyles(y *yaml.Node, text string, styles map[bool]int) {
+	if y.Kind == yaml.ScalarNode && y.Value == text {
+		styles[y.Style&yaml.LiteralStyle != 0]++
+	}
+	if y.Kind == yaml.AliasNode {
+		return
+	}
+	for _, c := range y.Content {
+		countStyles(c, text, styles)
+	}
+}
+
+// parseDocument parses text in format, as a step does, and for YAML gives
+// every node errata built, which literal looks up Block on.
+func parseDocument(format, text string) ([]*core.Node, []*core.Node, error) {
+	switch format {
+	case "json":
+		root, err := jsonreader.Parse([]byte(text))
+		return []*core.Node{root}, nil, err
+	case "toml":
+		root, err := tomlreader.Parse([]byte(text))
+		return []*core.Node{root}, nil, err
+	}
+	var nodes []*core.Node
+	docs, _, err := yamlreader.ParseNoted([]byte(text), 0, func(n *core.Node, _ string, _ bool) { nodes = append(nodes, n) })
+	if err == nil && len(docs) > 1 {
+		err = errors.New("more than one document")
+	}
+	return docs, nodes, err
+}
+
+// lineOf is line k of text, counted from 1, or "" past its end.
+func lineOf(text string, k int) string {
+	lines := strings.Split(text, "\n")
+	if k < 1 || k > len(lines) {
+		return ""
+	}
+	return lines[k-1]
 }
 
 // extractorRoots is the path of a yaml (format 0), json (1) or toml (2)

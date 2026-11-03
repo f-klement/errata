@@ -191,7 +191,7 @@ Every check has these keys:
 | `run` | program check, unless the file sets a [default run](#a-default-run) | the command, as a list of arguments, run from the repository root |
 | `timeout` | no | program check and generated check: a positive Go duration such as `10s` or `2m`; default `30s`. Zero or less does not load |
 | `generated` | generated check | the committed file and its generator: see [Generated files](#generated-files) |
-| `extract` | rule | the rule's extractors, each under a name of its own |
+| `extract` | rule | the rule's extractors, each under a name of its own that is a CEL identifier (see [assert](#assert)) |
 | `agree` | rule: this or `assert` | the extractors whose values must all agree |
 | `compare` | no | agree only: how the values must agree, `text` (the default) or `semver` (see [Comparing versions](#comparing-versions)) |
 | `assert` | rule: this or `agree` | a [CEL](https://cel.dev) expression over the extracted values that must be true |
@@ -326,9 +326,10 @@ line of the file.
 | `generated.max_bytes` | no | the most bytes errata reads of the file and holds of the generator's stdout, and of its stderr apart: from 1 to 67108864 (64 MiB), default 33554432 (32 MiB) |
 
 The generator runs as a program check does, through the same code: argv and never a shell, the
-check's `timeout`, the environment the [check protocol](#the-check-protocol) gives, its own process
-group, which a timeout kills while the generator runs. Its stdin is empty, so a generator that reads
-stdin reads nothing and goes on. errata compares the output and never runs it.
+check's `timeout`, the environment the [check protocol](#the-check-protocol) gives, and on Linux
+and macOS its own process group, which errata kills as the check protocol says. Its stdin is empty,
+so a generator that reads stdin reads nothing and goes on. errata compares the output and never
+runs it.
 
 | What happened | Verdict |
 |---|---|
@@ -336,7 +337,7 @@ stdin reads nothing and goes on. errata compares the output and never runs it.
 | the output differs from the file in any byte, a CR before a newline and the last newline included | false, at the first line that differs |
 | nothing is at `generated.file` | false: the generator printed a file the repository lacks. On a [witness](#witnesses) the witness is unknown instead, and the generator does not run |
 | the generator exits with any status but 0, exit 1 included, or cannot be started | unknown, with the end of its stderr |
-| the generator runs past `timeout`, or writes more than `max_bytes` to stdout or to stderr | unknown; errata kills its process group if the generator is still running. A child left running after the generator exits runs on |
+| the generator runs past `timeout`, or writes more than `max_bytes` to stdout or to stderr | unknown; on Linux and macOS errata kills its process group |
 | the file is over `max_bytes`, a directory, or a link that leads out of the repository | unknown |
 
 Line ends are compared as they are: a file of CRLF lines differs from a generator that prints LF.
@@ -640,8 +641,10 @@ checks:
 
 Each extractor is a variable named after it, and every variable is a `list(string)`: `schedule[0]`
 is the first value the extractor found. An extractor with `as: map` or `as: record` is a list of
-maps instead (see [Mappings whole](#mappings-whole) and [Records](#records)). An extractor named in `assert` must be a CEL identifier
-(letters, digits and `_`, not starting with a digit). `normalize` applies to the values before the
+maps instead (see [Mappings whole](#mappings-whole) and [Records](#records)). Every extractor's name is a CEL identifier,
+under `agree` as under `assert`: letters, digits and `_`, not starting with a digit, and none of the
+words CEL reserves, such as `in`, `null` and `true`. Any other name does not load, the empty one
+included. `normalize` applies to the values before the
 expression sees them. Numbers, durations and ports go through the functions below, so errata knows
 the type of every part of the expression when it loads the file, except a value read from a map,
 which CEL types `dyn`; a comparison of such a value with a bool, a number, null, bytes, a duration
@@ -929,9 +932,17 @@ a `/`, and `[a-z]` is a class. A segment that is exactly `**` matches zero or mo
 `**` inside a segment, as in `a**`, is a `*`. `env`'s `files:` matches the same way.
 
 A glob matches the files git tracks, read from `.git/index` without running git, so it reads what a
-clone holds: never an untracked or ignored file, a submodule, or a file a sparse checkout leaves
-out. It needs the repository root to be the top of a git repository; the cases that make such a
-rule unknown are those of [One variable in many files](#one-variable-in-many-files). The values come
+clone holds: never an untracked or ignored file or a submodule. It needs the repository root to be
+the top of a git repository; the cases that make such a rule unknown are those of
+[One variable in many files](#one-variable-in-many-files). In a sparse checkout, a glob that would
+match a file the checkout leaves out (git marks it skip-worktree, and the working tree lacks it),
+or may match a path below a directory a sparse index lists as one entry, makes the rule unknown,
+and the message names the sparse checkout. A skip-worktree file the working tree holds, as after
+`git update-index --skip-worktree` in a full checkout, is read as any other. A file `files:` or
+`file:` names outright that the checkout leaves out is unknown too, never missing, whether the
+name reaches it directly or through a tracked symlink, and whether the root is the top of the
+repository or a directory below it, so `exists` on it is unknown and not `false`. A glob that meets neither reads
+as in a full checkout. The values come
 in a fixed order: the entries in the order `files:` lists them, a glob's files in the order of
 git's index, which sorts paths byte by byte, and each file's values in the order its reader finds
 them. A file two entries name is read once, at its first place, and so is a file two names resolve
@@ -1331,10 +1342,17 @@ bytes, duration or timestamp, or a list or map with members, keys or values of s
 goes by the operand's type, not its spelling, so `r.replicas == size(l)`, `r.z == int('5')`, a
 ternary and `r.z in v.map(x, int(x))` are refused as `5` is. Inside a list or map literal it looks
 at each element, key and value, so `r == {'automerge': true}` is refused at `true`, and `[]` and
-`{}` load. It does the same for the literal a `cel.bind` name binds and for the list literal a
-comprehension variable runs over, so `cel.bind(want, {'name': 'x', 'automerge': true}, rules.exists(r,
-r == want))` is refused at `true`, though that map's type, `map(string, dyn)`, says nothing. Any
-other operand, such as the result of `map()` over the file's values, is checked by its type alone.
+`{}` load. It does the same for the literal a `cel.bind` name binds, for the list literal a
+comprehension variable runs over, bound to a name or not, and for the member a field or a literal
+index selects from such a literal. So `cel.bind(want, {'name': 'x', 'automerge': true},
+rules.exists(r, r == want))` is refused at `true`, though that map's type, `map(string, dyn)`, says
+nothing. When `want` binds `{'name': 'x', 'replicas': 3}`, `r.replicas == want.replicas` and
+`want['replicas']` are refused at `3`. Any other operand, such as the result of `map()` over the
+file's values, is checked by its type alone. Following names to their values has a budget of
+4194304 steps at load. That is more than ten times the most that nine shapes errata measured at
+the length limit took, but a rule built to defeat the tracing, such as many comprehensions over
+names that alias one bound list, can reach it within that limit. An expression past the budget
+does not load, and the refusal says it is too intricate to check.
 A side that is a whole map, or a list of maps, counts as a map's value too. The refusal is at the
 operand, or the member, and says what to write instead:
 
@@ -1403,12 +1421,17 @@ one node makes the rule unknown, naming the element's line, so write `[0]` to ta
 scalar or a sequence that holds none of the fields makes the rule unknown at its line; a mapping
 that holds none is an empty record. A field that no record holds makes the rule unknown, since
 `!has(e.url) || ...` would then hold on every record over a mistyped path or a key the file renamed;
-`allow_empty` on the extractor says that no record need hold it. Two fields over one path do not
-load, since `agree` over them would compare each node with itself. A record's keys are sorted by
-name. A field name is a letter or `_` and then letters, digits and `_`, and none of the words CEL
-reserves (`true`, `false`, `null`, `in`, and `as`, `break`, `const`, `continue`, `else`, `for`,
-`function`, `if`, `import`, `let`, `loop`, `namespace`, `package`, `return`, `var`, `void`,
-`while`), so assert reads it as `e.name`.
+`allow_empty` on the extractor says that no record need hold it. The same typo in the expression
+does not load: `e.ulr`, `has(e.ulr)`, `'ulr' in e` and `e['ulr']` are refused when the fields are
+`name` and `url`, and the message names both. errata finds a record by following the expression:
+a comprehension variable over the extractor, a `cel.bind` name bound to the extractor or to one of
+its records, an index such as `gatus[0]`, and the list `filter` or `map(x, x)` keeps of them. A
+record reached through `by_file`, or a variable that may also be another value, is not checked.
+Two fields over one path do not load, since `agree` over them would compare each node with
+itself. A record's keys are sorted by name. A field name is a letter or `_` and then letters,
+digits and `_`, and none of the words CEL reserves (`true`, `false`, `null`, `in`, and `as`,
+`break`, `const`, `continue`, `else`, `for`, `function`, `if`, `import`, `let`, `loop`,
+`namespace`, `package`, `return`, `var`, `void`, `while`), so assert reads it as `e.name`.
 
 A `regex` extractor with `as: record` returns a record for each match, whose fields are the
 pattern's named groups, `(?P<name>...)` or `(?<name>...)`, in the order the pattern opens them. A
@@ -1432,9 +1455,8 @@ field of every record as a flat value at its own line; a record without the fiel
 fields of the same records can agree with each other, and the extractor runs once. A field that
 holds a mapping or a sequence makes the rule unknown, and so do records none of which has the field,
 unless `allow_empty` lists the extractor. A field the records do not have, a field of an extractor
-that returns no record, and a record extractor named whole in `agree` do not load. An extractor's
-own name may hold a dot, but an entry that names such an extractor and also a field, as `a.b` beside
-a record extractor `a` with the field `b`, does not load: rename the extractor.
+that returns no record, and a record extractor named whole in `agree` do not load. No extractor's
+name holds a dot, so `a.b` always names the field `b` of the extractor `a`.
 
 Each record keeps the line where its element or match starts, and each field the line where its
 value starts, so a message about a whole record names the record, and `agree` names each field:
@@ -1456,7 +1478,9 @@ that need not capture. The `m` flag is on, so `^` and `$` match at each line;
 `(?-m)` at the start turns it off. `.` does not match a newline unless the pattern sets `(?s)`. A
 CRLF line ending reads as LF, so `$` matches before it and no value ends in its `\r`; a lone `\r`
 is kept. Each value is at the line where its match starts, counted in the file as it is. A match in
-which group 1 took no part gives no value.
+which group 1 took no part gives no value. A final newline ends the last line and starts no empty
+one, as it does for the context, so `^(.*)$` over `a` and a newline gives `a` alone, not a second,
+empty value at line 2. The same holds for `as: record` and for the `text` extractor's prose.
 
 #### Values of another extractor
 
@@ -2187,7 +2211,19 @@ documented order:
 1. Each `include:` of a local file is read and merged, a nested include first, then each file in
    its order, and the including file's own keys last. Hashes merge at any depth and any other
    value replaces the one before it, so a list is never merged item by item. A leading `/` is the
-   repository root.
+   repository root. A local include with `*` or `**` includes every file git tracks that it
+   matches, in git's order, as GitLab's code matches it (`search_files_by_wildcard_path` in its
+   `app/models/repository.rb`): `*` within one directory, `**/` zero or more directories, and any
+   other `**` across directories too. So `configs/*.yml` reads the `.yml` files in `configs`, and
+   `configs/**.yml` and `configs/**/*.yml` both read those in `configs` and every directory below
+   it. GitLab's documentation says the last reads only the directories below `configs`; its code
+   reads `configs` too, and errata follows the code. `?` and `[` are literal. The file that
+   includes the wildcard is left out of what it matches, as GitLab leaves it out, and a name with a
+   `.` or `..` name or an empty one, such as `./ci/*.yml`, matches no file, since GitLab does not
+   clean it. The files come from the listing a `files:` glob reads
+   ([A set of files](#a-set-of-files)), so its bounds and its sparse checkout rule hold, and no
+   witness's fixture is ever among them; each counts against the 150 files. A wildcard that
+   matches no file includes none.
 2. A job's `extends` is merged deeply, each parent in its order with the job's own keys last, over
    at most 11 levels. A keyword set to `null` is unset; a variable set to `null` is not literal. A
    parent that is a `!reference` is refused, since GitLab merges extends before it follows one.
@@ -2203,7 +2239,9 @@ documented order:
    `variables`. `inherit:variables` can leave out the last two.
 
 YAML anchors and merge keys work within one file, as in GitLab; an alias of an anchor in another
-file does not parse. A variable's long form gives its `value:`, and an empty string without one.
+file does not parse. A variable's long form gives its `value:`, and an empty string without one,
+at the line of the variable's name. A `!!bool` scalar holds any word Psych reads as a boolean,
+such as `!!bool yes` or `!!bool On`, as GitLab loads it.
 
 Which rule of a `rules:` list matches is the pipeline's to decide, so every rule that can match
 gives a value: its own variable, or the value below it when it sets none. A rule with
@@ -2214,8 +2252,12 @@ value the job can see agrees. A value that holds only in some cases carries its 
 a message names after its place: the rule's test, such as `if $CI_COMMIT_TAG` or
 `changes [src/a.go]`, prefixed `workflow` for a workflow rule, or the instance's name as GitLab
 gives it, such as `build: [linux, 3.12]`, with `010` written as `8` as GitLab's loader reads it. A
-message quotes 64 bytes of a condition, so a longer name writes the values no instance differs
-in as `...`, such as `build: [..., ..., monitoring-and-alerting-two]`:
+message quotes 64 bytes of a condition, so a longer name writes as `...` the value of a key every
+entry sets to one value, such as `build: [..., ..., monitoring-and-alerting-two]`. Two instances
+whose different names still begin with the same 64 bytes have their names cut and numbered by
+their place in the matrix, so no two print the same condition, such as
+`build: [aws, europe-west-1-a-long-zone-name, monitoring-and-a #1`; instances GitLab names
+alike keep one name:
 
 ```text
 FALSE tag-agrees (repo)
@@ -2232,7 +2274,7 @@ Some values are out of reach offline, and errata never guesses them:
 
 | What | Result |
 |---|---|
-| a `remote`, `project`, `template` or `component` include, a local include named by a wildcard or a variable, or an include with `rules:` | the rule is unknown, naming the include, since such a file could set any key |
+| a `remote`, `project`, `template` or `component` include, a local include whose name holds a variable (`$`), wildcard or not, or an include with `rules:`, local or not | the rule is unknown, naming the include, since such a file could set any key |
 | a `trigger:` job's variable | refused: the job passes it to a downstream pipeline |
 | a variable of a job that gets a dotenv report: from a job its `needs:` names with artifacts, or with no `needs:` one `dependencies:` lists, or by default any job of an earlier stage, that declares `artifacts:reports:dotenv`, under `default:` too | unknown, naming the job that writes the report: the pipeline writes it as it runs, and it outranks the file |
 | a variable set in a project's, group's or instance's settings, by a pipeline, or a predefined one such as `CI_COMMIT_SHA` | not in the files: a variable no file sets is no value, and the message says it may come from those settings; `allow_empty` still lets the rule hold |
@@ -2246,7 +2288,8 @@ errata refuses what GitLab refuses where the check is cheap: a keyword set both 
 and under `default:`, a long form in a rule's `variables:`, a job variable with a `description:`,
 a variable named as YAML reads a boolean, such as `ON`, an include that is not a `.yml` or
 `.yaml` file or that is empty, an `expand:` that is not `true` or `false`, a tag other than
-`!reference` and YAML's own, and a `parallel:matrix` of more than 200 jobs.
+`!reference` and YAML's own, a `parallel:matrix` value that Psych reads as a boolean or a null,
+such as `true`, `off`, `~` or an empty one, and a `parallel:matrix` of more than 200 jobs.
 
 The file, and every file it includes, hold at most `max_bytes` bytes in all, the nodes that size
 allows, and 1000000 nodes that YAML aliases and merge keys add, as one file does; a configuration
@@ -2342,9 +2385,10 @@ see it.
 
 errata refuses a `GITHUB_` or `RUNNER_` variable, which GitHub does not let a workflow set, a
 variable named in another case beside the one asked for (a Windows runner reads them as one), two
-matrix variables whose names differ only in case (GitHub documents `OS` and `os` as one; errata
-compares other letters as the runner compares a context's keys, so `é` and `É` are one and the
-Kelvin sign is not `k`), an empty matrix variable, an exclusion
+keys of one mapping that differ only in case, anywhere in the workflow, such as the matrix
+variables `OS` and `os` (GitHub refuses the workflow; errata compares other letters as the runner
+compares a context's keys, so `é` and `É` are one and the Kelvin sign is not `k`), an empty
+matrix variable, an exclusion
 that leaves no job, and a matrix of more than 256 jobs that no expression decides, GitHub's limit.
 The product of the variables holds at most 65536 combinations before `exclude:`, and matching the
 `include:` and `exclude:` entries takes one step for each key compared and for each 64 bytes of a
@@ -2524,7 +2568,12 @@ errata looks in this order and stops at the first place that gives a value:
    types, as in `int X = 1`. So may `final`, `static` and `var`. A generic type such as
    `List<String> X`, an array type, and a qualified type such as `java.lang.String X` are not
    read. An `X = v`, `X += v`, `X++` or `++X`, or the same with `--` or with `(X)` for `X`,
-   before the `def` or after it, makes the value unknown.
+   before the `def` or after it, makes the value unknown wherever it stands, as in
+   `if (c) X = v`, `def Y = X = v` or the multiple assignment `(a, X) = v`, and so does one
+   inside a GString's `${ }`, as in `sh "echo ${X++}"`. A parameter's default, as in
+   `def f(X = 2)`, a multiple declaration, as in `def (y, X) = [1, 2]`, and a declaration with a
+   generic or array type, as in `List<String> X = []` or `String[] X = []`, count as one too,
+   though they declare another variable.
 
 Of two assignments in one environment block the last counts. An environment block counts only
 inside the `pipeline` block, at its top or directly in a stage.
@@ -2549,7 +2598,7 @@ Some values are out of reach, and errata never guesses them:
 | a stage inside a `matrix` that has an axis of the variable's name | unknown, over every environment block: the matrix sets the axis in each cell |
 | `@Library`, the `libraries` directive, or a `library`, `load` or `evaluate` step, `this.load` included | unknown when no environment block sets the variable, since a shared library or a loaded file may set it |
 | a parameter of the variable's name in `parameters`, or a matrix axis outside the stage's matrix | unknown when no environment block sets it: whoever starts the build chooses a parameter, and errata does not read a matrix's cells |
-| `env['X'] = v`, `env."X" = v`, `env?.'X' = v`, `env.setProperty('X', v)`, `env.putAt('X', v)`, or one of these with a name that is not literal; `env.X += v` or another compound assignment, `env.X++`, `++env.X` and the same with `--` or with `(env.X)` for `env.X`; and an `env.X = v` that does not start a statement, such as `env?.X = v`, `this.env.X = v`, `this?.env.X = v`, `(env).X = v` or `if (c) env.X = v` | unknown when no environment block sets the variable: errata reads none of them |
+| `env['X'] = v`, `env."X" = v`, `env?.'X' = v`, `env.setProperty('X', v)`, `env.putAt('X', v)`, or one of these with a name that is not literal; `env.X += v` or another compound assignment, `env.X++`, `++env.X` and the same with `--` or with `(env.X)` for `env.X`; and an `env.X = v` that does not start a statement, such as `env?.X = v`, `this.env.X = v`, `this?.env.X = v`, `(env).X = v` or `if (c) env.X = v`; and each of these inside a GString's `${ }`, as in `"${env.X = 'b'}"` | unknown when no environment block sets the variable: errata reads none of them |
 | the variable's name in another case, such as `image_tag` for `IMAGE_TAG`, in an environment block, an `env.` assignment, a `withEnv` or a parameter | unknown: Jenkins does not tell names apart by case, and errata does not guess which spelling a stage sees |
 | a variable no file sets, such as `BUILD_NUMBER`, or one from the controller's, a folder's or a node's settings or a plugin | no value, and the message says where errata looked; `allow_empty` still lets the rule hold. Without `stage:`, the message names the stages whose environment sets it |
 
@@ -2579,7 +2628,11 @@ Where Groovy's grammar needs more than a lexer, errata takes the reading of the 
 start of a line included, but Groovy skips a line end inside `( )` or `[ ]`, so a `/` after one
 divides. In a dollar slashy string only `$$` and `$/` are escapes, and a backslash is itself, so
 `$/a\/$` ends at its `/$`. A line end ends a statement, unless it is inside brackets, follows an
-operator, or the next line starts with `.`, `?.`, `*.`, `?`, `:`, `?:`, `&&` or `||`.
+operator, or the next line starts with `.`, `?.`, `*.`, `?`, `:`, `?:`, `&&` or `||`. A `++` or
+`--` at a line's end goes on to the next line's operand unless a value stands before it, and a
+keyword an expression follows (`else`, `return`, `assert`, `throw`, `case`, `in`) or the `)` of
+the condition of an `if`, a `while` or a `for` is no value there, so `if (c) ++` then `X` changes
+`X`.
 
 The lexer reads the file once, twice with `stage:`, and holds no statement: it keeps the stack of
 blocks and strings it is inside, at most 1000 levels deep, and at most 100001 assignments of the
@@ -2647,8 +2700,9 @@ env:
 An entry with `*`, `?` or `[` is a glob. errata matches it against the files git tracks, read from
 `.git/index` without running git, a path segment at a time as Go's `path.Match` does: `*` never
 crosses a `/`, and a segment `**` matches any number of segments, as in
-[A set of files](#a-set-of-files). A file git does not track is not read, nor is a submodule or a file a sparse checkout
-leaves out. A glob that matches no file adds no value, so a rule whose `env` finds none is unknown
+[A set of files](#a-set-of-files). A file git does not track is not read, nor is a submodule. A glob
+that would match a file a sparse checkout leaves out, or a path below a directory it leaves out, makes
+the rule unknown, naming the sparse checkout, and so does a file named outright that it leaves out. A glob that matches no file adds no value, so a rule whose `env` finds none is unknown
 unless `allow_empty` lists it. A glob needs the repository root to be the top of a git repository. A
 worktree's or a submodule's `.git` file is followed to the git directory it names, and one that
 names a directory that is not there, as when a worktree is mounted alone into a container, or one
@@ -2728,6 +2782,8 @@ still makes the rule unknown.
 | a loop of symlinks, a FIFO, a socket or a device | unknown | unknown |
 | a name below a directory errata cannot open, to read it and search it | unknown | unknown |
 | a root that is not there, or is no directory | unknown | unknown |
+| nothing, where a sparse checkout leaves the file out, or a directory above it | unknown | unknown |
+| nothing, where git's index, which says whether a sparse checkout leaves the file out, cannot be read | unknown | unknown |
 
 `file` is read as for any extractor: relative to the root, its `..` resolved by name before any
 symlink, and its symlinks followed as the operating system follows them, with the same refusal of
@@ -2786,7 +2842,7 @@ core machine.
 |---|---|---|
 | the config file | 1 MiB (1048576 bytes) | checked while reading, so a pipe given with `--config` is held to it too. YAML aliases may expand it to at most 4 MiB, counted as the bytes of every scalar and one for each node before anything is expanded: one scalar of 64 KiB aliased by 8000 checks, 528 KB of config, ran the loader out of memory, since the YAML library's own guard counts aliased nodes, not their bytes. Unlike the limits below, a config over it does not load, and errata exits 2. The largest real config known, a GitOps repository's, is 37 KB for 72 checks, 28 times under the limit. Loading costs memory in proportion to the config: the densest shape measured, one rule of thousands of regex extractors, allocates about 630 bytes for each byte of config |
 | file size | 32 MiB, or `max_bytes` | checked before reading. An ordinary file costs about 27 times its size in memory: an 8.2 MB OpenAPI document takes 0.95 s and 223 MB |
-| nodes | `max_bytes` divided by 7 (YAML), 3 (TOML), 8 (JSON) or 3 (XML) | checked before parsing, since the YAML and TOML parsers build a whole document or expression before errata sees it. errata counts in one pass an upper bound on the nodes the parser can build: two for each byte after which a key, a value or an item can start, with YAML's NEL, LS and PS line breaks among them, and a UTF-16 YAML file counted as the UTF-8 the parser reads. A file of one-character items counts one for each byte, an ordinary file one for every 3 to 16: a 6.3 MB Helm index has 6 times room at the default, a 7.9 MB uv.lock 4.8 times, a 7.4 MB Google API document 8 times. The limit bounds nodes, not memory, since a node costs more or less by its shape. The densest files measured so far at the default peak at 2.0 GB in YAML (mappings of 62 anchored, tagged keys), 2.55 GB in TOML (inline tables of dotted keys of 500 parts) and 0.42 GB in JSON (objects nested 900 deep), and grow in proportion to `max_bytes`; 32 MiB of one-character items ran out of 4.7 GB in YAML without the limit. Raise `max_bytes` to read a denser file. For XML errata counts each element, attribute, namespace declaration and text node as it builds them from encoding/xml's tokens, since it builds the tree itself. The densest of 39 real XML files, MARC library records, holds a node for every 11.5 bytes, almost 4 times the room at the default. The densest file XML can write, text between empty elements (`x<a/>`), reaches the limit at 28 MB, which takes 1.0 GB; 32 MiB of empty elements takes 1.3 GB. An attribute costs more memory than an element, since encoding/xml builds a whole start tag before errata counts it: the densest XML measured so far, one start tag of 8.4 million attributes in 32 MiB, peaks at 1.94 GB before it is refused |
+| nodes | `max_bytes` divided by 7 (YAML), 3 (TOML), 8 (JSON) or 3 (XML) | checked before parsing, since the YAML and TOML parsers build a whole document or expression before errata sees it. errata counts in one pass an upper bound on the nodes the parser can build: two for each byte after which a key, a value or an item can start, with YAML's NEL, LS and PS line breaks among them, and a UTF-16 YAML file counted as the UTF-8 the parser reads. A file of one-character items counts one for each byte, an ordinary file one for every 3 to 16: a 6.3 MB Helm index has 6 times room at the default, a 7.9 MB uv.lock 4.8 times, a 7.4 MB Google API document 8 times. The limit bounds nodes, not memory, since a node costs more or less by its shape. The densest files measured so far at the default peak at 2.0 GB in YAML (mappings of 62 anchored, tagged keys), 2.55 GB in TOML (inline tables of dotted keys of 500 parts) and 0.42 GB in JSON (objects nested 900 deep), and grow in proportion to `max_bytes`; 32 MiB of one-character items ran out of 4.7 GB in YAML without the limit. Raise `max_bytes` to read a denser file. For XML errata counts each element, attribute, namespace declaration and text node as it builds them from encoding/xml's tokens, since it builds the tree itself. The densest of 39 real XML files, MARC library records, holds a node for every 11.5 bytes, almost 4 times the room at the default. The densest file XML can write, text between empty elements (`x<a/>`), reaches the limit at 28 MB, which takes 2.3 to 2.4 s and 0.9 to 1.1 GB; 32 MiB of empty elements takes 2.7 to 2.8 s and 1.3 to 1.6 GB. An attribute costs more memory than an element, since encoding/xml builds a whole start tag before errata counts it: the densest XML measured so far, one start tag of 8.4 million attributes in 32 MiB, takes 2.8 to 2.9 s and peaks at 1.9 to 2.1 GB before it is refused. Each XML figure is the range of five runs of `errata check` on the build node (4 cores, 4 GiB), timed whole and with the process's peak resident memory |
 | values per extractor | 100000 | each node of a mapping that `as: map` hands over counts as one, the mapping itself included, and so does each record and each node of its fields. Every value is kept in memory and printed; a regex `(\d*)` matches at every byte. A path that selects more nodes at any step stops there. The values of one extractor also hold at most `max_bytes` bytes in all, since YAML aliases can repeat a value, decoding can lengthen one, and an XML element's value holds the text of every element inside it: `//a` over 1000 nested elements around 30 MB would return 30 GB, and is refused. Each reader counts as it reads, and the rule counts every extractor's values again, with their bytes, before it compares them, and refuses a value whose location names no path inside the repository; it reads the name as written, without following links, which the readers check when they open a file. It reads the name the same on every OS: a path that starts with `/` or `\`, whose first name once `.` and `..` are resolved is a drive such as `C:` (`C:x`, `./C:x`), or whose `..` leaves the root with `\` read as a separator or as part of a name, is outside, and a name Windows keeps for a device, such as `aux.yaml`, is inside. A `file:` or a `files:` entry that is outside this way is refused when the config loads. A path that holds a control character, such as a newline, which the text output would print as a line of its own, a direction control (U+061C, U+200E, U+200F, U+202A to U+202E, U+2066 to U+2069) or a line or paragraph separator (U+2028, U+2029), which a SARIF viewer would act on, is refused in a `file:` when the config loads, in a tracked file a glob matches before it is read, and in a value's location. 100000 regex matches in 4.3 MB take 0.8 s and 45 MB |
 | documents in strings | `max_bytes` in all, and the nodes `max_bytes` allows | the documents an extractor's `embedded` steps parse out of strings count together, as one more file: their bytes against `max_bytes`, and the nodes each can hold, counted as for a file of its format at its bytes per node, against `max_bytes` too. A string YAML aliases repeat counts each time. The nodes YAML aliases add, the filter work and the values count over the file and its documents together, so a run reads at most twice `max_bytes` for one extractor. Over a set of files, the documents in the strings of every file count together against the set's `max_bytes`, as one more file of the set |
 | depth | 1000 | each key, each part of a dotted TOML key or table header, and each element is one level, and an array table's element one more. The deepest of 56 real files measured nests 25 |
@@ -2905,12 +2961,22 @@ that does not lex ([Jenkinsfiles](#jenkinsfiles)). A Markdown file parses whatev
 | anything else, or a timeout | unknown: the check could not evaluate. Not an erratum, but it fails the run |
 
 Stdout is the message. If stdout is a JSON object with a `message` string, errata uses that string.
-The program runs with the repository root as its working directory and receives `ERRATA_ROOT`,
-`ERRATA_CHECK_ID` and `ERRATA_SCOPE` in its environment. Its stdin is empty. Read the tree
-from `ERRATA_ROOT`, not the working directory: on a [witness](#witnesses) it is the fixture,
-while the working directory stays the repository root. A generated check's
-generator runs the same way, and its exit status is not a verdict
-([Generated files](#generated-files)).
+errata holds at most 33554432 bytes (32 MiB) of stdout, and of stderr apart. It reads what the
+program writes past that and drops it, and the program runs on to its exit or its timeout: the
+verdict is still the exit code, and the message ends with a line naming each stream errata cut and
+the bound. A cut stdout is no longer a whole JSON object, so the message is the text errata held.
+A program check takes no `max_bytes`. The program runs with the repository root as its working
+directory and receives `ERRATA_ROOT`, `ERRATA_CHECK_ID` and `ERRATA_SCOPE` in its environment. Its
+stdin is empty. Read the tree from `ERRATA_ROOT`, not the working directory: on a
+[witness](#witnesses) it is the fixture, while the working directory stays the repository root.
+
+On Linux and macOS the program runs in a process group of its own, which errata kills on a timeout
+and again once the program exits, so a child it starts in the background does not outlive the
+check, unless the child leaves the group, as `setsid` does. A child that keeps the program's stdout
+or stderr open holds the check one second past the program's exit; a program that exited 0 is then
+unknown, and any other exit keeps its verdict. On Windows errata starts no process group, and a
+child left running there runs on. A generated check's generator runs the same way, and its exit
+status is not a verdict ([Generated files](#generated-files)).
 
 ### Scopes
 
@@ -2964,7 +3030,9 @@ and renamed into place, so PATH holds the old file or the whole report, never pa
 that is killed leaves its temporary file, `.<name>.<random>.tmp`, beside PATH. A new file's mode
 is 0666 less the umask, and a file that is there keeps its mode. A value without `=`, with a
 format errata does not know, or that names the same file as another `--output` or the config, is
-exit 2 before any check runs, and so is a file errata cannot create. A file that cannot be written
+exit 2 before any check runs, and so is a file errata cannot create. An output names the config
+when it is the file the config was read from, through the config's symbolic links or a hard
+link; an output that is itself a link to the config is replaced, and the config is left alone. A file that cannot be written
 after the run is exit 2 too, in place of exit 1: errata still prints the report and writes every
 other file.
 [ADR 0005](docs/adr/0005-output-writes-a-format-to-a-file-beside-the-text-report.md) has the
@@ -3239,8 +3307,9 @@ that differ, the alert is on the second one. List the source of truth first. Wit
 blames the later, the one that does not agree with a value before it, so over `20`, `20.11.1` and
 `18` the alert is on `18`. The semver blame goes by position alone, however many places hold each
 value: with `18` in one file and `20.1.0` in two after it, semver blames `20.1.0`, where the text
-rule would blame `18`, the minority. Ranges alone that no release satisfies blame no value, and the
-result points at the check in the config. An assert rule has no majority, so it blames the first
+rule would blame `18`, the minority. Ranges alone that no release satisfies blame the first range
+at which the ranges before it stop overlapping, in the same order: over `>=20`, `<22` and `>=23`
+the alert is on `>=23`. An assert rule has no majority, so it blames the first
 value it extracted. A program check reports no values, so its result points at the line where the
 check starts in the config file, and so does a rule whose extractors found nothing; the message is
 what the program printed.

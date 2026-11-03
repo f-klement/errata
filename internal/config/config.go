@@ -695,9 +695,10 @@ func buildRule(e checkEntry, newExtractor Builder) (*check.Rule, []error) {
 			Name: name, Extractor: x, Spec: e.Extract[name].Resolved(), Description: d,
 		})
 	}
-	// A rule with agree beside assert is refused by validation, so its
-	// expression is not compiled into a second error.
-	if strings.TrimSpace(e.Assert) != "" && len(e.Agree) == 0 && len(names) > 0 {
+	// A rule with agree beside assert, or with an extractor's name that is
+	// no identifier, is refused by validation, so its expression is not
+	// compiled into a second error.
+	if strings.TrimSpace(e.Assert) != "" && len(e.Agree) == 0 && len(names) > 0 && !slices.ContainsFunc(names, misnamed) {
 		a, err := rule.Compile(e.Assert, r.Extractors)
 		if err != nil {
 			errs = append(errs, err)
@@ -706,6 +707,9 @@ func buildRule(e checkEntry, newExtractor Builder) (*check.Rule, []error) {
 	}
 	return r, errs
 }
+
+// misnamed reports whether check.ExtractorName refuses name.
+func misnamed(name string) bool { return check.ExtractorName(name) != nil }
 
 // maxSamePlace is the most extractors samePlaces names. A rule of thousands
 // of extractors over a few places would otherwise make an error for each.

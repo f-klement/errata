@@ -90,6 +90,11 @@ type level struct {
 	valToks int
 	// last is the statement's last token, for whether a line end goes on.
 	last token
+	// cond is whether the ( open at the level's top is the condition of an
+	// if, a while or a for, and condEnd the end of the ) that closed the
+	// last such condition, 0 for none.
+	cond    bool
+	condEnd int
 	// withEnv is the parens at which a withEnv( opened, 0 for none.
 	withEnv int
 	// prev to prev6 are the six tokens before, for name: 'X' in a
@@ -102,6 +107,12 @@ type level struct {
 	// envName is whether the token before was the variable's name in
 	// env.X, env?.X or this.env.X, in any case.
 	envName bool
+	// For (X) = v and (a, X) = v: bare is whether the token before was
+	// the variable's name right after a ( or a comma, group the count of
+	// brackets open at a group that holds it alone between commas, 0 for
+	// none, and closed whether the token before closed such a group.
+	bare, closed bool
+	group        int
 }
 
 // record is one assignment of the spec's variable.
@@ -139,6 +150,10 @@ type scan struct {
 	target []byte
 	lx     *lexer
 	stack  []level
+	// code is a level for each ${ } the lexer is inside, the innermost
+	// last, for what its code changes; the lexer nests at most
+	// core.MaxDepth of them.
+	code []level
 	// open counts the blocks of each kind on the stack.
 	opened [blockMatrix + 1]int
 	// pushed is a token read ahead to see whether a line end goes on.
@@ -179,7 +194,38 @@ type scan struct {
 }
 
 func newScan(data, name, target []byte, m *core.Meter) *scan {
-	return &scan{data: data, name: name, target: target, lx: newLexer(data, m), stack: []level{{}}, stageEnv: map[int]record{}}
+	s := &scan{data: data, name: name, target: target, lx: newLexer(data, m), stack: []level{{}}, stageEnv: map[int]record{}}
+	s.lx.code = s
+	return s
+}
+
+// enterCode, codeToken and leaveCode watch the code inside a string's ${ } for what
+// makes the variable unknown, as watch does outside a string: an X = or
+// an X += that changes a def X, a ++ or a --, an assignment to env.X, an
+// env['X'], a withEnv or a load. The string stays one token of its
+// statement, so an assignment there sets no value; and since no statement
+// is read there, a line end inside a ${ } does not end one.
+func (s *scan) enterCode() {
+	s.code = append(s.code, level{matrix: s.stack[len(s.stack)-1].matrix})
+}
+
+func (s *scan) leaveCode() { s.code = s.code[:len(s.code)-1] }
+
+func (s *scan) codeToken(t token) {
+	lv := &s.code[len(s.code)-1]
+	if t.kind == tokNewline {
+		return
+	}
+	s.watch(lv, t)
+	switch {
+	case t.is("(") || t.is("[") || t.is("?["):
+		lv.parens++
+	case t.is(")") || t.is("]"):
+		lv.parens--
+		if lv.withEnv > lv.parens {
+			lv.withEnv = 0
+		}
+	}
 }
 
 // token is the next token, the one read ahead first.
@@ -215,15 +261,34 @@ var goesOn = map[string]bool{".": true, "?.": true, "*.": true, ".&": true, ".@"
 // endsStatement reports whether a line end ends the statement the level
 // is in: an operator other than a closing bracket or a postfix ++ or --
 // at the end of a line goes on to the next. A ++ or -- after no value is a
-// prefix, which goes on to its operand (groovy.g 2815, INC^ nls!).
-func endsStatement(lv *level) bool {
+// prefix, which goes on to its operand (groovy.g 2815, INC^ nls!). So is
+// one after a keyword that an expression follows, such as return or else,
+// and one after the ) of the condition of an if, a while or a for.
+func (s *scan) endsStatement(lv *level) bool {
 	t := lv.last
-	if t.is("++") || t.is("--") {
-		// lv.prev2 is the token before it, none when it starts the statement
-		return lv.prev2.kind != tokEOF && isValue(lv.prev2)
+	if !t.is("++") && !t.is("--") {
+		return isValue(t)
 	}
-	return isValue(t)
+	// lv.prev2 is the token before it, none when it starts the statement
+	before := lv.prev2
+	switch {
+	case before.kind == tokEOF:
+		return false
+	case before.kind == tokName && beforeOperand[string(before.text(s.data))] && !member[lv.prev3.op]:
+		return false // a.in++ is a property's postfix
+	case before.is(")") && before.end == lv.condEnd:
+		return false
+	}
+	return isValue(before)
 }
+
+// beforeOperand are the keywords an expression follows, so a ++ or --
+// after one is a prefix.
+var beforeOperand = map[string]bool{"else": true, "return": true, "assert": true, "throw": true, "case": true, "in": true}
+
+// conditions are the keywords whose ( ) holds a condition, after which a
+// statement follows.
+var conditions = map[string]bool{"if": true, "while": true, "for": true}
 
 // isValue reports whether t ends a value: it is no operator, or it is a
 // closing bracket or a postfix ++ or --.
@@ -238,7 +303,7 @@ func (s *scan) feed(t token) error {
 		if lv.parens > 0 || lv.st == stStart {
 			return nil
 		}
-		if !endsStatement(lv) {
+		if !s.endsStatement(lv) {
 			return nil
 		}
 		// A line that starts with . or ?: goes on with this statement.
@@ -266,9 +331,15 @@ func (s *scan) feed(t token) error {
 	case t.is("}"):
 		return s.close(t)
 	case t.is("(") || t.is("[") || t.is("?["):
+		if t.is("(") && lv.parens == 0 && lv.prev2.kind == tokName && conditions[string(lv.prev2.text(s.data))] {
+			lv.cond = true
+		}
 		lv.parens++
 	case t.is(")") || t.is("]"): // the lexer refuses one that closes nothing
 		lv.parens--
+		if lv.parens == 0 && lv.cond {
+			lv.cond, lv.condEnd = false, t.end
+		}
 		if lv.withEnv > lv.parens {
 			lv.withEnv = 0
 		}
@@ -311,12 +382,16 @@ func (s *scan) watch(lv *level, t token) {
 }
 
 // watchChange looks for what changes the variable in a way the scan does
-// not read: ++ or -- before or after X or env.X, in parentheses or not, an
-// operator assignment to env.X, and an env.X = v anywhere but at a
-// statement's start, which is the one the scan reads: env?.X = v,
-// this.env.X = v, (env).X = v, if (c) env.X = v.
+// not read: an X = or X += anywhere, ++ or -- before or after X or env.X,
+// in parentheses or not, an operator assignment to env.X, and an
+// env.X = v anywhere but at a statement's start, which is the one the
+// scan reads: env?.X = v, this.env.X = v, (env).X = v, if (c) env.X = v.
 func (s *scan) watchChange(lv *level, t token) {
 	d := s.data
+	grouped := s.groupAssigned(lv, t)
+	if (t.is("=") || t.kind == tokOp && compound[t.op]) && (grouped || s.reassigns(lv)) {
+		s.note(&s.reassigned, fmt.Sprintf("%s %s", s.name, t.op), t.line)
+	}
 	after := lv.envName
 	lv.envName = false
 	if after && t.is(")") { // (env.X)++
@@ -340,6 +415,54 @@ func (s *scan) watchChange(lv *level, t token) {
 			s.note(&s.reassigned, fmt.Sprintf("%s%s", op.op, s.name), t.line)
 		}
 	}
+}
+
+// reassigns reports whether an = or a compound assignment after the last
+// tokens assigns the variable, wherever it stands: X = v, if (c) X = v,
+// def Y = X = v or f(X = v). Not a.X = v, nor def X = v or String X = v,
+// where the name before it declares it: def, final, static, var, a
+// built in type or a name with a capital, as step reads a declaration
+// (groovy.g, declarationStart), or another modifier, as in a class's
+// private X = v. Any other name before it is a keyword an
+// expression follows or a command call, so else X = v, return X = v and
+// echo X = v count. In an environment block X = v sets the variable, and
+// then no def X counts.
+func (s *scan) reassigns(lv *level) bool {
+	before := lv.prev2
+	n := before.text(s.data)
+	declares := before.kind == tokName &&
+		(declarers[string(n)] || modifiers[string(n)] || builtInTypes[string(n)] || isTypeName(n))
+	return s.isName(lv.prev, string(s.name)) && !member[before.op] && !declares
+}
+
+// groupAssigned reports whether t, after the last tokens, is an = or a
+// compound assignment to a group of brackets that holds the variable's
+// name alone between its commas: (X) = v, ((X)) = v and the multiple
+// assignment (a, X) = v. For any other t it moves the group's state on
+// by t, a step of constant work: lv.parens is the count of brackets open
+// before t.
+func (s *scan) groupAssigned(lv *level, t token) bool {
+	closed, bare := lv.closed, lv.bare
+	lv.closed, lv.bare = false, false
+	inGroup := lv.group > 0 && lv.group == lv.parens
+	switch {
+	case closed:
+		if t.is("=") || t.kind == tokOp && compound[t.op] {
+			return true
+		}
+		lv.closed = t.is(")") // ((X)) = v
+	case t.is(")") && (bare || inGroup):
+		lv.closed = true
+	case t.is(",") && bare:
+		lv.group = lv.parens
+		return false
+	case s.isName(t, string(s.name)) && lv.parens > 0 && (lv.prev.is("(") || lv.prev.is(",")):
+		lv.bare = true
+	}
+	if inGroup && (t.is(")") || t.is("]")) {
+		lv.group = 0
+	}
+	return false
 }
 
 // postfixOnName reports whether a ++ or -- after the last tokens changes
@@ -494,6 +617,15 @@ var loaders = map[string]bool{"library": true, "load": true, "evaluate": true}
 // or modifier in place of def.
 var declarers = map[string]bool{"def": true, "final": true, "var": true, "static": true}
 
+// modifiers are Groovy's other modifiers, which declare another variable
+// where they stand before X, as a class's private X = v does. Only
+// reassigns reads them: in declarers, step would read private X = v as a
+// def X = v.
+var modifiers = map[string]bool{
+	"private": true, "protected": true, "public": true, "transient": true, "volatile": true,
+	"synchronized": true, "abstract": true, "native": true, "strictfp": true,
+}
+
 // builtInTypes are the types of Groovy 2.4 that are keywords. Such a type,
 // or a name that starts with a capital, followed by a name starts a
 // declaration (groovy.g, declarationStart and upperCaseIdent).
@@ -551,11 +683,8 @@ func (s *scan) step(lv *level, t token) {
 			lv.st, lv.args, lv.arg = stArgs, 0, token{}
 		case t.is("=") && lv.block == blockEnvironment:
 			s.startValue(lv, formEnvironment, lv.head)
-		case t.is("=") || t.kind == tokOp && compound[t.op]:
+		case t.is("=") || t.kind == tokOp && compound[t.op]: // watchChange notes X = v
 			lv.st = stOther
-			if bytes.Equal(lv.head.text(d), s.name) {
-				s.note(&s.reassigned, fmt.Sprintf("%s %s", s.name, t.op), t.line)
-			}
 		case t.is("."):
 			lv.st = stDot
 		case t.kind == tokName && isTypeName(lv.head.text(d)):

@@ -27,9 +27,12 @@ func blamed(t *testing.T, res check.Result) string {
 // are three of one value each and the first value outside the largest
 // group would be 20.11.1, which agrees. A version that does not satisfy a
 // range before it is blamed, and so is a range a version before it does
-// not satisfy. Ranges alone that do not overlap blame none, since no pair
-// is to blame. Planted break: the pair's first value blamed, which named
-// 20.11.1 (#208).
+// not satisfy. Ranges alone that do not overlap blame the first range at
+// which the ranges before it stop overlapping, in the values' order:
+// over >=20, <22 and >=23 that is >=23, so the annotation lands on a line
+// of the repository. Planted breaks: the pair's first value blamed, which
+// named 20.11.1 (#208); and agreeSemver blaming no value for ranges alone,
+// as before #213.
 func TestAgreeSemverBlamesTheValueItIsFalseFor(t *testing.T) {
 	for _, c := range []struct {
 		name   string
@@ -39,7 +42,8 @@ func TestAgreeSemverBlamesTheValueItIsFalseFor(t *testing.T) {
 		{"versions", []string{"20", "20.11.1", "18"}, "v.txt:3"},
 		{"a version under a range", []string{">=20", "20.1.0", "18.19.0"}, "v.txt:3"},
 		{"a range a version misses", []string{"18.19.0", ">=20"}, "v.txt:2"},
-		{"ranges apart", []string{">=21", "~> 20.1"}, "none"},
+		{"ranges apart", []string{">=21", "~> 20.1"}, "v.txt:2"},
+		{"ranges apart at the third", []string{">=20", "<22", ">=23"}, "v.txt:3"},
 		{"holds", []string{"20", "20.11.1"}, "none"},
 		{"unknown", []string{"20", "latest"}, "none"},
 	} {

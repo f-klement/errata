@@ -70,36 +70,24 @@ type NamedExtractor struct {
 	Description Description
 }
 
-// AgreeOn is what an entry of agree names: the extractor of that name,
-// with field "", or, when no extractor has the name and it is x.f, split at
-// its last dot, the extractor x and its records' field f. Validate refuses
-// an entry that is both. ok is false when it names neither
-// an extractor nor a field of one, which Validate refuses; the field is
-// then checked against the extractor's fields by Validate, not here.
+// AgreeOn is what an entry of agree names: the extractor of that name, with
+// field "", or, for x.f, the extractor x and its records' field f. No
+// extractor's name holds a dot (ExtractorName), so the entry splits at its
+// first dot and the part before it is the only name to look up. ok is false
+// when that names no extractor, or the entry ends in the dot, which
+// Validate refuses; the field is then checked against the extractor's
+// fields by Validate, not here.
 func (r Rule) AgreeOn(entry string) (x NamedExtractor, field string, ok bool) {
-	for _, e := range r.Extractors {
-		if e.Name == entry {
-			return e, "", true
-		}
-	}
-	dot := strings.LastIndexByte(entry, '.')
-	if dot < 0 {
+	name, field, dotted := strings.Cut(entry, ".")
+	if dotted && field == "" {
 		return NamedExtractor{}, "", false
 	}
 	for _, e := range r.Extractors {
-		if e.Name == entry[:dot] {
-			return e, entry[dot+1:], true
+		if e.Name == name {
+			return e, field, true
 		}
 	}
 	return NamedExtractor{}, "", false
-}
-
-// fieldToo reports whether name, which names an extractor, also splits at
-// its last dot into a record extractor of byName and one of its fields.
-// AgreeOn takes the extractor, so the field could not be named at all.
-func fieldToo(byName map[string]NamedExtractor, name string) bool {
-	dot := strings.LastIndexByte(name, '.')
-	return dot >= 0 && slices.Contains(byName[name[:dot]].Description.Fields, name[dot+1:])
 }
 
 // Extracted is what one extractor returned to a rule, in the order it found
@@ -296,6 +284,9 @@ func (r *Rule) Validate(c Check) []error {
 	declared := make(map[string]bool, len(r.Extractors))
 	byName := make(map[string]NamedExtractor, len(r.Extractors))
 	for _, e := range r.Extractors {
+		if err := ExtractorName(e.Name); err != nil {
+			errs = append(errs, err)
+		}
 		declared[e.Name] = true
 		byName[e.Name] = e
 	}
@@ -303,6 +294,30 @@ func (r *Rule) Validate(c Check) []error {
 	named := make(map[string]bool, len(r.Agree))
 	compared := make(map[string]bool, len(r.Agree)) // the extractors agree reads
 	for _, name := range r.Agree {
+		if declared[name] && ExtractorName(name) != nil {
+			// Refused above by its name. Split as x.f it would be refused
+			// again, as an entry naming nothing and an extractor left out.
+			compared[name] = true
+			continue
+		}
+		if prefix, ends := strings.CutSuffix(name, "."); ends && declared[prefix] {
+			// AgreeOn names nothing for it, so it would be refused as an
+			// entry extract does not declare and its extractor as left out.
+			// The hint names only a form that loads for the extractor.
+			d := byName[prefix].Description
+			switch {
+			case named[name]:
+				errs = append(errs, fmt.Errorf("agree names %q twice", name))
+			case d.Fields != nil:
+				errs = append(errs, fmt.Errorf("agree names %q, which ends in a dot and so names no field; name one field, such as %s.%s", name, prefix, d.Fields[0]))
+			case d.Whole():
+				errs = append(errs, fmt.Errorf("agree names %q, which ends in a dot and so names no field; its extractor hands assert each mapping whole (as: map), so write an assert, or leave as: map out", name))
+			default:
+				errs = append(errs, fmt.Errorf("agree names %q, which ends in a dot and so names no field; write %q for the extractor, or %s.<field> for a field of its records", name, prefix, prefix))
+			}
+			named[name], compared[prefix] = true, true
+			continue
+		}
 		x, field, ok := r.AgreeOn(name)
 		if !ok {
 			errs = append(errs, fmt.Errorf("agree names %q, which extract does not declare", name))
@@ -314,9 +329,6 @@ func (r *Rule) Validate(c Check) []error {
 		}
 		switch {
 		case !ok:
-		case field == "" && fieldToo(byName, name):
-			dot := strings.LastIndexByte(name, '.')
-			errs = append(errs, fmt.Errorf("agree names %q, which is both an extractor and field %q of the records of extractor %q; rename the extractor, so each entry names one", name, name[dot+1:], name[:dot]))
 		case field != "" && x.Description.Fields == nil:
 			errs = append(errs, fmt.Errorf("agree names %q, but extractor %q returns no record, so it has no field %q", name, x.Name, field))
 		case field != "" && !slices.Contains(x.Description.Fields, field):

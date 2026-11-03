@@ -73,7 +73,7 @@ func memIndex(t *testing.T, files ...string) gitindex.Index {
 func globbedOf(t *testing.T, ix gitindex.Index) string {
 	t.Helper()
 	sp := ix.Paths().Span("")
-	got, err := sp.Match(func(string) bool { return true })
+	got, err := sp.Match(func(string) bool { return true }, func(string) bool { return true }, func(string) bool { return false })
 	if err != nil {
 		t.Fatal(err)
 	}

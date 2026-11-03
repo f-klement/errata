@@ -10,6 +10,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/f-klement/errata/internal/check"
 	"github.com/f-klement/errata/internal/extract/core/gitindex"
@@ -40,6 +41,7 @@ type tree struct {
 	held  bool            // the fixture the engine opened, which close leaves open
 	dirs  *chain          // the directories below the root open now
 	index *gitindex.Index // on a witness, git's index below the fixture
+	git   *gitIndexOnce   // on another run, git's index once a read misses (leftOut)
 }
 
 // chain is the directories a tree holds open below its root, each opened
@@ -354,7 +356,7 @@ func openTree(ctx context.Context, root string) (tree, error) {
 	if err != nil {
 		return tree{}, fmt.Errorf("open the repository root: %w", bare(err))
 	}
-	return tree{Root: r, real: realRoot, dirs: &chain{}}, nil
+	return tree{Root: r, real: realRoot, dirs: &chain{}, git: &gitIndexOnce{}}, nil
 }
 
 // close closes the directories t holds below its root, and t, unless it
@@ -382,9 +384,132 @@ func (t tree) find(file string) (string, fs.FileMode, error) {
 		err = t.indexed(file, rel)
 	}
 	if err != nil {
-		return "", 0, err
+		return "", 0, t.leftOut(file, err)
 	}
 	return rel, mode, nil
+}
+
+// leftOut is err, the error of a read of file that found nothing at the
+// name or a file on the way where a directory should be, refused instead
+// when git's index says the working tree lacks a file a clone holds there
+// (gitindex.Index.LeftOut): a file git marks skip-worktree, as a sparse
+// checkout leaves it out, or a directory above it a sparse index lists as
+// one entry. Both the path file names and the one the read reached once
+// resolve followed the links on the way (missedAt) are looked up, so a
+// tracked link into a directory left out is refused too. The read is then
+// unknown, and exists is not false (ADR 0006). The index is read only here,
+// once a read misses, and once for the tree (gitIndexOnce): the one of the
+// repository that holds the root, which may be a directory above it, as git
+// finds it (repositoryOf). A root that no repository holds has no sparse
+// checkout, and an index that cannot be read is refused, since it cannot
+// say. On a witness the index is the fixture's. Any other error passes as
+// it is.
+func (t tree) leftOut(file string, err error) error {
+	if !errors.Is(err, fs.ErrNotExist) && !errors.Is(err, syscall.ENOTDIR) {
+		return err
+	}
+	ix, below := t.index, ""
+	if ix == nil {
+		g := t.git
+		if g == nil {
+			g = &gitIndexOnce{}
+		}
+		if !g.read {
+			g.top, g.below = repositoryOf(t.real)
+			g.ix, g.err = readIndex(g.top)
+			g.read = true
+		}
+		if errors.Is(g.err, gitindex.ErrNoRepository) {
+			return err
+		}
+		if g.err != nil {
+			return fmt.Errorf("it is not in the working tree, and git's index, which says whether a sparse checkout leaves it out, cannot be read: %w", g.err)
+		}
+		ix, below = &g.ix, g.below
+	}
+	paths := []string{filepath.Clean(file)}
+	var missed missedAt
+	if errors.As(err, &missed) && missed.at != paths[0] {
+		paths = append(paths, missed.at)
+	}
+	for _, p := range paths {
+		at, left := ix.LeftOut(path.Join(below, filepath.ToSlash(p)))
+		switch {
+		case !left:
+			continue
+		case strings.HasSuffix(at, "/"):
+			return fmt.Errorf("the sparse checkout leaves out %s, the directory that holds it, which git's sparse index lists as one entry, so errata cannot read what a clone holds there; add the directory to the sparse checkout (git sparse-checkout add), or run errata in a full checkout", Quote(at))
+		default:
+			return fmt.Errorf("git marks %s skip-worktree and the working tree does not hold it, as a sparse checkout leaves a file out, so errata cannot read what a clone holds there; add it to the sparse checkout (git sparse-checkout add), or run errata in a full checkout", Quote(at))
+		}
+	}
+	return err
+}
+
+// maxAbove is how many directories above a root repositoryOf looks in for
+// the .git that holds it.
+const maxAbove = 64
+
+// repositoryOf is the top of the git repository that holds root, a path
+// with its links resolved, and root's path below it written with slashes,
+// "" when root is the top. It looks as git's discovery looks: in root, then
+// in each directory above it, at most maxAbove up, for a .git. A .git
+// directory that is no git directory (gitindex.IsGitDir), such as an empty
+// one, is passed over, and the look goes on up; a .git file stops it, and
+// readIndex reads or refuses what it names. The look stops where the
+// directory above is on another file system than root (deviceOf), as git
+// stops without GIT_DISCOVERY_ACROSS_FILESYSTEM. A root that none holds is
+// its own top, where readIndex refuses it as no repository.
+func repositoryOf(root string) (string, string) {
+	dev, known := deviceOf(root)
+	dir := root
+	for range maxAbove {
+		dot := filepath.Join(dir, ".git")
+		if info, err := os.Lstat(dot); err == nil && (!info.IsDir() || gitindex.IsGitDir(dot, indexLimits)) {
+			rel, err := filepath.Rel(dir, root)
+			if err != nil || rel == "." {
+				return dir, ""
+			}
+			return dir, filepath.ToSlash(rel)
+		}
+		up := filepath.Dir(dir)
+		if up == dir {
+			break
+		}
+		if d, ok := deviceOf(up); known && ok && d != dev {
+			break
+		}
+		dir = up
+	}
+	return root, ""
+}
+
+// deviceOf is the device of the file system that holds dir, as the OS's
+// Stat gives it, of a type that differs by OS and is only compared, and
+// whether the OS gives one (statDevice); a test replaces it to stand for a
+// mount point, so no test that does may run in parallel.
+var deviceOf = statDevice
+
+// missedAt is the error of a read whose resolution found nothing, and at,
+// relative to the root, the path the read would have reached there once
+// the links on the way were followed: the name it missed and the names of
+// file after it.
+type missedAt struct {
+	err error
+	at  string
+}
+
+func (e missedAt) Error() string { return e.err.Error() }
+
+func (e missedAt) Unwrap() error { return e.err }
+
+// gitIndexOnce is git's index as a tree read it once for leftOut, and the
+// error of that read.
+type gitIndexOnce struct {
+	top, below string // the repository's top and the root below it (repositoryOf)
+	ix         gitindex.Index
+	err        error
+	read       bool
 }
 
 // Listing is a directory's entries as a walk or a listing reads them: an
@@ -545,7 +670,7 @@ func (t tree) resolve(file string) (string, fs.FileMode, error) {
 					return "", 0, err
 				}
 			}
-			return "", 0, bare(err)
+			return "", 0, missedAt{err: bare(err), at: filepath.Join(append([]string{at}, todo...)...)}
 		}
 		if err := t.form(file, at, info.Mode(), true, len(todo) == 0); err != nil {
 			return "", 0, err

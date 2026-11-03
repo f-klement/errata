@@ -86,7 +86,7 @@ func entryPaths(entries []Entry) []string {
 
 // parsed is the paths parseIndex lists.
 func parsed(data []byte, hash, budget int) ([]string, error) {
-	entries, err := parseIndex(data, hash, Limits{Bytes: int64(budget), Entries: testLimits.Entries, Name: testLimits.Name})
+	entries, _, err := parseIndex(data, hash, Limits{Bytes: int64(budget), Entries: testLimits.Entries, Name: testLimits.Name})
 	if err != nil {
 		return nil, err
 	}
@@ -191,6 +191,36 @@ func TestReadLeavesOutWhatIsNoFile(t *testing.T) {
 	}
 	if got := tracked(t, root); !slices.Equal(got, []string{"a", "c"}) {
 		t.Errorf("got %q, want a and c", got)
+	}
+	if ix, err := readIndex(root); err != nil || !slices.Equal(ix.left, []string{"skip"}) {
+		t.Errorf("left out: %q, %v, want skip", ix.left, err)
+	}
+}
+
+// A sparse checkout's skip-worktree files, and a sparse index's
+// directories, are kept apart from the files listed, each directory with
+// its slash: in cone mode, each file of b, or b/ once. Planted breaks: the
+// skip-worktree file not kept, and the sparse index's directory not kept,
+// each of which lost what the checkout leaves out.
+func TestReadKeepsWhatASparseCheckoutLeavesOut(t *testing.T) {
+	files := map[string]string{"top": "x", "a/x": "x", "b/y": "x", "b/c/z": "x"}
+	for _, c := range []struct {
+		index bool
+		left  []string
+	}{
+		{false, []string{"b/c/z", "b/y"}},
+		{true, []string{"b/"}},
+	} {
+		ix, err := readIndex(extracttest.Sparse(t, files, c.index, "a"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := entryPaths(ix.entries); !slices.Equal(got, []string{"a/x", "top"}) {
+			t.Errorf("sparse index %v: lists %q, want a/x and top", c.index, got)
+		}
+		if !slices.Equal(ix.left, c.left) {
+			t.Errorf("sparse index %v: leaves out %q, want %q", c.index, ix.left, c.left)
+		}
 	}
 }
 

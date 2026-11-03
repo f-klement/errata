@@ -43,7 +43,7 @@ func FuzzGitLabCI(f *testing.F) {
 				return nil, errors.New("too large")
 			}
 			return []byte(body), nil
-		})
+		}, func(core.Files) ([]core.Named, error) { return nil, errors.New("no index") })
 		if err != nil {
 			return
 		}

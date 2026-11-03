@@ -25,7 +25,7 @@ stderr 'check "parse": assert: Syntax error: '
 stderr 'check "unused": extractor "threshold" is declared but assert does not use it'
 
 ! exec errata check -c name.yaml
-stderr 'check "name": extractor "backup-schedule": assert refers to an extractor by its name, so the name must be letters, digits and _'
+stderr 'check "name": extractor "backup-schedule": a rule refers to an extractor by its name, so the name must be letters, digits and _'
 
 ! exec errata check -c deep.yaml
 stderr 'check "deep": assert: the expression nests deeper than 32 levels \(each term of a \+ chain, each \?: and each \.call is a level\)$'

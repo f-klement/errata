@@ -34,7 +34,8 @@ regex extractor, not left to a program check.
   `before` lines before them and `after` lines after them, cut to the lines of the file. A match
   that ends with a newline ends on the line the newline ends, and a file's final newline ends its
   last line and starts none, so whether a file ends with one does not change what a context
-  holds. `before` and `after` count lines
+  holds. The main search reads the file the same way: it drops the empty match after a final
+  newline, which would be on no line. `before` and `after` count lines
   and default to 0, so a context without them is the match's own lines. Neither may be below 0;
   either may be larger than the file.
 - **Two patterns.** A match is kept when `with` matches in a line of its context and `without`

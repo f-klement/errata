@@ -96,15 +96,15 @@ func TestCompileRefuses(t *testing.T) {
 		},
 		{
 			"an extractor name CEL cannot read", "true", []string{"s3-endpoint"},
-			`extractor "s3-endpoint": assert refers to an extractor by its name, so the name must be letters, digits and _`,
+			`extractor "s3-endpoint": a rule refers to an extractor by its name, so the name must be letters, digits and _`,
 		},
 		{
 			"an extractor name that starts with a digit", "true", []string{"3d"},
-			`extractor "3d": assert refers to an extractor by its name`,
+			`extractor "3d": a rule refers to an extractor by its name`,
 		},
 		{
 			"an extractor named by a reserved word", "true", []string{"in"},
-			`extractor "in": assert refers to an extractor by its name`,
+			`extractor "in": a rule refers to an extractor by its name`,
 		},
 	}
 	for _, tc := range cases {

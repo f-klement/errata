@@ -201,7 +201,23 @@ func Parse(data []byte) ([]*core.Node, error) {
 // which a YAML 1.1 loader types by its text. The tree keeps neither. An
 // alias is noted once, as its anchor.
 func ParseNoted(data []byte, expanded int, note func(n *core.Node, tag string, plain bool)) ([]*core.Node, int, error) {
+	return parseNoted(data, expanded, note, nil)
+}
+
+// ParseNotedBools is ParseNoted for a format whose loader reads a scalar
+// tagged !!bool by the words of YAML 1.1, as GitLab's loader, Psych, does:
+// a !!bool scalar whose text bools takes, such as yes or On, loads as a
+// boolean that keeps its text, where YAML 1.2, and so ParseNoted, refuses
+// all but true and false. A !!bool key is still read as YAML 1.2 reads it.
+func ParseNotedBools(bools func(text string) bool) func(data []byte, expanded int, note func(n *core.Node, tag string, plain bool)) ([]*core.Node, int, error) {
+	return func(data []byte, expanded int, note func(n *core.Node, tag string, plain bool)) ([]*core.Node, int, error) {
+		return parseNoted(data, expanded, note, bools)
+	}
+}
+
+func parseNoted(data []byte, expanded int, note func(n *core.Node, tag string, plain bool), bools func(string) bool) ([]*core.Node, int, error) {
 	w := yamlWalker{
+		bools:    bools,
 		expanded: expanded,
 		note:     note,
 		last:     bytes.Count(data, []byte("\n")) + 1,
@@ -261,7 +277,8 @@ type yamlWalker struct {
 	ids      map[*yaml.Node]any       // a key as yaml.v3 decodes it into any, once decoded
 	unmerged map[*core.Node]error     // a merged mapping's refusal, made if an alias decodes it on its own
 	note     func(n *core.Node, tag string, plain bool)
-	blocks   *blocks // the lines of the | of literal block scalars
+	blocks   *blocks           // the lines of the | of literal block scalars
+	bools    func(string) bool // the words a !!bool value may hold beside true and false, or nil
 }
 
 // mergeable is what a merge key adds of a mapping, as yaml.v3 decodes it:
@@ -315,7 +332,7 @@ func (w *yamlWalker) convert(y *yaml.Node, depth int, merged bool) (*core.Node, 
 	default:
 		// A scalar keeps the text the file wrote: 1.0 stays 1.0, and a null
 		// is null, ~ or the empty string, as written.
-		c, err = converted{&core.Node{Type: yamlType(y), Block: w.blocks.lineOf(y), Text: y.Value, Line: w.line(y)}, 1}, checkTag(y)
+		c, err = converted{&core.Node{Type: yamlType(y), Block: w.blocks.lineOf(y), Text: y.Value, Line: w.line(y)}, 1}, w.checkValueTag(y)
 	}
 	if err != nil {
 		return nil, 0, err
@@ -430,6 +447,11 @@ func (w *yamlWalker) mapping(y *yaml.Node, depth int, merged bool) (converted, e
 			merge, mergeVal = v, val
 			c.size += size
 			continue
+		}
+		// An alias is its anchor's node, which keeps the line of the key the
+		// anchor stands under, as it keeps its Line.
+		if v.Kind != yaml.AliasNode {
+			val.KeyLine = int32(w.line(k)) //nolint:gosec // a line of a file of at most MaxMaxBytes, under 2^31
 		}
 		c.n.Set(key, val)
 		scalar := keyScalar(k)
@@ -642,6 +664,15 @@ func yamlType(y *yaml.Node) core.ScalarType {
 	default:
 		return core.TypeString
 	}
+}
+
+// checkValueTag is checkTag for a scalar value, which takes a !!bool scalar
+// of a word w.bools takes too.
+func (w *yamlWalker) checkValueTag(y *yaml.Node) error {
+	if w.bools != nil && y.Style&yaml.TaggedStyle != 0 && y.ShortTag() == "!!bool" && w.bools(y.Value) {
+		return nil
+	}
+	return checkTag(y)
 }
 
 // checkTag refuses a scalar whose explicit tag does not fit its text, such

@@ -54,15 +54,27 @@ extract:
 - **assert.** A record is the `check.Data` of kind `DataMap` that ADR 0009 announced: the same
   `list(map(string, dyn))`, the same strings, and the same refusal of a `dyn` compared with an
   operand whose checked type it never equals. errata adds no CEL type and no function for records.
+  It knows the fields at load, though, so a field the expression reads that the records do not
+  have does not load, as a field the config names that no record holds makes the rule unknown:
+  `!has(r.ulr) || ...` would hold on every record. A pass over the checked expression refuses
+  `r.f`, `has(r.f)`, `'f' in r` and `r['f']` with the field and the fields the records have, where
+  `r` is a record of the extractor as the refusal beside a map's value traces names (ADR 0009): a
+  comprehension variable over the extractor, a `cel.bind` name bound to it or to one of its
+  records, an index into it, or a member of a list that keeps some of its records whole, which
+  `filter` and `map(x, x)` build. The tracer matches that comprehension by its shape, an empty list
+  to which each step adds the variable itself, not by the macro's name. A record reached through
+  `by_file` is not traced, and a name that may also stand for a value that is no record is left
+  alone. A map extractor declares no fields and is not checked.
 - **agree.** An entry of `agree` names an extractor, or, when no extractor has that name and it is
   `x.f`, the field `f` of the records `x` returns. Each record's field is compared as a flat value
   at the field's own line, and the message names it under `x.f`. A record without the field adds
   nothing. A field holding a mapping or a sequence makes the rule unknown. Naming a record
   extractor whole, a field its records do not have, or a field of an extractor that returns no
   record does not load. The extractor runs once however many of its fields `agree` names, so two
-  fields of one record can agree with each other. An extractor whose own name holds a dot keeps
-  it, since the whole name is looked up first, but an entry that is both such an extractor and a
-  field of a record extractor does not load, since the field could then not be named at all.
+  fields of one record can agree with each other. An extractor's name is a CEL identifier under
+  every relation, so it holds no dot, and `x.f` splits at its first dot with nothing to look up
+  whole first. Up to v0.2.4 a name could hold a dot under `agree`: it was looked up whole first,
+  and an entry that was both such an extractor and a field of a record extractor did not load.
 - **normalize** applies to every scalar of a record, and to no key, as for a map.
 - **allow_empty** names the extractor. It decides an extractor that found no record, and a field
   that none of its records holds: under `assert` every field the config names, under `agree` the
@@ -102,11 +114,11 @@ messages print, is cut at 256 bytes as a map's is.
   nodes one element holds, so a rule could load and break on the next element. One value, or
   unknown, keeps a field one type. A field whose path selects a sequence whole is a list.
 - **A record type of its own in CEL**, with declared fields. It would check field names at load,
-  but a rule over maps would not read records, and ADR 0009 kept one type for both.
+  but a rule over maps would not read records, and ADR 0009 kept one type for both. The pass over
+  the checked expression checks the names a rule reads instead, on the names it can trace.
 - **agree over a field as a mapping**, `{extractor: x, field: f}`. Every `agree` today is a list
-  of names; `x.f` keeps it one, and the lookup of the whole name first keeps every name that loads
-  today meaning what it meant. No record extractor existed before v0.2.2, so refusing an entry that
-  could mean either refuses no config that loaded before.
+  of names, and `x.f` keeps it one. No record extractor existed before v0.2.2, and after v0.2.4 no
+  extractor's name holds a dot, so no entry can mean both an extractor and a field.
 
 ## Consequences
 

@@ -357,6 +357,63 @@ func TestOverlap(t *testing.T) {
 	}
 }
 
+// Overlapping is the longest prefix of the ranges that one release
+// satisfies, in their order: the largest number of leading ranges that
+// cover one stretch holding a release, not the first such stretch's, and
+// not a stretch that holds pre-releases alone. Planted breaks: the first
+// stretch's count returned, which gives 2 for the fourth case; the
+// holdsRelease test dropped, which gives 2 for the fifth; a range whose
+// last interval ends left marked as covering, which gives 3 for the third.
+func TestOverlapping(t *testing.T) {
+	for _, c := range []struct {
+		ranges []string
+		want   int
+	}{
+		{[]string{">=20", "^20.1", "<20.5", "~20.1"}, 4},
+		{[]string{">=20", "<22", ">=23"}, 2},
+		{[]string{">=23", ">=20", "<22"}, 2},
+		{[]string{"^1 || ^3", "^1 || ^3", "^3", "^1"}, 3},
+		{[]string{"<2.0.0", ">=2.0.0-alpha"}, 1},
+		{[]string{"<0.0.0-alpha", "*"}, 0},
+		{[]string{"*"}, 1},
+		{nil, 0},
+	} {
+		var rs []Range
+		for _, s := range c.ranges {
+			rs = append(rs, mustRange(t, s))
+		}
+		if got := Overlapping(rs); got != c.want {
+			t.Errorf("Overlapping(%q) = %d, want %d", c.ranges, got, c.want)
+		}
+		if got, want := Overlap(rs), len(rs) > 0 && c.want == len(rs); got != want {
+			t.Errorf("Overlap(%q) = %v, want %v", c.ranges, got, want)
+		}
+	}
+}
+
+// leading counts the flags from the first on that are all 1, over every
+// set of up to 9 flags, against a count flag by flag. The planted break:
+// leading's block test made to accept a sum one short.
+func TestPrefixTreeLeading(t *testing.T) {
+	for n := range 10 {
+		for set := range 1 << n {
+			tree := newPrefixTree(n)
+			for i := range n {
+				if set&(1<<i) != 0 {
+					tree.add(i, 1)
+				}
+			}
+			want := 0
+			for want < n && set&(1<<want) != 0 {
+				want++
+			}
+			if got := tree.leading(); got != want {
+				t.Fatalf("%d flags %b: leading %d, want %d", n, set, got, want)
+			}
+		}
+	}
+}
+
 func TestAgree(t *testing.T) {
 	for _, c := range []struct {
 		values        []string
@@ -372,7 +429,9 @@ func TestAgree(t *testing.T) {
 		{[]string{">=20", "20.11", "^20.12"}, false, false, 1, 2},
 		{[]string{"20", "^20.1"}, true, false, -1, -1},
 		{[]string{">=20", "^20.1"}, true, true, -1, -1},
-		{[]string{">=21", "^20.1"}, false, true, -1, -1},
+		{[]string{">=21", "^20.1"}, false, true, -1, 1},
+		{[]string{">=20", "<22", ">=23"}, false, true, -1, 2},
+		{[]string{">=1.0.0 <1.0.0", ">=1"}, false, true, -1, 0},
 		{[]string{"~> 3.2", "3.3.0", ">= 3.2.1, < 4"}, true, false, -1, -1},
 	} {
 		var vs []Value

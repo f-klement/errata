@@ -244,18 +244,14 @@ func (w *workflow) matrix(job string, j *core.Node) ([]combo, error) {
 	var names []string
 	var ids []int
 	var lists [][]*core.Node
-	spelled := map[int]string{}
+	// Two variables whose names GitHub reads as one never get here:
+	// checkKeys refused the workflow.
 	for i, k := range m.Keys {
 		v := m.Vals[i]
 		if k == "include" || k == "exclude" {
 			continue
 		}
 		id := w.keyID(k)
-		if seen, ok := spelled[id]; ok {
-			return nil, fmt.Errorf("%s:%d: the matrix of job %s has the variables %s and %s, which GitHub reads as one: its names are case insensitive",
-				w.file, v.Line, core.Quote(job), core.Quote(seen), core.Quote(k))
-		}
-		spelled[id] = k
 		switch {
 		case isExpression(v):
 			return nil, w.outOfReach(job, v, "the matrix variable "+core.Quote(k))

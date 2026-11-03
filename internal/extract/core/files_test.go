@@ -1,7 +1,9 @@
 package core
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -268,7 +270,7 @@ func TestSpanMatchesAsTheWholeIndex(t *testing.T) {
 					byMatch = append(byMatch, p)
 				}
 			}
-			got, err := spans[k].Match(func(p string) bool { return matchGlob(e.segs, p) })
+			got, err := spans[k].Match(func(p string) bool { return matchGlob(e.segs, p) }, func(d string) bool { return matchesBelow(e.segs, d) }, func(string) bool { return false })
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -408,5 +410,293 @@ func BenchmarkMatchGlob(b *testing.B) {
 			}
 			b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N)/float64(bytes*globWeight(segs)), "ns/weighed-byte")
 		})
+	}
+}
+
+// matchesBelow says whether a glob may match a path below a directory: a
+// ** takes any number of the directory's names, a glob that ends at the
+// directory or before it matches nothing below, and a glob whose literal
+// names part from the directory's matches nothing there. Planted breaks:
+// a ** that takes no more names, which missed b/c against **/x; a glob
+// that ended at the directory taken, which said yes for b against b.
+func TestMatchesBelow(t *testing.T) {
+	for _, c := range []struct {
+		glob, dir string
+		want      bool
+	}{
+		{"**/*.yaml", "b", true},
+		{"**/x", "b/c", true},
+		{"b/*.yaml", "b", true},
+		{"b/**", "b/c/d", true},
+		{"b/c/*.yaml", "b", true},
+		{"*/c/*.yaml", "b", true},
+		{"*.yaml", "b", false},
+		{"a/*.yaml", "b", false},
+		{"b/c/*.yaml", "b/d", false},
+		{"b", "b", false},
+		{"b/*", "b/c", false},
+		{"b/**/x", "b/c/d", true},
+		{"*/*", "b/c", false},
+	} {
+		if got := matchesBelow(globSegments(c.glob), c.dir); got != c.want {
+			t.Errorf("matchesBelow(%s, %s) = %v, want %v", c.glob, c.dir, got, c.want)
+		}
+	}
+}
+
+// A glob that would match a file a sparse checkout leaves out, or a path
+// below a directory a sparse index lists as one entry, is refused, naming
+// the sparse checkout, and one that meets neither lists what it matches,
+// so a sparse checkout makes unknown only the sets it cuts. A file a
+// files: entry names outright is listed, and its read refuses it
+// (TestAReadOfAFileASparseCheckoutLeavesOut). Planted breaks: parseIndex
+// dropping a skip-worktree file, or a sparse index's directory, again,
+// which matched the glob against what the checkout holds alone.
+func TestListOverASparseCheckout(t *testing.T) {
+	files := map[string]string{"top.yaml": "", "a/x.yaml": "", "b/y.yaml": "", "b/c/z.yaml": ""}
+	for _, c := range []struct {
+		index bool
+		glob  string
+		want  string
+	}{
+		{false, "**/*.yaml", `yaml: files lists the glob "**/*.yaml", which matches "b/c/z.yaml", which git marks skip-worktree and the working tree does not hold, as a sparse checkout leaves a file out`},
+		{false, "b/c/*.yaml", `yaml: files lists the glob "b/c/*.yaml", which matches "b/c/z.yaml", which git marks skip-worktree`},
+		{true, "**/*.yaml", `yaml: files lists the glob "**/*.yaml", which may match files below "b/", a directory the sparse checkout leaves out of the working tree, which git's sparse index lists as one entry`},
+		{true, "b/c/*.yaml", `yaml: files lists the glob "b/c/*.yaml", which may match files below "b/"`},
+	} {
+		root := extracttest.Sparse(t, files, c.index, "a")
+		f, err := CheckFiles("yaml", []string{c.glob}, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = f.List(t.Context(), root)
+		extracttest.WantError(t, err, c.want)
+	}
+	for _, index := range []bool{false, true} {
+		root := extracttest.Sparse(t, files, index, "a")
+		f, err := CheckFiles("yaml", []string{"*.yaml", "a/*.yaml", "b/y.yaml"}, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := f.List(t.Context(), root)
+		want := []Named{{"top.yaml", []int{0}}, {"a/x.yaml", []int{1}}, {"b/y.yaml", []int{2}}}
+		if err != nil || fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Errorf("sparse index %v: globs beside what is left out: %v, %v; want %v", index, got, err, want)
+		}
+	}
+}
+
+// A read, a stat and a resolution of a file a sparse checkout leaves out,
+// marked skip-worktree or below a sparse index's directory, are refused,
+// naming the sparse checkout, and none reads as a missing file, so exists
+// is unknown and not false (ADR 0006); a file that no entry of the index
+// names is still missing, in the same checkout and in a root with no .git.
+// Planted breaks: leftOut passing err as it is, which read each as
+// missing; parseIndex dropping what the checkout leaves out again.
+func TestAReadOfAFileASparseCheckoutLeavesOut(t *testing.T) {
+	files := map[string]string{"top.yaml": "", "a/x.yaml": "", "b/y.yaml": "", "b/c/z.yaml": ""}
+	for _, c := range []struct {
+		index bool
+		file  string
+		want  string
+	}{
+		{false, "b/y.yaml", `git marks "b/y.yaml" skip-worktree and the working tree does not hold it, as a sparse checkout leaves a file out`},
+		{false, "./b/c/z.yaml", `git marks "b/c/z.yaml" skip-worktree and the working tree does not hold it`},
+		{true, "b/y.yaml", `the sparse checkout leaves out "b/", the directory that holds it, which git's sparse index lists as one entry`},
+		{true, "b/c/z.yaml", `the sparse checkout leaves out "b/", the directory that holds it`},
+	} {
+		root := extracttest.Sparse(t, files, c.index, "a")
+		src := Source{File: c.file, Limit: DefaultMaxBytes}
+		_, err := src.Stat(t.Context(), root)
+		extracttest.WantError(t, err, "stat "+c.file+": "+c.want)
+		if errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("sparse index %v: the stat of %s reads as a missing file", c.index, c.file)
+		}
+		_, err = src.Read(t.Context(), root)
+		extracttest.WantError(t, err, "read "+c.file+": "+c.want)
+		_, err = src.Resolved(t.Context(), root)
+		extracttest.WantError(t, err, "read "+c.file+": "+c.want)
+		_, err = Source{File: "a/gone.yaml", Limit: DefaultMaxBytes}.Stat(t.Context(), root)
+		if !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("sparse index %v: a file the index does not name: %v, want a missing file", c.index, err)
+		}
+	}
+	_, err := Source{File: "gone", Limit: DefaultMaxBytes}.Stat(t.Context(), extracttest.Repo(t, map[string]string{"a": ""}))
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("a root with no .git: %v, want a missing file", err)
+	}
+}
+
+// A missing file in a root whose git index cannot be read is refused,
+// since the index cannot say whether a sparse checkout leaves it out.
+// Planted break: every error of the index's read taken as no repository.
+func TestAReadMissesWhereTheIndexCannotBeRead(t *testing.T) {
+	root := repo(t, map[string]string{"a": ""})
+	writeFile(t, root, ".git/index", "not an index")
+	_, err := Source{File: "gone", Limit: DefaultMaxBytes}.Stat(t.Context(), root)
+	extracttest.WantError(t, err, "stat gone: it is not in the working tree, and git's index, which says whether a sparse checkout leaves it out, cannot be read: read git's index: it does not start with DIRC")
+}
+
+// Tracked lists each files: key as List does, against the index it read at
+// its first glob: a .git taken away after that changes nothing, where List
+// reads the index again. Planted break: Tracked reading the index for each
+// key, which refused the second.
+func TestTrackedReadsTheIndexOnce(t *testing.T) {
+	root := repo(t, map[string]string{"a.yaml": "", "d/b.yaml": ""})
+	tr := NewTracked(t.Context(), root)
+	first, _ := CheckFiles("include", []string{"*.yaml"}, 0)
+	if got, err := tr.List(first); err != nil || fmt.Sprint(got) != "[{a.yaml [0]}]" {
+		t.Fatalf("the first key: %v, %v", got, err)
+	}
+	if err := os.RemoveAll(filepath.Join(root, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	second, _ := CheckFiles("include", []string{"d/*.yaml"}, 0)
+	if got, err := tr.List(second); err != nil || fmt.Sprint(got) != "[{d/b.yaml [0]}]" {
+		t.Errorf("the second key: %v, %v", got, err)
+	}
+	_, err := second.List(t.Context(), root)
+	extracttest.WantError(t, err, "the repository root holds no .git")
+}
+
+// skipWorktree is a full checkout of files, committed, with each of marked
+// skip-worktree, as git update-index --skip-worktree marks a file whose
+// local edits git should not see; the files stay on disk.
+func skipWorktree(t *testing.T, files map[string]string, marked ...string) string {
+	t.Helper()
+	root := repo(t, files)
+	git(t, root, "commit", "-q", "-m", "files")
+	git(t, root, append([]string{"update-index", "--skip-worktree"}, marked...)...)
+	return root
+}
+
+// In a full checkout, a file git marks skip-worktree that the working tree
+// holds is listed by a glob and read as any other, in git's order; one the
+// working tree lacks, once taken away, makes the glob unknown and its read
+// too. Planted breaks: Span.Match asked nothing of the disk, which refused
+// a/x.yaml on disk; the span of a glob with no literal directory taken as
+// out of git's order, which listed a/x.yaml last.
+func TestASkipWorktreeFileOnDisk(t *testing.T) {
+	root := skipWorktree(t, map[string]string{"a/w.yaml": "", "a/x.yaml": "k: v\n", "a/y.yaml": ""}, "a/x.yaml")
+	f, err := CheckFiles("yaml", []string{"a/*.yaml"}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := f.List(t.Context(), root)
+	want := []Named{{"a/w.yaml", []int{0}}, {"a/x.yaml", []int{0}}, {"a/y.yaml", []int{0}}}
+	if err != nil || fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("a skip-worktree file on disk: %v, %v; want %v", got, err, want)
+	}
+	// A glob with no literal directory spans the whole index, and keeps
+	// git's order too.
+	whole, err := CheckFiles("yaml", []string{"**/*.yaml"}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := whole.List(t.Context(), root); err != nil || fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("a skip-worktree file on disk, by **/*.yaml: %v, %v; want %v", got, err, want)
+	}
+	if err := os.Remove(filepath.Join(root, "a", "x.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	_, err = f.List(t.Context(), root)
+	extracttest.WantError(t, err, `which matches "a/x.yaml", which git marks skip-worktree and the working tree does not hold`)
+	_, err = Source{File: "a/x.yaml", Limit: DefaultMaxBytes}.Stat(t.Context(), root)
+	extracttest.WantError(t, err, `stat a/x.yaml: git marks "a/x.yaml" skip-worktree and the working tree does not hold it`)
+}
+
+// A file reached through a tracked symlink into a directory a sparse
+// checkout leaves out is unknown, not missing, by the path the read
+// reached: link names b/y, outside the cone. Planted break: leftOut looking
+// up only the path the spec wrote, which read link as missing.
+func TestAReadThroughALinkIntoWhatASparseCheckoutLeavesOut(t *testing.T) {
+	for _, index := range []bool{false, true} {
+		root := extracttest.Repo(t, map[string]string{"top": "", "b/y": "x"})
+		extracttest.Symlink(t, "b/y", filepath.Join(root, "link"))
+		git(t, root, "init", "-q")
+		git(t, root, "add", "-A")
+		git(t, root, "commit", "-q", "-m", "files")
+		set := []string{"sparse-checkout", "set", "--cone"}
+		if index {
+			set = append(set, "--sparse-index")
+		}
+		git(t, root, set...)
+		_, err := Source{File: "link", Limit: DefaultMaxBytes}.Stat(t.Context(), root)
+		extracttest.WantError(t, err, "stat link: ")
+		extracttest.WantError(t, err, "sparse checkout")
+		if errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("sparse index %v: the link reads as a missing file", index)
+		}
+	}
+}
+
+// A root below the top of a sparse checkout finds the repository above it,
+// as git does, so a file the checkout leaves out below the root is unknown
+// there too; a missing file the index does not name is still missing.
+// Planted break: repositoryOf looking only at the root, which read out/b
+// as missing.
+func TestARootBelowTheTopOfASparseCheckout(t *testing.T) {
+	files := map[string]string{"s/top": "", "s/in/a": "", "s/out/b": ""}
+	for _, index := range []bool{false, true} {
+		root := filepath.Join(extracttest.Sparse(t, files, index, "s/in"), "s")
+		_, err := Source{File: "out/b", Limit: DefaultMaxBytes}.Stat(t.Context(), root)
+		extracttest.WantError(t, err, "stat out/b: ")
+		extracttest.WantError(t, err, "sparse checkout")
+		_, err = Source{File: "in/gone", Limit: DefaultMaxBytes}.Stat(t.Context(), root)
+		if !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("sparse index %v: a file the index does not name: %v, want a missing file", index, err)
+		}
+	}
+}
+
+// The look for the repository above a root passes over a .git directory
+// that is no git directory, as git's discovery does: an empty .git above a
+// plain directory leaves a missing file missing, and one between a root
+// and the sparse checkout above it does not hide the checkout. Planted
+// break: any .git taken as the repository, which made gone unknown and
+// read out/b as missing.
+func TestTheRepositoryAboveARootPassesOverAStrayGit(t *testing.T) {
+	plain := extracttest.Repo(t, map[string]string{"p/q/a": ""})
+	if err := os.Mkdir(filepath.Join(plain, ".git"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Source{File: "gone", Limit: DefaultMaxBytes}.Stat(t.Context(), filepath.Join(plain, "p", "q"))
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("a stray .git above a plain directory: %v, want a missing file", err)
+	}
+	files := map[string]string{"s/top": "", "s/in/a": "", "s/out/b": ""}
+	top := extracttest.Sparse(t, files, false, "s/in")
+	if err := os.Mkdir(filepath.Join(top, "s", ".git"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	_, err = Source{File: "out/b", Limit: DefaultMaxBytes}.Stat(t.Context(), filepath.Join(top, "s"))
+	extracttest.WantError(t, err, "sparse checkout")
+}
+
+// The look stops where the directory above is on another file system, as
+// git's discovery stops without GIT_DISCOVERY_ACROSS_FILESYSTEM: with the
+// root standing for a mount point (deviceOf replaced, since a test cannot
+// mount one), the sparse checkout above it is not found, and out/b is
+// missing. Planted break: the device test dropped, which found the
+// checkout across the mount.
+func TestTheRepositoryAboveARootStopsAtAFileSystem(t *testing.T) {
+	files := map[string]string{"s/top": "", "s/in/a": "", "s/out/b": ""}
+	top := extracttest.Sparse(t, files, false, "s/in")
+	root := filepath.Join(top, "s")
+	real, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	was := deviceOf
+	t.Cleanup(func() { deviceOf = was })
+	deviceOf = func(dir string) (any, bool) {
+		if dir == real {
+			return 2, true
+		}
+		return 1, true
+	}
+	_, err = Source{File: "out/b", Limit: DefaultMaxBytes}.Stat(t.Context(), root)
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("a root on a file system of its own: %v, want a missing file", err)
 	}
 }

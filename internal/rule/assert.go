@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -53,6 +52,8 @@ type limits struct {
 	// grace is how long Eval waits after the timeout for the evaluation to
 	// see it and stop.
 	grace time.Duration
+	// trace is the tracer's budget at load; 0 is MaxTraceWork.
+	trace int
 }
 
 // stopGrace is the default grace. CEL looks at the context after every
@@ -68,7 +69,22 @@ const (
 	MaxDepth = 32
 	// MaxLength is the expression's length in code points.
 	MaxLength = 4096
+	// MaxTraceWork is the most work the passes that follow a name to its
+	// values do at load (tracer): the sources they add to a set or look at.
+	// Past it the assert does not load (tooIntricate), so a shape that
+	// makes the work grow faster than the square cannot stall the load. It
+	// is more than ten times the most work of nine shapes measured at
+	// MaxLength, 311335. A rule written to defeat the tracer's sharing, such
+	// as many comprehensions over paths that alias one bound list, can still
+	// reach it within MaxLength, and is then refused.
+	MaxTraceWork = 4 << 20
 )
+
+// tooIntricate is the refusal of an expression whose names the tracer could
+// not follow within budget steps.
+func tooIntricate(budget int) error {
+	return fmt.Errorf("assert: the expression is too intricate to check within errata's load bound: following its names to their values took more than %d steps, so errata cannot tell whether it reads a field the records do not have or compares a map's value with a value it never equals; write it with fewer comprehensions inside each other, or as two rules", budget)
+}
 
 // baseEnv is the CEL environment every assert extends with its extractors.
 var baseEnv = sync.OnceValues(func() (*cel.Env, error) {
@@ -89,16 +105,6 @@ var baseEnv = sync.OnceValues(func() (*cel.Env, error) {
 // Version 0 is the macro alone. A later one adds cel.@block, which only
 // cel-go's optimizer writes, and is left out.
 const bindingsVersion = 0
-
-// identifier is what CEL reads as one variable name. An extractor named
-// otherwise could not be written in the expression.
-var identifier = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
-
-// reserved are the words CEL's grammar keeps for itself.
-var reserved = []string{
-	"as", "break", "const", "continue", "else", "false", "for", "function", "if", "import", "in",
-	"let", "loop", "package", "namespace", "null", "return", "true", "var", "void", "while",
-}
 
 // by_file(x) is the values of the extractor x grouped by file: a map from
 // each file that gave x a value to its values, in the order x found them.
@@ -138,7 +144,7 @@ func byFileMacro(extractors []string) cel.EnvOption {
 // that is not a bool and a parse error, each with the expression and a caret
 // under the column; an extractor the expression never uses, unless another
 // extractor that built reads its values (Description.Reads); an extractor
-// name CEL cannot read.
+// name that check.ExtractorName refuses.
 func Compile(expr string, extractors []check.NamedExtractor) (check.Assertion, error) {
 	a, err := compileWith(expr, extractors, limits{cost: CostLimit, timeout: EvalTimeout, grace: stopGrace})
 	if err != nil {
@@ -162,9 +168,13 @@ func compile(expr string, names []string, lim limits, extra ...cel.EnvOption) (*
 // declarations.
 func compileWith(expr string, extractors []check.NamedExtractor, lim limits, extra ...cel.EnvOption) (*assertion, error) {
 	names := make([]string, len(extractors))
-	var whole, read []string // read as lists of maps; read by another extractor
+	var whole, read []string        // read as lists of maps; read by another extractor
+	fields := map[string][]string{} // a record extractor's declared fields
 	for i, x := range extractors {
 		names[i] = x.Name
+		if x.Description.Shape == check.ShapeRecord && x.Description.Fields != nil {
+			fields[x.Name] = x.Description.Fields
+		}
 		if x.Description.Whole() {
 			whole = append(whole, x.Name)
 		}
@@ -182,8 +192,9 @@ func compileWith(expr string, extractors []check.NamedExtractor, lim limits, ext
 		vars = make([]cel.EnvOption, 0, len(extractors))
 	)
 	for _, name := range names {
-		if !identifier.MatchString(name) || slices.Contains(reserved, name) {
-			errs = append(errs, fmt.Errorf("extractor %q: assert refers to an extractor by its name, so the name must be letters, digits and _, must not start with a digit and must not be one of CEL's reserved words", name))
+		if err := check.ExtractorName(name); err != nil {
+			// Validate refuses it too; a name CEL cannot read is no variable.
+			errs = append(errs, err)
 			continue
 		}
 		if slices.Contains(whole, name) {
@@ -213,7 +224,18 @@ func compileWith(expr string, extractors []check.NamedExtractor, lim limits, ext
 		return nil, located(expr, root.SourceInfo().GetStartLocation(root.Expr().ID()),
 			fmt.Sprintf("the expression has type %s; assert needs a bool", cel.FormatCELType(t)))
 	}
-	if errs := mapLiterals(expr, ast.NativeRep()); len(errs) > 0 {
+	tr := newTracer(ast.NativeRep())
+	if lim.trace > 0 {
+		tr.budget = lim.trace
+	}
+	errs = mapLiterals(expr, tr)
+	if !tr.exceeded() {
+		errs = append(errs, undeclaredFields(expr, tr, fields)...)
+	}
+	if tr.exceeded() {
+		return nil, tooIntricate(tr.budget)
+	}
+	if len(errs) > 0 {
 		return nil, errors.Join(errs...)
 	}
 	used := free(ast.NativeRep())
@@ -263,32 +285,173 @@ func compileWith(expr string, extractors []check.NamedExtractor, lim limits, ext
 // goes by the operand's checked type, so int('5'), size(m), !false, a
 // ternary and v.map(x, int(x)) are refused as a literal is. A list or map
 // literal is refused at each element, key or value of such a type, so an
-// empty one loads, and so is the literal a cel.bind name binds or a
-// comprehension variable runs over, since a literal that mixes types, such
-// as {'name': 'x', 'automerge': true}, is typed map(string, dyn). Any other
-// operand is checked by its type alone. A value the expression writes as
+// empty one loads. So is the literal a cel.bind name binds, the members of
+// the list literal a comprehension variable runs over, a bound one too, and
+// the member a field or a literal index such as want.replicas or ws[0]
+// selects from such a literal, since a literal that mixes types, such as
+// {'name': 'x', 'automerge': true}, is typed map(string, dyn) (tracer). Any
+// other operand is checked by its type alone. A value the expression writes as
 // dyn() itself is left alone, which is also the way out for a dyn that is
 // not a map's, such as [1, 'a'][0]. Each refusal is at the operand, or the
 // member, of that type.
-func mapLiterals(expr string, checked *celast.AST) []error {
-	errs, _ := refusals(expr, checked)
+func mapLiterals(expr string, tr *tracer) []error {
+	errs, _ := refusals(expr, tr)
 	return errs
 }
 
-// refusals is mapLiterals, and the number of nodes it visited. Each node is
-// visited at most once as a compared operand and once as the right side of
-// in, so the visits are linear in the expression however often a followed
-// name is read: without that, a chain of binds that each name the last one
-// k times took k to the power of its depth, 56 s for 400 bytes. The calls
-// are not: each read of a comprehension variable follows it to every
-// element of its range before the visited set answers, so they grow as the
-// reads times the range's length, about 0.1 s at MaxLength.
-func refusals(expr string, checked *celast.AST) ([]error, int) {
-	var errs []error
-	nodes := map[int64]celast.NavigableExpr{}
-	for _, n := range celast.MatchDescendants(celast.NavigateAST(checked), func(celast.NavigableExpr) bool { return true }) {
-		nodes[n.ID()] = n
+// undeclaredFields refuses each read of a field that the records of an
+// extractor with as: record do not have: x.f, has(x.f), 'f' in x and
+// x['f'], where x is a member of that extractor as the tracer finds it,
+// such as a comprehension variable over the extractor, a cel.bind name
+// bound to the extractor or to one of its members, or e[0]. CEL types a
+// record map(string, dyn), so x.ulr type checks, and !has(x.ulr) || ...
+// would hold on every record (ADR 0013). fields maps each record
+// extractor to its fields. A read is refused only when every value x may
+// stand for is a member of such an extractor and none of their records
+// has the field, so a read of a map extractor's value, of a literal, or
+// through by_file, is left alone. Each field is refused once for each
+// extractor, where CEL places its first read: at the dot, at has( or at
+// the quoted name, and the refusal says how many more times the
+// expression reads it, so fixing the first read does not leave the next
+// for the next load. The message lists the declared fields up to
+// check.ShownBytes.
+func undeclaredFields(expr string, tr *tracer, fields map[string][]string) []error {
+	if len(fields) == 0 {
+		return nil
 	}
+	// declared holds each extractor's fields as a set, so a test costs one
+	// step however many fields the config declares; shown is each list as
+	// a message writes it.
+	declared := make(map[string]map[string]bool, len(fields))
+	shown := make(map[string]string, len(fields))
+	for name, fs := range fields {
+		declared[name] = make(map[string]bool, len(fs))
+		for _, f := range fs {
+			declared[name][f] = true
+		}
+		shown[name] = shownFields(fs)
+	}
+	type pair struct{ extractor, field string }
+	type refusal struct {
+		at    celast.Expr
+		pairs []pair
+	}
+	// more counts the reads of each refused pair after its first, which a
+	// refusal names once the walk is done.
+	var refusals []refusal
+	more := map[pair]int{}
+	read := func(x, at celast.Expr, field string) {
+		var lacking []string
+		for _, s := range tr.sources(x) {
+			tr.work++
+			if tr.exceeded() || s.kind != memberSource {
+				return
+			}
+			set, ok := declared[s.e.AsIdent()]
+			if !ok || set[field] {
+				return
+			}
+			if !slices.Contains(lacking, s.e.AsIdent()) {
+				lacking = append(lacking, s.e.AsIdent())
+			}
+		}
+		var pairs []pair
+		for _, name := range lacking {
+			p := pair{name, field}
+			if n, ok := more[p]; ok {
+				more[p] = n + 1
+				continue
+			}
+			more[p] = 0
+			pairs = append(pairs, p)
+		}
+		if len(pairs) > 0 {
+			refusals = append(refusals, refusal{at, pairs})
+		}
+	}
+	text := func(e celast.Expr) (string, bool) {
+		if e.Kind() != celast.LiteralKind {
+			return "", false
+		}
+		v, ok := e.AsLiteral().(types.String)
+		return string(v), ok
+	}
+	for _, e := range celast.MatchDescendants(celast.NavigateAST(tr.checked), func(celast.NavigableExpr) bool { return true }) {
+		switch e.Kind() {
+		case celast.SelectKind:
+			read(e.AsSelect().Operand(), e, e.AsSelect().FieldName())
+		case celast.CallKind:
+			args := e.AsCall().Args()
+			if len(args) != 2 {
+				continue
+			}
+			switch e.AsCall().FunctionName() {
+			case operators.In:
+				if f, ok := text(args[0]); ok {
+					read(args[1], args[0], f)
+				}
+			case operators.Index:
+				if f, ok := text(args[1]); ok {
+					read(args[0], args[1], f)
+				}
+			}
+		default:
+			// Only a select or a call reads a field.
+		}
+	}
+	errs := make([]error, 0, len(refusals))
+	for _, r := range refusals {
+		clauses := make([]string, 0, len(r.pairs))
+		for _, p := range r.pairs {
+			clause := fmt.Sprintf("the records of extractor %q have no field %q; their fields are %s", p.extractor, p.field, shown[p.extractor])
+			switch n := more[p]; {
+			case n == 1:
+				clause += " (read 1 more time)"
+			case n > 1:
+				clause += fmt.Sprintf(" (read %d more times)", n)
+			}
+			clauses = append(clauses, clause)
+		}
+		errs = append(errs, located(expr, tr.checked.SourceInfo().GetStartLocation(r.at.ID()), strings.Join(clauses, "; ")))
+	}
+	return errs
+}
+
+// shownFields is fields as a refusal lists them, joined with commas and
+// cut at check.ShownBytes, with how many more there are, so a config that
+// declares thousands of fields does not make each message as long.
+func shownFields(fields []string) string {
+	var b strings.Builder
+	for i, f := range fields {
+		if i > 0 && b.Len()+len(f)+2 > check.ShownBytes {
+			return fmt.Sprintf("%s and %d more", b.String(), len(fields)-i)
+		}
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(f)
+	}
+	return b.String()
+}
+
+// refusals is mapLiterals, and the number of nodes it and tr visited. Each
+// node is visited at most once as a compared operand, once as the right
+// side of in and once by the tracer, so the visits are linear in the
+// expression however often a followed name is read: without that, a chain
+// of binds that each name the last one k times took k to the power of its
+// depth, 56 s for 400 bytes. The work is bounded by MaxTraceWork: past it
+// the tracer stops and the assert does not load, so the tracing costs at
+// most what the budget costs, 158 ms on the build node, the slowest of three
+// shapes driven past it. The tracer traces each access path, a name and the
+// fields and literal indexes read from it, once, and each comprehension's
+// range once for each path, so on the shapes measured the work grows as the
+// square of the expression. At MaxLength the most work measured was 311335
+// steps, under a tenth of the budget, and the slowest load 27 ms on the
+// build node, over every split of nine shapes among their literals, ranges
+// and reads.
+func refusals(expr string, tr *tracer) ([]error, int) {
+	var errs []error
+	checked := tr.checked
 	dyn := func(e celast.Expr) bool {
 		if e.Kind() == celast.CallKind && e.AsCall().FunctionName() == "dyn" {
 			return false
@@ -302,25 +465,7 @@ func refusals(expr string, checked *celast.AST) ([]error, int) {
 			errs = append(errs, located(expr, checked.SourceInfo().GetStartLocation(e.ID()), msg))
 		}
 	}
-	// follow is what a name stands for: the value a cel.bind name binds, or
-	// the elements of the list literal a comprehension variable runs over.
-	// It is nil, and false, for any other expression.
-	follow := func(e celast.Expr) ([]celast.Expr, bool) {
-		if e.Kind() != celast.IdentKind {
-			return nil, false
-		}
-		c, ok := binder(nodes[e.ID()], e.AsIdent())
-		if !ok {
-			return nil, false
-		}
-		if c.AccuVar() == e.AsIdent() {
-			return []celast.Expr{c.AccuInit()}, true
-		}
-		if c.IterVar() == e.AsIdent() && c.IterRange().Kind() == celast.ListKind {
-			return c.IterRange().AsList().Elements(), true
-		}
-		return nil, false
-	}
+	follow := tr.targets
 	visits := 0
 	compared, searched := map[int64]bool{}, map[int64]bool{}
 	var refuse, member func(e celast.Expr)
@@ -408,7 +553,7 @@ func refusals(expr string, checked *celast.AST) ([]error, int) {
 			}
 		}
 	}
-	return errs, visits
+	return errs, visits + tr.visits
 }
 
 // holdsNever reports whether t is a type a value of a map never equals, or

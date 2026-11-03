@@ -126,3 +126,32 @@ func TestBreakAt(t *testing.T) {
 		}
 	}
 }
+
+// A value's KeyLine is the line of its key, where Line is where the value
+// starts (an anchor on the key's line starts the value there); an alias
+// keeps its anchor's, and an item or a document has none.
+func TestKeyLine(t *testing.T) {
+	docs, err := Parse([]byte("a:\n  b: 1\n  c:\n    - x\nd: &k\n  e: 2\nf: *k\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := docs[0]
+	a, d := root.Field["a"], root.Field["d"]
+	for _, c := range []struct {
+		name          string
+		keyLine, line int
+		gotK, gotL    int
+	}{
+		{"root", 0, 1, int(root.KeyLine), root.Line},
+		{"a", 1, 2, int(a.KeyLine), a.Line},
+		{"a.b", 2, 2, int(a.Field["b"].KeyLine), a.Field["b"].Line},
+		{"a.c", 3, 4, int(a.Field["c"].KeyLine), a.Field["c"].Line},
+		{"a.c[0]", 0, 4, int(a.Field["c"].Items[0].KeyLine), a.Field["c"].Items[0].Line},
+		{"d", 5, 5, int(d.KeyLine), d.Line},
+		{"f, an alias of d", 5, 5, int(root.Field["f"].KeyLine), root.Field["f"].Line},
+	} {
+		if c.gotK != c.keyLine || c.gotL != c.line {
+			t.Errorf("%s: KeyLine %d, Line %d; want %d, %d", c.name, c.gotK, c.gotL, c.keyLine, c.line)
+		}
+	}
+}

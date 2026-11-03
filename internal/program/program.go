@@ -1,10 +1,18 @@
 // Package program starts every program errata runs and waits for it: a
 // program check's, a generated check's generator, and later a plugin's.
 // Each starts through Run, so all of them get the same handling of the
-// working directory, environment, stdin, timeout, bound on output and kill
-// of the process group. What a program's exit and output mean is its
-// caller's: the check protocol reads a verdict from them
-// (internal/protocol), a generated check compares the output with a file.
+// working directory, environment, stdin, timeout, bound on output and, on
+// unix, kill of the process group, during the run and once the program
+// exits. What a program's exit and output mean is its caller's: the check
+// protocol reads a verdict from them (internal/protocol), a generated check
+// compares the output with a file.
+//
+// The bound on output holds in one of two ways, which the caller picks. A
+// generator's bound stops it: the byte past the bound kills its process
+// group, as a timeout does, and Ended.OverBound names the stream. A program
+// check's bound drains (Spec.Drain): errata keeps the first Bound bytes of
+// each stream, reads the rest and drops it, and the program runs to its exit
+// or its timeout, with Ended.Cut naming each stream it dropped bytes of.
 package program
 
 import (
@@ -33,26 +41,39 @@ type Spec struct {
 	// none.
 	Timeout time.Duration
 	// Bound is the most bytes errata holds of stdout, and of stderr apart:
-	// the byte after it on either stops the program as a timeout does. 0
-	// holds all of both.
+	// the byte after it on either stops the program as a timeout does,
+	// unless Drain is set. 0 holds all of both.
 	Bound int64
+	// Drain makes Bound hold without stopping the program: errata reads
+	// what the program writes past it on either stream and drops it, and
+	// the program runs to its exit or its timeout.
+	Drain bool
 }
 
 // Ended is how one run of a program ended: what it wrote, the error
 // exec.Cmd.Run returned, whether errata stopped it for running past its
-// timeout, and the stream, "stdout" or "stderr", it wrote past the bound
-// on, "" when it wrote past none.
+// timeout, and the stream, "stdout" or "stderr", it wrote past a stopping
+// bound on, "" when it wrote past none. Cut lists the streams, stdout
+// before stderr, that the program wrote past a draining bound on, whose
+// bytes past it errata dropped; it is nil when the bound stops or the
+// program wrote past none.
 type Ended struct {
 	Stdout, Stderr []byte
 	Err            error
 	TimedOut       bool
 	OverBound      string
+	Cut            []string
 }
 
-// Run starts s, waits for it and returns how it ended. The program runs in
-// a process group of its own, which the timeout and the bound kill whole
-// (isolate). A child left running after the program exits runs on. A Spec
-// with no Argv starts nothing and ends with errNoArgv.
+// Run starts s, waits for it and returns how it ended. On unix the program
+// runs in a process group of its own, which the timeout and the bound kill
+// whole (isolate), and which Run kills once the program has exited (reap),
+// so a child the program left running does not outlive the run unless it
+// left the group; elsewhere both are no-ops. A child that still holds the
+// program's stdout or stderr holds the run for WaitDelay past the
+// program's exit, and the run ends with exec.ErrWaitDelay when the program
+// exited 0, or with its exit error otherwise. A Spec with no Argv starts
+// nothing and ends with errNoArgv.
 func Run(ctx context.Context, s Spec) Ended {
 	if len(s.Argv) == 0 {
 		return Ended{Err: errNoArgv}
@@ -78,16 +99,26 @@ func Run(ctx context.Context, s Spec) Ended {
 	// If something the program started still holds its output open after
 	// the program is cancelled, stop waiting for it.
 	cmd.WaitDelay = time.Second
-	stdout := &bounded{limit: s.Bound, stop: stop}
-	stderr := &bounded{limit: s.Bound, stop: stop}
+	stdout := &bounded{limit: s.Bound, drain: s.Drain, stop: stop}
+	stderr := &bounded{limit: s.Bound, drain: s.Drain, stop: stop}
 	cmd.Stdout, cmd.Stderr = stdout, stderr
 
 	err := cmd.Run()
+	reap(cmd)
 	e := Ended{Stdout: stdout.buf.Bytes(), Stderr: stderr.buf.Bytes(), Err: err}
-	if stdout.over {
+	switch {
+	case s.Drain:
+		for _, b := range []struct {
+			name string
+			over bool
+		}{{"stdout", stdout.over}, {"stderr", stderr.over}} {
+			if b.over {
+				e.Cut = append(e.Cut, b.name)
+			}
+		}
+	case stdout.over:
 		e.OverBound = "stdout"
-	}
-	if stderr.over && !stdout.over {
+	case stderr.over:
 		e.OverBound = "stderr"
 	}
 	e.TimedOut = err != nil && e.OverBound == "" && timed.Err() != nil
@@ -102,12 +133,16 @@ var errNoArgv = errors.New("program: the Spec names no program to start, its arg
 var errOverBound = errors.New("a stream is over its bound")
 
 // bounded holds what a program writes to one stream up to limit bytes, and for
-// a write that passes it keeps what fits, sets over and calls stop. A limit
-// of 0 holds everything. exec writes to it from one goroutine and Run reads
-// it only after Wait, so it needs no lock.
+// a write that passes it keeps what fits and sets over. Unless it drains, it
+// then calls stop and fails the write, which ends exec's copy of the stream;
+// one that drains reports the whole write taken, so exec goes on reading
+// the stream and the program is never blocked on a full pipe. A limit of 0
+// holds everything. exec writes to it from one goroutine and Run reads it
+// only after Wait, so it needs no lock.
 type bounded struct {
 	buf   bytes.Buffer
 	limit int64
+	drain bool
 	over  bool
 	stop  context.CancelFunc
 }
@@ -116,6 +151,9 @@ func (b *bounded) Write(p []byte) (int, error) {
 	if room := b.limit - int64(b.buf.Len()); b.limit > 0 && int64(len(p)) > room {
 		b.buf.Write(p[:room])
 		b.over = true
+		if b.drain {
+			return len(p), nil
+		}
 		b.stop()
 		return int(room), errOverBound
 	}

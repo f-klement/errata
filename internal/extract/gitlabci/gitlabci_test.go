@@ -12,7 +12,7 @@ import (
 )
 
 // yamlParse is the parser the facade hands Build.
-var yamlParse Parser = yaml.ParseNoted
+var yamlParse Parser = yaml.ParseNotedBools(isPsychBool)
 
 // build is Build with that parser.
 func build(s Spec) (check.Extractor, error) { return Build(s, yamlParse) }

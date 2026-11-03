@@ -22,11 +22,18 @@ The exit code, and the content of each format, are what they are without the fla
 - A value without `=`, with an empty FORMAT or PATH, with a FORMAT errata has no reporter for, or
   two values that name the same file after `filepath.Abs` (`errata.xml` and `./errata.xml`) are a
   usage error: exit 2 and the reason on stderr, before the config is loaded, so nothing runs. One
-  format may go to two files. errata does not follow symbolic links to compare paths. An output
-  whose absolute path is the config file's, the `--config` file or `errata.yaml` in the root, is
-  exit 2 once the config has loaded and before any check runs: a passing run would otherwise
-  replace the config with its report and exit 0, where `> errata.yaml` emptied the config first
-  and the run failed.
+  format may go to two files. errata does not follow symbolic links to compare two outputs. An
+  output that names the config file, the `--config` file or `errata.yaml` in the root, is exit 2
+  once the config has loaded and before any check runs: a passing run would otherwise replace the
+  config with its report and exit 0, where `> errata.yaml` emptied the config first and the run
+  failed. An output names the config when its absolute path is the config's, or when it is the
+  file the config was read from: the config is stat'd through its links, as the load reads it,
+  and the output without following its own, as the rename replaces it. So `-c link.yaml -o
+  text=real.yaml`, where `link.yaml` links to `real.yaml`, is refused. `-o text=link.yaml` is not:
+  the report replaces the link and the config is left as it was. An output that is a hard link to
+  the config is refused too, though the rename would replace only that name and the config would
+  keep its content: it is the config under another name, and whatever reads it there would read
+  a report.
 - `--format` and `--output` do not interact. `--format junit --output sarif=errata.sarif` prints
   JUnit on stdout and writes SARIF to the file.
 - Each file is written whole or not at all. Before any check runs, errata creates a temporary

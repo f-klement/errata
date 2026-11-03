@@ -15,12 +15,16 @@ import (
 // argument and returns the count it ends at, as yaml.ParseNoted does.
 // Noted is yaml.ParseNoted itself, which also calls note for each node
 // with the tag the file wrote on it, and whether it is a plain scalar: the
-// gitlab-ci and github-actions readers read with it for the env kind.
+// github-actions reader reads with it for the env kind. NotedYAML11Bools
+// is Noted taking, in a value tagged !!bool, the words YAML 1.1 and GitLab's
+// loader, Psych, read as booleans, such as yes and On
+// (yaml.ParseNotedBools): the gitlab-ci reader reads with it.
 type Parsers struct {
-	YAML  func([]byte, int) ([]*Node, int, error)
-	JSON  func([]byte) (*Node, error)
-	TOML  func([]byte) (*Node, error)
-	Noted func(data []byte, expanded int, note func(n *Node, tag string, plain bool)) ([]*Node, int, error)
+	YAML             func([]byte, int) ([]*Node, int, error)
+	JSON             func([]byte) (*Node, error)
+	TOML             func([]byte) (*Node, error)
+	Noted            func(data []byte, expanded int, note func(n *Node, tag string, plain bool)) ([]*Node, int, error)
+	NotedYAML11Bools func(data []byte, expanded int, note func(n *Node, tag string, plain bool)) ([]*Node, int, error)
 }
 
 // CheckVersion refuses a version that is empty, or that holds a character

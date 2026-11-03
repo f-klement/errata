@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"os"
 	"path"
 	"path/filepath"
 	"slices"
@@ -13,8 +14,10 @@ import (
 
 // A files: key lists entries, each a file or a glob. A glob is matched
 // against the files git tracks (runIndex), so it names the files a
-// clone holds, in git's order, and never one that is not checked in. env
-// and the extractors that take a file set (FileSet) read it the same way.
+// clone holds, in git's order, and never one that is not checked in; in a
+// sparse checkout, one that would match a file the checkout leaves out is
+// refused. env and the extractors that take a file set (FileSet) read it
+// the same way.
 
 // MaxEntries is the most entries files: may list.
 const MaxEntries = 64
@@ -230,6 +233,38 @@ func matchGlob(segs []string, name string) bool {
 	return p == len(segs)
 }
 
+// matchesBelow reports whether the glob of segs may match a path below the
+// directory dir, written with slashes: whether its segments can match dir's
+// names, a ** taking any number of them, with a segment of the glob left
+// for the names below. A segment left is taken to match some name, so the
+// answer errs toward yes, which makes a glob over a directory a sparse
+// checkout leaves out unknown (gitindex.Span.Match) rather than a set
+// that may lack a file. A ** stays a place the match may be at after every
+// name, and is a segment left, so a ** reached answers yes, and the match
+// need not try it as matching no name.
+func matchesBelow(segs []string, dir string) bool {
+	// at[p] reports that segs[:p] can match the names of dir read so far.
+	at := make([]bool, len(segs)+1)
+	at[0] = true
+	for _, name := range strings.Split(dir, "/") {
+		next := make([]bool, len(segs)+1)
+		for p, ok := range at[:len(segs)] {
+			switch {
+			case !ok:
+			case segs[p] == doubleStar:
+				next[p] = true
+			default:
+				// The segments were checked when the glob was built.
+				if m, _ := path.Match(segs[p], name); m {
+					next[p+1] = true
+				}
+			}
+		}
+		at = next
+	}
+	return slices.Contains(at[:len(segs)], true)
+}
+
 // Named is one file a files: key names, and the indexes in Entries of the
 // entries that name it, in their order.
 type Named struct {
@@ -243,8 +278,45 @@ type Named struct {
 // glob matched only against its span. The index is read once, and only
 // when an entry is a glob. A glob that matches no file names none, and one
 // that matches a path holding a control character is refused
-// (gitindex.Span.Match); a file: entry was checked at load (CheckSource).
+// (gitindex.Span.Match), as is one that matches a file a sparse checkout
+// leaves out or may match a path below a directory it leaves out
+// (matchesBelow), since the set would lack what a clone holds; a file:
+// entry was checked at load (CheckSource), and a read of it in a sparse
+// checkout is refused (tree.leftOut).
 func (f Files) List(ctx context.Context, root string) ([]Named, error) {
+	return f.list(root, func() (gitindex.Index, error) { return runIndex(ctx, root) })
+}
+
+// Tracked lists files: keys under one root against one read of git's
+// index, for a reader that builds a files: key for each of several names
+// as it reads, such as gitlab-ci's wildcard includes. The index is read at
+// the first glob, as List reads it, and kept with its error.
+type Tracked struct {
+	ctx  context.Context
+	root string
+	ix   gitindex.Index
+	err  error
+	read bool
+}
+
+// NewTracked is a Tracked at root, which reads under ctx.
+func NewTracked(ctx context.Context, root string) *Tracked {
+	return &Tracked{ctx: ctx, root: root}
+}
+
+// List is f.List under t's root, with t's read of the index.
+func (t *Tracked) List(f Files) ([]Named, error) {
+	return f.list(t.root, func() (gitindex.Index, error) {
+		if !t.read {
+			t.ix, t.err = runIndex(t.ctx, t.root)
+			t.read = true
+		}
+		return t.ix, t.err
+	})
+}
+
+// list is List under root, with the index index gives.
+func (f Files) list(root string, index func() (gitindex.Index, error)) ([]Named, error) {
 	var spans []gitindex.Span // each entry's, nil until the index is read
 	seen := map[string]int{}  // each file's index in out
 	var out []Named
@@ -252,7 +324,7 @@ func (f Files) List(ctx context.Context, root string) ([]Named, error) {
 		files := []string{e.Clean}
 		if e.Glob {
 			if spans == nil {
-				ix, err := runIndex(ctx, root)
+				ix, err := index()
 				if err != nil {
 					return nil, fmt.Errorf("%s: files lists the glob %s: %w", f.kind, Quote(e.Clean), err)
 				}
@@ -263,7 +335,9 @@ func (f Files) List(ctx context.Context, root string) ([]Named, error) {
 				}
 			}
 			var err error
-			if files, err = spans[k].Match(func(t string) bool { return matchGlob(e.segs, t) }); err != nil {
+			match := func(t string) bool { return matchGlob(e.segs, t) }
+			under := func(dir string) bool { return matchesBelow(e.segs, dir) }
+			if files, err = spans[k].Match(match, under, onDisk(root)); err != nil {
 				return nil, fmt.Errorf("%s: files lists the glob %s, which %w", f.kind, Quote(e.Clean), err)
 			}
 		}
@@ -281,6 +355,17 @@ func (f Files) List(ctx context.Context, root string) ([]Named, error) {
 		}
 	}
 	return out, nil
+}
+
+// onDisk reports whether the working tree at root holds something at p, a
+// path git's index lists, by Lstat: a file git marks skip-worktree that is
+// there is listed as any other (gitindex.Span.Match), and read, with every
+// check a read makes, through Source.
+func onDisk(root string) func(string) bool {
+	return func(p string) bool {
+		_, err := os.Lstat(filepath.Join(root, filepath.FromSlash(p)))
+		return err == nil
+	}
 }
 
 // spans is the span of each entry that is a glob in t, by the entry's

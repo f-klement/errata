@@ -48,7 +48,7 @@ func chooses(file string) bool { return path.Base(file) == ".gitlab-ci.yml" }
 // envRead is the env kind's reader of the variable name in file: Every's,
 // with the YAML parser the facade hands it.
 func envRead(file, name string, maxBytes int64, p core.Parsers) (check.Extractor, error) {
-	return Every(file, name, maxBytes, p.Noted)
+	return Every(file, name, maxBytes, p.NotedYAML11Bools)
 }
 
 // Resolve is s with its max_bytes written out, for errata list.
@@ -70,7 +70,7 @@ func Describe(Spec) check.Description {
 // nodes YAML aliases and merge keys add from expanded, the count of the
 // files before, against core.MaxExpanded, and returns the count it ends
 // at, so the bound holds for every file read together. The facade hands it
-// yaml.ParseNoted.
+// yaml.ParseNotedBools(PsychBool).
 type Parser func(data []byte, expanded int, note func(n *core.Node, tag string, plain bool)) ([]*core.Node, int, error)
 
 // maxName is the longest job, variable or key that loads, in bytes. A name
@@ -228,14 +228,15 @@ func (e extractor) ExtractRead(ctx context.Context, root string) ([]check.Value,
 		data, err := s.Read(ctx, root)
 		read += int64(len(data))
 		return data, err
-	})
+	}, core.NewTracked(ctx, root).List)
 	return vs, read, err
 }
 
-// resolve builds the configuration from the files read reads, and returns
-// the values the job sees.
-func (e extractor) resolve(read func(core.Source) ([]byte, error)) ([]check.Value, error) {
-	l := &loader{read: read, parse: e.parse, limit: e.Limit, left: e.Limit, info: map[*core.Node]nodeInfo{}}
+// resolve builds the configuration from the files read reads, with list
+// giving the tracked files a wildcard include matches, and returns the
+// values the job sees.
+func (e extractor) resolve(read func(core.Source) ([]byte, error), list func(core.Files) ([]core.Named, error)) ([]check.Value, error) {
+	l := &loader{read: read, list: list, parse: e.parse, limit: e.Limit, left: e.Limit, info: map[*core.Node]nodeInfo{}}
 	top, err := l.load(e.File, false)
 	if err != nil {
 		return nil, err

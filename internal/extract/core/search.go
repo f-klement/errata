@@ -337,7 +337,11 @@ func (e Search) matches(data []byte, clock *clockedReader) ([]Match, error) {
 
 // each runs the searches of Matches through clock and hands keep each match
 // it accepts, every group's start and end, as FindSubmatchIndex returns
-// them, in file order. It stops at the first error keep returns.
+// them, in file order. It stops at the first error keep returns. A final
+// newline ends the last line and starts no empty one, as fileLines counts
+// them, so the empty match at the end of a text that ends with a newline,
+// which ^$ and (.*) find, is on no line and is dropped, for regex values
+// and records alike. The text extractor's prose ends in no newline.
 func (e Search) each(data []byte, clock *clockedReader, keep func(m []int) error) error {
 	accepted := 0
 	for pos, prevEnd := 0, -1; pos <= len(data); {
@@ -348,7 +352,7 @@ func (e Search) each(data []byte, clock *clockedReader, keep func(m []int) error
 				"or shorten a counted repeat, such as {0,1000}",
 				e.File, e.TimeLimit, e.whoseLimit(), accepted)
 		}
-		if m == nil {
+		if m == nil || (m[0] == len(data) && len(data) > 0 && data[len(data)-1] == '\n') {
 			break
 		}
 		accept := true

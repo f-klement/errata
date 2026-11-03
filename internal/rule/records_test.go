@@ -2,8 +2,10 @@ package rule
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/f-klement/errata/internal/check"
 )
@@ -184,5 +186,106 @@ func TestAssertBindsAFieldOfARecord(t *testing.T) {
 		Extractors: []check.NamedExtractor{recordsOf(rec(3, "landingpage-registered", "external"), rec(7, "landingpage-queue", "external"))}, Assert: expr, Compiled: a}}
 	if res := Run(context.Background(), "", c); res.Verdict != check.VerdictTrue {
 		t.Fatalf("verdict %s: %s", res.Verdict, res.Message)
+	}
+}
+
+// fielded is two extractors whose records have fields, e with name and
+// url and g with name and uri, and one named m with as: map.
+func fielded() []check.NamedExtractor {
+	return []check.NamedExtractor{
+		{Name: "e", Description: check.Description{Shape: check.ShapeRecord, Fields: []string{"name", "url"}}},
+		{Name: "g", Description: check.Description{Shape: check.ShapeRecord, Fields: []string{"name", "uri"}}},
+		{Name: "m", Description: check.Description{Shape: check.ShapeMap}},
+	}
+}
+
+// A field the records do not have, misspelt in the expression, does not
+// load, as a field the config misspells makes the rule unknown: a read, a
+// has(), an in and a literal index, through a comprehension variable over
+// the extractor or over its filter(), a cel.bind name bound to it or to a
+// member, and an index into it. The refusal is where CEL places the read,
+// at its dot, at has( or at the quoted name, and names the fields the
+// records have, once for each extractor. A field they have, a map
+// extractor's key, a literal's key, a read through by_file and a read of
+// what map() computes load. Planted breaks: the pass left out of
+// compileWith; a variable over the extractor not traced to its member; any
+// index into the extractor not taken as a member; the extractor named once
+// for each source; a read with no extractor to name refused; filter() not
+// followed; map(x, x.name) followed as if it kept x.
+func TestAssertRefusesAFieldTheRecordsDoNotHave(t *testing.T) {
+	const (
+		lacks  = `the records of extractor "e" have no field "ulr"; their fields are name, url`
+		suffix = " && size(m) + size(g) >= 0"
+	)
+	for expr, want := range map[string]string{
+		// The review's probes P2 and P3 (records-review-delta1.md).
+		"e.all(x, !has(x.ulr) || x.ulr == 'nope')":   "assert: " + lacks + " (read 1 more time), at line 1 column 14 of the expression:\n    e.all(x, !has(x.ulr) || x.ulr == 'nope')" + suffix + "\n                 ^",
+		"e.all(x, !('ulr' in x) || x.ulr == 'nope')": lacks + " (read 1 more time), at line 1 column 12",
+		// Later reads are counted, not refused again: assert-delta4.md H2.
+		"e.all(x, x.ulr == 'a' && has(x.ulr) && x['ulr'] != '')":  lacks + " (read 2 more times), at line 1 column 11",
+		"e.all(x, x['ulr'] == 'a')":                               lacks + ", at line 1 column 12",
+		"e[0].ulr == 'a'":                                         lacks,
+		"e[size(e) - 1].ulr == 'a'":                               lacks,
+		"cel.bind(xs, e, xs.all(x, has(x.ulr)))":                  lacks,
+		"e.all(x, cel.bind(r, x, has(r.ulr)))":                    lacks,
+		"cel.bind(r, e[0], r.ulr == 'a')":                         lacks,
+		"e.exists(x, e.all(y, x.name == y.ulr))":                  lacks,
+		"e.filter(x, x.name != '').all(y, !has(y.ulr))":           lacks,
+		"e.map(x, x).exists(y, y.ulr == 'a')":                     lacks,
+		"cel.bind(f, e.filter(x, x.name != ''), f[0].ulr == 'a')": lacks,
+		"[e, g].filter(l, true).all(l2, l2.all(x, has(x.ulr)))":   lacks,
+		"[e[0], g[0]].all(x, has(x.ulr))":                         lacks + `; the records of extractor "g" have no field "ulr"; their fields are name, uri`,
+	} {
+		_, err := Compile(expr+suffix, fielded())
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: %v, want %q", expr, err, want)
+		}
+	}
+	for expr, n := range map[string]int{
+		"e.all(x, has(x.ulr) && x.ulr == 'a')": 1,
+		"[e[0], e[1]].all(x, has(x.ulr))":      1,
+	} {
+		if _, err := Compile(expr+suffix, fielded()); err == nil || strings.Count(err.Error(), lacks) != n {
+			t.Errorf("%s: want %d refusals: %v", expr, n, err)
+		}
+	}
+	for _, expr := range []string{
+		"e.all(x, !has(x.url) || x.url != 'nope' && 'name' in x && x['name'] != '' && e[0].name != '') && size(m) >= 0",
+		"m.all(x, !has(x.ulr) || 'ulr' in x || x['ulr'] == '') && size(e) >= 0",
+		"[e[0], {'ulr': 'x'}].exists(x, has(x.ulr)) && size(m) >= 0",
+		"cel.bind(want, {'ulr': 'x'}, e.exists(x, x.url == want.ulr)) && size(m) >= 0",
+		"by_file(e)['f'].all(r, !has(r.ulr)) && size(m) >= 0",
+		"{'k': e[0], 'n': 1}.z.ulr == '' && size(m) >= 0",
+		"e.map(x, x.name).all(y, !has(y.ulr)) && size(m) >= 0",
+		"[e[0], g[0]].all(x, has(x.name)) && size(m) >= 0",
+	} {
+		if _, err := Compile(expr+" && size(g) >= 0", fielded()); err != nil {
+			t.Errorf("%s: %v", expr, err)
+		}
+	}
+}
+
+// A config may declare many fields, and an expression may misspell one many
+// times: the field is refused once, at its first read, and the message lists
+// the declared fields up to check.ShownBytes and says how many more there
+// are, so neither the load nor the error grows with the two together. With
+// a message for each read, each naming every field, 100000 fields and 780
+// reads made a 620 MB error in 1.2 s. Planted breaks: every declared field
+// listed; each read refused.
+func TestAFieldRefusalStaysSmallOverManyFields(t *testing.T) {
+	declared := make([]string, 10000)
+	for i := range declared {
+		declared[i] = "f" + strconv.Itoa(i)
+	}
+	xs := []check.NamedExtractor{{Name: "e", Description: check.Description{Shape: check.ShapeRecord, Fields: declared}}}
+	expr := "e.all(x, [" + strings.TrimSuffix(strings.Repeat("x.zz, ", 300), ", ") + "].size() > 0)"
+	start := time.Now()
+	_, err := Compile(expr, xs)
+	took := time.Since(start)
+	if err == nil || strings.Count(err.Error(), `have no field "zz"`) != 1 || !strings.Contains(err.Error(), "f0, f1, f2") || !strings.Contains(err.Error(), " more (read 299 more times), at line 1 column 12") {
+		t.Fatalf("one refusal with the fields cut: %.400v", err)
+	}
+	if n := len(err.Error()); n > 8<<10 || took > time.Second {
+		t.Errorf("the error is %d bytes and the load took %v", n, took)
 	}
 }

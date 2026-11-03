@@ -621,12 +621,25 @@ func boundAt(p point, lower bool) bound {
 	return bound{v: *p.v, inc: p.after != lower}
 }
 
-// Overlap reports whether one release satisfies every range of rs. It sorts
-// the ends of every interval once and sweeps them, counting the ranges that
-// cover each stretch between two ends, so it takes time in proportion to the
-// intervals times their logarithm. An event points at its bound rather than
-// copying it, so the sweep holds 24 bytes for each end.
+// Overlap reports whether one release satisfies every range of rs, which
+// takes at least one.
 func Overlap(rs []Range) bool {
+	return len(rs) > 0 && Overlapping(rs) == len(rs)
+}
+
+// Overlapping is the length of the longest prefix of rs whose ranges one
+// release satisfies: len(rs) when they overlap, else the index of the first
+// range at which the ranges before it stop overlapping, 0 when that is the
+// first, which no release satisfies alone. It sorts the ends of every
+// interval once and sweeps them, keeping for each stretch between two ends
+// the number of leading ranges that cover it; the longest prefix is the
+// largest such number over the stretches that hold a release. A Fenwick
+// tree over the ranges gives that number in time logarithmic in their
+// count, so the sweep takes time in proportion to the intervals times
+// their logarithm, as one sort of them does, and searches no prefix again.
+// An event points at its bound rather than copying it, so the sweep holds
+// 24 bytes for each end.
+func Overlapping(rs []Range) int {
 	type event struct {
 		at    point
 		rng   int32
@@ -661,32 +674,76 @@ func Overlap(rs []Range) bool {
 	})
 	// depth counts, for each range, its intervals open at the sweep; the
 	// alternatives of one range may overlap, so a range covers a stretch
-	// when its depth is above 0.
+	// when its depth is above 0. covered marks those ranges.
 	depth := make([]int32, len(rs))
-	covered := 0
+	covered := newPrefixTree(len(rs))
+	longest := 0
 	for i := 0; i < len(events); {
 		at := events[i].at
 		for i < len(events) && cmpPoint(events[i].at, at) == 0 {
 			e := events[i]
 			if e.start {
 				if depth[e.rng] == 0 {
-					covered++
+					covered.add(int(e.rng), 1)
 				}
 				depth[e.rng]++
 			} else {
 				depth[e.rng]--
 				if depth[e.rng] == 0 {
-					covered--
+					covered.add(int(e.rng), -1)
 				}
 			}
 			i++
 		}
-		if covered == len(rs) && i < len(events) {
+		if i == len(events) {
+			break
+		}
+		// Only a count above longest can lengthen the prefix. The test is
+		// written without < or >, whose boundary mutant would only read a
+		// stretch again and could not fail a test.
+		if lead := covered.leading(); max(lead, longest) != longest {
 			iv := interval{lo: boundAt(at, true), hi: boundAt(events[i].at, false)}
 			if iv.holdsRelease() {
-				return true
+				if longest = lead; longest == len(rs) {
+					return longest
+				}
 			}
 		}
 	}
-	return false
+	return longest
+}
+
+// prefixTree is a Fenwick tree over n flags, each 0 or 1, that says how
+// many flags from the first on are all 1.
+type prefixTree struct {
+	sums []int // sums[k] is the sum of the flags k-(k&-k) to k-1
+	top  int   // the largest power of two no greater than n
+}
+
+func newPrefixTree(n int) *prefixTree {
+	top := 1
+	for top*2 <= n {
+		top *= 2
+	}
+	return &prefixTree{sums: make([]int, n+1), top: top}
+}
+
+// add adds d to flag i.
+func (t *prefixTree) add(i int, d int) {
+	for k := i + 1; k < len(t.sums); k += k & -k {
+		t.sums[k] += d
+	}
+}
+
+// leading is the number of flags from the first on that are all 1. It
+// descends the tree once: the block of step flags after the first pos is
+// all 1 when its sum is step.
+func (t *prefixTree) leading() int {
+	pos := 0
+	for step := t.top; step > 0; step /= 2 {
+		if next := pos + step; next < len(t.sums) && t.sums[next] == step {
+			pos = next
+		}
+	}
+	return pos
 }
