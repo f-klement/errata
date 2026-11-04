@@ -168,6 +168,30 @@ func TestScannerEdges(t *testing.T) {
 	}
 }
 
+// A carriage return after <pre> is the pre's first line feed: the HTML
+// standard reads a lone CR, and a CR before a LF, as one LF before it
+// tokenizes, so a browser drops it and reopens no formatting element
+// before it. A textarea's first line feed is the tag's too, and a CR alone
+// in a pre leaves it empty, so the CR after a tag a browser ignores is
+// dropped as well. The planted breaks: only '\n' dropped, which keeps the
+// CR as text and refuses the find (FuzzHTML, the round after 04c52e9); a
+// CRLF dropped as one byte; a CR alone not taken as the line feed alone.
+func TestPreFirstCarriageReturn(t *testing.T) {
+	for src, want := range map[string]string{
+		"<pre>\rx</pre>":               "<pre|pre:x|</pre",
+		"<pre>\r\nx</pre>":             "<pre|pre:x|</pre",
+		"<pre>\r</pre>":                "<pre|</pre",
+		"<pre>\r\rx</pre>":             "<pre|pre:\rx|</pre",
+		"<pre>\r</li>\rx":              "<pre|</li|pre:x",
+		"<textarea>\rx</textarea>":     "<textarea|pre:x|</textarea",
+		"<p ><Code ><pre>\r<p></Code>": "<p|<code|<pre|<p|</code",
+	} {
+		if got := strings.Join(tokens(src, 100), "|"); got != want {
+			t.Errorf("%q: got %q, want %q", src, got, want)
+		}
+	}
+}
+
 // The token limit holds exactly, fresh tokenizers counted: a scan reads at
 // the count it makes, and is refused one under it.
 func TestTheTokenLimitIsExact(t *testing.T) {

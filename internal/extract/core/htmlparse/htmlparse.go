@@ -315,6 +315,19 @@ func (s *Scanner) restart(at, end int) {
 	}
 }
 
+// lineFeed is the length of the line feed text starts with, 0 for none,
+// and whether text is that line feed alone. A line feed is a LF, a CR
+// before a LF, or a lone CR, each of which the HTML standard reads as one
+// LF before it tokenizes.
+func lineFeed(text []byte) (n int, alone bool) {
+	for _, lf := range [...]string{"\r\n", "\n", "\r"} {
+		if bytes.HasPrefix(text, []byte(lf)) {
+			return len(lf), len(text) == len(lf)
+		}
+	}
+	return 0, false
+}
+
 // keep classifies the token the tokenizer is at, of type tt, after the raw
 // element raw and with dropLF, and reports whether Next gives it.
 func (s *Scanner) keep(tt html.TokenType, raw string, dropLF bool) bool {
@@ -331,9 +344,10 @@ func (s *Scanner) keep(tt html.TokenType, raw string, dropLF bool) bool {
 				s.end -= len("]]>")
 			}
 		}
-		if dropLF && s.start < s.end && s.src[s.start] == '\n' {
-			s.start++
-			s.dropLF = s.start == s.end // text of the line feed alone leaves the pre empty
+		if dropLF {
+			n, alone := lineFeed(s.src[s.start:s.end])
+			s.start += n
+			s.dropLF = alone // text of the line feed alone leaves the pre empty
 		}
 		// A browser reopens formatting elements before text it inserts: not
 		// a raw element's, nor NULs alone or a pre's first line feed, which

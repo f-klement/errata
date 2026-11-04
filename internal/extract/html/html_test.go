@@ -144,6 +144,18 @@ func TestCodeBlocksByLanguage(t *testing.T) {
 	want(t, "matches", got, "3:make", "6:main")
 }
 
+// A lone CR after <pre> is the pre's first line feed, which a browser
+// drops before it reopens a formatting element, so the </code> after it
+// ends a code the pre's start closed and is read, not refused. The find
+// of FuzzHTML the round after 04c52e9, its seed 66ff48555d1e4d7c. The
+// planted break: only '\n' dropped after <pre>.
+func TestPreFirstCarriageReturn(t *testing.T) {
+	got := read(t, sel("code", nil), "<p ><Code ><pre>\r<p></Code>")
+	want(t, "find", got, "1:")
+	got = read(t, sel("code", nil), "<pre>\rx\n</pre>")
+	want(t, "lone CR", got, "1:x")
+}
+
 const tables = "<table>\n" +
 	"<thead><tr><th>Host</th><th>Port</th></tr></thead>\n" +
 	"<tbody>\n<tr><td>web</td><td> <b>80</b> </td></tr>\n" +

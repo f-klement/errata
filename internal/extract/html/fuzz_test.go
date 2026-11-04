@@ -32,7 +32,7 @@ func FuzzHTML(f *testing.F) {
 		values, err := e.(extractor).FromData([]byte(data))
 		if err != nil {
 			if !bounded(err) && refusedFor(err, extracttest.BrowserReads(data, htmlparse.LineTag, true)) == "" {
-				t.Fatalf("%+v: refused: %v", s, err)
+				t.Fatalf("%+v: %q: refused: %v", s, data, err)
 			}
 			return
 		}

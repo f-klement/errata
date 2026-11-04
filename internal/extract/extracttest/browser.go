@@ -390,6 +390,7 @@ var BrowserShapes = []string{
 	// (FuzzHTML).
 	"<h1>T<p><code><pre>\n<p></code>x</pre><h2>U</h2>",
 	"<h1>T<p><code><pre>\nx<p></code></pre><h2>U</h2>",
+	"<p ><Code ><pre>\r<p></Code>", // a lone CR is a line feed too (FuzzHTML, the round after 04c52e9)
 	// The page's mode by the standard's rules on its first doctype: a table
 	// opens in a p in quirks mode, and closes it in standards mode, where
 	// the h2 lands in the reopened code inside the h1. The names are in
