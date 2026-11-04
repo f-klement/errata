@@ -15,12 +15,12 @@ import (
 // repeatable, is now refused before it is read. The planted break is
 // returning the bytes read, which hands back the file cut at the limit.
 func TestReadRefusesAFileThatGrowsPastTheLimit(t *testing.T) {
-	data, err := Source{File: "f", Limit: 8}.readLimited(strings.NewReader(strings.Repeat("x", 16)))
+	data, err := Source{File: "f", Limit: 8}.ReadLimited(strings.NewReader(strings.Repeat("x", 16)))
 	want := "read f: the file is 9 bytes, over the limit of 8 bytes"
 	if err == nil || !strings.HasPrefix(err.Error(), want) {
 		t.Fatalf("read %q, %v; want an error starting %q", data, err, want)
 	}
-	if data, err := (Source{File: "f", Limit: 8}).readLimited(strings.NewReader("12345678")); err != nil || string(data) != "12345678" {
+	if data, err := (Source{File: "f", Limit: 8}).ReadLimited(strings.NewReader("12345678")); err != nil || string(data) != "12345678" {
 		t.Errorf("a file of the limit: %q, %v", data, err)
 	}
 }

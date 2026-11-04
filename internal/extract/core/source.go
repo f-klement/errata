@@ -103,6 +103,11 @@ func (r *Reader) Read(s Source) ([]byte, error) { return s.readIn(r.t) }
 // Resolved is s.Resolved under the reader's root.
 func (r *Reader) Resolved(s Source) (string, error) { return s.resolvedIn(r.t) }
 
+// Open is the file s names under the reader's root, open for a reader that
+// reads it in pieces, and its size, refused as Read refuses the file: a
+// file over s.Limit too. The caller closes it.
+func (r *Reader) Open(s Source) (*os.File, int64, error) { return s.openIn(r.t) }
+
 // Close closes what the reader holds open.
 func (r *Reader) Close() { r.t.close() }
 
@@ -163,6 +168,14 @@ func (s Source) Stat(ctx context.Context, root string) (fs.FileInfo, error) {
 		return nil, errors.New(err.Error())
 	}
 	defer t.close()
+	return s.statIn(t)
+}
+
+// Stat is s.Stat under the reader's root, through its open tree.
+func (r *Reader) Stat(s Source) (fs.FileInfo, error) { return s.statIn(r.t) }
+
+// statIn is Stat through the tree t.
+func (s Source) statIn(t tree) (fs.FileInfo, error) {
 	rel, mode, err := t.find(s.File)
 	if err != nil {
 		return nil, fmt.Errorf("stat %s: %w", s.File, notThere(err))
@@ -221,13 +234,13 @@ func (s Source) readIn(t tree) ([]byte, error) {
 		return nil, err
 	}
 	defer f.Close()
-	return s.readLimited(f)
+	return s.ReadLimited(f)
 }
 
-// readLimited reads r to the limit, and refuses it when it holds a byte
-// more: the file grew while it was read. The limit is never added to, so no
-// limit overflows.
-func (s Source) readLimited(r io.Reader) ([]byte, error) {
+// ReadLimited reads r, the file s names as Reader.Open opened it, to the
+// limit, and refuses it when it holds a byte more: the file grew while it
+// was read. The limit is never added to, so no limit overflows.
+func (s Source) ReadLimited(r io.Reader) ([]byte, error) {
 	data, err := io.ReadAll(io.LimitReader(r, s.Limit))
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", s.File, bare(err))

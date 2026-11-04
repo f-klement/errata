@@ -1,7 +1,7 @@
 # errata list prints each kind of check as errata check loads it, with the
 # defaults the loader fills in written out: a program check's timeout of 30s,
-# an extractor's max_bytes of 33554432 and an ini extractor's dialect, which
-# the file's name chooses. It reads none of the files the checks name, so
+# an extractor's max_bytes of 33554432, and an ini extractor's dialect and a
+# comment extractor's language, which the file's name chooses. It reads none of the files the checks name, so
 # none is here, and it exits 0.
 exec errata list -c program.yaml -f json
 cmp stdout program.json
@@ -203,11 +203,14 @@ checks:
       replicas: {yaml: {file: deploy.yaml, path: spec.replicas}}
       nodes:    {regex: {file: README.md, pattern: '(\d+) nodes'}}
       prose:    {text: {file: README.md, pattern: 'runs on (\w+)', code: true}}
+      note:     {comment: {file: main.go, pattern: 'port (\d+)'}}
+      marker:   {markdown: {file: README.md, target: comment, pattern: 'v(\S+)'}}
+      hosts:    {html: {file: docs/index.html, target: table, section: Hosts, column: Port, key: Host, row: web}}
       pom:      {xml: {file: pom.xml, path: '/m:project/m:version', namespaces: {m: 'http://maven.apache.org/POM/4.0.0'}}}
       port:     {properties: {file: app.properties, key: server.port}}
       cfg:      {toml: {file: cfg.toml, path: 'server.port'}}
       pkg:      {package_version: {}}
-    assert: int(replicas[0]) <= int(nodes[0]) && size(prose) + size(pom) + size(port) + size(cfg) + size(pkg) > 0
+    assert: int(replicas[0]) <= int(nodes[0]) && size(prose) + size(note) + size(pom) + size(port) + size(cfg) + size(pkg) + size(marker) + size(hosts) > 0
 -- assert.json --
 {
   "version": 1,
@@ -230,11 +233,38 @@ checks:
             "path": "server.port"
           }
         },
+        "hosts": {
+          "html": {
+            "file": "docs/index.html",
+            "max_bytes": 33554432,
+            "target": "table",
+            "section": "Hosts",
+            "column": "Port",
+            "key": "Host",
+            "row": "web"
+          }
+        },
+        "marker": {
+          "markdown": {
+            "file": "README.md",
+            "max_bytes": 33554432,
+            "target": "comment",
+            "pattern": "v(\\S+)"
+          }
+        },
         "nodes": {
           "regex": {
             "file": "README.md",
             "max_bytes": 33554432,
             "pattern": "(\\d+) nodes"
+          }
+        },
+        "note": {
+          "comment": {
+            "file": "main.go",
+            "max_bytes": 33554432,
+            "pattern": "port (\\d+)",
+            "language": "go"
           }
         },
         "pkg": {
@@ -276,7 +306,7 @@ checks:
         }
       },
       "relation": {
-        "assert": "int(replicas[0]) <= int(nodes[0]) && size(prose) + size(pom) + size(port) + size(cfg) + size(pkg) > 0"
+        "assert": "int(replicas[0]) <= int(nodes[0]) && size(prose) + size(note) + size(pom) + size(port) + size(cfg) + size(pkg) + size(marker) + size(hosts) > 0"
       },
       "normalize": [],
       "allow_empty": [],

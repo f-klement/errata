@@ -1,0 +1,275 @@
+# The fourth worked example of docs/examples.md: an attested fact. The
+# router's firewall is set in its web interface, which no tool reads, so
+# facts/router-wan-ssh.yaml records what someone saw there, with the source,
+# the day they looked and how many days that look is trusted. A rule holds the
+# network document to the fact's value; a program check fails once the fact is
+# older than its lifetime. ATTESTED_TODAY fixes the date the program reads, so
+# every verdict here is the same on any day. errata.yaml's check
+# docs-examples-are-run holds every block of this example in docs/examples.md
+# equal to its section here, in order.
+env ATTESTED_TODAY=2026-11-03
+! exec errata check
+cmp stdout false.txt
+! stderr .
+
+# The last day of the lifetime holds, and the day after it is an erratum.
+env ATTESTED_TODAY=2026-10-18
+exec errata check
+stdout '^0 errata, 0 unknown. Coverage: ran 2, skipped 0.$'
+! stderr .
+
+env ATTESTED_TODAY=2026-10-19
+! exec errata check
+stdout '^FALSE attested-facts-are-current \(repo\)$'
+stdout 'attested 2026-07-20, 91 days old, past its lifetime of 90 days'
+stdout '^1 erratum, 0 unknown. Coverage: ran 2, skipped 0.$'
+! stderr .
+
+# On a pass errata shows no message, so the script is run as errata runs it,
+# from the root with ERRATA_ROOT set, to see that it names the date it used
+# and where the date came from: ATTESTED_TODAY, or else the clock, here a
+# stand-in date on PATH.
+env ERRATA_ROOT=$WORK
+env ATTESTED_TODAY=2026-10-18
+exec sh scripts/attested-age.sh
+stdout '^today is 2026-10-18, from ATTESTED_TODAY$'
+! stderr .
+
+chmod 755 bin/date
+env PATH=$WORK/bin${:}$PATH
+env ATTESTED_TODAY=
+exec sh scripts/attested-age.sh
+stdout '^today is 2026-10-01, from the clock, UTC$'
+! stderr .
+
+# A date the script cannot read is unknown, never true: a current date that is
+# no day of the calendar, a clock that gives none, a fact attested after the
+# current date, a fact with no lifetime, one with no attested date, one with a
+# key written twice, a file in facts/ that is not facts/<name>.yaml, and no
+# facts at all.
+cp bin/date-fails bin/date
+! exec errata check
+stdout '^UNKNOWN attested-facts-are-current \(repo\)$'
+stdout 'date -u gave no current date'
+
+env ATTESTED_TODAY=2026-02-29
+! exec errata check
+stdout '^UNKNOWN attested-facts-are-current \(repo\)$'
+stdout 'today is 2026-02-29, from ATTESTED_TODAY'
+stdout 'today is not a date as YYYY-MM-DD'
+stdout '^0 errata, 1 unknown. Coverage: ran 2, skipped 0.$'
+
+env ATTESTED_TODAY=2026-07-19
+! exec errata check
+stdout '^UNKNOWN attested-facts-are-current \(repo\)$'
+stdout 'facts/router-wan-ssh.yaml: attested 2026-07-20, after 2026-07-19'
+
+env ATTESTED_TODAY=2026-11-03
+cp broken/no-lifetime.yaml facts/router-wan-ssh.yaml
+! exec errata check
+stdout '^UNKNOWN attested-facts-are-current \(repo\)$'
+stdout 'facts/router-wan-ssh.yaml: no lifetime_days as a whole number of days'
+
+cp broken/no-attested.yaml facts/router-wan-ssh.yaml
+! exec errata check
+stdout '^UNKNOWN attested-facts-are-current \(repo\)$'
+stdout 'facts/router-wan-ssh.yaml: no attested date as YYYY-MM-DD'
+
+cp broken/twice.yaml facts/router-wan-ssh.yaml
+! exec errata check
+stdout '^UNKNOWN attested-facts-are-current \(repo\)$'
+stdout 'facts/router-wan-ssh.yaml: attested or lifetime_days is written twice'
+
+cp fixed/router-wan-ssh.yaml facts/router-wan-ssh.yaml
+cp more/nas-smb1.yaml facts/nas-smb1.yml
+! exec errata check
+stdout '^UNKNOWN attested-facts-are-current \(repo\)$'
+stdout 'facts/nas-smb1.yml: not a fact; each fact is a file facts/<name>.yaml'
+rm facts/nas-smb1.yml
+
+mkdir facts/old
+cp more/nas-smb1.yaml facts/old/nas-smb1.yaml
+! exec errata check
+stdout '^UNKNOWN attested-facts-are-current \(repo\)$'
+stdout 'facts/old: not a fact; each fact is a file facts/<name>.yaml'
+rm facts/old
+
+cp more/nas-smb1.yaml facts/.nas-smb1.yaml
+! exec errata check
+stdout 'facts/.nas-smb1.yaml: not a fact; each fact is a file facts/<name>.yaml'
+rm facts/.nas-smb1.yaml
+
+mv facts/router-wan-ssh.yaml router-wan-ssh.yaml
+! exec errata check
+stdout '^UNKNOWN attested-facts-are-current \(repo\)$'
+stdout 'facts/\*.yaml: cannot be read'
+mv router-wan-ssh.yaml facts/router-wan-ssh.yaml
+
+# Looked at again on 2026-11-02 and still blocked: both checks hold.
+exec errata check
+stdout '^0 errata, 0 unknown. Coverage: ran 2, skipped 0.$'
+! stdout 'FALSE|UNKNOWN'
+! stderr .
+
+# A current fact beside a stale one, whose values carry comments: only the
+# stale one is printed. With the router's fact stale too, both are, in order.
+cp more/nas-smb1.yaml facts/nas-smb1.yaml
+! exec errata check
+stdout '^FALSE attested-facts-are-current \(repo\)$'
+stdout 'facts/nas-smb1.yaml: attested 2026-03-02, 246 days old, past its lifetime of 180 days'
+! stdout 'facts/router-wan-ssh.yaml: attested'
+stdout '^1 erratum, 0 unknown. Coverage: ran 2, skipped 0.$'
+
+cp facts-stale.yaml facts/router-wan-ssh.yaml
+! exec errata check
+stdout '(?s)nas-smb1.yaml: attested 2026-03-02, 246 days old.*\n *facts/router-wan-ssh.yaml: attested 2026-07-20, 106 days old'
+rm facts/nas-smb1.yaml
+
+# Looked at again and found open: the fact is current and the document is
+# wrong, so the rule on the value is the erratum.
+cp opened/router-wan-ssh.yaml facts/router-wan-ssh.yaml
+! exec errata check
+stdout '^FALSE network-doc-states-the-router-ssh-rule \(repo\)$'
+stdout '^1 erratum, 0 unknown. Coverage: ran 2, skipped 0.$'
+! stderr .
+
+-- facts/router-wan-ssh.yaml --
+value: blocked
+source: router web interface, Firewall, WAN inbound rules, the rule named ssh
+attested: 2026-07-20
+lifetime_days: 90
+-- docs/network.md --
+# The home network
+
+From the internet, port 22 is blocked at the router. Reach the hosts over the
+VPN.
+-- scripts/attested-age.sh --
+# Exits 1 when a fact under facts/ is older than its lifetime, and 2 when a
+# fact has no date or lifetime it can read, or facts/ holds anything but
+# facts. ATTESTED_TODAY, as YYYY-MM-DD, stands in for the current date in UTC.
+# The first line printed names the date used and where it came from.
+if [ -n "${ATTESTED_TODAY:-}" ]; then
+  today=$ATTESTED_TODAY from=ATTESTED_TODAY
+else
+  from="the clock, UTC"
+  today=$(date -u +%Y-%m-%d) || { echo "date -u gave no current date"; exit 2; }
+fi
+echo "today is $today, from $from"
+cd "$ERRATA_ROOT" || exit 2
+for f in facts/* facts/.[!.]* facts/..?*; do
+  [ -e "$f" ] || [ -L "$f" ] || continue
+  case $f in
+    facts/.*) ;;
+    *.yaml) [ -f "$f" ] && continue ;;
+  esac
+  echo "$f: not a fact; each fact is a file facts/<name>.yaml"
+  exit 2
+done
+exec awk -v today="$today" '
+# The days since a fixed origin of a date written YYYY-MM-DD, or -1.
+function day(s,   y, m, d, n) {
+  if (s !~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/) return -1
+  y = substr(s, 1, 4) + 0; m = substr(s, 6, 2) + 0; d = substr(s, 9, 2) + 0
+  if (m < 1 || m > 12) return -1
+  n = substr("312831303130313130313031", 2 * m - 1, 2) + 0
+  if (m == 2 && y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)) n++
+  if (d < 1 || d > n) return -1
+  if (m <= 2) y--
+  return 365 * y + int(y / 4) - int(y / 100) + int(y / 400) + int((153 * (m > 2 ? m - 3 : m + 9) + 2) / 5) + d
+}
+# The value of a line "key: value", without a trailing comment.
+function field(s) {
+  sub(/^[a-z_]+:[ \t]*/, "", s); sub(/[ \t]+#.*$/, "", s); sub(/[ \t]+$/, "", s)
+  return s
+}
+BEGIN {
+  now = day(today)
+  if (now < 0) { print "today is not a date as YYYY-MM-DD"; exit 2 }
+  status = 0
+  for (i = 1; i < ARGC; i++) {
+    file = ARGV[i]; at = ""; life = ""; ats = 0; lives = 0
+    while ((r = (getline line < file)) > 0) {
+      if (line ~ /^attested:/) { at = field(line); ats++ }
+      if (line ~ /^lifetime_days:/) { life = field(line); lives++ }
+    }
+    if (r < 0) { print file ": cannot be read"; exit 2 }
+    if (ats > 1 || lives > 1) { print file ": attested or lifetime_days is written twice"; exit 2 }
+    close(file)
+    then = day(at)
+    if (then < 0) { print file ": no attested date as YYYY-MM-DD"; exit 2 }
+    if (life !~ /^[0-9]+$/) { print file ": no lifetime_days as a whole number of days"; exit 2 }
+    if (then > now) { print file ": attested " at ", after " today; exit 2 }
+    if (now - then > life + 0) {
+      print file ": attested " at ", " now - then " days old, past its lifetime of " life " days"
+      status = 1
+    }
+  }
+  exit status
+}' facts/*.yaml
+-- errata.yaml --
+checks:
+  - id: network-doc-states-the-router-ssh-rule
+    reason: >
+      docs/network.md tells the reader whether the router lets SSH in from the internet. The
+      router's firewall is set in its web interface, which no tool reads, so the attested fact is
+      the record of what it is set to.
+    scope: repo
+    extract:
+      doc:  {text: {file: docs/network.md, pattern: 'port 22 is (\S+) at the router'}}
+      fact: {yaml: {file: facts/router-wan-ssh.yaml, path: value}}
+    agree: [doc, fact]
+
+  - id: attested-facts-are-current
+    reason: >
+      Each fact under facts/ records what someone saw where no tool can read, with the day they
+      looked and how many days that look is trusted. A fact past its lifetime may no longer hold,
+      and the rules that read its value would hold on a guess.
+    scope: repo
+    run: [sh, scripts/attested-age.sh]
+-- false.txt --
+FALSE attested-facts-are-current (repo)
+  why:  Each fact under facts/ records what someone saw where no tool can read, with the day they looked and how many days that look is trusted. A fact past its lifetime may no longer hold, and the rules that read its value would hold on a guess.
+  said: today is 2026-11-03, from ATTESTED_TODAY
+        facts/router-wan-ssh.yaml: attested 2026-07-20, 106 days old, past its lifetime of 90 days
+
+1 erratum, 0 unknown. Coverage: ran 2, skipped 0.
+-- fixed/router-wan-ssh.yaml --
+value: blocked
+source: router web interface, Firewall, WAN inbound rules, the rule named ssh
+attested: 2026-11-02
+lifetime_days: 90
+-- opened/router-wan-ssh.yaml --
+value: open
+source: router web interface, Firewall, WAN inbound rules, the rule named ssh
+attested: 2026-11-02
+lifetime_days: 90
+-- broken/no-lifetime.yaml --
+value: blocked
+source: router web interface, Firewall, WAN inbound rules, the rule named ssh
+attested: 2026-07-20
+-- broken/no-attested.yaml --
+value: blocked
+source: router web interface, Firewall, WAN inbound rules, the rule named ssh
+lifetime_days: 90
+-- broken/twice.yaml --
+value: blocked
+source: router web interface, Firewall, WAN inbound rules, the rule named ssh
+attested: 2026-07-20
+lifetime_days: 90
+attested: 2026-11-02
+-- more/nas-smb1.yaml --
+value: off # SMB1, in Control Panel
+source: NAS web interface, Control Panel, File Services, SMB, Advanced
+attested: 2026-03-02   # the day of the firmware update
+lifetime_days: 180	# two firmware releases
+-- facts-stale.yaml --
+value: blocked
+source: router web interface, Firewall, WAN inbound rules, the rule named ssh
+attested: 2026-07-20
+lifetime_days: 90
+-- bin/date --
+#!/bin/sh
+echo 2026-10-01
+-- bin/date-fails --
+#!/bin/sh
+exit 1

@@ -104,7 +104,8 @@ docker run --rm -v "$PWD:/repo" -w /repo fklement/errata check
   cluster says out loud which checks it could not reach.
 - **Rules in YAML.** A rule reads values out of YAML, JSON, TOML, XML, INI, Java properties
   and dotenv files, the files that pin a tool's version, the variables of shell scripts, regular
-  expression captures, the prose of Markdown files, and whether a file is there and its size,
+  expression captures, the prose and structure of Markdown and AsciiDoc files, the structure of
+  reStructuredText files, and whether a file is there and its size,
   and states that they agree
   or that a [CEL](https://cel.dev) expression over them holds.
   An erratum names every value with the `file:line` it came from, or the file alone for whether a
@@ -117,6 +118,10 @@ docker run --rm -v "$PWD:/repo" -w /repo fklement/errata check
   disagrees.
 - **The suite as data.** `errata list --format json` prints every check as `errata check` loads
   it, defaults filled in, for a program that wants to know what errata will run.
+- **Attested facts.** A value no API can read, such as a setting in a router's web interface, is
+  recorded in a file with its source, the day it was read and how many days it is trusted. A rule
+  tests the value, and a program check fails once the fact is older than its lifetime:
+  [the worked example](docs/examples.md#an-attested-fact-is-older-than-its-lifetime) holds both.
 - **One static binary**, for Linux, macOS and Windows on amd64 and arm64, and a container image.
 
 Designed and not built yet, in the order of [ROADMAP.md](ROADMAP.md):
@@ -129,7 +134,6 @@ Designed and not built yet, in the order of [ROADMAP.md](ROADMAP.md):
 - **Verdicts, not drift.** A model of each reconciler (whether it runs, how often, whether it
   prunes, whether it repairs a hand edit) separates a difference that heals in three minutes from
   one that never will.
-- **Attested facts:** a value no API can read, recorded with a source and a date, checked for both.
 
 The words above have one meaning each, fixed in [GLOSSARY.md](GLOSSARY.md).
 
@@ -153,15 +157,18 @@ errata is not a schema validator, an admission controller or a security policy e
 
 ## Worked examples
 
-[docs/examples.md](docs/examples.md) writes three common kinds of rot as rules, each with its
-files, its rule, the erratum errata prints and the fix:
+[docs/examples.md](docs/examples.md) writes four common kinds of rot as checks, each with its
+files, its checks, the erratum errata prints and the fix:
 
 - [a document that names the wrong port](docs/examples.md#a-document-names-the-wrong-port), with
   `text` and `toml` under `agree`;
 - [a derived number that drifted from what derives it](docs/examples.md#a-derived-number-drifted-from-what-derives-it),
   a backup count against its schedule, with `yaml` and `toml` under `assert`;
 - [a runbook step whose prerequisite the repository no longer declares](docs/examples.md#a-procedures-prerequisite-is-no-longer-declared),
-  a package and a kernel parameter, with `text`, `yaml` and `regex` under `assert`.
+  a package and a kernel parameter, with `text`, `yaml` and `regex` under `assert`;
+- [an attested fact older than its lifetime](docs/examples.md#an-attested-fact-is-older-than-its-lifetime),
+  a router setting no tool reads, recorded in a file whose value a rule tests and whose age a
+  program check tests.
 
 ## Usage
 
@@ -802,7 +809,8 @@ An extractor reads one file of the repository and returns a list of values, each
 the line where it starts, or the file alone for `exists` and `size`; `yaml`, `json`, `toml` and
 `regex` read every file `files:` names instead of one (see [A set of files](#a-set-of-files)),
 `tool_version` reads every file that pins one tool, `package_version` each manifest of the package,
-and `env` one variable in every file a rule lists; `exists` and `size` look at one file and read
+`env` one variable in every file a rule lists, and `marker` the markers that name its rule in every
+file git tracks (see [Markers](#markers)); `exists` and `size` look at one file and read
 none of it. A rule names its extractors under `extract:` and sets exactly one key in each, the
 extractor's kind:
 
@@ -818,6 +826,14 @@ extract:
     regex: {file: Dockerfile, pattern: '^FROM (\S+)'}
   ci_node:
     text: {file: README.md, pattern: 'CI runs on node (\w+)'}
+  listen_port:
+    comment: {file: internal/server/server.go, pattern: 'listens on port (\d+)'}
+  go_needed:
+    markdown: {file: README.md, target: section, section: Install > Requirements, pattern: 'Go (\S+)'}
+  docs_port:
+    html: {file: docs/index.html, target: table, column: Port, key: Host, row: web}
+  tagged:
+    marker: {}
   guava:
     xml:
       file: pom.xml
@@ -858,6 +874,12 @@ extract:
 | `toml` | `file` or `files`, `path`, `embedded`, and `as: map`, or `as: record` with `fields` | every scalar the path selects, each mapping whole, or a record for each node |
 | `regex` | `file` or `files`, `pattern`, `as: record`, `values_as` for a pattern that references another extractor's values, and `context` to keep a match by the lines around it | capture group 1 of every match (see [Values of another extractor](#values-of-another-extractor) and [The context of a match](#the-context-of-a-match)), or with `as: record` a record of the named groups of each match |
 | `text` | `file`, `pattern`, and `code` to read code blocks too | capture group 1 of every match in the prose of a Markdown file |
+| `comment` | `file`, `pattern`, and `language` where the file's name chooses none | capture group 1 of every match in the comments of a source file (see [Code comments](#code-comments)) |
+| `markdown` | `file`, `target` (`comment`, `section`, `code` or `table`), `section` for a heading path, `pattern`, `language` for code, and `column`, `key` and `row` for a table | each comment, section, fenced code block or table cell of a Markdown file, whole or capture group 1 of every match in it (see [Markdown structure](#markdown-structure)) |
+| `asciidoc` | the `markdown` extractor's fields | each comment, section, listing, literal or source block, or table cell of an AsciiDoc file, whole or capture group 1 of every match in it (see [AsciiDoc structure](#asciidoc-structure)) |
+| `rst` | the fields of `markdown` | each comment, section, literal or code block or table cell of a reStructuredText file, whole or capture group 1 of every match in it (see [reStructuredText structure](#restructuredtext-structure)) |
+| `html` | `file`, `target` (`comment`, `section`, `code` or `table`), `section` for a heading path, `pattern`, `language` for code, and `column`, `key` and `row` for a table | each comment, section, pre block or table cell of an HTML file, whole or capture group 1 of every match in it (see [HTML structure](#html-structure)) |
+| `marker` | nothing, or `files` to narrow the walk | the value of every marker that names the rule, in the files git tracks (see [Markers](#markers)) |
 | `xml` | `file`, `path`, and `namespaces` for a file with namespaces | every node the path selects: an element's text, an attribute's value or a text node |
 | `ini` | `file`, `key`, `section`, and `dialect`, `subsection` (git) or `host` (ansible) | every value of the key in the section, or the hosts or child groups of an ansible group |
 | `properties` | `file`, `key` | every value of the key |
@@ -1652,13 +1674,27 @@ errata builds the prose from the file this way:
   prose neither starts nor ends with one.
 - Code span backticks, emphasis and strong markers, and link destinations are dropped. A link
   keeps its text, an image its alt text and an autolink its address.
-- An HTML block is left out. A line starts one when it starts with a comment, with a block tag
-  such as `<div>` or `<p>`, or holds one tag and nothing else. The block runs to the next blank
-  line for a tag, and to its end for a comment, a `<script>`, `<pre>`, `<style>` or `<textarea>`
-  element, a processing instruction, a declaration or CDATA. For those last kinds, the text after
-  the end on its line is prose, as a browser shows it: `<!-- marker --> CI runs on node builder`
-  reads `CI runs on node builder`. `<!-->` and `<!--->` are whole comments. Tags and comments in
-  that text follow the rule above.
+- An HTML block is read as HTML. A line starts one when it starts with a comment, with a block
+  tag such as `<div>` or `<p>`, or holds one tag and nothing else. The block runs to the next
+  blank line for a tag, and to its end for a comment, a `<script>`, `<pre>`, `<style>` or
+  `<textarea>` element, a processing instruction, a declaration or CDATA.
+  - A block that a blank line ends, and a `<pre>` or `<textarea>` block, is prose as the `html`
+    extractor reads a page ([HTML structure](#html-structure)): each tag of the elements above
+    that a browser starts a line at ends a line of prose, any other tag joins the text around
+    it, and a `<pre>` or `<textarea>` keeps its lines. A comment, a `<script>`, a `<style>` and
+    a `<template>` inside the block show nothing. An entity stays as written, as in the rest of
+    the prose. `<div>\nCI runs on node builder\n</div>` reads `CI runs on node builder`. Each
+    block is read alone, so a `<pre>` ends at an end tag of an element the block opened around
+    it, such as `<details><pre>log</details>`. An end tag in a `<pre>` of an element the block
+    did not open, such as a `</div>` whose `<div>` is in another block, may or may not end the
+    pre in a browser, and the file is refused at its line.
+  - Of a comment, a `<script>` or `<style>` block, a processing instruction, a declaration and
+    CDATA, only the text after the end on its line is prose, as a browser shows it:
+    `<!-- marker --> CI runs on node builder` reads `CI runs on node builder`. `<!-->` and
+    `<!--->` are whole comments. Tags and comments in that text follow the rule above.
+
+  Until v0.2.5 the first kind was left out of the prose too; a pattern that matched only the
+  prose around such a block may now match inside it.
 - Fenced and indented code blocks are left out, and so is front matter: a block that starts the
   file (after a UTF-8 byte order mark, if any) with a line of `---` and ends at a line of `---` or
   `...`, or starts and ends with `+++`. Without its closing line it is no front matter.
@@ -1667,7 +1703,8 @@ errata builds the prose from the file this way:
 - A backslash escape and an entity such as `&amp;` stay as written.
 - CRLF line endings read as LF.
 - errata runs no Markdown extensions, so a GitHub table is a paragraph whose rows are joined with
-  spaces, pipes and delimiter row included: `runs on \| (\w+)` reads a cell.
+  spaces, pipes and delimiter row included: `runs on \| (\w+)` reads a cell. The `markdown`
+  extractor reads a table by its cells ([Markdown structure](#markdown-structure)).
 
 The value is the prose's text of group 1: `node *builder*` wrapped over two lines gives
 `node builder`. Its line is the line of the file where the match starts.
@@ -1676,6 +1713,545 @@ goldmark, the parser, is quadratic in the file on some shapes of input, such as 
 comment on every line, and nothing outside it can stop it. errata looks at the clock, and counts
 what the parse has built, on every call goldmark makes into its parsers, and refuses a file past
 any of the bounds under Limits. Each refusal makes the rule unknown and names the bound.
+
+#### Code comments
+
+Agents put the same facts in code comments as in Markdown: a port in a comment above a constant,
+a "keep in step with" note naming another file. The `comment` extractor matches `pattern` against
+the comments of one source file. A lexer finds them, driven by a table with one row per language:
+it knows each language's comment delimiters and its string literal forms, so `// port 80` inside a
+string is no comment. It parses nothing else.
+
+| Field | Required | Meaning |
+|---|---|---|
+| `file` | yes | the source file |
+| `pattern` | yes | an RE2 pattern with a capture group, as for `regex`; group 1 is the value |
+| `language` | no | the row of the table to read the file with; default the one the file's name chooses |
+| `max_bytes` | no | the largest file read (see Limits) |
+
+```yaml
+checks:
+  - id: server-port-agrees
+    reason: >
+      The comment above the listener tells readers which port the server takes. If the chart
+      moves the port and the comment stays, the next person configures the old one.
+    scope: repo
+    extract:
+      code:  {comment: {file: internal/server/server.go, pattern: 'listens on port (\d+)'}}
+      chart: {yaml: {file: deploy/values.yaml, path: service.port}}
+    agree: [code, chart]
+```
+
+The file's base name chooses its language, then its longest extension that a row lists, in any
+case. A name no row lists, such as `README.md` or `Dockerfile.prod`, is a load error that names
+the file; set `language:` to read it as one of the rows. The rows:
+
+| Family | Language | Files | Comments | Strings the lexer skips |
+|---|---|---|---|---|
+| C-like | `go` | `.go` | `//`, `/* */` | `"..."`, `'.'`, `` `...` `` |
+| | `c` | `.c`, `.h` | `//`, `/* */` | `"..."`, `'.'` |
+| | `cpp` | `.cc`, `.cpp`, `.cxx`, `.c++`, `.hh`, `.hpp`, `.hxx`, `.h++` | `//`, `/* */` | `"..."`, `'.'`, `R"d(...)d"` |
+| | `java` | `.java` | `//`, `/* */` | `"..."`, `"""..."""`, `'.'` |
+| | `kotlin` | `.kt`, `.kts` | `//`, `/* */` nested | `"..."`, `"""..."""` (closed by the last three of a run of quotes), `'.'` |
+| | `javascript` | `.js`, `.mjs`, `.cjs`, `.jsx` | `//`, `/* */` | `"..."`, `'...'`, `` `...` `` |
+| | `typescript` | `.ts`, `.mts`, `.cts`, `.tsx` | `//`, `/* */` | `"..."`, `'...'`, `` `...` `` |
+| | `rust` | `.rs` | `//`, `/* */` nested | `"..."`, `r#"..."#`, `'.'` |
+| | `swift` | `.swift` | `//`, `/* */` nested | `"..."`, `"""..."""`, `#"..."#`, `#"""..."""#` |
+| | `csharp` | `.cs` | `//`, `/* */` | `"..."`, `@"..."`, `"""..."""`, `'.'` |
+| | `css` | `.css` | `/* */` | `"..."`, `'...'` |
+| Hash | `python` | `.py`, `.pyi` | `#` | `"..."`, `'...'`, `"""..."""`, `'''...'''` |
+| | `shell` | `.sh`, `.bash`, `.zsh`, `.ksh` | `#` at the start of a word | `"..."`, `'...'`, `$'...'`, and `\#` |
+| | `ruby` | `.rb`, `.rake`, `.gemspec`, `Rakefile`, `Gemfile` | `#`, `=begin` to `=end` | `"..."`, `'...'`, `` `...` `` |
+| | `perl` | `.pl`, `.pm` | `#` after a blank, `;`, a brace or a parenthesis, POD to `=cut` | `"..."`, `'...'` |
+| | `yaml` | `.yaml`, `.yml` | `#` after a blank | `"..."`, `'...'` after a blank, `[`, `{` or `,`; a `\|` or `>` block scalar |
+| | `toml` | `.toml` | `#` | `"..."`, `'...'`, `"""..."""`, `'''...'''` |
+| | `dockerfile` | `Dockerfile`, `Containerfile`, `.dockerfile` | `#` at the start of a line | none |
+| | `makefile` | `Makefile`, `makefile`, `GNUmakefile`, `.mk`, `.mak` | `#` | `"..."`, `'...'`, and `\#` |
+| | `hcl` | `.tf`, `.tfvars`, `.hcl` | `#`, `//`, `/* */` | `"..."` |
+| SQL and Lua | `sql` | `.sql` | `--`, `/* */` | `'...'`, PostgreSQL's `E'...'` and `$tag$...$tag$`, and the names `"..."`, `` `...` `` and `[...]` |
+| | `lua` | `.lua` | `--`, `--[[ ]]` | `"..."`, `'...'`, `[[...]]` |
+| HTML and XML | `html` | `.html`, `.htm`, `.xhtml` | `<!-- -->` | attribute values after `=` |
+| | `xml` | `.xml`, `.xsd`, `.xsl`, `.xslt`, `.svg`, `.plist`, `.csproj`, `.props`, `.targets`, `.xaml` | `<!-- -->` | attribute values after `=`, `<![CDATA[...]]>` |
+
+A `'.'` is a character literal: one character or one escape, so a Rust lifetime such as `'a`
+opens no string. A run of `#`, `=` or quotes in a raw or long string, as in `r##"..."##`,
+`[==[...]==]` or C#'s `""""...""""`, must close with the same run. A run longer than 16, in any of them or in a C++ raw string's
+delimiter, or a PostgreSQL dollar quote's tag longer than 63 bytes, makes the rule unknown, as a
+string that runs to the end of the file does (below). A YAML block scalar's body is
+the lines after its `|` or `>` that are blank or indented as far as its first line, or as far as
+an indentation indicator such as `|2` says, which must be further than the key or list entry it
+belongs to; a `---` or `...` line ends it. A comment on the
+line of the `|` itself is part of the scalar and is not read.
+Markdown's HTML comments are read by Markdown's own extractor, not this one.
+
+errata builds the text the pattern searches this way:
+
+- Each comment is its body, without its delimiters: `// port 80` reads ` port 80`, and a block
+  comment keeps its lines as written, a leading `*` on each included.
+- The comments follow one another in the file's order with a line feed between two, so `\n` or
+  `(?s)` in a pattern can match from one comment into the next, as a comment wrapped over
+  several `//` lines needs. The `m` flag is set, as for `regex`.
+- CRLF line endings read as LF.
+
+The value is group 1's text; its line is the file's line where the match starts.
+
+A comment or string that never meets its closer and runs to the end of the file makes the rule
+unknown. No file its compiler accepts ends that way, so it means the lexer lost its place, and from
+there it could read code as comment. The message names the line where the comment or string
+opened: `a.js: line 2: a comment opens here and runs to the end of the file, so the lexer lost its
+place ...`. Set the rule aside for that file, or move the construct below.
+
+The lexer reads one language at a time and does not understand these. Where one holds a quote or
+a comment's opener, a match can be wrong, or the rule unknown as above:
+
+- A shell or Ruby heredoc, a Ruby `%q{...}` or `?"`, a Perl `q(...)`, `qw(...)` or regex, Perl's
+  variables `$"` and `$'`, a Ruby or JavaScript regular expression literal, an HCL heredoc: their
+  text is read as code. A `#` or `//` inside one reads as a comment. A quote inside one opens a
+  string, and shell, Ruby and Perl strings run over lines, so strings and comments change places
+  up to the next quote: a real comment there is missed and a `#` inside a string is matched. An
+  apostrophe in a heredoc's usage text is enough. When no later quote closes the string, the rule
+  is unknown.
+- Code inside a string, such as a JavaScript template literal's `${...}`, Python's f-string,
+  Kotlin's `${...}`, Swift's `\(...)`, C#'s `$"{...}"`, Ruby's `#{...}`, HCL's `${...}` or a shell
+  `"$(...)"`: the string is skipped up to the first quote of its own kind. A quote of that kind
+  inside the code ends the string there, and what follows reads as code: in
+  `` `${f(`// x`)}` `` the text ` x`)}` `` is a comment.
+- JSX and TSX text between tags is read as code: a `//` in it, as in a URL, starts a comment, and
+  an apostrophe, as in `Don't`, opens a string to the end of its line, which hides a comment there.
+  A JSX comment written `{/* ... */}` reads right.
+- A line comment continued with a backslash at the end of the line, as C allows: the next line
+  is code.
+- SQL dialects: MySQL's backslash escape in `'...'` and its `#` comments are not read, so
+  `'it\'s -- no'` ends at `\'` and `-- no` reads as a comment. A block comment never nests, though
+  PostgreSQL nests them. A block comment nests in Kotlin, Rust and Swift.
+- A YAML plain scalar with a quote after a blank, such as `a: x 'y # z`, reads the quote as a
+  string's start. In a Makefile, make ends a variable's value at `#` even inside quotes, and the
+  lexer reads the quotes as a string.
+- The content of a `<script>` or `<style>` element is read as HTML: a `//` comment there is not
+  read, and a `<!--` in a JavaScript string there is.
+- Another language embedded in a string of the file, such as SQL in a Go string: the string is
+  skipped, so its comments are not read. A YAML block scalar is a string, so a shell comment in a
+  CI step's `run: |` is not read either.
+
+The lexer is one pass over the file: every fence is at most 16 bytes, or 63 for a dollar quote's
+tag, whose bytes start no other fence, so each byte is looked at a bounded number of times. The search has the time limit of `regex`.
+
+#### Markdown structure
+
+Docs keep facts in a Markdown file's structure as well as in its sentences: a marker in an HTML
+comment, a requirement under one heading, a command in a fenced block, a port in a table. A test that
+greps the file for them finds the same text in the wrong place. The `markdown` extractor parses the
+file as the `text` extractor does, and reads one `target` by its structure:
+
+| Field | Required | Meaning |
+|---|---|---|
+| `file` | yes | the Markdown file |
+| `target` | yes | `comment`, `section`, `code` or `table` |
+| `section` | for `section` | a heading path such as `Install > Requirements`; with any other target, it keeps only what lies in those sections |
+| `pattern` | no | an RE2 pattern with a capture group, as for `regex`; without it a value is the whole comment, section, block or cell |
+| `language` | no, `code` only | the language a fenced block must have, the first word of its info string, such as `bash` |
+| `column` | for `table` | the header of the column whose cells are the values |
+| `key`, `row` | no, `table` only, both or neither | keep only the rows whose cell under the header `key` is `row` |
+| `max_bytes` | no | the largest file read (see Limits) |
+
+```yaml
+extract:
+  marker:   {markdown: {file: README.md, target: comment, pattern: 'errata:version (\S+)'}}
+  go:       {markdown: {file: README.md, target: section, section: Install > Requirements, pattern: 'Go (\d+\.\d+)'}}
+  install:  {markdown: {file: README.md, target: code, language: bash, section: Install}}
+  web_port: {markdown: {file: docs/hosts.md, target: table, column: Port, key: Host, row: web}}
+```
+
+- **comment.** Each HTML comment, `<!--` to `-->`, in an HTML block or inline in text. One in a
+  code span or a code block is no comment, and neither is one in a `<script>`, `<style>` or
+  `<textarea>` block; one in a `<pre>` block is. `<!-->` and `<!--->` are empty comments, and a
+  `<!--` with no `-->` after it is none. The value is the comment's text with the blanks at either
+  end left out, or the pattern's captures in that text, and its line is where the comment starts.
+  A `<!--` inside a tag, such as in an attribute's value, is no comment, as in a browser: a tag
+  runs from `<` and a letter or `/` to the first `>` outside quotes. A comment in a block quote
+  reads without the quote's `>` markers. In an HTML block a blank line ends, and in a `<pre>` or
+  `<textarea>` block, the comments are the ones the `html` extractor reads in the same HTML
+  ([HTML structure](#html-structure)): one in a `<script>`, `<style>`, `<template>` or
+  `<textarea>` inside a `<div>` is none, as in a browser.
+- **section.** The prose under each heading the path names, to the next heading of the same or a
+  higher level, so it holds its subsections, their headings included. The prose is the `text`
+  extractor's ([Markdown prose](#markdown-prose)), code blocks left out and the text of HTML blocks
+  in, a `<pre>` block's included. A heading names the path
+  when the headings it sits under end with the path's, from the nearest up: `Install >
+  Requirements` is a `Requirements` heading whose nearest heading of a higher level is `Install`,
+  at any level of the file. A heading's text is its prose, compared whole and in its case, so a
+  heading whose text holds `>` cannot be named. Only a
+  heading of the document counts, not one in a block quote or a list item, and a `#` line in a
+  code block is no heading. A path that names no heading gives no value, which `allow_empty`
+  decides on; a path that names two headings gives the values of both. Without a pattern the value
+  is the section's prose at its heading's line; with one, each capture is at the line where its
+  match starts.
+- **code.** Each fenced code block, or each whose language, the first word of its info string, is
+  `language`, its lines as the block holds them without the fences. Indented code blocks are not
+  read. The value's line is the first line inside the fences, or the opening fence for an empty
+  block, and a capture's the line where its match starts.
+- **table.** Each GitHub table, as GitHub reads it: a delimiter row such as `|---|:-:|` under a
+  header row. The value is the cell under the header `column`, in each row, or in each row whose
+  `key` cell is `row`; a cell is read as prose, so `*db*` is `db`, and its line is its row's. A
+  `\|` in a cell is a pipe, in a code span too. A table with no such header gives no value, and of
+  two headers alike the first counts. A row with fewer cells than the header has an empty cell for
+  each one missing.
+
+A match never runs from one comment, section, block or cell into the next. All the matches share
+one time limit and one cap on values, the `regex` extractor's for the file. A pattern runs inside
+each piece, so `^` and `$` match at its lines. The parse is the `text` extractor's, under the same
+bounds; for a table target the parse counts each table's cells against the node limit before it
+makes them, and refuses a table that would pad its short rows with more empty cells than it has
+bytes (Limits, Markdown table padding). The text the extractor reads may be at most 12 times the size of the
+file: sections of one path may nest, and a table's key cells are read twice.
+
+#### AsciiDoc structure
+
+The `asciidoc` extractor reads an AsciiDoc file as the `markdown` extractor reads a Markdown file:
+the same fields, the same four targets and the same values, so a rule reads a claim the same way
+whichever markup a page uses. No maintained AsciiDoc parser in Go was found, so the reader is
+errata's own, written for the common forms of the language below, and it reads each file in one
+pass over its lines.
+
+```yaml
+extract:
+  marker: {asciidoc: {file: README.adoc, target: comment, pattern: 'errata:version (\S+)'}}
+  go:     {asciidoc: {file: README.adoc, target: section, section: Install > Requirements, pattern: 'Go (\d+\.\d+)'}}
+  web:    {asciidoc: {file: docs/hosts.adoc, target: table, column: Port, key: Host, row: web}}
+```
+
+- **comment.** Each line comment, `//` and not `///`, and each comment block between two lines of
+  four or more `/`. The value is the text after `//`, or the block's lines, with the blanks at either
+  end left out, at the comment's first line. A `//` line in a listing, literal or passthrough block
+  is no comment; one in a paragraph, an example, sidebar, quote or open block, or a table is.
+- **section.** The prose under each title the path names, to the next title of the same or a higher
+  level, its subsections and their titles included. A title is one to six `=` or `#`, a blank and
+  its text, with the same marks after it left out (`== Install ==`), on a line that does not go on
+  a paragraph and is in no delimited block. A title under `[discrete]` or `[float]`, or in an
+  example or sidebar block, is prose and starts no section. The prose is the section's lines less
+  comments, attribute lines, attribute entries, block delimiters and the content of listing,
+  literal, passthrough and indented literal blocks; list markers and the formatting marks of
+  `*bold*`, `_italic_`, `` `mono` ``, `#mark#` and their doubled forms are left out where they pair,
+  as Asciidoctor pairs them: over the lines of one paragraph or list item, a comment line in it
+  left out, and never from one into the next. A block title's and a title's marks pair on their
+  own line. A table's lines are prose as written, `|` included.
+- **code.** Each listing block (`----`), literal block (`....`) and fenced block (```` ``` ````). Its
+  language is the second positional attribute of the attribute line above it when the style is
+  `source` or empty, `[source,sh]` or `[,sh]`, or the word after ```` ``` ````. Attribute lines one
+  after another merge, as in Asciidoctor: `[source,sh]` over `[#id]` is still `sh`, and a later
+  style replaces an earlier one. The value is the block's lines as written, at the first of them, or
+  at the opening delimiter for an empty block.
+- **table.** Each table between two `|===` lines, or `!===` with `!` separating cells. A cell
+  starts at each `|`, may run over lines, and loses the cell specifier before its `|`, such as `a`
+  in `a|`. A row has as many cells as `cols` gives, or as the table's first line holds. `cols` is
+  read as Asciidoctor reads it: a number alone (`cols=3`), or entries split at commas, or at
+  semicolons when there is none, quoted with `"` or `'` or not, each one column or `n*` for n, with
+  its alignment, width and style (`"2*,<.^1a,<.,20%,~"`); any other form is refused. The header row is
+  that first line when a blank line follows it, or the first row under `%header` or
+  `options="header"`, and never under `%noheader`; a table with no header row gives no value. A cell is read as prose and its
+  value is at the line of its row's first cell. A row the table ends before is left out, as
+  Asciidoctor leaves it out.
+
+What the reader does not understand, it reads as the text it is, or refuses:
+
+- Preprocessor directives, `include::`, `ifdef::`, `ifndef::`, `ifeval::` and the rest, are lines of
+  prose. No include is followed, local or remote, and every branch of a conditional is read: read an
+  included file with an extractor of its own.
+- Attribute references such as `{version}` are not replaced, and inline macros, links and
+  passthroughs are read as written.
+- Two line titles are not read, and a file that holds one is refused, at its underline: the first
+  line of a paragraph outside every delimited block, holding a letter or a digit and starting with
+  no dot, over a line of two or more of one of `=`, `-`, `~`, `^` or `+`, as many as the line has
+  characters or one more or less, as Asciidoctor reads such a title. Inside a block, `Run:` over
+  `----` is a paragraph and a listing block, as in Asciidoctor. Without the
+  refusal, `Install` over `-------` would open a listing block and read the prose after it as
+  code. Write the title on one line, `== Install`.
+- A `[source]` paragraph with no delimiters is prose, and an indented literal paragraph is not
+  read.
+- The table target refuses a table whose cells span columns or rows or repeat (`2+|`, `.2+|`,
+  `3*|`), one of comma or colon separated values (`,===`, `:===`, `format=csv`), and one with a
+  `separator` of its own.
+
+A delimited block with no closing line is refused, at the line that opened it: Asciidoctor warns
+and reads it to the end of the file, so an unclosed `----` would make the rest of the file code.
+Blocks nest at most 1000 deep, and a read holds at most one piece, a value, a run of lines or a
+table cell, for every 4 bytes of `max_bytes`; past either bound the file is refused (Limits,
+AsciiDoc pieces and AsciiDoc nesting). The text the extractor reads is at
+most the file's size, and the search shares the `regex` extractor's time limit and cap on values.
+
+#### reStructuredText structure
+
+The `rst` extractor reads a reStructuredText file by the same targets and fields as the `markdown`
+extractor ([Markdown structure](#markdown-structure)), so one rule reads a claim the same way
+whichever of the two a page is written in:
+
+```yaml
+extract:
+  marker:   {rst: {file: README.rst, target: comment, pattern: 'errata:version (\S+)'}}
+  go:       {rst: {file: README.rst, target: section, section: Install > Requirements, pattern: 'Go (\d+\.\d+)'}}
+  install:  {rst: {file: README.rst, target: code, language: bash, section: Install}}
+  web_port: {rst: {file: docs/hosts.rst, target: table, column: Port, key: Host, row: web}}
+```
+
+No maintained parser of reStructuredText in Go was found, so errata parses the file itself, in one
+pass over its lines, and reads the common forms of what docutils reads. A form it cannot read as
+docutils does is refused, and the message names its line, rather than read wrong; the rule is then
+unknown.
+
+- **comment.** Explicit markup, `..` and a blank, that is no directive (`name::`, or `name ::`
+  with one space), hyperlink target (`.. _name:`, `_` and no blank), substitution definition
+  (`.. |name| ...`), footnote (`.. [1]`, `[#]`, `[#name]`, `[*]`) or citation (`.. [name]`).
+  Its text is what follows the `..` and the lines indented under it, those lines dedented; the
+  value is that text with the blanks at either end left out, at the line of its `..`. A `..` alone
+  with a blank line after it is an empty comment, whose value is empty, and the indented block
+  after it is no part of it. A comment counts wherever rST is read: in a list item, a block quote,
+  or the content of an admonition (`attention`, `caution`, `danger`, `error`, `hint`,
+  `important`, `note`, `tip`, `warning` and `seealso`) or of `admonition`, `compound`,
+  `container`, `only`, `sidebar`, `table` and `topic`. A directive's options, the lines starting
+  with `:` right under it and the lines indented more than each that go on it, are none of its
+  content.
+- **section.** A title is one line at the first column, or anywhere between an overline and an
+  underline, under an adornment of one ASCII punctuation character repeated, as wide as the title
+  (an East Asian wide character counts two columns) or at least four characters, with an overline
+  the same as its underline or none. A line that starts a bullet list item, such as `- foo`, is a
+  list item and no title. Its level is the order in which its style, the character and whether it
+  has an overline, first appears in the file, as docutils counts it. A title more than one level
+  below the section it is in, or of a new style below a section that is not the deepest, is an
+  error in docutils, and errata refuses the file. A title that is indented is none; an overline
+  shorter than four characters is text, and an overline of four or more that differs from its
+  underline is neither title nor prose. The path names titles as it names Markdown headings, and
+  the prose under a title runs to the next title of the same or a higher level. The prose is each
+  paragraph's lines joined by a space, a block to a line, with the markup below left out; a list
+  item's bullet or number is no part of it. Titles of subsections are prose, and so is the content
+  of the directives listed under comment; an admonition's text after its `::` and the lines under
+  it are the first paragraph of its content. Comments, literal and code blocks, tables, targets
+  and other directives are not prose. A paragraph's closing `::` reads as `:`, or as nothing after
+  a blank or on its own.
+- **code.** Each literal block, the indented block after a paragraph that ends in `::`, and each
+  `code-block`, `code` or `sourcecode` directive, whose language is its argument, compared in its
+  case: `.. code-block:: bash`. A literal block has no language, so `language` keeps none. The
+  value is the block's lines dedented, without its options (`:linenos:`) or the blank lines at its
+  end, at the line of its first; an empty directive's is at the directive's line.
+- **table.** Each grid table and each simple table that has a header of one row: the row above a
+  grid table's border of `=`, or above a simple table's middle border. A table without a header gives no value, since no column is
+  named. A cell's lines are joined by a space and read as prose, at its row's first line. A simple
+  table's columns start at the runs of `=` of its top border, the last running to the end of the
+  line, and a line whose first column is blank goes on the row above it. A grid table's cells are
+  cut at the columns of its top border's `+`. Where the table target reads a table, errata refuses
+  a grid table with a line those columns do not cut, as where a cell spans columns or rows, and a
+  header of more than one row, or with a rule under a header cell that spans columns; any other
+  target passes over such a table. A simple table with no bottom border, a border of `=` followed
+  by a blank line, a line indented less than the table, as where the next list item follows, or
+  the end of the file, is refused whatever the target, since docutils reads no table there and its
+  rows would run on into the rest of the file. A column counts one for each
+  character and a tab moves to the next multiple of 8, so a table aligned by the width of East
+  Asian characters is cut wrong.
+
+Inline markup reads as its text, in titles, prose and cells: ``` ``literal`` ```, `**strong**`,
+`*emphasis*`, `` `interpreted text` `` with a role before or after it (`` :ref:`x` ``), and a
+reference or a role written with a target, `` `text <target>`_ ``, keep only their text. A
+backslash escapes the character after it. Markup starts and ends where docutils lets it, with
+ASCII punctuation only: after a blank or an opening punctuation mark, and before a blank or
+punctuation. docutils also takes Unicode punctuation there, so `«*x*»` keeps its stars here.
+
+errata does not understand, and reads as written or not at all: any other directive, whose content
+it passes over, `include` among them, so an included file is not read; `highlight`, so a literal
+block has no language even where Sphinx gives it one; roles and substitutions beyond the inline
+markup above, so `name_`, `[1]_` and `|name|` stay as written; quoted literal blocks, doctest
+blocks, `csv-table` and `list-table`; and a field or definition list, read as prose.
+
+A match never runs from one piece into the next, and all of them share one time limit and one cap
+on values, as for `markdown`. The text read is no longer than the file, give or take a line end.
+Sections of one path that nest, `A` under `A`, share it. There are 64 title styles, 32 characters
+with an overline or without, so sections nest at most 64 deep, and the pieces the target reads
+may be at most 12 times the size of the file in all, checked before a value is copied.
+
+#### HTML structure
+
+A project's docs site or a generated page makes the same claims as its Markdown. The `html`
+extractor reads an HTML file with the fields and targets of the `markdown` extractor, so one rule
+reads a claim whichever of the two a page is written in:
+
+```yaml
+extract:
+  marker:   {html: {file: docs/index.html, target: comment, pattern: 'errata:version (\S+)'}}
+  go:       {html: {file: docs/install.html, target: section, section: Install > Requirements, pattern: 'Go (\d+\.\d+)'}}
+  install:  {html: {file: docs/install.html, target: code, language: bash, section: Install}}
+  web_port: {html: {file: docs/hosts.html, target: table, column: Port, key: Host, row: web}}
+```
+
+errata reads the file with the tokenizer of
+[golang.org/x/net/html](https://pkg.go.dev/golang.org/x/net/html), in one pass, and takes each
+line from the offset of a token's bytes in the file. It builds no document tree: it follows the
+headings, `pre` elements and tables as they open and close, and the end tags a browser implies,
+such as a `<td>` with no `</td>`, end where the next one starts. Text is what a browser shows: a
+character reference such as `&amp;` or `&lt;` reads as the character, and a run of blanks is one
+space. A line feed right after `<pre>` is the tag's, as in a browser, and CDATA in an `<svg>` or
+a `<math>` reads as its text.
+
+errata follows the elements as a browser's parser does, from the start of the file, so a
+`<pre>` or a heading ends where a browser ends it: at its own end tag, at the end tag of an
+element open around or inside it, such as `<div><pre>a</div>b`'s `</div>`, at the start of the
+next cell for one in a cell, or, for a heading, at the next heading. It follows the page's
+mode as a browser does, and the page's first doctype sets it by the HTML standard's rules, when
+nothing but blanks and comments comes before it. `<!DOCTYPE html>`, in any case and spacing, puts
+the page in standards mode, where a `<table>` ends a `<p>` open, and so does a doctype the
+standard does not mark quirky, such as XHTML 1.0 Strict's or `about:legacy-compat`. A doctype it
+marks quirky, such as HTML 4.01 Transitional's without its system identifier, puts the page in
+quirks mode, where the table opens inside the p, and so does a page with no doctype or with text
+or a tag before it. A doctype after the first changes nothing. A Markdown file's HTML blocks
+always read in standards mode, and a doctype in one changes nothing. An end tag of an element
+that is not open closes nothing, as in a browser, and a `<table>` in a table but outside a cell
+ends that table. A test holds errata to the HTML standard's tree builder (golang.org/x/net/html's
+`Parse`) on generated HTML: each pre's, heading's and cell's text is the text the tree builder
+puts in that element. errata reopens a formatting element a block's end closed before the next
+text, as a browser does, so `<h1>a<div><b></div>c<h2>` opens the `<h2>` inside the `<h1>`. Where
+the builder would reorder formatting elements around a pre or a heading (its adoption agency, for
+`<b><pre>a</b>`), and for a heading opened inside a heading, errata refuses the file at that
+tag's line rather than read it otherwise; close the elements in order. Text a page puts in a table outside a cell, which
+a browser moves before the table, errata reads where it is written.
+
+- **comment.** Each comment, `<!--` to `-->` or `--!>`. One in a `<script>`, `<style>`,
+  `<textarea>`, `<title>` or a tag's attribute is no comment, as in a browser; neither is a
+  doctype, a processing instruction such as `<?php ?>`, or a `<!--` with no end after it. `<!-->` and
+  `<!--->` are empty. The value is the text with the blanks at either end left out, entities as
+  written, at the line where the comment starts.
+- **section.** What a browser shows under each heading, `<h1>` to `<h6>`, that the path names, to
+  the next heading of the same or a higher level, its subsections and their headings included.
+  A heading names the path as in a Markdown file; its text is what a browser shows of it,
+  compared whole and in its case, a `<br>` in it a space. A link inside the heading to a place in
+  the page, its `href` starting with `#`, whose text is blank or only `¶`, `§`, `#`, `🔗` or a
+  zero width space, is the heading's link to itself, which
+  Sphinx, MkDocs, Docusaurus, rustdoc, pkg.go.dev and GitHub write, and no part of its text or of
+  the section's prose: `<h2>Install<a class="headerlink" href="#install">¶</a></h2>` is
+  `Install`. Every heading counts, inside a `<section>`, a `<div>` or a table
+  too; a heading's start ends a heading still open. Each element a browser starts a line at, the
+  list under [Markdown prose](#markdown-prose), ends a line, so a paragraph or a list item is a
+  line; a `<pre>` or a `<textarea>` keeps its lines. The value is at the heading's line, and a
+  capture at the line where its match starts.
+- **code.** Each `<pre>` element (and `<listing>`), its text as written, tags left out and
+  references decoded, less a newline at its end. Its language is the one a class names,
+  `language-x` or `lang-x`, the first such class of the `<pre>` or else of a `<code>` inside it:
+  `<pre><code class="hljs language-go">` is `go`. A `<code>` outside a `<pre>` is inline code,
+  not a block. The value is at the line of its first character, or of the `<pre>` when it is
+  empty.
+- **table.** Each `<table>`. Its first row with a cell holds the headers, `<th>` or `<td>`; each
+  row after it gives the cell under the header `column`, or only the rows whose `key` cell is
+  `row`, at the row's line (its `<tr>`, or its first cell when the row has no `<tr>`). A cell is
+  what a browser shows of it, on one line. `colspan` and `rowspan` are not followed: each cell is
+  one column of its row. A table inside a cell is a table of its own, and the cell's text ends
+  where it starts.
+
+errata does not read what a browser runs or does not show: `<script>`, `<style>`, `<template>`,
+`<noscript>`, `<iframe>`, `<title>`, `<noembed>` and `<noframes>`, nor attributes other than a
+`<pre>` or `<code>` class, nor anything JavaScript builds when the page loads. It leaves out the
+text of the obsolete `<xmp>` and `<plaintext>` too, although a browser shows it. A page whose content a script renders has nothing for errata to read; point the rule at the
+source the page is built from.
+
+Matches, values and the heading path work as for the `markdown` extractor: a match never runs from
+one piece into the next, and all of them share the `regex` extractor's time limit and cap on
+values. The pass is bounded by the tokens a file may hold and by 1000 elements open at once
+(Limits); the text read may be at most 12 times the size of the file, since sections of one path
+nest at most six deep.
+
+#### Markers
+
+A rule names the files it reads. A marker turns that around: the claim names the rule. A document
+tags a claim inline with the id of the rule that checks it, errata finds the markers in the files
+git tracks, and the `marker` extractor gives the rule the value of each marker that names it.
+
+```markdown
+The API listens on port <!-- errata: api-port -->8080<!-- /errata -->.
+```
+
+```yaml
+checks:
+  - id: api-port
+    reason: >
+      The docs tell an operator which port to open. If the chart moves the port and the docs
+      stay, the firewall is opened on the old one.
+    scope: repo
+    extract:
+      doc:  {marker: {}}
+      conf: {yaml: {file: deploy/api.yaml, path: 'spec.ports[0].port'}}
+    agree: [doc, conf]
+```
+
+| Field | Required | Meaning |
+|---|---|---|
+| `files` | no | the files to walk, each a file or a glob over the files git tracks (see [A set of files](#a-set-of-files)); default every file git tracks, `**` |
+| `max_bytes` | no | the largest file the walk parses, and what the values hold in all (see Limits) |
+
+A marker opens with the HTML comment `<!-- errata: ID -->`, where `ID` is a rule's id, and closes
+with `<!-- /errata -->`. Its value is the text between the two, with the blanks at either end left
+out and each run of blanks inside, a line break among them, read as one space, so a value that a
+line wrap splits reads as one line. Markers do not nest. Each value is at its file and the line
+where it starts, so one rule gathers markers from many files and an `agree` that fails lists each
+place:
+
+```text
+  said: agree: the values differ
+          "8080" at README.md:3 (doc), cmd/main.go:3 (doc), deploy/api.yaml:3 (conf)
+          "8081" at docs/ops.md:3 (doc)
+```
+
+Where a marker may stand depends on the file:
+
+- In Markdown (`.md`, `.markdown`), a marker is an HTML comment the CommonMark parse reads as
+  HTML: inline in a paragraph, a heading, a list item or a table cell, or a comment block on a
+  line of its own. The value is the prose between the markers, as the `text` extractor reads it,
+  so `**8080**` reads `8080`, and it stays in one block and one table cell: a marker opened in one
+  paragraph or cell and closed in the next is unknown. A marker inside a fenced or indented code
+  block or a code span is no marker. One inside other HTML, such as a `<div>` block, makes the
+  rule unknown: errata reads markers only in comments the Markdown parse gives it, and pairing
+  one with its closer across the HTML's own text is not built.
+- In a file the comment lexer reads (see [Code comments](#code-comments)), a marker is written
+  inside a comment of the language, as the same HTML comment text: `// Listens on <!-- errata:
+  api-port -->8080<!-- /errata -->.` A marker inside a string literal is no marker, and that
+  includes a Python docstring. A value may run on through a run of comments with only blanks
+  between them, such as consecutive `//` lines, and a `*` that starts a line of a block comment
+  is left out of it; a value that runs out of its comments into code makes the rule unknown.
+- In HTML and XML, a marker is a comment of the file, and its value the text between, tags and
+  all.
+- Any other file is passed over, unless it holds a marker, which makes the rule unknown: errata
+  cannot tell whether the file reads it as one. reStructuredText and AsciiDoc are such files: an
+  HTML comment there renders as visible text, so a marker written in one is refused rather than
+  read.
+
+A marker that cannot be read whole makes every rule whose walk reads its file unknown, never a
+value: one no `<!-- /errata -->` closes, a closer with no marker open, a marker opened inside
+another, an id that is no check's id form, a closer with more after `/errata`, and a `<!--` that
+reads like a marker but stands inside another comment or has no `-->`. A near miss is no marker
+and is passed over without a word: `ERRATA:` in capitals, a blank before the colon, and a comment
+in a link reference definition, which the Markdown parse does not read as HTML. Only one whose
+closer is right is refused, as a closer with no marker open.
+
+A marker that no rule reads tags a claim that nothing checks, which is a check silently off. So
+whenever a rule reads markers, errata adds a check of its own, `errata-unbound-markers`, after the
+config's checks. It walks the files the `marker` extractors of every rule walk, together, and is
+false for each marker there whose file no `marker` extractor of the rule it names reads. That is a
+marker naming no check, one naming a check that reads no markers, and one in a file its rule's
+`files` leave out while another rule's take it in. A marker outside every rule's `files` is not
+its to report: a repository whose test fixtures hold marker text, as errata's own does, narrows
+`files` to its documents and code and leaves the fixtures out of every walk (owner decision
+2026-11-03). It is a rule, with one extractor `unbound` and the assert `size(unbound) == 0`, so it
+reports like one, and errata list prints it with the rules' files; `required` does not list it,
+and a check of the config may not take its id while a rule reads markers. A rule that reads
+markers and finds none is unknown unless `allow_empty` lists the extractor.
+
+The walk reads git's index, as a glob does: only the files a clone holds, never an untracked or
+ignored file, the fixtures of witnesses only on a witness's run, and in a sparse checkout it is
+unknown wherever the checkout leaves a file out (see [A set of files](#a-set-of-files)). A file
+git tracks as a symlink that a glob matched is passed over: what it leads to is read under its
+own name when git tracks it, so a repository that tracks `AGENTS.md` as a link to `CLAUDE.md`
+reads its markers once. A link that `files` names outright makes the walk unknown, and the message
+names the target to list instead: read under the link's name, a marker would be bound to a file
+the built-in check reads under the target's. It parses only a file that holds the bytes
+`errata`, and a file over `max_bytes` it reads in pieces for those bytes alone: without them it is
+passed over, and with them the rule is unknown. A run reads and parses each file once, however
+many rules' walks and the built-in check's take it in, and each walk filters the one result.
+[ADR 0017](docs/adr/0017-a-marker-names-its-rule-and-errata-finds-every-marker.md) says why the
+syntax and the walk are what they are.
 
 #### XML paths
 
@@ -2824,7 +3400,7 @@ A file in a pull request can be large or hostile, and an extractor must not stal
 over it. errata enforces the limits below on what it reads: the file size, the nodes a file can
 hold, the nodes YAML aliases add, the values, the depth, a pattern's capture groups, the regex time,
 the work of a path's filters and an XML path's terms, what a Markdown parse may build and how long
-it may run, the work of an INI, properties or env file read, how deep a shell script or a
+it may run, the tokens of HTML and how deep its tables nest, the work of an INI, properties or env file read, how deep a shell script or a
 Jenkinsfile nests, the
 lines and tokens of a go.mod, and the entries and depth of a walk of the repository. It does not
 bound the memory a read takes. Peak memory depends on the file's shape within those limits, and the
@@ -2856,10 +3432,16 @@ core machine.
 | filter depth | 4 | parsing a filter and testing a member each recurse once for each filter nested inside another; membership takes 2 |
 | XML path terms | 32 steps and predicates | each step reads at most every node of the file once, and each predicate the nodes its step keeps, so a path costs the file's nodes times its terms. 32 `//` steps over 8.4 million elements take 2.4 s after the parse. A comparison is counted against the filter work: 256 for each child or attribute it looks at, and the literal's length for each value of the same length it compares |
 | Markdown parse time | 30 s for each 32 MiB of `max_bytes`, and never less than 30 s | goldmark is quadratic on some shapes and cannot be stopped from outside, so errata looks at the clock on every call goldmark makes into its parsers. 32 MiB of express's changelog, repeated, parsed in 15 s on a loaded 4 core machine and in 1.9 s on the build node. Of 42 hostile shapes at 32 MiB, each was read or refused at most 0.08 s after the limit on the build node. Three of them, lines of `*` and `_` runs, ran to the limit until the scan for closing runs below had a limit of its own. A fourth ran to the limit until that scan counted goldmark's walk of the paragraph's runs: a paragraph of runs followed by lines of emphasis inside words |
-| Markdown nodes | `max_bytes` divided by 4 | counted as the parse builds them: three for each inline node, two for each line, one for each block and each emphasis. The aws-sdk-go-v2 changelog of 2.9 MB makes the most of 5962 real Markdown files, 321763, 4% of the limit at the default |
+| Markdown nodes | `max_bytes` divided by 4 | counted as the parse builds them: three for each inline node, two for each line, one for each block and each emphasis. For the `markdown` extractor's table target, each paragraph that may hold a table counts, before the table is read, three for each cell its rows may make, a cell for each column of the delimiter row, and one for each row and three for the table. The aws-sdk-go-v2 changelog of 2.9 MB makes the most of 5962 real Markdown files, 321763, 4% of the limit at the default |
+| Markdown table padding | as many empty cells as the table has bytes | a GitHub table gives each row a cell for each column of its delimiter row, so n columns over n rows of one byte made n squared cells: 9.6 KB made 2.56 million and allocated 512 MiB. errata counts the cells each row lacks, at least the columns less the row's pipes and one, and refuses the table past its bytes, as cmark-gfm bounds the cells it completes, so a table's cells are linear in its bytes |
 | Markdown open blocks from line to line | `max_bytes` divided by 4 | goldmark records each block other than a paragraph that goes on to the next line and makes no node for it: 32 MiB of lines of 100 block quotes made 33 million and took 3.3 GB without the limit. The most in a real file is 56921 |
 | pieces of the prose | `max_bytes` divided by 4 | a run of the file's bytes, or a space or newline errata writes. A run of blanks rewritten as one space starts two, so 32 MiB of a letter and a tab took 3.3 GB without the limit. The most in a real file is 92147 |
 | Markdown nesting | 1000 levels | the text of a paragraph in 998 block quotes is at the limit |
+| AsciiDoc pieces | `max_bytes` divided by 4 | a piece is a value, a run of lines of the text read, or a table cell, each 24 to 32 bytes, so a read holds about six times its limit at most, as the Markdown pieces do. The densest shape, lines of `//` read by a comment pattern, reaches the limit at 8388608 comments in 2.5 s with 1480 MiB allocated on a worker node (3 cores) at 32 MiB, and a paragraph of 32 MiB of `a` and `//` lines, which the limit lets through, takes 2.4 s and allocates 1645 MiB. Without a pattern each piece is a value, and the read stops at 100000 |
+| AsciiDoc nesting | 1000 levels | delimited blocks inside one another, such as `====` and `****` in turn, each one level. 998 nested blocks around 32 MiB of text take 1.4 s and allocate 32 MiB on a worker node |
+| HTML tokens | `max_bytes` divided by 4, and one more | a tag, a comment, a doctype or a run of text is one token, for the `html` extractor and for the HTML blocks of a Markdown file together. One tokenizer reads all of a Markdown file's HTML blocks; a block that ends inside a tag, a comment or a script's text needs a fresh one, with a buffer of 4096 bytes, which counts as 1024 tokens, and the tokenizer has read that comment or text past the block's end, to the end of the HTML at worst, so those bytes count too, one token for every 4. Without that count 500 blocks of `<div><!--` before 16 MiB of HTML took 56 s. The tokenizer reads each byte once; the bound is on what errata builds for each token. The densest of 347 real HTML files over 10 KB measured, 14 MB in all, has a token for every 6.4 bytes (RE2's syntax page). On builder, 32 MiB of `<b>xyzwv`, at the limit, read as one code block in 0.84 s with at most 745 MB of heap, and the Go spec repeated to 32 MiB in 0.25 s and 306 MB |
+| HTML text pieces | `max_bytes` divided by 4 | as for the pieces of Markdown prose: 32 MiB of a letter and a tab under a heading is refused at the limit after 0.78 s and 1.04 GB of heap, the densest shape measured; cells of `<td>ab` reach the token limit at 0.94 GB |
+| HTML nesting | 1000 elements open | errata follows the elements open in an HTML file, or in each HTML block of a Markdown file, with one entry for each (HTML structure). Every element open counts: a table nested in a cell opens four, `table`, `tbody`, `tr` and `td`, the `tbody` and `tr` implied when a page leaves them out, as a browser implies them, so tables nest 250 deep. A formatting element a block's end closed is reopened before each text that follows, as a browser reopens it, at most 3 of a name and 39 in all: 8 MiB of short paragraphs after a `<div>` that closed 36 of them scan in 0.59 s on builder, against 0.25 s with none to reopen, about 2.4 times as long, and the time still grows with the file's size alone |
 | runs of `*` and `_` in one paragraph | 5000 | goldmark matches each closing run against the runs open before it, so a paragraph costs up to the square of its runs: with goldmark 2.1.8 the slowest of ten shapes of 5000 measured, such as `****_a*a` 1663 times on one line, takes 0.062 s on the build node. From 256 bytes or more before the end of a line goldmark matches no emphasis at once, so there each emphasis is two runs. A CommonMark table, which errata reads as one paragraph, of 300-byte rows with `**x**` and `_y_` in the cells is refused at 1251 rows; a table of narrow rows, whose emphasis matches at once, is not. The most in a real paragraph is 286 |
 | Markdown scan for closing runs | `max_bytes` times 2 | from each run of `*` or `_` that opens with fewer than 256 bytes left on its line, goldmark looks to the end of the line for a run to close it, so runs that close nothing cost up to 255 bytes each: without the limit, 32 MiB of lines of 85 of them scanned 330 MB, ten bytes for each of the file's, in 2.2 s on the build node. errata counts the rest of the line for each such run left open, and the bytes up to the closing run for each emphasis goldmark matches at once, which goldmark reads at most twice. From such a run that may also close, goldmark walks the runs of the paragraph before it, and errata counts a byte for each run so far, before every unmatched run that may close and every emphasis matched at once whose opening run follows a character goldmark does not read as a space (goldmark's spaces are tab, line feed, carriage return, space and the spaces above ASCII, not the vertical tab or the form feed): 4990 runs followed by lines of `a*b*c` took 3.99 s at 1 MiB and 16.6 s at 4 MiB on the build node, and ran to the time limit at 32 MiB, where the build node now refuses it in at most 0.39 s. Of 5341 real Markdown files (a Go module cache and npm packages, 42 MB, measured on 2026-10-25 and not kept), the most is 140541 bytes, 0.2% of the limit at the default, and the densest counts 0.99 for each of its bytes. goldmark up to 2.1.6 scanned from every run to the end of its line, so a line of runs cost the square of its length |
 | link reference definitions | 10000000, the definitions at the start of a paragraph times its lines | goldmark copies the paragraph's lines once for each definition it takes out: 3162 definitions, at the limit, take 0.08 s. The most in a row in a real file is 343. Put blank lines between the definitions |
@@ -2880,6 +3462,7 @@ core machine.
 | the values of `env`, or of `files` | 100000 and `max_bytes` in all | a CI file repeats a value for each job that inherits it, so the values of every file, job and step together hold to the limits of one extractor's. A Jenkinsfile is read again for each stage that sets the variable, all within the extractor's one work budget, so a file of hundreds of such stages is refused at it: 400 of them are refused in 1 s |
 | `package_version` files | 64 in `files` | a manifest gives at most two values, so 64 files stay under the limit on values by construction; a package has a manifest or two of each kind, and a rule over more packages names several extractors |
 | files one extractor reads | `max_bytes` in all | a walk may find many files, and symlinks or copies may repeat one, so the files of one extractor are read up to its `max_bytes` together, as one file is; in `tool_version` and the `files:` of yaml, json, toml and regex, links that end at one file read it once, and `env` and `package_version` read each name they list. 100 links to a 32 MiB file take 0.4 to 0.7 s, where reading each link took 31 to 64 s in all before |
+| a walk for markers | 100000 files, 2 GiB read, 100000 markers | the `marker` extractor opens every file its `files` name, and `errata-unbound-markers` every file any of them names. Measured on the builder node, each figure in proportion to the walk: 20000 small files, a tenth of them Markdown and a tenth Go holding a marker each, took 0.66 s and 144 MiB allocated, so 100000 take about 3.3 s; 256 MiB of files without the bytes `errata` took 0.34 s, so 2 GiB about 2.7 s; 128 MiB of Markdown that holds them, each file parsed, took 3.0 s, so 2 GiB about 48 s. A run reads and parses each file once, whichever walks take it in, so the cost of n rules that read markers over one tree is one walk and n listings of git's index, not n + 1 walks. Every file counts its size against the bytes read, a file over `max_bytes` too, which the walk reads in pieces of 1 MiB for the bytes `errata`. A Markdown file it parses holds to the Markdown limits above, and the markers of one walk to the cap on values |
 | file name | 4096 bytes | the longest path Linux opens. A longer `file:` in an extractor is a load error, since every message about a file names it whole |
 | quoted text | 64 bytes | errata's message that quotes a key, an anchor or a number from a file, or a path, a pattern, a file or a selector from `errata.yaml`, cuts it there and writes `...`, since a message goes into the CI log and the JUnit report. A parser's message, such as yaml.v3's for an unknown anchor, which quotes the anchor's name, is cut at 256 bytes. A rule's message quotes a value of at most 256 bytes whole. Of a longer one it quotes 256 bytes, from 32 bytes before the first byte where it differs from the other values of the message, marked as in `(from byte 266 of 299)`, so two long values that differ only at the end still print differently |
 
@@ -2897,6 +3480,11 @@ examples: 2.0 GB for one paragraph of nine-byte lines lazily under 499 list item
 same lines under a setext underline, and 1.7 GB for GitHub table rows read as one paragraph. A
 refusal for nodes, open blocks or pieces says to raise `max_bytes`; one for the time, the nesting,
 the runs, an HTML line or the prose says that a `regex` extractor can still read the file.
+
+A `comment` extractor's match time, values and capture groups are bounded as a `regex` extractor's
+are. Its lexer reads the file once, each byte a bounded number of times, since every fence of a raw or
+long string is bounded, and holds the comments' text, which is never longer than the
+file.
 
 The `ini` and `properties` values hold at most `max_bytes` bytes in all, as every extractor's
 do; a git key with no `=` reads as `true` and a byte Java reads as U+FFFD takes three, so the
@@ -3066,6 +3654,8 @@ Every value is the one the loader resolved, with these defaults written out:
 - `max_bytes` of every extractor and of a generated check: 33554432 (32 MiB) when it sets none;
 - `dialect` of an `ini` extractor: the one the file's name chooses when the extractor names none
   (see [INI files](#ini-files));
+- `language` of a `comment` extractor: the one the file's name chooses when the extractor names
+  none (see [Code comments](#code-comments));
 - `compare` of an `agree` rule: `text` when the rule sets none;
 - `normalize`, `allow_empty` and `skip_not_literal` of a rule: an empty list when the rule sets
   none.
@@ -3393,24 +3983,9 @@ HIGH or CRITICAL finding with a fix produces a patch release once the full gate 
 
 ## Architecture
 
-Each package has one job, and the domain types import nothing else:
-
-| Package | Job |
-|---|---|
-| `internal/check` | the domain: check, rule, extractor, value, location, assertion, scope, verdict, result, report |
-| `internal/config` | reads `errata.yaml`, strictly, and builds each rule's extractors and assert |
-| `internal/engine` | decides which checks run and which are skipped |
-| `internal/protocol` | runs a check program and turns its exit code into a verdict |
-| `internal/program` | starts every program errata runs, with its stdin, timeout, output bound and process group |
-| `internal/rule` | evaluates a rule: runs its extractors, compares their values or evaluates its assert in CEL |
-| `internal/semver` | reads versions and ranges in five ecosystems' syntax, for `compare: semver` and the assert helpers |
-| `internal/extract` | builds the extractors a rule names and reads their values from files, one reader package beneath it for each kind |
-| `internal/provider` | the interface for running systems, and the reconciler model |
-| `internal/report` | the text, JUnit and SARIF outputs |
-| `internal/cli` | flags, wiring and exit codes |
-
-[docs/architecture.md](docs/architecture.md) explains the seams between them and the choices
-behind each one.
+Each package has one job, and the domain types in `internal/check` import nothing else of
+errata's. [docs/architecture.md](docs/architecture.md) draws how a run moves through the
+packages, the imports between them, the seams and the choices behind each one.
 
 ## Contributing
 

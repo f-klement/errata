@@ -88,8 +88,8 @@ Claims about how values sit together, not only what they are.
 ## v0.2.3: consolidation before plugins
 
 The places where a new extractor, check kind or reader is added today each hold a case per kind;
-this release makes each of them one table, so the readers of the later v0.2 releases and the
-plugins of v0.3.0 are added in one place. It also clears the backlog that has no other release,
+this release makes each of them one table, so the readers of the later releases and the
+plugins of v0.5.0 are added in one place. It also clears the backlog that has no other release,
 which brings two features with it:
 
 - A check may name a witness, a fixture on which it must report false, so a check that cannot
@@ -218,7 +218,7 @@ The claims documentation makes, read by its structure.
   device's web interface, recorded with its source and date, and an example check that fails
   once the fact is older than its stated lifetime.
 
-## v0.2.6: literals and dependencies
+## v0.3.0: literals and dependencies
 
 Values written in code, and one version pinned in many places.
 
@@ -236,7 +236,7 @@ Values written in code, and one version pinned in many places.
 - Smaller items: an embedded step with no parser is refused, and fuzzing covers file sets with
   embedded steps.
 
-## v0.2.7: host config and formats
+## v0.4.0: host config and formats
 
 The files a host is configured with, and the formats the earlier readers left open.
 
@@ -249,7 +249,7 @@ The files a host is configured with, and the formats the earlier readers left op
   consuming tool computes marked as not literal.
 - A SARIF result for a file that does not exist points at its check in errata.yaml.
 
-## v0.3.0: the plugin system
+## v0.5.0: the plugin system
 
 errata stays one small binary, and further integrations install on demand.
 
@@ -264,7 +264,7 @@ errata stays one small binary, and further integrations install on demand.
   cancelled apart from one that timed out.
 - The CSV and HCL (Terraform, Packer, Nomad) extractors are the first two plugins.
 
-## v0.4.0: container and manifest readers
+## v0.6.0: container and manifest readers
 
 The files that describe containers and clusters, read in core.
 
@@ -276,7 +276,7 @@ The files that describe containers and clusters, read in core.
 - Argo CD and Flux resources: sources, revisions and chart versions.
 - `--base`, the diff range, detected in GitLab, GitHub Actions and Jenkins.
 
-## v0.4.1: fields git cannot remove
+## v0.6.1: fields git cannot remove
 
 The feature no other tool ships.
 
@@ -291,7 +291,7 @@ The feature no other tool ships.
   with extractors for Helm charts and values and for Kustomize files. errata never applies
   anything.
 
-## v0.5.0: drift verdicts
+## v0.7.0: drift verdicts
 
 - The reconciler model: whether a reconciler runs, how often, whether it prunes and whether it
   repairs a hand edit. It turns drift into a verdict, so a difference Argo CD repairs in minutes is
@@ -300,13 +300,13 @@ The feature no other tool ships.
 - Beside it, the errata-ext-baremetal plugin: a bare metal and systemd provider reading files over
   SSH and `systemctl show`, with the operating system vendor as a competing writer.
 
-## v0.6.0: refactor and hardening
+## v0.8.0: refactor and hardening
 
 No new features. Deepen what the earlier releases have bent, and harden what CI users depend on.
 
 ## Plugins
 
-The plugin protocol ships in v0.3.0. After that, each plugin is released on its own tag, apart
+The plugin protocol ships in v0.5.0. After that, each plugin is released on its own tag, apart
 from the releases above, and a plugin that is not scheduled has no release yet.
 
 A plugin is built when a real repository needs it: one errata already checks, or one a user names
@@ -344,5 +344,4 @@ Planned as plugins, with no release yet:
 
 ## Later
 
-- Attested facts: a value no API can read, recorded with its source and date, checked for both.
 - Whether every check must prove it can fail, with a fixture on which it reports false.

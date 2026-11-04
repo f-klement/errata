@@ -1,33 +1,33 @@
-package text
+// Package mdparse is the Markdown parse that the readers of Markdown share:
+// Parse gives goldmark's tree of a file with every node's offsets in it,
+// under a guard that bounds its time, its nodes and its continuations, and
+// Prose maps text built from pieces of the file back to the file's lines.
+// It lives below core, as gitindex does, since no reader imports another.
+package mdparse
 
 import (
 	"bytes"
 	"fmt"
 	"slices"
-	"strings"
 	"time"
 	"unicode"
 
 	"github.com/yuin/goldmark/v2/ast"
+	"github.com/yuin/goldmark/v2/extension"
 	"github.com/yuin/goldmark/v2/parser"
 	"github.com/yuin/goldmark/v2/text"
 	"github.com/yuin/goldmark/v2/util"
 
 	"github.com/f-klement/errata/internal/extract/core"
+	"github.com/f-klement/errata/internal/extract/core/htmlparse"
 )
 
-// This file is the Markdown parse that the text extractor reads, kept apart
-// from that extractor so that another reader of Markdown can share it:
-// parseMarkdown gives goldmark's tree of a file with every node's offsets in
-// it, and prose maps text built from pieces of the file back to the file's
-// lines.
-//
 // errata runs goldmark as CommonMark, without extensions. Its parse is
 // quadratic in the file on several shapes, unclosed comments and link
 // destinations, deep block quotes and long lists among them, and nothing
 // outside it can stop it. So errata gives it parsers that wrap goldmark's own
 // and look at a guard on every call. The guard stops the parse, by a panic
-// that parseMarkdown recovers, once it has run past its time limit or past
+// that parse recovers, once it has run past its time limit or past
 // one of the bounds below. Between two looks at the guard, goldmark does at
 // most one pass over a paragraph or one of the bounded costs the bounds below
 // name: it scans HTML and link destinations by hand, a byte at a time. Runs
@@ -68,19 +68,19 @@ const (
 	maxDefinitionCopies = 10_000_000
 
 	// markdownTimeLimit bounds the parse of a file of up to the default
-	// size; a larger max_bytes raises it in proportion (markdownTime). An
+	// size; a larger max_bytes raises it in proportion (Time). An
 	// ordinary file parses slower than a regex search reads it: 32 MiB of
 	// express's changelog, repeated, took 15 s with the machine's four
 	// cores loaded three times over.
 	markdownTimeLimit = 30 * time.Second
 
-	// maxHTMLLine is the longest line that may start or continue an HTML
+	// MaxHTMLLine is the longest line that may start or continue an HTML
 	// block. goldmark scans such a line in calls the guard cannot stop: a
 	// tag of 32 MiB took 0.59 s, and 0.02 s at the limit. The limit dates
 	// from goldmark v1, whose regular expressions took 11 s over the same
 	// line. The longest line of HTML in the real files measured is 1801
 	// bytes.
-	maxHTMLLine = 1 << 20
+	MaxHTMLLine = 1 << 20
 
 	// markdownBytesPerContinuation is how many bytes of max_bytes allow one
 	// continuation: a block other than a paragraph that goes on from one
@@ -102,10 +102,10 @@ const (
 	markdownBytesPerPiece = 4
 )
 
-// markdownTime is the time limit of the parse of a file of up to limit
+// Time is the time limit of the parse of a file of up to limit
 // bytes: markdownTimeLimit up to the default size, and in proportion to the
 // limit above it.
-func markdownTime(limit int64) time.Duration {
+func Time(limit int64) time.Duration {
 	if limit <= core.DefaultMaxBytes {
 		return markdownTimeLimit
 	}
@@ -143,7 +143,19 @@ var (
 // markdownParser is goldmark's CommonMark parser with every block parser,
 // inline parser and paragraph transformer wrapped to look at the guard, in
 // place of goldmark's own, which WithDefaultParsers(false) leaves out.
-var markdownParser = func() parser.Parser {
+// tablesParser is the same with GitHub's tables as well (ParseTables).
+var markdownParser, tablesParser = guardedParser(false), guardedParser(true)
+
+// tableTransformers is the option of goldmark's table extension that reads
+// a table from a paragraph's lines: the first of the two its ParserOptions
+// gives. The second rewrites a code span in a cell that holds \| so that
+// its value is a string of its own, which has no offsets in the file, and
+// errata leaves it out (Prose.dropPipeEscapes reads the cell instead).
+// TestTablesParseAsGoldmark holds the option to the extension's.
+var tableTransformers = extension.NewTableParser().ParserOptions(nil)[0]
+
+// guardedParser is markdownParser, with GitHub's tables when tables is set.
+func guardedParser(tables bool) parser.Parser {
 	var blocks []util.PrioritizedValue[parser.BlockParser]
 	var inlines []util.PrioritizedValue[parser.InlineParser]
 	var transformers []util.PrioritizedValue[parser.ParagraphTransformer]
@@ -160,43 +172,69 @@ var markdownParser = func() parser.Parser {
 	for _, v := range commonMarkTransformers {
 		transformers = append(transformers, util.Prioritized[parser.ParagraphTransformer](guardedTransformer{v.Value}, v.Priority))
 	}
-	return parser.New(parser.WithDefaultParsers(false), parser.WithBlockParsers(blocks...),
-		parser.WithInlineParsers(inlines...), parser.WithParagraphTransformers(transformers...))
-}()
+	opts := []parser.Option{parser.WithDefaultParsers(false), parser.WithBlockParsers(blocks...),
+		parser.WithInlineParsers(inlines...), parser.WithParagraphTransformers(transformers...)}
+	if tables {
+		// goldmark's table transformer has the priority 200, after the link
+		// reference definitions at 100; the guard looks before it.
+		opts = append(opts, tableTransformers,
+			parser.WithParagraphTransformers(util.Prioritized[parser.ParagraphTransformer](tableGuard{}, 150)))
+	}
+	return parser.New(opts...)
+}
 
-// markdownDoc is a Markdown file parsed. Every node's offsets index src.
-type markdownDoc struct {
-	// src is the file with every CRLF read as LF, so its lines are the
+// Doc is a Markdown file parsed. Every node's offsets index Src.
+type Doc struct {
+	// Src is the file with every CRLF read as LF, so its lines are the
 	// file's, with its front matter, if any, written over with spaces.
-	src  []byte
-	root ast.Node
-	// front is the front matter's text between its fences, from offset
-	// frontAt of src; nil when the file has none.
-	front   []byte
-	frontAt int
-	// maxPieces is the most pieces its prose may hold.
+	Src  []byte
+	Root ast.Node
+	// Front is the front matter's text between its fences, from offset
+	// FrontAt of Src; nil when the file has none.
+	Front   []byte
+	FrontAt int
+	// maxPieces is the most pieces its prose may hold, and maxTokens the
+	// most tokens the HTML parse may read of its HTML blocks; html is what
+	// that parse found, once it has run.
 	maxPieces int
+	maxTokens int64
+	html      *htmlBlocks
 	// nodes is the guard's count of the nodes the parse made, an upper
 	// bound on those in the tree, and goOn its count of continuations.
 	nodes, goOn int64
 }
 
-// parseMarkdown parses data, which it may change, as CommonMark, past a
-// UTF-8 byte order mark at its start. A file that starts with a line of --- or +++ and has a line of the same, or of ... after
-// ---, further on, starts with front matter, which the parse skips. The parse
+// Parse parses data, which it may change, as CommonMark, past a UTF-8 byte
+// order mark at its start, for the file named file, which its refusals name.
+// A file that starts with a line of --- or +++ and has a line of the same,
+// or of ... after ---, further on, starts with front matter, which the parse
+// skips. The parse
 // takes at most timeLimit and makes at most limit/markdownBytesPerNode nodes.
 // Its tree nests at most maxDepth levels below the document: the text of a
 // paragraph in 998 block quotes is at the limit. Past any bound the parse is
 // refused.
-func parseMarkdown(file string, data []byte, limit int64, timeLimit time.Duration) (doc *markdownDoc, err error) {
+func Parse(file string, data []byte, limit int64, timeLimit time.Duration) (*Doc, error) {
+	return parse(markdownParser, file, data, limit, timeLimit)
+}
+
+// ParseTables is Parse with GitHub's tables, as goldmark's table extension
+// reads them: a paragraph whose second line, or a later one, is a delimiter
+// row such as |---|:-:| becomes a table from the line before it. The guard
+// counts, before goldmark reads a table, the most nodes the table may make.
+func ParseTables(file string, data []byte, limit int64, timeLimit time.Duration) (*Doc, error) {
+	return parse(tablesParser, file, data, limit, timeLimit)
+}
+
+// parse is Parse with the parser md.
+func parse(md parser.Parser, file string, data []byte, limit int64, timeLimit time.Duration) (doc *Doc, err error) {
 	if crlf := []byte("\r\n"); bytes.Contains(data, crlf) {
 		data = bytes.ReplaceAll(data, crlf, []byte("\n"))
 	}
 	data = core.DropBOM(data) // three bytes on the first line: the lines stay the file's
 	lines := int64(bytes.Count(data, newline))
-	doc = &markdownDoc{src: data, maxPieces: int(limit / markdownBytesPerPiece)}
+	doc = &Doc{Src: data, maxPieces: int(limit / markdownBytesPerPiece), maxTokens: htmlparse.MaxTokens(limit)}
 	if at, end, ok := frontMatter(data); ok {
-		doc.front, doc.frontAt = bytes.Clone(data[at:end]), at
+		doc.Front, doc.FrontAt = bytes.Clone(data[at:end]), at
 		for i := range data[:end+3] {
 			if data[i] != '\n' {
 				data[i] = ' '
@@ -227,9 +265,9 @@ func parseMarkdown(file string, data []byte, limit int64, timeLimit time.Duratio
 	g.add(2*lines + 3)
 	pc := parser.NewContext()
 	pc.Set(guardKey, g)
-	doc.root = markdownParser.Parse(data, parser.WithContext(pc))
+	doc.Root = md.Parse(data, parser.WithContext(pc))
 	doc.nodes, doc.goOn = g.nodes, g.goOn
-	if err := checkDepth(doc.root, data); err != nil {
+	if err := checkDepth(doc.Root, data); err != nil {
 		return nil, fmt.Errorf("%s: %w", file, err)
 	}
 	return doc, nil
@@ -269,7 +307,7 @@ func checkDepth(root ast.Node, src []byte) error {
 	for n := root; n != nil; {
 		if c := n.FirstChild(); c != nil {
 			if depth++; depth > core.MaxDepth {
-				return core.TooDeep(lineOf(src, nodeStart(c)))
+				return core.TooDeep(LineOf(src, NodeStart(c)))
 			}
 			n = c
 			continue
@@ -286,8 +324,8 @@ func checkDepth(root ast.Node, src []byte) error {
 	return nil
 }
 
-// nodeStart is the offset where n or the nearest node above it starts, or 0.
-func nodeStart(n ast.Node) int {
+// NodeStart is the offset where n or the nearest node above it starts, or 0.
+func NodeStart(n ast.Node) int {
 	for ; n != nil; n = n.Parent() {
 		if p := n.Pos(); p >= 0 {
 			return p
@@ -296,8 +334,8 @@ func nodeStart(n ast.Node) int {
 	return 0
 }
 
-// lineOf is the line, counted from 1, that holds offset off of src.
-func lineOf(src []byte, off int) int {
+// LineOf is the line, counted from 1, that holds offset off of src.
+func LineOf(src []byte, off int) int {
 	return bytes.Count(src[:min(off, len(src))], newline) + 1
 }
 
@@ -353,7 +391,7 @@ func (g *guard) add(n int64) {
 
 // guardedBlock is a block parser that looks at the guard on every call, and
 // refuses to open a block below maxDepth others. The HTML block parser's
-// refuses a line longer than maxHTMLLine too.
+// refuses a line longer than MaxHTMLLine too.
 type guardedBlock struct {
 	parser.BlockParser
 	html bool
@@ -364,7 +402,7 @@ func (b guardedBlock) Open(parent ast.Node, reader text.Reader, pc parser.Contex
 	g.tick()
 	if len(pc.OpenedBlocks()) >= core.MaxDepth {
 		_, seg := reader.Position()
-		g.stop(fmt.Errorf("%s: %w", g.file, core.TooDeep(lineOf(g.src, seg.Start))))
+		g.stop(fmt.Errorf("%s: %w", g.file, core.TooDeep(LineOf(g.src, seg.Start))))
 	}
 	b.checkLine(g, reader)
 	n, state := b.BlockParser.Open(parent, reader, pc)
@@ -382,21 +420,21 @@ func (b guardedBlock) Continue(n ast.Node, reader text.Reader, pc parser.Context
 		if g.goOn++; g.goOn > g.maxGoOn {
 			_, seg := reader.Position()
 			g.stop(fmt.Errorf("%s: line %d: the Markdown parse goes on with more than %d open blocks from line to line, the limit, one for every %d bytes of max_bytes; set max_bytes: higher to read a file this nested",
-				g.file, lineOf(g.src, seg.Start), g.maxGoOn, markdownBytesPerContinuation))
+				g.file, LineOf(g.src, seg.Start), g.maxGoOn, markdownBytesPerContinuation))
 		}
 	}
 	return b.BlockParser.Continue(n, reader, pc)
 }
 
-// checkLine refuses a line longer than maxHTMLLine that the HTML block
+// checkLine refuses a line longer than MaxHTMLLine that the HTML block
 // parser is about to read.
 func (b guardedBlock) checkLine(g *guard, reader text.Reader) {
 	if !b.html {
 		return
 	}
-	if line, seg := reader.PeekLine(); len(line) > maxHTMLLine {
+	if line, seg := reader.PeekLine(); len(line) > MaxHTMLLine {
 		g.stop(fmt.Errorf("%s: line %d: a line of HTML of %d bytes, over the limit of %d; %s",
-			g.file, lineOf(g.src, seg.Start), len(line), maxHTMLLine, core.OtherWay))
+			g.file, LineOf(g.src, seg.Start), len(line), MaxHTMLLine, core.OtherWay))
 	}
 }
 
@@ -427,7 +465,7 @@ func (p guardedInline) Parse(parent ast.Node, block text.Reader, pc parser.Conte
 		}
 		if g.delimiters++; g.delimiters > maxDelimiters {
 			g.stop(fmt.Errorf("%s: line %d: a paragraph holds more than %d runs of * and _, the limit; %s",
-				g.file, lineOf(g.src, d.Value.Index().Start), maxDelimiters, core.OtherWay))
+				g.file, LineOf(g.src, d.Value.Index().Start), maxDelimiters, core.OtherWay))
 		}
 		d.Processor = guardedProcessor{d.Processor, g}
 	}
@@ -538,7 +576,7 @@ func (t guardedTransformer) Transform(n *ast.Paragraph, reader text.Reader, pc p
 	lines := n.Source()
 	if defs := definitions(lines, g.src); defs*len(lines) > maxDefinitionCopies {
 		g.stop(fmt.Errorf("%s: line %d: a paragraph of %d lines may hold %d link reference definitions, and the two multiplied are over the limit of %d; put blank lines between the definitions",
-			g.file, lineOf(g.src, lines[0].Start), len(lines), defs, maxDefinitionCopies))
+			g.file, LineOf(g.src, lines[0].Start), len(lines), defs, maxDefinitionCopies))
 	}
 	t.ParagraphTransformer.Transform(n, reader, pc)
 }
@@ -561,12 +599,150 @@ func definitions(lines []text.Segment, src []byte) int {
 	return n
 }
 
-// prose is text joined from pieces of a file, with the offset in the file
+// tableGuard looks at the guard before goldmark's table transformer reads a
+// paragraph, refuses a table that pads its short rows with more empty cells
+// than it has bytes (tablePadding), and counts the most nodes a table of it
+// may make (tableNodes). goldmark's reading of the lines is one pass over
+// them.
+type tableGuard struct{}
+
+func (tableGuard) Transform(n *ast.Paragraph, _ text.Reader, pc parser.Context) {
+	g := guardOf(pc)
+	g.tick()
+	lines := n.Source()
+	if padded, size, at := tablePadding(lines, g.src); padded > size {
+		g.stop(fmt.Errorf("%s: line %d: a table pads its short rows with at least %d empty cells, more than its %d bytes, the limit; %s",
+			g.file, LineOf(g.src, at), padded, size, core.OtherWay))
+	}
+	g.add(tableNodes(lines, g.src))
+}
+
+// tablePadding is a lower bound on the empty cells goldmark adds to the rows
+// of the table it reads from a paragraph of these lines, the table's bytes,
+// and the offset where the table starts; 0, 0 and 0 for a paragraph that
+// holds no table. goldmark gives every row a cell for each column of the
+// delimiter row, so a header of n columns over n rows of one byte makes n
+// times n cells from a file of about 6n bytes: quadratic. A row of p pipes
+// holds at most p+1 cells, so it is padded with at least the columns less
+// p+1. Bounding the padding by the table's bytes, as cmark-gfm bounds the
+// cells it completes, keeps the cells of a table linear in its bytes: a row
+// holds at most a cell for each of its pipes, one more, and the padding.
+func tablePadding(lines []text.Segment, src []byte) (padded, size, at int) {
+	i, cols := tableAt(lines, src)
+	if i == 0 {
+		return 0, 0, 0
+	}
+	for _, l := range lines[i+1:] {
+		padded += max(0, cols-bytes.Count(l.Bytes(src), []byte("|"))-1)
+	}
+	return padded, lines[len(lines)-1].Stop - lines[i-1].Start, lines[i-1].Start
+}
+
+// tableAt is where goldmark's table extension reads a table from a
+// paragraph of these lines: the index of its delimiter row and the row's
+// columns, or 0 and 0 for no table. goldmark takes the first line after the
+// first that is a delimiter row (delimiterColumns), and makes a table there
+// unless the line before it, the header, has more cells than the row has
+// columns (headerCells); a header of fewer it pads, as it pads any row.
+// Either way it reads no further line. TestTableDecisionIsGoldmarks holds
+// this to goldmark's own parse.
+func tableAt(lines []text.Segment, src []byte) (delimiter, cols int) {
+	for i := 1; i < len(lines); i++ {
+		cols := delimiterColumns(lines[i].Bytes(src))
+		if cols == 0 {
+			continue
+		}
+		if headerCells(lines[i-1].Bytes(src)) > cols {
+			return 0, 0
+		}
+		return i, cols
+	}
+	return 0, 0
+}
+
+// headerCells is the cells of a header row, counted by the loop of goldmark's
+// parseRow: the line without the blanks at either end; a | at its start
+// skipped and one at its end left out; then a cell for each run up to a |
+// that no backslash escapes, or up to the end, while any of the line is
+// left, so a | left at the end of what remains, as in |a|a||, starts no
+// cell. An empty line has none.
+func headerCells(line []byte) int {
+	line = util.TrimRightSpace(util.TrimLeftSpace(line))
+	pos, limit := 0, len(line)
+	if len(line) > 0 && line[0] == '|' {
+		pos++
+	}
+	if len(line) > 0 && line[limit-1] == '|' {
+		limit--
+	}
+	cells := 0
+	for pos < limit {
+		closure := pos
+		for ; closure < limit; closure++ {
+			if line[closure] == '|' && (closure == 0 || line[closure-1] != '\\') {
+				break
+			}
+		}
+		cells++
+		pos = closure + 1
+	}
+	return cells
+}
+
+// delimiterColumns is the columns of line read as goldmark's table
+// extension reads a delimiter row, 0 for a line that is none: at most three
+// spaces of indent, only blanks, -, | and :, not only -, and between the
+// pipes, the blank ends left out, cells of :?-+:? each.
+func delimiterColumns(line []byte) int {
+	if w, _ := util.IndentWidth(line, 0); w > 3 {
+		return 0
+	}
+	if len(bytes.Trim(line, "-")) == 0 || len(bytes.Trim(line, " \t\n\v\f\r-|:")) > 0 {
+		return 0
+	}
+	cols := bytes.Split(line, []byte("|"))
+	if util.IsBlank(cols[0]) {
+		cols = cols[1:]
+	}
+	if len(cols) > 0 && util.IsBlank(cols[len(cols)-1]) {
+		cols = cols[:len(cols)-1]
+	}
+	for _, c := range cols {
+		c = bytes.TrimSuffix(bytes.TrimPrefix(bytes.TrimSpace(c), []byte(":")), []byte(":"))
+		if len(c) == 0 || len(bytes.Trim(c, "-")) > 0 {
+			return 0
+		}
+	}
+	return len(cols)
+}
+
+// tableNodes is an upper bound on the nodes goldmark's table transformer
+// makes of a paragraph of these lines. It reads a table from the first line
+// after the first that is a delimiter row: a row for each line from the one
+// before it, and in each row a cell for each column of the delimiter row,
+// which has at most one more than its pipes. A cell may hold two text nodes
+// that no inline parser makes, so it counts three, and the table, its header
+// and its body three more. A line of nothing but blanks, -, | and : may be
+// that row, and the bound is the largest any of them gives.
+func tableNodes(lines []text.Segment, src []byte) int64 {
+	var most int64
+	for i := 1; i < len(lines); i++ {
+		line := lines[i].Bytes(src)
+		if len(bytes.Trim(line, " \t\n\v\f\r-|:")) > 0 {
+			continue
+		}
+		rows := int64(len(lines) - i + 1)
+		most = max(most, rows*(3*int64(bytes.Count(line, []byte("|"))+1)+1)+3)
+	}
+	return most
+}
+
+// Prose is text joined from pieces of a file, with the offset in the file
 // where each piece starts, so that an offset in the text maps back to one in
 // the file. A piece is either bytes copied from the file or a byte errata
 // wrote, a space or a newline, that maps to the offset it stands for.
-type prose struct {
-	text   []byte
+type Prose struct {
+	Text   []byte
 	pieces []piece // in text order
 	// maxPieces is the most pieces the prose may hold; zero, as in the zero
 	// value, is no bound. over is whether it ran out, and overAt the offset
@@ -574,17 +750,23 @@ type prose struct {
 	maxPieces int
 	over      bool
 	overAt    int
+	// dropPipeEscapes is whether copyText drops the backslash of \|, as
+	// GitHub reads a table cell (Cell).
+	dropPipeEscapes bool
+	// doc is the document the prose reads, whose HTML blocks it reads as
+	// the HTML parse found them (htmlText).
+	doc *Doc
 }
 
-// newProse is prose for this document, bounded to its pieces.
-func (d *markdownDoc) newProse() *prose {
-	return &prose{maxPieces: d.maxPieces}
+// NewProse is empty prose for this document, bounded to its pieces.
+func (d *Doc) NewProse() *Prose {
+	return &Prose{maxPieces: d.maxPieces, doc: d}
 }
 
 // full reports whether the prose has as many pieces as it may hold, and
 // marks where it ran out, at offset from of the file, the first time. Once
 // full the prose takes nothing more.
-func (p *prose) full(from int) bool {
+func (p *Prose) full(from int) bool {
 	if !p.over && p.maxPieces > 0 && len(p.pieces) >= p.maxPieces {
 		p.over, p.overAt = true, from
 	}
@@ -597,33 +779,33 @@ type piece struct {
 	wrote bool // whether errata wrote it rather than copied it
 }
 
-// copyFrom appends b, which starts at offset from of the file, as a piece of
+// CopyFrom appends b, which starts at offset from of the file, as a piece of
 // its own unless it continues the piece before in the file.
-func (p *prose) copyFrom(b []byte, from int) {
+func (p *Prose) CopyFrom(b []byte, from int) {
 	if len(b) == 0 || p.over {
 		return
 	}
-	if n := len(p.pieces); n == 0 || p.pieces[n-1].wrote || p.pieces[n-1].from+len(p.text)-p.pieces[n-1].at != from {
+	if n := len(p.pieces); n == 0 || p.pieces[n-1].wrote || p.pieces[n-1].from+len(p.Text)-p.pieces[n-1].at != from {
 		if p.full(from) {
 			return
 		}
-		p.pieces = append(p.pieces, piece{at: len(p.text), from: from})
+		p.pieces = append(p.pieces, piece{at: len(p.Text), from: from})
 	}
-	p.text = append(p.text, b...)
+	p.Text = append(p.Text, b...)
 }
 
 // write appends b, which stands for offset from of the file.
-func (p *prose) write(b byte, from int) {
+func (p *Prose) write(b byte, from int) {
 	if p.full(from) {
 		return
 	}
-	p.pieces = append(p.pieces, piece{at: len(p.text), from: from, wrote: true})
-	p.text = append(p.text, b)
+	p.pieces = append(p.pieces, piece{at: len(p.Text), from: from, wrote: true})
+	p.Text = append(p.Text, b)
 }
 
-// offset is the offset in the file of offset at of the text, or 0 when the
+// Offset is the offset in the file of offset at of the text, or 0 when the
 // text is empty.
-func (p *prose) offset(at int) int {
+func (p *Prose) Offset(at int) int {
 	if len(p.pieces) == 0 {
 		return 0
 	}
@@ -645,22 +827,51 @@ func (p *prose) offset(at int) int {
 
 // atSpace reports whether the text is empty or ends in a space or newline,
 // where a browser shows no further space.
-func (p *prose) atSpace() bool {
-	n := len(p.text)
-	return n == 0 || p.text[n-1] == ' ' || p.text[n-1] == '\n'
+func (p *Prose) atSpace() bool {
+	n := len(p.Text)
+	return n == 0 || p.Text[n-1] == ' ' || p.Text[n-1] == '\n'
 }
 
 // space appends a space that stands for offset from, unless atSpace.
-func (p *prose) space(from int) {
+func (p *Prose) space(from int) {
 	if !p.atSpace() {
 		p.write(' ', from)
 	}
 }
 
+// Cell appends the prose of a table cell of GitHub's tables: Inline's, with
+// the backslash of each \| dropped, in a code span too, since in a table
+// the pipe is escaped for the table and not for the inline text.
+func (p *Prose) Cell(src []byte, cell ast.Node) {
+	p.dropPipeEscapes = true
+	p.Inline(src, cell)
+	p.dropPipeEscapes = false
+}
+
 // copyText appends b, which starts at offset from of the file, as a browser
+// shows text (copyRun), and without the backslash of each \| when
+// dropPipeEscapes is set.
+func (p *Prose) copyText(b []byte, from int) {
+	if !p.dropPipeEscapes {
+		p.copyRun(b, from)
+		return
+	}
+	start := 0
+	for {
+		i := bytes.Index(b[start:], []byte(`\|`))
+		if i < 0 {
+			p.copyRun(b[start:], from+start)
+			return
+		}
+		p.copyRun(b[start:start+i], from+start)
+		start += i + 1 // the pipe starts the next run
+	}
+}
+
+// copyRun appends b, which starts at offset from of the file, as a browser
 // shows text: each run of spaces, tabs and newlines as one space, and none
 // where atSpace. A lone space is copied, so ordinary text stays one piece.
-func (p *prose) copyText(b []byte, from int) {
+func (p *Prose) copyRun(b []byte, from int) {
 	start := 0
 	for i := 0; i < len(b); {
 		if !isBlank(b[i]) {
@@ -671,17 +882,17 @@ func (p *prose) copyText(b []byte, from int) {
 		for j < len(b) && isBlank(b[j]) {
 			j++
 		}
-		p.copyFrom(b[start:i], from+start)
+		p.CopyFrom(b[start:i], from+start)
 		switch {
 		case p.atSpace():
 		case j-i == 1 && b[i] == ' ':
-			p.copyFrom(b[i:j], from+i)
+			p.CopyFrom(b[i:j], from+i)
 		default:
 			p.write(' ', from+i)
 		}
 		start, i = j, j
 	}
-	p.copyFrom(b[start:], from+start)
+	p.CopyFrom(b[start:], from+start)
 }
 
 // isBlank reports whether b is HTML white space, a browser's blank: a
@@ -689,42 +900,43 @@ func (p *prose) copyText(b []byte, from int) {
 // CommonMark leaves in the text when it stands alone.
 func isBlank(b byte) bool { return b == ' ' || b == '\t' || b == '\n' || b == '\f' || b == '\r' }
 
-// endBlock ends a line of prose: it drops a space at its end, then appends
+// EndBlock ends a line of prose: it drops a space at its end, then appends
 // a newline that stands for the offset after the text's last byte, unless
 // the text is empty or ends in one already.
-func (p *prose) endBlock() {
-	if n := len(p.text); n > 0 && p.text[n-1] == ' ' {
-		p.text = p.text[:n-1]
+func (p *Prose) EndBlock() {
+	if n := len(p.Text); n > 0 && p.Text[n-1] == ' ' {
+		p.Text = p.Text[:n-1]
 		if last := len(p.pieces) - 1; p.pieces[last].at == n-1 {
 			p.pieces = p.pieces[:last]
 		}
 	}
-	if n := len(p.text); n > 0 && p.text[n-1] != '\n' {
-		p.write('\n', p.offset(n-1)+1)
+	if n := len(p.Text); n > 0 && p.Text[n-1] != '\n' {
+		p.write('\n', p.Offset(n-1)+1)
 	}
 }
 
-// prose is the document's prose: the text of each paragraph, heading and
-// list item, as inline writes it, each on a line of its own, and the text a
-// browser shows after an HTML block's end on its last line. With code it
+// Prose is the document's prose: the text of each paragraph, heading and
+// list item, as inline writes it, each on a line of its own; the text a
+// browser shows of an HTML block a blank line ends and of a pre or a
+// textarea block (htmlText); and the text a browser shows after the end of
+// any other HTML block on its last line (htmlTail). With code it
 // holds instead each code block, HTML block and the front matter, line for
 // line as the block holds them. A block of a kind it does not know is an
 // error, so that a goldmark extension cannot make text disappear.
-func (d *markdownDoc) prose(code bool) (*prose, error) {
-	p := d.newProse()
-	if code && d.front != nil {
-		p.copyFrom(d.front, d.frontAt)
+func (d *Doc) Prose(code bool) (*Prose, error) {
+	p := d.NewProse()
+	if code && d.Front != nil {
+		p.CopyFrom(d.Front, d.FrontAt)
 	}
-	if err := p.blocks(d.src, d.root, code); err != nil {
+	if err := p.Blocks(d.Src, d.Root.FirstChild(), nil, code); err != nil {
 		return nil, err
 	}
-	if p.over {
-		return nil, fmt.Errorf("line %d: the prose is made of more than %d pieces of the file, the limit, one for every %d bytes of max_bytes; set max_bytes: higher to read a file this broken up",
-			lineOf(d.src, p.overAt), p.maxPieces, markdownBytesPerPiece)
+	if err := d.Err(p); err != nil {
+		return nil, err
 	}
 	// The last block's newline ends nothing, and would give ^$ a match.
-	if n := len(p.text); n > 0 && p.text[n-1] == '\n' {
-		p.text = p.text[:n-1]
+	if n := len(p.Text); n > 0 && p.Text[n-1] == '\n' {
+		p.Text = p.Text[:n-1]
 		if last := len(p.pieces) - 1; p.pieces[last].at == n-1 {
 			p.pieces = p.pieces[:last]
 		}
@@ -732,38 +944,55 @@ func (d *markdownDoc) prose(code bool) (*prose, error) {
 	return p, nil
 }
 
-// blocks appends the prose of n's child blocks.
-func (p *prose) blocks(src []byte, n ast.Node, code bool) error {
-	for c := n.FirstChild(); c != nil; c = c.NextSibling() {
+// Err refuses prose of this document that ran out of pieces: its text is
+// cut short.
+func (d *Doc) Err(p *Prose) error {
+	if p.over {
+		return fmt.Errorf("line %d: the prose is made of more than %d pieces of the file, the limit, one for every %d bytes of max_bytes; set max_bytes: higher to read a file this broken up",
+			LineOf(d.Src, p.overAt), p.maxPieces, markdownBytesPerPiece)
+	}
+	return nil
+}
+
+// Blocks appends the prose of the blocks from first up to stop, its later
+// sibling, or to the last sibling when stop is nil, as Prose reads them.
+func (p *Prose) Blocks(src []byte, first, stop ast.Node, code bool) error {
+	for c := first; c != nil && c != stop; c = c.NextSibling() {
 		switch c.Kind() {
 		case ast.KindParagraph, ast.KindHeading:
-			p.inline(src, c)
-			p.endBlock()
+			p.Inline(src, c)
+			p.EndBlock()
 		case ast.KindCodeBlock:
 			if code {
-				p.lines(src, c.(*ast.CodeBlock).Value.Segments())
+				p.Lines(src, c.(*ast.CodeBlock).Value.Segments())
 			}
 		case ast.KindHTMLBlock:
-			if code {
-				p.lines(src, c.(*ast.HTMLBlock).Value.Segments())
-			} else {
-				p.htmlTail(src, c.(*ast.HTMLBlock))
+			h := c.(*ast.HTMLBlock)
+			switch {
+			case code:
+				p.Lines(src, h.Value.Segments())
+			case shownAsHTML(h, src):
+				if err := p.htmlText(src, h); err != nil {
+					return err
+				}
+			default:
+				p.htmlTail(src, h)
 			}
 		case ast.KindBlockquote, ast.KindList, ast.KindListItem:
-			if err := p.blocks(src, c, code); err != nil {
+			if err := p.Blocks(src, c.FirstChild(), nil, code); err != nil {
 				return err
 			}
 		case ast.KindThematicBreak, ast.KindLinkReferenceDefinition:
 		default:
-			return fmt.Errorf("line %d: a block of kind %s, which the text extractor does not read", lineOf(src, firstOffset(c)), c.Kind())
+			return fmt.Errorf("line %d: a block of kind %s, which the text extractor does not read", LineOf(src, FirstOffset(c)), c.Kind())
 		}
 	}
 	return nil
 }
 
-// firstOffset is the first offset in the file that n or a node below it
+// FirstOffset is the first offset in the file that n or a node below it
 // holds, or where the nearest node above it starts.
-func firstOffset(n ast.Node) int {
+func FirstOffset(n ast.Node) int {
 	for c := n; c != nil; c = c.FirstChild() {
 		if b, ok := c.(ast.BlockNode); ok && len(b.Source()) > 0 {
 			return b.Source()[0].Start
@@ -772,20 +1001,20 @@ func firstOffset(n ast.Node) int {
 			return t.Value.Index().Start
 		}
 	}
-	return nodeStart(n)
+	return NodeStart(n)
 }
 
-// lines appends the lines of a code or HTML block as the block holds them,
+// Lines appends the lines of a code or HTML block as the block holds them,
 // without fences or the markers and indent of the blocks around it, a tab
 // that the block's indent splits as the spaces left of it.
-func (p *prose) lines(src []byte, segs []text.Segment) {
+func (p *Prose) Lines(src []byte, segs []text.Segment) {
 	for _, s := range segs {
 		for range s.Padding {
 			p.write(' ', s.Start)
 		}
-		p.copyFrom(src[s.Start:s.Stop], s.Start)
+		p.CopyFrom(src[s.Start:s.Stop], s.Start)
 	}
-	p.endBlock()
+	p.EndBlock()
 }
 
 // htmlEnds is, for each HTML block that ends on the line holding its end,
@@ -800,10 +1029,31 @@ var htmlEnds = map[ast.HTMLBlockKind][]string{
 	ast.HTMLBlockKind5: {"]]>"},
 }
 
+// shownAsHTML reports whether the prose reads HTML block h through the HTML
+// parse (htmlText): a block of CommonMark's type 6 or 7, which a blank
+// line ends, such as <div> or <p align=center>, and a pre or textarea
+// element, whose text a browser shows. The other blocks of type 1, a
+// script or a style, and the comments, processing instructions,
+// declarations and CDATA of types 2 to 5 show only the text after their
+// end (htmlTail).
+func shownAsHTML(h *ast.HTMLBlock, src []byte) bool {
+	switch h.HTMLBlockKind {
+	case ast.HTMLBlockKind6, ast.HTMLBlockKind7:
+		return true
+	case ast.HTMLBlockKind1:
+		first := h.Value.Segments()[0] // a block of type 1 starts on its first line
+		open := asciiLower(bytes.TrimLeft(src[first.Start:first.Stop], " \t"))
+		return bytes.HasPrefix(open, []byte("<pre")) || bytes.HasPrefix(open, []byte("<textarea"))
+	case ast.HTMLBlockKind2, ast.HTMLBlockKind3, ast.HTMLBlockKind4, ast.HTMLBlockKind5:
+	}
+	return false
+}
+
 // htmlTail appends what a browser shows after the end of an HTML block of
 // types 1 to 5, on the line that holds the end, as a line of prose of its
-// own. A block of type 6 or 7, which a blank line ends, gives nothing.
-func (p *prose) htmlTail(src []byte, h *ast.HTMLBlock) {
+// own. A block of type 6 or 7, which a blank line ends, gives nothing; the
+// prose reads those with htmlText.
+func (p *Prose) htmlTail(src []byte, h *ast.HTMLBlock) {
 	ends, ok := htmlEnds[h.HTMLBlockKind]
 	if !ok {
 		return
@@ -826,13 +1076,13 @@ func (p *prose) htmlTail(src []byte, h *ast.HTMLBlock) {
 		return
 	}
 	p.visible(src[last.Start+end:last.Stop], last.Start+end)
-	p.endBlock()
+	p.EndBlock()
 }
 
 // visible appends the text a browser shows of HTML b, which starts at offset
-// from of the file: a tag of lineTags stands for a space, any other tag and
+// from of the file: a tag of htmlparse.LineTag stands for a space, any other tag and
 // a comment for nothing, and the rest is text, an entity as written.
-func (p *prose) visible(b []byte, from int) {
+func (p *Prose) visible(b []byte, from int) {
 	for i := 0; i < len(b); {
 		j := i
 		for j < len(b) && !tagAt(b, j) {
@@ -870,24 +1120,9 @@ func asciiLower(b []byte) []byte {
 	return out
 }
 
-// lineTags are the elements a browser starts a new line at, or puts a cell
-// or a rule between: each of their tags is a space in the prose. Any other
-// tag, a comment or an inline element such as <code>, <a>, <b> or <sub>,
-// joins the text on either side of it.
-var lineTags = map[string]bool{}
-
-func init() {
-	for _, t := range strings.Fields(`address article aside blockquote br caption center dd details dialog div
-		dl dt fieldset figcaption figure footer form h1 h2 h3 h4 h5 h6 header hr legend li main nav
-		dir hgroup menu noscript ol optgroup option p pre search section summary table tbody td
-		tfoot th thead tr ul`) {
-		lineTags[t] = true
-	}
-}
-
 // breaksLine reports whether b starts with the tag, opening or closing, of
-// one of lineTags: the name ends at a blank, a / or a >, so a custom element
-// such as <h1-x> is not h1.
+// a line element (htmlparse.LineTag): the name ends at a blank, a / or a
+// >, so a custom element such as <h1-x> is not h1.
 func breaksLine(b []byte) bool {
 	if len(b) == 0 || b[0] != '<' {
 		return false
@@ -900,7 +1135,7 @@ func breaksLine(b []byte) bool {
 	for j < len(b) && !isBlank(b[j]) && b[j] != '/' && b[j] != '>' {
 		j++
 	}
-	return j < len(b) && lineTags[string(asciiLower(b[i:j]))]
+	return j < len(b) && htmlparse.LineTag(string(asciiLower(b[i:j])))
 }
 
 // tagAt reports whether b holds at i a < that starts a tag, a comment, a
@@ -913,12 +1148,12 @@ func tagAt(b []byte, i int) bool {
 	return c == '/' || c == '!' || c == '?' || ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z')
 }
 
-// inline appends the prose of n's inline children: their text, spaced as
-// copyText spaces it, with a line break and a tag of lineTags as one space,
-// any other tag or comment as nothing, and without code span backticks,
-// emphasis markers or link destinations. A link or an image keeps its text, and an autolink its
-// address.
-func (p *prose) inline(src []byte, n ast.Node) {
+// Inline appends the prose of n's inline children: their text, spaced as
+// copyText spaces it, with a line break and a tag of a line element
+// (htmlparse.LineTag) as one space, any other tag or comment as nothing,
+// and without code span backticks, emphasis markers or link destinations.
+// A link or an image keeps its text, and an autolink its address.
+func (p *Prose) Inline(src []byte, n ast.Node) {
 	for c := n.FirstChild(); c != nil; c = c.NextSibling() {
 		switch c := c.(type) {
 		case *ast.Text:
@@ -933,13 +1168,13 @@ func (p *prose) inline(src []byte, n ast.Node) {
 			}
 		case *ast.AutoLink:
 			s := c.Label.Index()
-			p.copyFrom(src[s.Start:s.Stop], s.Start)
+			p.CopyFrom(src[s.Start:s.Stop], s.Start)
 		case *ast.RawHTML:
 			if s := c.Value.Index(); breaksLine(src[s.Start:s.Stop]) {
-				p.space(nodeStart(c))
+				p.space(NodeStart(c))
 			}
 		default:
-			p.inline(src, c)
+			p.Inline(src, c)
 		}
 	}
 }

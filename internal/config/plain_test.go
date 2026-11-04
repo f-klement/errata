@@ -174,6 +174,11 @@ func stringFields(t reflect.Type, path []string) [][]string {
 	case reflect.Struct:
 		var out [][]string
 		for f := range t.Fields() {
+			if !f.IsExported() {
+				// encoding/json reads no unexported field, so no config
+				// writes one: marker's rule, which config gives it.
+				continue
+			}
 			name, _, _ := strings.Cut(f.Tag.Get("json"), ",")
 			if f.Anonymous && name == "" {
 				// encoding/json promotes the keys of a struct embedded

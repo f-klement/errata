@@ -1,0 +1,140 @@
+# Markers tag claims in Markdown and in code comments with the id of the
+# rule that reads them, across every file git tracks.
+env GIT_CONFIG_NOSYSTEM=1
+env GIT_CONFIG_GLOBAL=/dev/null
+exec git init -q
+exec git add README.md docs/ops.md cmd/main.go deploy/api.yaml
+
+# One rule gathers the markers of every file, each value at its file and
+# line, and agree lists each. The marker in the fenced code block and the one
+# in the Go string literal are none: 1 and 9999 are nowhere.
+! exec errata check -c errata.yaml
+stdout '^FALSE api-port \(repo\)$'
+stdout '^          "8080" at README.md:3 \(doc\), cmd/main.go:3 \(doc\), deploy/api.yaml:3 \(conf\)$'
+stdout '^          "8081" at docs/ops.md:3 \(doc\)$'
+! stdout '"1"|9999'
+
+# A marker that names no rule is an erratum of the built-in check, which
+# runs since a rule reads markers.
+stdout '^FALSE errata-unbound-markers \(repo\)$'
+stdout '^          unbound\[0\] = "worker-port" at README.md:9$'
+stdout '^2 errata, 0 unknown. Coverage: ran 2, skipped 0.$'
+
+# A rule that reads markers and finds none is unknown, unless allow_empty
+# lists the extractor.
+! exec errata check -c none.yaml
+stdout '^UNKNOWN cache-ttl \(repo\)$'
+stdout 'extractor "doc" found no value'
+exec errata check -c allowed.yaml
+stdout '^0 errata, 0 unknown. Coverage: ran 4, skipped 0.$'
+
+# An unclosed marker is unknown, never a value: for every walk that reads
+# its file, and for the built-in check, which reads them all. A rule whose
+# files: leaves the file out still holds.
+exec git add notes.md
+! exec errata check -c allowed.yaml
+stdout '^UNKNOWN api-port \(repo\)$'
+stdout '^UNKNOWN errata-unbound-markers \(repo\)$'
+stdout 'notes.md: line 1: the marker cache-ttl opens and no <!-- /errata --> after it closes it'
+stdout '^0 errata, 2 unknown. Coverage: ran 4, skipped 0.$'
+
+# errata list prints the built-in check after the config's own.
+exec errata list -c allowed.yaml
+stdout '^errata-unbound-markers \(repo\) rule$'
+stdout '^  extract: unbound: marker files \[\*\*, docs/\*\*, README.md\], max_bytes 33554432$'
+
+# The built-in check walks only the files the marker rules walk, together.
+# A repository whose test fixtures hold marker text, as errata's own does,
+# reads its markers with a narrowed files:, and a marker outside every
+# rule's files is not reported.
+exec git rm -q --cached notes.md
+exec git add testdata/fixture.txtar
+! exec errata check -c everywhere.yaml
+stdout '^UNKNOWN errata-unbound-markers \(repo\)$'
+stdout 'testdata/fixture.txtar: line 2: a marker, in a file errata reads no markers in'
+exec errata check -c narrowed.yaml
+stdout '^0 errata, 0 unknown. Coverage: ran 2, skipped 0.$'
+-- errata.yaml --
+checks:
+  - id: api-port
+    reason: Every place that names the API's port names the one deploy sets.
+    scope: repo
+    extract:
+      doc:  {marker: {}}
+      conf: {yaml: {file: deploy/api.yaml, path: 'spec.ports[0].port'}}
+    agree: [doc, conf]
+-- none.yaml --
+checks:
+  - id: cache-ttl
+    reason: The docs name the cache's time to live.
+    scope: repo
+    extract:
+      doc:  {marker: {}}
+      conf: {yaml: {file: deploy/api.yaml, path: 'spec.ports[0].port'}}
+    agree: [doc, conf]
+-- allowed.yaml --
+checks:
+  - id: api-port
+    reason: The docs name the API's port.
+    scope: repo
+    extract:
+      doc: {marker: {}}
+    assert: doc.all(p, p in ['8080', '8081'])
+  - id: cache-ttl
+    reason: The docs name the cache's time to live, when they do.
+    scope: repo
+    extract:
+      doc:  {marker: {files: ['docs/**']}}
+      conf: {yaml: {file: deploy/api.yaml, path: 'spec.ports[0].port'}}
+    agree: [doc, conf]
+    allow_empty: [doc]
+  - id: worker-port
+    reason: The README names the worker's port.
+    scope: repo
+    extract:
+      doc: {marker: {files: [README.md]}}
+    assert: doc == ['9090']
+-- everywhere.yaml --
+checks:
+  - id: ops-port
+    reason: The operations guide names the port to open.
+    scope: repo
+    extract:
+      doc: {marker: {}}
+    assert: doc == ['8081']
+-- narrowed.yaml --
+checks:
+  - id: api-port
+    reason: The operations guide names the port to open.
+    scope: repo
+    extract:
+      doc: {marker: {files: ['docs/**']}}
+    assert: doc == ['8081']
+-- testdata/fixture.txtar --
+# A fixture of a test, whose text shows a marker.
+<!-- errata: x -->1<!-- /errata -->
+-- notes.md --
+<!-- errata: cache-ttl -->60s
+-- README.md --
+# API
+
+The API listens on port <!-- errata: api-port -->8080<!-- /errata -->.
+
+```markdown
+A fence holds no marker: <!-- errata: api-port -->1<!-- /errata -->
+```
+
+The worker reads <!-- errata: worker-port -->9090<!-- /errata -->.
+-- docs/ops.md --
+# Operations
+
+Open port <!-- errata: api-port -->8081<!-- /errata --> on the firewall.
+-- cmd/main.go --
+package main
+
+// listen serves on port <!-- errata: api-port -->8080<!-- /errata -->.
+const banner = "<!-- errata: api-port -->9999<!-- /errata -->"
+-- deploy/api.yaml --
+spec:
+  ports:
+    - port: 8080

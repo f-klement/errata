@@ -114,8 +114,8 @@ checks:
 
   - id: docs-examples-are-run
     reason: >
-      docs/examples.md shows three examples: the files, the rules and what errata prints. Three
-      API tests in internal/cli/testdata/script run those rules on those files and compare what
+      docs/examples.md shows four examples: the files, the checks and what errata prints. Four
+      API tests in internal/cli/testdata/script run those checks on those files and compare what
       errata prints. A block on the page that differs from its test's section is one nobody ran,
       and a reader who copies it gets another verdict than the page shows. The page's blocks are
       compared in order with the sections, so a block added, dropped or moved fails too.
@@ -136,7 +136,13 @@ checks:
       prereq_rules: {regex: {file: internal/cli/testdata/script/example_unmet_prerequisite.txtar, pattern: '^-- errata\.yaml --\n((?:[^\n]*\n)*?)-- \S+ --$'}}
       prereq_output: {regex: {file: internal/cli/testdata/script/example_unmet_prerequisite.txtar, pattern: '^-- false\.txt --\n((?:[^\n]*\n)*?)-- \S+ --$'}}
       prereq_file_check: {regex: {file: internal/cli/testdata/script/example_unmet_prerequisite.txtar, pattern: '^-- files\.yaml --\n((?:[^\n]*\n)*?)-- \S+ --$'}}
+      fact_file: {regex: {file: internal/cli/testdata/script/example_attested_fact.txtar, pattern: '^-- facts/router-wan-ssh\.yaml --\n((?:[^\n]*\n)*?)-- \S+ --$'}}
+      fact_doc: {regex: {file: internal/cli/testdata/script/example_attested_fact.txtar, pattern: '^-- docs/network\.md --\n((?:[^\n]*\n)*?)-- \S+ --$'}}
+      fact_script: {regex: {file: internal/cli/testdata/script/example_attested_fact.txtar, pattern: '^-- scripts/attested-age\.sh --\n((?:[^\n]*\n)*?)-- \S+ --$'}}
+      fact_rules: {regex: {file: internal/cli/testdata/script/example_attested_fact.txtar, pattern: '^-- errata\.yaml --\n((?:[^\n]*\n)*?)-- \S+ --$'}}
+      fact_output: {regex: {file: internal/cli/testdata/script/example_attested_fact.txtar, pattern: '^-- false\.txt --\n((?:[^\n]*\n)*?)-- \S+ --$'}}
     assert: |
       page == port_agents + port_config + port_rules + port_output + number_cronjob +
         number_config + number_rules + number_output + prereq_runbook + prereq_tasks +
-        prereq_sysctl + prereq_rules + prereq_output + prereq_file_check
+        prereq_sysctl + prereq_rules + prereq_output + prereq_file_check + fact_file + fact_doc +
+        fact_script + fact_rules + fact_output

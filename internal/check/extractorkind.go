@@ -26,6 +26,9 @@ type ExtractorKind struct {
 	Resolve func(spec any) any
 	// Describe is what the extractor a spec builds returns.
 	Describe func(spec any) Description
+	// ForRule, when set, is a spec with the id of the rule it is an entry
+	// of, for a kind whose extractor reads by it.
+	ForRule func(spec any, id string) any
 	// Env, when set, is how the env kind chooses the kind as the reader of
 	// a file, which it lists under Key. It is the declaration the kind
 	// writes, not a copy of it.

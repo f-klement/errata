@@ -280,6 +280,13 @@ func parse(raw []byte, newExtractor Builder) (Config, error) {
 		seen[c.ID] = true
 		checks = append(checks, c)
 	}
+	// The built-in check is no entry of the file, so required does not
+	// list it.
+	if c, ok, err := unboundMarkers(checks); err != nil {
+		errs = append(errs, err)
+	} else if ok {
+		checks = append(checks, c)
+	}
 	if hasRequired {
 		if perrs := plainKey(first, "required", reflect.TypeFor[[]string]()); len(perrs) > 0 {
 			errs = append(errs, fmt.Errorf("decode: %w", errors.Join(perrs...)))
@@ -680,7 +687,7 @@ func buildRule(e checkEntry, newExtractor Builder) (*check.Rule, []error) {
 	names := slices.Sorted(maps.Keys(e.Extract))
 	errs = append(errs, samePlaces(e.Extract, names)...)
 	for _, name := range names {
-		x, d, err := newExtractor(e.Extract[name])
+		x, d, err := newExtractor(e.Extract[name].ForRule(e.ID))
 		switch {
 		case err != nil:
 			errs = append(errs, fmt.Errorf("extractor %q: %w", name, err))

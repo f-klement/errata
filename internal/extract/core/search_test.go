@@ -267,3 +267,53 @@ func TestRegexLinesCostNoMemoryForEachNewline(t *testing.T) {
 		t.Errorf("%d bytes allocated for a file of %d, over %d", n, len(data), bound)
 	}
 }
+
+// MatchesIn holds the texts of one file to one cap on values and one time
+// limit, and finds in each what Matches finds in it alone. The planted
+// breaks: the count of values started again for each text, which reads the
+// 2 x 60000 values, and a clock for each text, under which 400 texts that
+// each match well within the limit read in all for far longer than it; and
+// exactly MaxValues matches read (CONDITIONALS_BOUNDARY on the cap).
+func TestMatchesInSharesTheCapAndTheClock(t *testing.T) {
+	e, err := CompileSearchAt("regex", Source{File: "f", Limit: DefaultMaxBytes}, `(a)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := e.MatchesIn([][]byte{[]byte("xa\na"), nil, []byte("a")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := [][]Match{{{1, 2, 1, 2}, {3, 4, 3, 4}}, nil, {{0, 1, 0, 1}}}; len(got) != 3 || len(got[0]) != 2 || got[0][1] != want[0][1] || got[1] != nil || got[2][0] != want[2][0] {
+		t.Errorf("matches %v, want %v", got, want)
+	}
+	many := []byte(strings.Repeat("a", 60_000))
+	_, err = e.MatchesIn([][]byte{many, many})
+	extracttest.WantError(t, err, "f: the extractor selects more than 100000 values, the limit")
+	// Exactly the cap across two texts is read (a mutation of the count's
+	// bound one early lived, judged for #32).
+	rest := []byte(strings.Repeat("a", MaxValues-60_000))
+	if _, err := e.MatchesIn([][]byte{many, rest}); err != nil {
+		t.Errorf("exactly %d values: %v", MaxValues, err)
+	}
+	// Exactly MaxValues over the pieces read, and one more is refused: the
+	// mutant that reads > as >= refuses the first.
+	half := []byte(strings.Repeat("a", MaxValues/2))
+	if got, err := e.MatchesIn([][]byte{half, half}); err != nil || len(got[0])+len(got[1]) != MaxValues {
+		t.Errorf("MaxValues matches: %d, %v", len(got), err)
+	}
+	_, err = e.MatchesIn([][]byte{half, half, []byte("a")})
+	extracttest.WantError(t, err, "f: the extractor selects more than 100000 values, the limit")
+
+	slow, err := CompileSearchAt("regex", Source{File: "f", Limit: DefaultMaxBytes}, `(a)(?:.*x)?`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	slow.TimeLimit = 50 * time.Millisecond
+	text := []byte(strings.Repeat("a ", 250))
+	texts := make([][]byte, 400)
+	for i := range texts {
+		texts[i] = text
+	}
+	_, err = slow.MatchesIn(texts)
+	extracttest.WantError(t, err, "f: matching took more than 50ms, the limit")
+}

@@ -12,6 +12,7 @@ import (
 	"github.com/f-klement/errata/internal/check"
 	"github.com/f-klement/errata/internal/extract/core"
 	"github.com/f-klement/errata/internal/extract/extracttest"
+	"github.com/f-klement/errata/internal/extract/marker"
 	"github.com/f-klement/errata/internal/extract/regex"
 	"github.com/f-klement/errata/internal/extract/text"
 	"github.com/f-klement/errata/internal/extract/yaml"
@@ -70,7 +71,11 @@ func fill(v reflect.Value) {
 		v.SetMapIndex(key, value)
 	case reflect.Struct:
 		for i := range v.NumField() {
-			fill(v.Field(i))
+			// An unexported field, such as marker's rule, is no key a
+			// spec's YAML writes, and Resolve copies it as a value.
+			if v.Type().Field(i).IsExported() {
+				fill(v.Field(i))
+			}
 		}
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
 		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr,
@@ -293,6 +298,11 @@ var describes = []string{
 	`{"regex": {"files": ["a", "b"], "pattern": "((?{c}))"}}`,
 	`{"regex": {"file": "a", "pattern": "(?P<n>x)", "as": "record"}}`,
 	`{"text": {"file": "a.md", "pattern": "(x)"}}`,
+	`{"comment": {"file": "a.go", "pattern": "(x)"}}`,
+	`{"markdown": {"file": "a.md", "target": "table", "section": "Ports", "column": "Port", "key": "Host", "row": "web", "pattern": "(\\d+)"}}`,
+	`{"asciidoc": {"file": "a.adoc", "target": "code", "section": "Install", "language": "sh", "pattern": "(\\S+)"}}`,
+	`{"rst": {"file": "a.rst", "target": "code", "section": "Install", "language": "sh", "pattern": "(\\S+)"}}`,
+	`{"html": {"file": "a.html", "target": "code", "section": "Install", "language": "sh", "pattern": "(\\S+)"}}`,
 	`{"xml": {"file": "a.xml", "path": "/a"}}`,
 	`{"ini": {"file": "a.ini", "section": "s", "key": "k"}}`,
 	`{"ini": {"file": ".gitconfig", "section": "s", "key": "k"}}`,
@@ -312,6 +322,7 @@ var describes = []string{
 	`{"env": {"name": "A", "files": [".env"]}}`,
 	`{"exists": {"file": "a"}}`,
 	`{"size": {"file": "a"}}`,
+	`{"marker": {}}`,
 }
 
 // mayNotLiteral are the specs of describes whose built extractor may
@@ -380,7 +391,7 @@ func TestDescribeTellsWhatBuildReturns(t *testing.T) {
 	seen := map[string]bool{}
 	for _, raw := range describes {
 		s := decode(t, raw)
-		x, err := Build(s)
+		x, err := Build(s.ForRule("r")) // as config builds it, for marker
 		if err != nil {
 			t.Errorf("%s: %v", raw, err)
 			continue
@@ -441,13 +452,13 @@ func TestDescribeCarriesMaxBytes(t *testing.T) {
 // regex that searches for another extractor's values, which reads once
 // those values are known. Planted break: text's FromShared removed.
 func TestEveryOneFileReaderIsAFileReader(t *testing.T) {
-	ownFiles := map[string]bool{"tool_version": true, "package_version": true, "env": true, "exists": true, "size": true, "gitlab-ci": true}
+	ownFiles := map[string]bool{"tool_version": true, "package_version": true, "env": true, "exists": true, "size": true, "gitlab-ci": true, "marker": true}
 	seen := map[string]bool{}
 	// describes holds json only as a file set.
 	for _, raw := range append(slices.Clone(describes), `{"json": {"file": "a.json", "path": "a"}}`) {
 		s := decode(t, raw)
 		k := s.set[0].kind.Key
-		x, err := Build(s)
+		x, err := Build(s.ForRule("r"))
 		if err != nil {
 			t.Fatalf("%s: %v", raw, err)
 		}
@@ -599,5 +610,33 @@ func TestSpecMarshalsAsTheEncoderAsks(t *testing.T) {
 	}
 	if raw, err := json.Marshal(s); err != nil || string(raw) != `{"text":{"file":"a","pattern":"(a \u003c\u003c b)"}}` {
 		t.Errorf("escaped: %s, %v", raw, err)
+	}
+}
+
+// SpecOf gives the spec of the kind a Spec sets, and false for a Spec of
+// another kind or of none. ForRule reaches the kind that takes it and leaves
+// another as it was. Planted breaks: SpecOf ignoring the kind; ForRule
+// skipping the hook.
+func TestSpecOfAndForRule(t *testing.T) {
+	m := decode(t, `{"marker": {"files": ["docs/**"]}}`)
+	got, ok := SpecOf(m, marker.Kind)
+	if !ok || fmt.Sprint(got.Files) != "[docs/**]" {
+		t.Errorf("SpecOf a marker spec: %+v %t", got, ok)
+	}
+	if _, ok := SpecOf(decode(t, `{"size": {"file": "a"}}`), marker.Kind); ok {
+		t.Error("SpecOf a size spec as marker: true")
+	}
+	if _, ok := SpecOf(Spec{}, marker.Kind); ok {
+		t.Error("SpecOf the zero Spec: true")
+	}
+	if _, err := Build(m); err == nil {
+		t.Error("a marker spec built without its rule")
+	}
+	if _, err := Build(m.ForRule("r")); err != nil {
+		t.Errorf("a marker spec given its rule: %v", err)
+	}
+	size := decode(t, `{"size": {"file": "a"}}`)
+	if !reflect.DeepEqual(size.ForRule("r"), size) {
+		t.Error("ForRule changed a size spec")
 	}
 }

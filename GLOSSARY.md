@@ -127,9 +127,19 @@ any `run` is.
 
 **Extractor.** The part of a rule that gets values from one place. A YAML path, an XPath into an XML
 file, a key in an INI, properties or env file, a regular expression capture, a sentence of Markdown
-prose, the versions of a tool in the files that pin it, the version a package gives itself in each
-of its manifests, one variable in every file a rule lists, whether a file is there and its size in
-bytes, an image digest, a field on a live object.
+prose, a Markdown, AsciiDoc, reStructuredText or HTML comment, section, code block or table
+cell, the value a marker tags, the versions of a tool in the files that pin it, the version a
+package gives itself in each of its manifests, one variable in every file a rule lists, whether a
+file is there and its size in bytes, an image digest, a field on a live object.
+
+**Marker.** A claim a document or a code comment tags inline with the id of the rule that checks
+it: `<!-- errata: api-port -->8080<!-- /errata -->`. The text between the two HTML comments is
+its value, which the `marker` extractor of the rule with that id reads, at its file and line.
+errata finds markers in the files git tracks that the rules' `marker` extractors walk; a marker
+there that no `marker` extractor of the rule it names reads is an erratum of the built-in check
+`errata-unbound-markers`, and one it cannot read whole, such
+as one no closer ends, makes every rule whose walk reads its file unknown. Do not call it a tag
+or an annotation.
 
 **Extractor kind.** The key an entry under a rule's `extract:` names, such as `yaml`, `regex` or
 `ini`, and the reader that reads an entry of it: it decodes the entry, builds its extractor, gives

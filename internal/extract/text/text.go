@@ -1,5 +1,6 @@
 // Package text is the text extractor: core's regex search over the prose of
-// a Markdown file, as a browser shows it.
+// a Markdown file, as a browser shows it. The parse and the prose are
+// core/mdparse's, which the markdown kind reads too.
 package text
 
 import (
@@ -9,18 +10,21 @@ import (
 
 	"github.com/f-klement/errata/internal/check"
 	"github.com/f-klement/errata/internal/extract/core"
+	"github.com/f-klement/errata/internal/extract/core/mdparse"
 )
 
 // Spec returns capture group 1 of every match of Pattern in the prose of
 // File, a Markdown file. The prose is the text of its paragraphs, headings
 // and list items, each on one line and spaced as a browser shows it: a line
-// wrap, and a tag a browser starts a line or a cell at (lineTags), is a
-// space, any other tag joins the text around it, and a run of blanks is one
-// space.
+// wrap, and a tag a browser starts a line or a cell at (htmlparse.LineTag),
+// is a space, any other tag joins the text around it, and a run of blanks
+// is one space.
 // Code span backticks, emphasis markers and link destinations are gone, and
-// a link keeps its text. Code blocks, HTML blocks and front matter are left
-// out, but for the text after an HTML block's end on its line, unless Code is
-// set, which reads their lines instead.
+// a link keeps its text. An HTML block that a blank line ends, and a pre or
+// textarea element, reads as the HTML parse shows it (core/htmlparse); of
+// the other HTML blocks only the text after the end on its line is read.
+// Code blocks and front matter are left out. Code reads the lines of code
+// blocks, HTML blocks and front matter instead.
 type Spec struct {
 	core.OneFile
 	Pattern string `json:"pattern"`
@@ -77,7 +81,7 @@ func Build(t Spec) (check.Extractor, error) {
 	if err != nil {
 		return nil, err
 	}
-	return textExtractor{search: search, code: t.Code, parseTime: markdownTime(search.Limit)}, nil
+	return textExtractor{search: search, code: t.Code, parseTime: mdparse.Time(search.Limit)}, nil
 }
 
 // ExtractWith is Extract: the extractor reads no other extractor's values.
@@ -102,30 +106,30 @@ func (e textExtractor) FromShared(data []byte, _ *core.Spent) ([]check.Value, er
 // does once it has read them.
 func (e textExtractor) FromData(data []byte) ([]check.Value, error) {
 	size := len(data)
-	doc, err := parseMarkdown(e.search.File, data, e.search.Limit, e.parseTime)
+	doc, err := mdparse.Parse(e.search.File, data, e.search.Limit, e.parseTime)
 	if err != nil {
 		return nil, err
 	}
-	p, err := doc.prose(e.code)
+	p, err := doc.Prose(e.code)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", e.search.File, err)
 	}
-	if err := checkProse(e.search.File, len(p.text), size, maxProseRatio); err != nil {
+	if err := checkProse(e.search.File, len(p.Text), size, maxProseRatio); err != nil {
 		return nil, err
 	}
-	matches, err := e.search.Matches(p.text)
+	matches, err := e.search.Matches(p.Text)
 	if err != nil {
 		return nil, err
 	}
-	lines := core.NewLineCursor(doc.src) // it counts back for an offset before the one asked before
+	lines := core.NewLineCursor(doc.Src) // it counts back for an offset before the one asked before
 	out := []check.Value{}
 	for _, m := range matches {
 		if m[2] < 0 {
 			continue
 		}
 		out = append(out, check.Value{
-			Text: string(p.text[m[2]:m[3]]),
-			At:   check.Location{File: e.search.File, Line: lines.At(p.offset(m[0]))},
+			Text: string(p.Text[m[2]:m[3]]),
+			At:   check.Location{File: e.search.File, Line: lines.At(p.Offset(m[0]))},
 		})
 	}
 	return out, nil

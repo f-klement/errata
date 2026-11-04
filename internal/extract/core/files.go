@@ -58,12 +58,22 @@ type FileEntry struct {
 
 // Files is a files: key, checked. Its limits are MaxFiles and
 // MaxMatchBytes; a reader's test lowers them to witness the bounds with a
-// few files.
+// few files. stated is the file limit a refusal names, which a test's lower
+// FileLimit leaves as it is, and WithFileLimit sets with it.
 type Files struct {
 	kind       string
 	Entries    []FileEntry
 	FileLimit  int
 	MatchLimit int
+	stated     int
+}
+
+// WithFileLimit is f with n as its file limit, the one it holds the files
+// to and the one a refusal names: for a reader whose bound on files is not
+// MaxFiles, such as the markers' walk over every file git tracks.
+func (f Files) WithFileLimit(n int) Files {
+	f.FileLimit, f.stated = n, n
+	return f
 }
 
 // CheckFiles checks the entries of a files: key of an extractor of kind:
@@ -74,7 +84,7 @@ func CheckFiles(kind string, files []string, maxBytes int64) (Files, error) {
 	if len(files) > MaxEntries {
 		return Files{}, fmt.Errorf("%s: files lists %d entries, over the limit of %d; a glob such as config/*.env names many files in one", kind, len(files), MaxEntries)
 	}
-	out := Files{kind: kind, FileLimit: MaxFiles, MatchLimit: MaxMatchBytes}
+	out := Files{kind: kind, FileLimit: MaxFiles, MatchLimit: MaxMatchBytes, stated: MaxFiles}
 	listed := map[string]bool{}
 	for _, f := range files {
 		if _, err := CheckSource(kind, f, maxBytes); err != nil {
@@ -266,10 +276,13 @@ func matchesBelow(segs []string, dir string) bool {
 }
 
 // Named is one file a files: key names, and the indexes in Entries of the
-// entries that name it, in their order.
+// entries that name it, in their order. Link is whether git tracks it as a
+// symlink, for a file a glob matched; a file only entries naming it outright
+// name is never marked, since such an entry asks for what it leads to.
 type Named struct {
 	File string
 	By   []int
+	Link bool
 }
 
 // List is the files the entries name, each once, in the entries' order: a
@@ -318,13 +331,15 @@ func (t *Tracked) List(f Files) ([]Named, error) {
 // list is List under root, with the index index gives.
 func (f Files) list(root string, index func() (gitindex.Index, error)) ([]Named, error) {
 	var spans []gitindex.Span // each entry's, nil until the index is read
+	var ix gitindex.Index     // read with spans
 	seen := map[string]int{}  // each file's index in out
 	var out []Named
 	for k, e := range f.Entries {
 		files := []string{e.Clean}
 		if e.Glob {
 			if spans == nil {
-				ix, err := index()
+				var err error
+				ix, err = index()
 				if err != nil {
 					return nil, fmt.Errorf("%s: files lists the glob %s: %w", f.kind, Quote(e.Clean), err)
 				}
@@ -342,16 +357,22 @@ func (f Files) list(root string, index func() (gitindex.Index, error)) ([]Named,
 			}
 		}
 		for _, file := range files {
+			link := false
+			if e.Glob {
+				entry, _ := ix.Lookup(file)
+				link = entry.Symlink()
+			}
 			i, ok := seen[file]
 			if ok {
 				out[i].By = append(out[i].By, k)
+				out[i].Link = out[i].Link || link
 				continue
 			}
 			if len(out) == f.FileLimit {
-				return nil, fmt.Errorf("%s: files names more than %d files, the limit, at %s; narrow the glob", f.kind, MaxFiles, Quote(e.Clean))
+				return nil, fmt.Errorf("%s: files names more than %d files, the limit, at %s; narrow the glob", f.kind, f.stated, Quote(e.Clean))
 			}
 			seen[file] = len(out)
-			out = append(out, Named{File: file, By: []int{k}})
+			out = append(out, Named{File: file, By: []int{k}, Link: link})
 		}
 	}
 	return out, nil

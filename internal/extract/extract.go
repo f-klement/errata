@@ -1,10 +1,11 @@
 // Package extract builds the extractors a rule names in errata.yaml. Each one
 // reads one file and returns every value it finds there, with its location.
 // Each extractor kind, the key an extract: entry names, is a reader in a
-// package of its own below this one (yaml, json, toml, regex, text, xml,
-// ini, properties, toolversion, packageversion, envfile, gitlabci, shell,
-// githubactions, jenkins, and filestat for exists and size), and the
-// readers share internal/extract/core; no reader imports another. The env
+// package of its own below this one (yaml, json, toml, regex, text, comment,
+// markdown, asciidoc, rst, html, marker, xml, ini, properties, toolversion,
+// packageversion, envfile, gitlabci, shell, githubactions, jenkins, and
+// filestat for exists and size), and the readers share
+// internal/extract/core; no reader imports another. The env
 // kind asks those that declare themselves env readers for one variable
 // across several files, through the functions this package hands it. Below, a kind is always an
 // extractor kind, never a check's.
@@ -26,18 +27,24 @@ import (
 	"strings"
 
 	"github.com/f-klement/errata/internal/check"
+	"github.com/f-klement/errata/internal/extract/asciidoc"
+	"github.com/f-klement/errata/internal/extract/comment"
 	"github.com/f-klement/errata/internal/extract/core"
 	"github.com/f-klement/errata/internal/extract/env"
 	"github.com/f-klement/errata/internal/extract/envfile"
 	"github.com/f-klement/errata/internal/extract/filestat"
 	"github.com/f-klement/errata/internal/extract/githubactions"
 	"github.com/f-klement/errata/internal/extract/gitlabci"
+	"github.com/f-klement/errata/internal/extract/html"
 	"github.com/f-klement/errata/internal/extract/ini"
 	"github.com/f-klement/errata/internal/extract/jenkins"
 	ejson "github.com/f-klement/errata/internal/extract/json"
+	"github.com/f-klement/errata/internal/extract/markdown"
+	"github.com/f-klement/errata/internal/extract/marker"
 	"github.com/f-klement/errata/internal/extract/packageversion"
 	"github.com/f-klement/errata/internal/extract/properties"
 	"github.com/f-klement/errata/internal/extract/regex"
+	"github.com/f-klement/errata/internal/extract/rst"
 	"github.com/f-klement/errata/internal/extract/shell"
 	"github.com/f-klement/errata/internal/extract/text"
 	"github.com/f-klement/errata/internal/extract/toml"
@@ -55,6 +62,12 @@ var kinds = registry(
 	register(toml.Kind, with(toml.Build, parsers)),
 	register(regex.Kind, regex.Build),
 	register(text.Kind, text.Build),
+	register(comment.Kind, comment.Build),
+	register(markdown.Kind, markdown.Build),
+	register(asciidoc.Kind, asciidoc.Build),
+	register(rst.Kind, rst.Build),
+	register(html.Kind, html.Build),
+	register(marker.Kind, marker.Build),
 	register(xml.Kind, xml.Build),
 	register(ini.Kind, ini.Build),
 	register(properties.Kind, properties.Build),
@@ -150,6 +163,9 @@ func register[S core.Bounded](k core.Kind[S], build func(S) (check.Extractor, er
 	}
 	if k.Resolve != nil {
 		r.Resolve = func(s any) any { return k.Resolve(s.(S)) }
+	}
+	if k.ForRule != nil {
+		r.ForRule = func(s any, id string) any { return k.ForRule(s.(S), id) }
 	}
 	if k.Describe != nil {
 		r.Describe = func(s any) check.Description {
@@ -376,6 +392,30 @@ func (s Spec) each(f func(*kind, any) any) Spec {
 		out.set = append(out.set, entry{e.kind, f(e.kind, e.spec)})
 	}
 	return out
+}
+
+// ForRule is s with id, the id of the rule s is an entry of, given to a
+// kind that reads by it (core.Kind.ForRule), as marker's values are those
+// of the markers that name its rule. Any other kind's spec is as it was.
+// config builds every entry of a rule from what ForRule returns.
+func (s Spec) ForRule(id string) Spec {
+	return s.each(func(k *kind, v any) any {
+		if k.ForRule != nil {
+			return k.ForRule(v, id)
+		}
+		return v
+	})
+}
+
+// SpecOf is the spec of the kind k that s sets, and whether s sets that
+// kind and nothing else.
+func SpecOf[S any](s Spec, k core.Kind[S]) (S, bool) {
+	if len(s.set) != 1 || s.set[0].kind.Key != k.Key {
+		var zero S
+		return zero, false
+	}
+	v, ok := s.set[0].spec.(S)
+	return v, ok
 }
 
 // Place returns s with only what decides where it reads: each file cleaned,

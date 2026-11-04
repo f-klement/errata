@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -66,6 +67,25 @@ func TestExecutePassesRoot(t *testing.T) {
 	e.Execute(context.Background(), []check.Check{{ID: "a", Scope: check.ScopeRepo}})
 	if gotRoot != "/repo" {
 		t.Fatalf("root = %q", gotRoot)
+	}
+}
+
+// The checks of one Execute share a run, so a result one computes through
+// check.Shared reaches the next; a second Execute is a run of its own.
+// Planted break: Execute without check.WithRun.
+func TestExecuteSharesOneRun(t *testing.T) {
+	calls := 0
+	e := &Engine{Root: "/repo", Run: func(ctx context.Context, _ string, c check.Check) check.Result {
+		n, _ := check.Shared(ctx, "walk", func() (int, error) { calls++; return calls, nil })
+		return check.Result{Check: c, Verdict: check.VerdictTrue, Message: strconv.Itoa(n)}
+	}}
+	checks := []check.Check{{ID: "a", Scope: check.ScopeRepo}, {ID: "b", Scope: check.ScopeRepo}}
+	rep := e.Execute(context.Background(), checks)
+	if rep.Results[0].Message != "1" || rep.Results[1].Message != "1" {
+		t.Errorf("one run: %q and %q, want 1 and 1", rep.Results[0].Message, rep.Results[1].Message)
+	}
+	if rep := e.Execute(context.Background(), checks); rep.Results[0].Message != "2" {
+		t.Errorf("a second run: %q, want 2", rep.Results[0].Message)
 	}
 }
 

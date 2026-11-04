@@ -35,6 +35,10 @@ type Kind[S any] struct {
 	// Describe is what the extractor the spec builds returns, told from
 	// the spec alone (check.Description).
 	Describe func(S) check.Description
+	// ForRule, when set, is the spec with the id of the rule it is an entry
+	// of, for a kind whose extractor reads by it, as marker's does; config
+	// builds every entry from it (extract's Spec.ForRule).
+	ForRule func(S, string) S
 	// Env, when set, makes the kind a reader the env kind asks: env reads
 	// a file with it when the file's name chooses it, or when a rule's
 	// readers: names its Key. extract hands it on to the registry as it is.

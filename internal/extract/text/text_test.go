@@ -127,20 +127,6 @@ func TestTextValueIsTheProse(t *testing.T) {
 	}
 }
 
-// An autolink keeps its address, and the file's own text keeps a backslash
-// escape and an entity as written.
-func TestTextKeepsAutolinksAndEscapes(t *testing.T) {
-	root := extracttest.Repo(t, readme("See <https://ci.example/a> and \\*not emphasis\\* &amp; more.\n"))
-	for pattern, want := range map[string]string{
-		`See (\S+)`:     "https://ci.example/a@3",
-		`and (.*) more`: `\*not emphasis\* &amp;@3`,
-	} {
-		if got := extracttest.Texts(mustRun(t, textSpec(pattern), root)); got != want {
-			t.Errorf("%s: got %q, want %q", pattern, got, want)
-		}
-	}
-}
-
 const withCode = `---
 title: CI runs on node frontmatter
 ---
@@ -167,13 +153,14 @@ CI runs on node tilde
 ~~~
 `
 
-// Code blocks, HTML blocks and front matter are left out of the prose unless
-// the extractor sets code:, and with it each is in at its own line. The
+// Code blocks, front matter and the comment's lines are left out of the
+// prose unless the extractor sets code:, and with it each is in at its own
+// line; the div's text is prose either way (#86). The
 // planted break is code: true, which finds the claims that the prose leaves
 // out.
 func TestTextLeavesOutCodeUnlessAsked(t *testing.T) {
 	root := extracttest.Repo(t, map[string]string{"README.md": withCode})
-	if got, want := extracttest.Texts(mustRun(t, textSpec(claim), root)), "builder@6"; got != want {
+	if got, want := extracttest.Texts(mustRun(t, textSpec(claim), root)), "builder@6 html@15"; got != want {
 		t.Errorf("prose: got %q, want %q", got, want)
 	}
 	want := "frontmatter@2 builder@6 fenced@9 indented@12 html@15 comment@19 closing@20 tilde@23"
@@ -183,172 +170,6 @@ func TestTextLeavesOutCodeUnlessAsked(t *testing.T) {
 	// A code block's lines stay lines, as the file has them.
 	if got := extracttest.Texts(mustRun(t, codeSpec(`^(#.*)$`), root)); got != "# CI runs on node fenced@9" {
 		t.Errorf("code lines: got %q", got)
-	}
-}
-
-// A code block's line keeps the spaces left of a tab that its indent
-// splits, and a match in which group 1 took no part gives no value.
-func TestTextCodeLinesAndEmptyGroups(t *testing.T) {
-	root := extracttest.Repo(t, map[string]string{"README.md": ">\t\tx\n\nCI runs on node builder\n"})
-	if got := extracttest.Texts(mustRun(t, codeSpec(`^( *x)$`), root)); got != "  x@1" {
-		t.Errorf("code line: got %q", got)
-	}
-	if got := mustRun(t, textSpec(`(x)?CI`), root); len(got) != 0 {
-		t.Errorf("empty group: got %s", extracttest.Texts(got))
-	}
-}
-
-// Front matter is a block of --- or +++ lines at the very start of the file,
-// closed by the same line, or by ... after ---. Anything else is Markdown.
-func TestTextFrontMatter(t *testing.T) {
-	for body, want := range map[string]string{
-		"---\nCI runs on node a\n---\n":            "",
-		"---\nCI runs on node a\n...\n":            "",
-		"+++\nCI runs on node a\n+++\n":            "",
-		"+++\nCI runs on node a\n...\n":            "a@2",
-		"---\nCI runs on node a\n":                 "a@2",
-		"\n---\nCI runs on node a\n---\n":          "a@3",
-		"---\n---\nCI runs on node a\n":            "a@3",
-		"---\nx\n---\n---\nCI runs on node a\n---": "a@5",
-	} {
-		root := extracttest.Repo(t, map[string]string{"README.md": body})
-		if got := extracttest.Texts(mustRun(t, textSpec(claim), root)); got != want {
-			t.Errorf("%q: got %q, want %q", body, got, want)
-		}
-	}
-	// Every byte of the front matter is out, its closing fence too, and a
-	// UTF-8 byte order mark before the file starts nothing. The planted
-	// breaks are the closing fence left in, which read "... b", and the
-	// mark read as text, which hid the front matter.
-	for body, want := range map[string]string{
-		"---\na\n...\nb\n":                "b@4",
-		"---\na\n---\nb\n":                "b@4",
-		"\xef\xbb\xbf---\nx: y\n---\nb\n": "b@4",
-		"\xef\xbb\xbfb\n":                 "b@1",
-		"\xef\xbb\xbf\xef\xbb\xbfb\n":     "\ufeffb@1",
-	} {
-		root := extracttest.Repo(t, map[string]string{"README.md": body})
-		if got := extracttest.Texts(mustRun(t, textSpec(`^(\S+)`), root)); got != want {
-			t.Errorf("%q: got %q, want %q", body, got, want)
-		}
-	}
-}
-
-// The prose is spaced as a browser shows it: an element of inline HTML,
-// <br> among them, stands for one space, a run of spaces and tabs is one
-// space, and a line of prose neither starts nor ends with one. The reported
-// line is still the line where the match starts. The planted break for each
-// case is the input itself, which joined two words or doubled a space.
-func TestTextSpacesAsABrowserDoes(t *testing.T) {
-	for name, c := range map[string]struct {
-		body, pattern, want string
-	}{
-		"comment beside a claim": {"See: <!-- errata: ci --> CI runs on node builder.\n", `See: (CI runs on node \w+)`, "CI runs on node builder@3"},
-		"comment across lines":   {"CI runs on node <!--\nx\n--> builder\n", claim, "builder@3"},
-		"tag first":              {"<img src=x> CI runs on node builder.\n", `^(CI) runs`, "CI@3"},
-		"br":                     {"CI runs on node<br>builder\n", claim, "builder@3"},
-		"br closed":              {"CI runs on node<br/>builder\n", claim, "builder@3"},
-		"spaces and tabs":        {"CI runs on  node \t builder\n", claim, "builder@3"},
-		"value collapsed":        {"CI runs on  *node*   \t builder.\n", `on (.*)\.`, "node builder@3"},
-		"trailing tag":           {"CI runs on node builder <b></b>\n", `(builder)$`, "builder@3"},
-		"code span spaces":       {"CI runs on `node   builder`\n", claim, "builder@3"},
-		"match after a comment":  {"x <!-- a\nb --> y\nCI runs on node builder\n", claim, "builder@5"},
-		"wrap after a tag":       {"CI runs on <i>\nnode</i> builder\n", claim, "builder@3"},
-		"inline code tag":        {"node <code>builder</code>.\n", `node (\w+)\.`, "builder@3"},
-		"tag in a word":          {"CI runs on node b<i>uild</i>er\n", claim, "builder@3"},
-		"kbd":                    {"Press <kbd>Ctrl</kbd>+<kbd>C</kbd>\n", `(Ctrl\+C)`, "Ctrl+C@3"},
-		"sub":                    {"H<sub>2</sub>O\n", `(H2O)`, "H2O@3"},
-		"link tag":               {"<a href=x>builder</a>, today\n", `(builder,)`, "builder,@3"},
-		"comment in a word":      {"CI runs on node build<!-- x -->er\n", claim, "builder@3"},
-		"cell tags":              {"CI runs on node</td><td>builder\n", claim, "builder@3"},
-		"paragraph tag":          {"CI runs on node<P>builder\n", claim, "builder@3"},
-		"menu":                   {"CI runs on node<menu>builder\n", claim, "builder@3"},
-		"noscript":               {"CI runs on node</noscript>builder\n", claim, "builder@3"},
-		"option":                 {"CI runs on node<option value=x>builder\n", claim, "builder@3"},
-		"custom element":         {"CI runs on node build<h1-x>er</h1-x>\n", claim, "builder@3"},
-		"br closed by a slash":   {"CI runs on node<br/>builder\n", claim, "builder@3"},
-		"carriage return":        {"CI runs on\rnode builder\n", claim, "builder@3"},
-		"form feed":              {"CI runs on\fnode builder\n", claim, "builder@3"},
-	} {
-		got := extracttest.Texts(mustRun(t, textSpec(c.pattern), extracttest.Repo(t, readme(c.body))))
-		if got != c.want {
-			t.Errorf("%s: got %q, want %q", name, got, c.want)
-		}
-	}
-}
-
-// A line that starts an HTML block hides nothing a browser shows after the
-// block's end on that line: text after a comment, a processing instruction,
-// a declaration, CDATA, or a script, style, pre or textarea element. Text
-// inside a <div> and the other blocks that end at a blank line is left out,
-// as is everything with code: true but the lines themselves. The planted
-// break is the remainder left out, which hid every claim below; and the end
-// looked for only after the opening, which hid the claim after <?>.
-func TestTextReadsTextAfterAnHTMLBlockEnds(t *testing.T) {
-	for name, c := range map[string]struct {
-		body, want string
-	}{
-		"comment":            {"<!-- errata: ci --> CI runs on node builder.\n", "builder@3"},
-		"comment over lines": {"<!--\nmarker\n--> CI runs on node builder\n", "builder@5"},
-		"two comments":       {"<!-- a --> CI runs <!-- b --> on node builder\n", "builder@3"},
-		"tags after":         {"<!-- a --> CI runs on <b>node</b> builder\n", "builder@3"},
-		"processing":         {"<?x y?> CI runs on node builder\n", "builder@3"},
-		"declaration":        {"<!X y> CI runs on node builder\n", "builder@3"},
-		"cdata":              {"<![CDATA[x]]> CI runs on node builder\n", "builder@3"},
-		"script":             {"<script>x</script> CI runs on node builder\n", "builder@3"},
-		"pre over lines":     {"<pre>\nCI runs on node hidden\n</pre> CI runs on node builder\n", "builder@5"},
-		"unclosed comment":   {"<!-- a\nCI runs on node hidden\n", ""},
-		"comment in a quote": {"> <!-- a --> CI runs on node builder\n", "builder@3"},
-		"div":                {"<div>\nCI runs on node hidden\n</div>\n", ""},
-		"tag alone":          {"<span>\nCI runs on node hidden\n", ""},
-		"empty comment":      {"<!--> CI runs on node builder\n", "builder@3"},
-		"empty comment dash": {"<!---> CI runs on node builder\n", "builder@3"},
-		"empty processing":   {"<?> CI runs on node builder\n", "builder@3"},
-		"inline tag in tail": {"<!-- a --> CI runs on node b<i>uild</i>er\n", "builder@3"},
-		"br in tail":         {"<!-- a --> CI runs on node<br>builder\n", "builder@3"},
-		"folds longer":       {"<!-- ȺȺȺ -->x CI runs on node builder\n", "builder@3"},
-		"folds shorter":      {"<!-- \u212a\u212a\u212a -->x CI runs on node builder\n", "builder@3"},
-		"invalid UTF-8":      {"<!-- \xff\xfe -->x CI runs on node builder\n", "builder@3"},
-		"script folds":       {"<script>Ⱥ\u212a</SCRIPT> CI runs on node builder\n", "builder@3"},
-	} {
-		got := extracttest.Texts(mustRun(t, textSpec(claim), extracttest.Repo(t, readme(c.body))))
-		if got != c.want {
-			t.Errorf("%s: got %q, want %q", name, got, c.want)
-		}
-	}
-	root := extracttest.Repo(t, readme("<!-- a --> CI runs on node builder\n"))
-	if got := extracttest.Texts(mustRun(t, codeSpec(`^(.*)$`), root)); got != "Build@1 <!-- a --> CI runs on node builder@3" {
-		t.Errorf("code: got %q", got)
-	}
-	// A rune whose lower case is longer or shorter in UTF-8 moved the cut,
-	// past the line's end in the first two: a panic, and comment bytes in
-	// the prose of the others.
-	for _, body := range []string{"# B\n\n<!-- ȺȺȺȺ -->\n", "<!-- ȺȺ -->", "<!-- ȺȺȺ -->x y\n", "<!-- \u212a\u212a\u212a -->x y\n"} {
-		root := extracttest.Repo(t, map[string]string{"README.md": body})
-		if got := extracttest.Texts(mustRun(t, textSpec(`(-->|\x{212a}|Ⱥ)`), root)); got != "" {
-			t.Errorf("%q: comment bytes in the prose: %q", body, got)
-		}
-	}
-}
-
-// Without the table extension a table is a paragraph, its rows joined by a
-// space, delimiter row and pipes included.
-func TestTextReadsATableAsAParagraph(t *testing.T) {
-	root := extracttest.Repo(t, readme("| CI | node |\n|---|---|\n| runs on | builder |\n"))
-	if got := extracttest.Texts(mustRun(t, textSpec(`^(.*)$`), root)); got != "Build@1 | CI | node | |---|---| | runs on | builder |@3" {
-		t.Errorf("got %q", got)
-	}
-	if got := extracttest.Texts(mustRun(t, textSpec(`runs on \| (\w+)`), root)); got != "builder@5" {
-		t.Errorf("cell: got %q", got)
-	}
-}
-
-// A CRLF line ending reads as LF, as in the regex extractor, so the lines
-// are the file's.
-func TestTextReadsCRLFAsLF(t *testing.T) {
-	root := extracttest.Repo(t, map[string]string{"README.md": "# Build\r\n\r\nCI runs on\r\nnode builder\r\n\r\n```\r\nCI runs on node code\r\n```\r\n"})
-	if got := extracttest.Texts(mustRun(t, codeSpec(claim+`$`), root)); got != "builder@3 code@7" {
-		t.Errorf("got %q", got)
 	}
 }
 

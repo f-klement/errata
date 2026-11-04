@@ -106,6 +106,9 @@ internal/engine                    85        85      5
 # per reader (#105), extract as one package had the floor 83 (83.49% against a
 # ceiling of 83.74%, #107).
 internal/extract                   85        85      5
+# asciidoc: new in v0.2.5 (#86), held to the floor every reader has.
+internal/extract/asciidoc          85        85      5
+internal/extract/comment           85        85      5
 # core: 85.08%, 111 of 744 not covered, efficacy 95.73%, on 2026-10-25 with
 # env's reader in, before case expressions were covered; #209 did not measure
 # it again. 110 of those 111 were case expressions, which no longer count as not
@@ -114,6 +117,13 @@ internal/extract                   85        85      5
 internal/extract/core              85        85      5      mutant 26.3 measuring 182 measured 3010608824
 internal/extract/core/clip         85        85      5      from internal/extract/core
 internal/extract/core/gitindex     85        85      5      from internal/extract/core
+# htmlparse: new in v0.2.5 (#86), the HTML parse the html, text and markdown
+# readers share.
+internal/extract/core/htmlparse    85        85      5
+internal/extract/core/lexer        85        85      5
+# markup: new in v0.2.5 (#30), what the markup readers share.
+internal/extract/core/markup       85        85      5
+internal/extract/core/mdparse      85        85      5      from internal/extract/text
 # env: 100%, efficacy 100%, on 2026-10-25.
 internal/extract/env               85        85      5
 # envfile: 100% on a dry run.
@@ -126,6 +136,8 @@ internal/extract/filestat          85        85      5
 internal/extract/githubactions     85        85      5
 # gitlabci: 90.00%, 38 of 380, efficacy 92.69%, on 2026-10-25.
 internal/extract/gitlabci          85        85      5
+# html: new in v0.2.5 (#86), held to the floor every reader has.
+internal/extract/html              85        85      5
 # ini: 94.46%, 83 of its 1498 not covered, efficacy 86.64% (189 lived, 18
 # timed out), on 2026-10-30 with case expressions covered. It had the floor 82
 # at 82.87% (253 of 1500 not covered, 178 of them case expressions) until then.
@@ -142,6 +154,10 @@ internal/extract/ini               85        85      10
 internal/extract/jenkins           85        85      5
 # json: 100%, efficacy 100%, on 2026-10-22.
 internal/extract/json              85        85      5
+# markdown: new in v0.2.5 (#30), held to the floor every reader has.
+internal/extract/markdown          85        85      5
+# marker: new in v0.2.5 (#32), held to the floor every reader has.
+internal/extract/marker            85        85      5
 # packageversion: 100%, efficacy 98.57%, on 2026-10-30 with case expressions
 # covered. It had the floor 84 at 84.29% (11 case expressions of 70) until then.
 internal/extract/packageversion    85        85      5
@@ -151,6 +167,8 @@ internal/extract/packageversion    85        85      5
 internal/extract/properties        85        85      5
 # regex: 100%, efficacy 100%, on 2026-10-22.
 internal/extract/regex             85        85      5
+# rst: new in v0.2.5 (#86), held to the floor every reader has.
+internal/extract/rst               85        85      5
 # shell: 99.59% on a dry run, 1 not covered.
 internal/extract/shell             85        85      5
 # text: 97.90%, 5 not covered, efficacy 90.56%, after goldmark v2.

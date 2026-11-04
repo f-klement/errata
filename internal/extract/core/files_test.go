@@ -150,7 +150,7 @@ func TestList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []Named{{"z.yaml", []int{0}}, {"d/b.yaml", []int{1, 2}}, {"d/e/a.yaml", []int{1}}, {"missing.yaml", []int{3}}}
+	want := []Named{{File: "z.yaml", By: []int{0}}, {File: "d/b.yaml", By: []int{1, 2}}, {File: "d/e/a.yaml", By: []int{1}}, {File: "missing.yaml", By: []int{3}}}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Errorf("List: %v, want %v", got, want)
 	}
@@ -479,7 +479,7 @@ func TestListOverASparseCheckout(t *testing.T) {
 			t.Fatal(err)
 		}
 		got, err := f.List(t.Context(), root)
-		want := []Named{{"top.yaml", []int{0}}, {"a/x.yaml", []int{1}}, {"b/y.yaml", []int{2}}}
+		want := []Named{{File: "top.yaml", By: []int{0}}, {File: "a/x.yaml", By: []int{1}}, {File: "b/y.yaml", By: []int{2}}}
 		if err != nil || fmt.Sprint(got) != fmt.Sprint(want) {
 			t.Errorf("sparse index %v: globs beside what is left out: %v, %v; want %v", index, got, err, want)
 		}
@@ -545,14 +545,14 @@ func TestTrackedReadsTheIndexOnce(t *testing.T) {
 	root := repo(t, map[string]string{"a.yaml": "", "d/b.yaml": ""})
 	tr := NewTracked(t.Context(), root)
 	first, _ := CheckFiles("include", []string{"*.yaml"}, 0)
-	if got, err := tr.List(first); err != nil || fmt.Sprint(got) != "[{a.yaml [0]}]" {
+	if got, err := tr.List(first); err != nil || fmt.Sprint(got) != fmt.Sprint([]Named{{File: "a.yaml", By: []int{0}}}) {
 		t.Fatalf("the first key: %v, %v", got, err)
 	}
 	if err := os.RemoveAll(filepath.Join(root, ".git")); err != nil {
 		t.Fatal(err)
 	}
 	second, _ := CheckFiles("include", []string{"d/*.yaml"}, 0)
-	if got, err := tr.List(second); err != nil || fmt.Sprint(got) != "[{d/b.yaml [0]}]" {
+	if got, err := tr.List(second); err != nil || fmt.Sprint(got) != fmt.Sprint([]Named{{File: "d/b.yaml", By: []int{0}}}) {
 		t.Errorf("the second key: %v, %v", got, err)
 	}
 	_, err := second.List(t.Context(), root)
@@ -583,7 +583,7 @@ func TestASkipWorktreeFileOnDisk(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := f.List(t.Context(), root)
-	want := []Named{{"a/w.yaml", []int{0}}, {"a/x.yaml", []int{0}}, {"a/y.yaml", []int{0}}}
+	want := []Named{{File: "a/w.yaml", By: []int{0}}, {File: "a/x.yaml", By: []int{0}}, {File: "a/y.yaml", By: []int{0}}}
 	if err != nil || fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Errorf("a skip-worktree file on disk: %v, %v; want %v", got, err, want)
 	}
@@ -698,5 +698,62 @@ func TestTheRepositoryAboveARootStopsAtAFileSystem(t *testing.T) {
 	_, err = Source{File: "out/b", Limit: DefaultMaxBytes}.Stat(t.Context(), root)
 	if !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("a root on a file system of its own: %v, want a missing file", err)
+	}
+}
+
+// WithFileLimit holds the files to its limit and names it in the refusal,
+// where a test's lower FileLimit keeps MaxFiles in the message. Planted
+// break: WithFileLimit setting FileLimit alone.
+func TestWithFileLimit(t *testing.T) {
+	root := repo(t, map[string]string{"a.c": "", "b.c": ""})
+	f, _ := CheckFiles("marker", []string{"*.c"}, 0)
+	_, err := f.WithFileLimit(1).List(t.Context(), root)
+	extracttest.WantError(t, err, `marker: files names more than 1 files, the limit, at "*.c"`)
+	if _, err := f.WithFileLimit(2).List(t.Context(), root); err != nil {
+		t.Errorf("2 files under a limit of 2: %v", err)
+	}
+}
+
+// A file a glob matches is marked Link when git tracks it as a symlink,
+// whichever entry matched it first; a file only an entry naming it outright
+// names is not, though it is one. Planted break: list never marking a link.
+func TestListMarksLinks(t *testing.T) {
+	root := extracttest.Repo(t, map[string]string{"a.c": ""})
+	extracttest.Symlink(t, "a.c", filepath.Join(root, "b.c"))
+	git(t, root, "init", "-q")
+	git(t, root, "add", "-A")
+	f, _ := CheckFiles("marker", []string{"b.c", "*.c"}, 0)
+	got, err := f.List(t.Context(), root)
+	want := []Named{{File: "b.c", By: []int{0, 1}, Link: true}, {File: "a.c", By: []int{1}}}
+	if err != nil || fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("List: %v %v, want %v", got, err, want)
+	}
+	f, _ = CheckFiles("marker", []string{"b.c"}, 0)
+	if got, err := f.List(t.Context(), root); err != nil || got[0].Link {
+		t.Errorf("a file named outright: %v %v", got, err)
+	}
+}
+
+// Reader.Open opens a file as Read does, refusing one over its limit, and
+// ReadLimited reads it. Planted break: Open skipping the size check.
+func TestReaderOpen(t *testing.T) {
+	root := extracttest.Repo(t, map[string]string{"a": "12345"})
+	r, err := OpenReader(t.Context(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	f, size, err := r.Open(Source{File: "a", Limit: 5})
+	if err != nil || size != 5 {
+		t.Fatalf("Open: %d %v", size, err)
+	}
+	data, err := Source{File: "a", Limit: 5}.ReadLimited(f)
+	_ = f.Close()
+	if err != nil || string(data) != "12345" {
+		t.Errorf("ReadLimited: %q %v", data, err)
+	}
+	_, _, err = r.Open(Source{File: "a", Limit: 4})
+	if !errors.Is(err, ErrTooLarge) {
+		t.Errorf("Open over the limit: %v", err)
 	}
 }

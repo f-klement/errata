@@ -292,6 +292,28 @@ func (e Search) Matches(data []byte) ([]Match, error) {
 	return e.matches(data, e.clock())
 }
 
+// MatchesIn returns the Matches of each of texts, pieces of one file, under
+// one time limit and one cap on values for all of them together, so a file
+// cut into many pieces costs what the file costs. A match never crosses
+// from one text into the next.
+func (e Search) MatchesIn(texts [][]byte) ([][]Match, error) {
+	clock, n := e.clock(), 0
+	out := make([][]Match, len(texts))
+	for i, text := range texts {
+		err := e.each(text, clock, func(m []int) error {
+			if n++; n > MaxValues {
+				return TooManyValues(e.File)
+			}
+			out[i] = append(out[i], Match(m[:4]))
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
 // clock is the clock of one search of a file: TimeLimit from now, or the
 // deadline the files of a set share.
 func (e Search) clock() *clockedReader {

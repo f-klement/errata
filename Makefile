@@ -63,14 +63,28 @@ FUZZ_TARGETS = $(shell find internal -name testdata -prune -o -name '*_test.go' 
 .PHONY: check gate precheck build tools lint fmt test cover slow fuzz mutation vuln dogfood public-dry release-dry image-dry ci-local ci-test tool-sums hooks clean
 
 # ci/ is stripped from the public mirror, so a public clone runs the gate
-# without the publish and autopatch targets.
-INTERNAL := $(if $(wildcard ci/public-tree.sh),public-dry ci-test)
+# without the publish and autopatch targets. CI's test job passes CI_TEST=apart
+# and leaves ci-test out, since the ci-test job runs it beside test (owner
+# decision 2026-11-04); a gate anywhere else runs it. Only a command-line value
+# counts, as for MUTATION_SCOPE below: a shell that exported CI_TEST=apart
+# would make a seat's gate skip the shell suite and pass.
+ifeq ($(origin CI_TEST),environment)
+override CI_TEST :=
+endif
+# Exactly apart: "apart x" runs the suite.
+ifeq ($(CI_TEST),apart)
+GATE_SUITE :=
+else
+GATE_SUITE := ci-test
+endif
+INTERNAL := $(if $(wildcard ci/public-tree.sh),public-dry $(GATE_SUITE))
 
 # `gate` is everything but mutation testing, for a quick run by hand: Gremlins
 # over the whole module takes hours. CI's test job runs `gate` with fuzzing
-# scoped to the packages a push changed (ci/mutation-scope.sh), its mutation
-# job mutates the lines those packages changed (ci/push-mutation.sh), and the
-# weekly pass runs every package whole.
+# scoped to the packages a push changed (ci/mutation-scope.sh) and without
+# ci-test, which its ci-test job runs. Its mutation job mutates the lines those
+# packages changed (ci/push-mutation.sh), and the weekly pass runs every
+# package whole.
 gate: lint test cover slow fuzz vuln dogfood image-dry $(INTERNAL)
 
 check: gate mutation
@@ -80,12 +94,17 @@ check: gate mutation
 # went red on one of them: three on lint or on a node name in a public file (public-dry), and two
 # on a new package without its `//go:build mutation` mutation_test.go, which only
 # TestEveryTestedPackageLinksTheWatchdog in make test catches. A sixth, on 2026-11-01, went red
-# on TestReadersImportNoOtherReader, after a package was split out below core. Those tests run
+# on TestReadersImportNoOtherReader, after a package was split out below core. The TestArch tests
+# fail on a package, an import or a kind that docs/architecture.md does not draw, which most new
+# packages are. scripts/floors-gaps.sh refuses a package with no row in
+# scripts/mutation-floors.txt, on which a gate went red 16 minutes in on 2026-11-03. Those run
 # first, since they take seconds where lint takes minutes. The public mirror has no ci/, so there
-# it is the tests and lint.
+# it is the tests, the floors and lint.
 precheck:
 	$(GO) test -count=1 -run '^TestEveryTestedPackageLinksTheWatchdog$$' ./internal/heapcap
 	$(GO) test -count=1 -run '^(TestReadersImportNoOtherReader|TestReaderImportsRefuses)$$' ./internal/extract
+	$(GO) test -count=1 -run '^TestArch' ./internal/cli
+	GO=$(GO) sh scripts/floors-gaps.sh
 	$(MAKE) --no-print-directory lint $(if $(wildcard ci/public-tree.sh),public-dry)
 
 build:

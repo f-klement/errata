@@ -63,10 +63,14 @@ func (t Table) Dispatch(ctx context.Context, root string, c check.Check) check.R
 
 // Execute runs every check that the available providers can reach and skips
 // the rest with the reason. Checks run in order, one at a time; parallelism
-// can come later without changing the report.
+// can come later without changing the report. The checks share one run
+// (check.WithRun).
 func (e *Engine) Execute(ctx context.Context, checks []check.Check) check.Report {
 	caps := provider.Union(e.Providers)
 	rep := check.Report{SkipsFail: e.SkipsFail}
+	// The checks of the run share what a reader computes once for all of
+	// them, such as the files a marker walk reads (check.Shared).
+	ctx = check.WithRun(ctx)
 	for _, c := range checks {
 		if ok, gap := provider.Reaches(caps, c.Scope); !ok {
 			rep.Results = append(rep.Results, check.Result{Check: c, Gap: gap})
