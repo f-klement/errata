@@ -225,6 +225,9 @@ Values written in code, and one version pinned in many places.
 - Literal values in source code and in configuration written in a programming language, such as
   a version constant or a default port, read by one literal reader with a table row per
   language. errata reads configuration and never runs it, so no interpreter or runtime is added.
+- The value one name a source file declares, such as a Go constant or a class's member, read
+  through Go's own parser or the literal reader, and marked not literal where the program
+  computes it.
 - Dependency versions across manifests and lockfiles (Go, npm, pnpm, Yarn, Python, Cargo, Ruby,
   Composer, Maven, Gradle, NuGet), so one rule checks that a package pinned in several places
   agrees.
@@ -249,6 +252,8 @@ The files a host is configured with, and the formats the earlier readers left op
   tool reads as written, template blocks that decide whether a key exists, and values the
   consuming tool computes marked as not literal.
 - A SARIF result for a file that does not exist points at its check in errata.yaml.
+- A `package_version` value that is not literal, such as a workspace version, reported as the
+  file writes it or in one canonical spelling, whichever reads better beside the other values.
 
 ## v0.5.0: the plugin system
 
