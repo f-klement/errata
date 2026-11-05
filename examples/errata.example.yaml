@@ -73,8 +73,10 @@ checks:
   # than the check naming each document. text with code reads the port out of a docker run in
   # a fenced block, and comment reads the comments of two files whose names choose no
   # language, so each names its own. literal reads the port from the dev server's config,
-  # JavaScript in a file whose name chooses no language either.
-  # See docs/reference.md#marker; #text; #comment; #envfile; #literal.
+  # JavaScript in a file whose name chooses no language either, and code reads the constant
+  # that config exports and the Go constant the stock checker calls the API on, which an iota
+  # block gives.
+  # See docs/reference.md#marker; #text; #comment; #envfile; #literal; #code.
   - id: api-port-agrees
     reason: >
       The chart opens the port, the docs tell an operator which port to allow, and the
@@ -89,7 +91,9 @@ checks:
       probe: {comment: {file: src/healthcheck, pattern: 'localhost:(\d+)/health', language: shell}}
       direnv: {comment: {file: .envrc, pattern: 'API starts on port (\d+)', language: shell}}
       devserver: {literal: {file: web/dev-server.config, path: default.server.port, language: javascript}}
-    agree: [doc, chart, dotenv, readme, probe, direnv, devserver]
+      client: {code: {file: web/dev-server.config, const: PORT, language: javascript}}
+      stock: {code: {file: tools/cmd/stock/main.go, const: APIPort}}
+    agree: [doc, chart, dotenv, readme, probe, direnv, devserver, client, stock]
 
   # Claim: the port tables of the four documentation formats, and the config the task definition
   # hands the API as a JSON string, name the port the chart opens. markdown, asciidoc, rst and
@@ -215,10 +219,10 @@ checks:
 
   # Claim: the admin console's port is 9090 in its config, in its code and its comment, and in
   # the port tables of the handbook and the web page. properties reads a Java properties file,
-  # literal the constant the Python code assigns, asciidoc and html read a table cell by its
-  # column and its row, and toml with embedded reads the JSON the service's TOML config holds
-  # in a string.
-  # See docs/reference.md#properties; #literal; #comment; #asciidoc; #html; #documents-in-strings.
+  # literal the constant the Python code assigns, code the attribute of the console's settings
+  # class, asciidoc and html read a table cell by its column and its row, and toml with embedded
+  # reads the JSON the service's TOML config holds in a string.
+  # See docs/reference.md#properties; #literal; #code; #comment; #asciidoc; #html; #documents-in-strings.
   - id: admin-port-agrees
     reason: >
       The admin console must stay off the public network, and the firewall rules are written
@@ -228,10 +232,11 @@ checks:
       config: {properties: {file: config/application.properties, key: admin.port}}
       code: {comment: {file: src/admin.py, pattern: 'listens on port (\d+)'}}
       constant: {literal: {file: src/admin.py, path: ADMIN_PORT}}
+      console: {code: {file: src/admin.py, name: Console.PORT}}
       handbook: {asciidoc: {file: docs/handbook.adoc, target: table, column: Port, key: Service, row: admin}}
       site: {html: {file: docs/index.html, target: table, column: Port, key: Service, row: admin}}
       settings: {toml: {file: config/larder.toml, path: admin.settings, embedded: [{format: json, path: port}]}}
-    agree: [config, code, constant, handbook, site, settings]
+    agree: [config, code, constant, console, handbook, site, settings]
 
   # Claim: the Node the developer's version manager pins, the image builds with, CI tests on and
   # the docs require are one release line. compare: semver lets 20, 20.11 and 20.11.1 agree at
@@ -304,26 +309,30 @@ checks:
     agree: [tagged, release]
 
   # Claim: the JavaScript and Java SDKs carry the service's release. package_version with files
-  # names the manifests to read, xml reads the POM's version through its namespace, json with
-  # files reads one path from two package.json files, and literal reads the version the Groovy
-  # release script assigns, from a file whose name chooses no language.
-  # See docs/reference.md#package_version; #xml-namespaces; #literal.
+  # names the manifests to read, and with tag reads the git tags on HEAD that start with its
+  # prefix too: api/v2.4.1 for the service, sdk-js/v2.4.1 for the JavaScript SDK. A commit no
+  # such tag names gives no version from the tags. xml reads the POM's version through its
+  # namespace, json with files reads one path from two package.json files, and literal and code
+  # each read the version the Groovy release script assigns, from a file whose name chooses no
+  # language.
+  # See docs/reference.md#package_version; #the-tag-on-head; #xml-namespaces; #literal; #code.
   - id: sdk-versions-follow-the-release
     reason: >
       Users pick the SDK by the service's version. An SDK published under another number reads
       as built for another release of the API.
     scope: repo
     extract:
-      js: {package_version: {files: [clients/js/package.json]}}
+      js: {package_version: {files: [clients/js/package.json], tag: sdk-js/v}}
       java:
         xml:
           file: clients/java/pom.xml
           path: /m:project/m:version
           namespaces: {m: http://maven.apache.org/POM/4.0.0}
-      service: {package_version: {files: [pyproject.toml]}}
+      service: {package_version: {files: [pyproject.toml], tag: api/v}}
       npm: {json: {files: [package.json, clients/js/package.json], path: version}}
       publish: {literal: {file: clients/java/publish.script, path: version, language: groovy}}
-    agree: [js, java, service, npm, publish]
+      script: {code: {file: clients/java/publish.script, name: version, language: groovy}}
+    agree: [js, java, service, npm, publish, script]
 
   # Claim: the zod that npm installs is one that the app and the JavaScript SDK accept.
   # dependency asks each manifest and the lockfile for one package; with compare: semver

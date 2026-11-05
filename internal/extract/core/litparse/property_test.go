@@ -1,4 +1,4 @@
-package literal
+package litparse
 
 import (
 	"strconv"
@@ -24,7 +24,7 @@ func pieces(l core.Language) []string {
 	}
 	s := l.Syntax
 	for _, words := range [][]string{s.Declare, s.Keywords, s.Rebind, s.Assign, s.Entry, s.Keyword, s.True, s.Null,
-		s.Blocks, s.Lead, s.Casts, {s.Do, s.End, s.Repeat, s.Until, s.Return, s.Default, s.ArrayCall, "<?php", "?>"}} {
+		s.Blocks, s.Lead, s.Casts, s.Classes, s.Modifiers, {s.Do, s.End, s.Repeat, s.Until, s.Return, s.Default, s.ArrayCall, "<?php", "?>"}} {
 		for _, w := range words {
 			if w != "" {
 				out = append(out, w, w+" ")
@@ -37,11 +37,12 @@ func pieces(l core.Language) []string {
 	return out
 }
 
-// literalRows are the rows the reader reads.
-func literalRows() []core.Language {
+// literalRows are the rows the parse reads: with members, every row with a
+// Syntax, and without, those that write values outside classes too.
+func literalRows(members bool) []core.Language {
 	var out []core.Language
 	for _, l := range core.Languages() {
-		if l.Syntax != nil {
+		if l.Syntax != nil && (members || !l.Syntax.InClasses) {
 			out = append(out, l)
 		}
 	}
@@ -51,8 +52,9 @@ func literalRows() []core.Language {
 // checkFile fails t unless reading data as l either is refused or gives a
 // tree whose every node lies on a line of the file, and the values a path
 // selects from its top do too.
-func checkFile(t interface{ Fatalf(string, ...any) }, l core.Language, data []byte) {
-	root, err := Parse("f", l, data)
+func checkFile(t interface{ Fatalf(string, ...any) }, l core.Language, data []byte, members bool) {
+	tree, err := parse("f", l, data, members)
+	root := tree.Root
 	if err != nil {
 		if !strings.HasPrefix(err.Error(), "f: ") {
 			t.Fatalf("%s %q: a refusal that names no file: %v", l.Name, data, err)
@@ -76,11 +78,11 @@ func checkFile(t interface{ Fatalf(string, ...any) }, l core.Language, data []by
 		}
 	}
 	walk(root, 0)
-	x, err := Build(Spec{OneFile: core.OneFile{File: "f"}, Path: "$[*]", Language: l.Name})
+	all, err := core.CheckPath("literal", "$[*]")
 	if err != nil {
-		t.Fatalf("Build: %v", err)
+		t.Fatalf("CheckPath: %v", err)
 	}
-	vs, err := x.(extractor).FromData(data)
+	vs, err := core.Source{File: "f", Limit: core.DefaultMaxBytes}.Values(all, root)
 	if err != nil {
 		return // a member that is a list or a mapping
 	}
@@ -95,11 +97,11 @@ func checkFile(t interface{ Fatalf(string, ...any) }, l core.Language, data []by
 // delimiters, words and line ends; a file the reader cannot read is refused
 // by name, never read past.
 func TestEveryValueLiesInsideItsFile(t *testing.T) {
-	rows := literalRows()
 	rapid.Check(t, func(t *rapid.T) {
-		l := rapid.SampledFrom(rows).Draw(t, "language")
+		members := rapid.Bool().Draw(t, "members")
+		l := rapid.SampledFrom(literalRows(members)).Draw(t, "language")
 		parts := rapid.SliceOfN(rapid.SampledFrom(pieces(l)), 0, 60).Draw(t, "pieces")
-		checkFile(t, l, []byte(strings.Join(parts, "")))
+		checkFile(t, l, []byte(strings.Join(parts, "")), members)
 	})
 }
 
@@ -111,7 +113,9 @@ func fuzz(f *testing.F, name string, seeds ...string) {
 	if !ok || l.Syntax == nil {
 		f.Fatalf("no literal row %s", name)
 	}
-	f.Add(planted[name])
+	if src, ok := planted[name]; ok {
+		f.Add(src)
+	}
 	if src, ok := plantedInCode[name]; ok {
 		f.Add(src)
 	}
@@ -119,7 +123,8 @@ func fuzz(f *testing.F, name string, seeds ...string) {
 		f.Add(s)
 	}
 	f.Fuzz(func(t *testing.T, src string) {
-		checkFile(t, l, []byte(src))
+		checkFile(t, l, []byte(src), false)
+		checkFile(t, l, []byte(src), true)
 	})
 }
 
@@ -170,6 +175,10 @@ func FuzzLua(f *testing.F) {
 		"a = \"x\\z\nPLANTED = 9 --\"\ntable.insert(a, 'b')\n")
 }
 
+func FuzzJava(f *testing.F) {
+	fuzz(f, "java", "@A(x = 1)\npublic final class V {\n  public static final String S = \"a\";\n  int[] p = {1, 2};\n  static { S = \"\"\"\n  b\"\"\"; }\n  void f() { int x = 1; }\n}\n")
+}
+
 // assignment is how each language assigns value to name as a statement.
 func assignment(lang, name, value string) string {
 	switch lang {
@@ -190,7 +199,7 @@ func assignment(lang, name, value string) string {
 // them, the last with no line end after it. Planted break: a scalar's line
 // one past its own.
 func TestValueLinesAreTheirStatements(t *testing.T) {
-	rows := literalRows()
+	rows := literalRows(false)
 	rapid.Check(t, func(t *rapid.T) {
 		l := rapid.SampledFrom(rows).Draw(t, "language")
 		comment := map[string]string{"python": "#", "ruby": "#", "elixir": "#", "lua": "--"}[l.Name]

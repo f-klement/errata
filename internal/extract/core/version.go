@@ -1,6 +1,8 @@
 package core
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 	"unicode/utf8"
 
@@ -31,11 +33,20 @@ type Parsers struct {
 // a terminal or a viewer acts on rather than shows, which no version holds.
 // line is where the version is, for the message.
 func CheckVersion(line int, text string) error {
+	if err := VersionError(text); err != nil {
+		return LineError(line, "%s", err)
+	}
+	return nil
+}
+
+// VersionError is CheckVersion's refusal of text without a line, for a
+// version no line of a file holds, such as a git tag's name.
+func VersionError(text string) error {
 	if text == "" {
-		return LineError(line, "the version is empty")
+		return errors.New("the version is empty")
 	}
 	if strings.ContainsFunc(text, actedOn) {
-		return LineError(line, "the version %s holds a control character, a direction control, a line or paragraph separator or a byte that is not UTF-8, which no version holds", Quote(text))
+		return fmt.Errorf("the version %s holds a control character, a direction control, a line or paragraph separator or a byte that is not UTF-8, which no version holds", Quote(text))
 	}
 	return nil
 }

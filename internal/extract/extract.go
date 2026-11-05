@@ -2,7 +2,7 @@
 // reads one file and returns every value it finds there, with its location.
 // Each extractor kind, the key an extract: entry names, is a reader in a
 // package of its own below this one (yaml, json, toml, regex, text, comment, literal,
-// markdown, asciidoc, rst, html, marker, xml, ini, properties, toolversion,
+// code, markdown, asciidoc, rst, html, marker, xml, ini, properties, toolversion,
 // packageversion, dependency, envfile, gitlabci, shell, githubactions, jenkins, and
 // filestat for exists and size), and the readers share
 // internal/extract/core; no reader imports another. The env
@@ -28,6 +28,7 @@ import (
 
 	"github.com/f-klement/errata/internal/check"
 	"github.com/f-klement/errata/internal/extract/asciidoc"
+	"github.com/f-klement/errata/internal/extract/code"
 	"github.com/f-klement/errata/internal/extract/comment"
 	"github.com/f-klement/errata/internal/extract/core"
 	"github.com/f-klement/errata/internal/extract/dependency"
@@ -66,6 +67,7 @@ var kinds = registry(
 	register(text.Kind, text.Build),
 	register(comment.Kind, comment.Build),
 	register(literal.Kind, literal.Build),
+	register(code.Kind, code.Build),
 	register(markdown.Kind, markdown.Build),
 	register(asciidoc.Kind, asciidoc.Build),
 	register(rst.Kind, rst.Build),

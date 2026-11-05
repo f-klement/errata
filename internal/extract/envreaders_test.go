@@ -112,6 +112,33 @@ func TestEnvChoosesByName(t *testing.T) {
 		"Jenkinsfile": "jenkins", "ci/Jenkinsfile": "jenkins",
 		"a.env": "envfile", "config/prod.env": "envfile",
 		"env": "", "bin/deploy": "", "a.envx": "", "Jenkinsfile.groovy": "",
+		// These rows guard the env readers only, since Choose runs over them
+		// alone: they fail when an env reader's chooser grows onto a name
+		// another kind reads.
+		// The literal kind reads the lexer rows with a Syntax; no env reader
+		// takes their names.
+		"x.kt": "", "build.gradle.kts": "", "index.js": "", "x.mjs": "", "x.cjs": "", "x.jsx": "",
+		"src/env.ts": "", "x.mts": "", "x.cts": "", "x.tsx": "", "index.php": "", "x.groovy": "",
+		"build.gradle": "", "x.gvy": "", "x.scala": "", "x.sc": "", "build.sbt": "", "x.swift": "",
+		"settings.py": "", "x.pyi": "", "app.rb": "", "x.rake": "", "x.gemspec": "", "Rakefile": "",
+		"x.ex": "", "config/config.exs": "", "config/runtime.exs": "", "x.lua": "", "x.rockspec": "",
+		// The comment kind reads every lexer row; these are the rows only it
+		// reads, those with no Syntax. Of these only .sh is an env reader's,
+		// shell's (rows above); the rest go to none.
+		"lib/x.bash": "", "x.zsh": "", "x.ksh": "", "x.pl": "", "main.tf": "", "terraform.tfvars": "",
+		"Dockerfile": "", "Makefile": "", "x.mk": "", "config.yml": "", "config.toml": "",
+		"docker-compose.yml": "",
+		// The dependency kind's manifests and locks go to no env reader.
+		"go.mod": "", "go.work": "", "package.json": "", "package-lock.json": "",
+		"npm-shrinkwrap.json": "", "pnpm-lock.yaml": "", "yarn.lock": "", "pyproject.toml": "",
+		"requirements.txt": "", "requirements-dev.in": "", "requirements/base.txt": "",
+		"constraints.txt": "", "poetry.lock": "", "uv.lock": "", "Cargo.toml": "", "Cargo.lock": "",
+		"Gemfile": "", "Gemfile.lock": "", "composer.json": "", "composer.lock": "",
+		// A name that starts .env and ends in a literal row's extension is a
+		// code file, no env reader's; .sh is shell's. A data extension stays
+		// envfile's.
+		".env.py": "", ".env.js": "", "src/.env.d.ts": "", ".env.rb": "",
+		".env.toml": "envfile", ".env.yaml": "envfile", ".env.yml": "envfile", ".env.json": "envfile",
 	} {
 		if got := rs.Choose(file); got != want {
 			t.Errorf("%s: %q, want %q", file, got, want)

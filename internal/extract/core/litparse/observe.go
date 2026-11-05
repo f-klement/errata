@@ -1,4 +1,4 @@
-package literal
+package litparse
 
 import "slices"
 
@@ -9,7 +9,8 @@ import "slices"
 // def X or for X in; and every name an import binds. The parser marks each
 // such name of the root computed, unless the statement is one that sets it.
 type observer struct {
-	taints []taint
+	// taints are the statements that change each name, in order, each once.
+	taints map[string][]int
 	cur    *chain  // the chain being read, nil for none
 	saved  []chain // the chains an index [...] interrupts, innermost last
 	rebind bool    // the next name is bound anew
@@ -18,17 +19,19 @@ type observer struct {
 	arg    bool    // a Mutators call just opened: the name after it changes
 }
 
-// taint is a name a statement changes.
-type taint struct {
-	name string
-	stmt int
-}
-
-// chain is a name and the members and indices after it so far.
+// chain is a name and the members and indices after it so far. Self is
+// whether the name is a word of the row's Selves, as this or self, whose
+// first member, first, a change to the chain changes too.
 type chain struct {
 	name  string
 	state uint8
 	depth int // for a saved chain, the brackets open before its index
+	self  bool
+	first string
+	// members counts the members read after the name, and last is the
+	// latest of them.
+	members int
+	last    string
 }
 
 // The states of a chain.
@@ -73,17 +76,23 @@ func (p *parser) observe(t token) {
 		o.arg = false
 		if o.cur != nil && o.cur.state == sDot {
 			o.cur.state = sMember
+			if o.cur.first == "" {
+				o.cur.first = name
+			}
+			o.cur.members++
+			o.cur.last = name
 			if p.syn.Command {
 				// A row that calls without parentheses may call the member:
 				// LIST.push 'b' changes LIST as LIST.push('b') does.
-				o.taint(o.cur.name, p.stmt)
+				o.call(p, o.cur)
 			}
 			o.text += "." + name
 			return
 		}
 		o.cur = nil
-		if !p.member(p.prev) && !p.keyword(t) {
-			o.cur = &chain{name: name}
+		self := p.members && slices.Contains(p.syn.Selves, name)
+		if !p.member(p.prev) && (!p.keyword(t) || self) {
+			o.cur = &chain{name: name, self: self}
 			o.text = name
 		}
 	case tPunct:
@@ -96,7 +105,7 @@ func (p *parser) observe(t token) {
 			o.cur.state = sDot
 			return
 		case o.cur != nil && o.cur.state != sDot && assigns[w]:
-			o.taint(o.cur.name, p.stmt)
+			o.change(o.cur, p.stmt)
 		}
 		o.cur = nil
 	case tOpen:
@@ -106,7 +115,7 @@ func (p *parser) observe(t token) {
 			c.depth = len(p.open)
 			o.saved = append(o.saved, c)
 		case o.cur != nil && o.cur.state == sMember && p.src[t.start] == '(':
-			o.taint(o.cur.name, p.stmt)
+			o.call(p, o.cur)
 			o.arg = slices.Contains(p.syn.Mutators, o.text)
 			o.cur = nil
 			return
@@ -128,5 +137,35 @@ func (p *parser) observe(t token) {
 
 // taint notes that statement stmt changes name.
 func (o *observer) taint(name string, stmt int) {
-	o.taints = append(o.taints, taint{name, stmt})
+	if o.taints == nil {
+		o.taints = map[string][]int{}
+	}
+	if l := o.taints[name]; len(l) == 0 || l[len(l)-1] != stmt {
+		o.taints[name] = append(l, stmt)
+	}
+}
+
+// call notes the change a call of c's last member makes: any call changes
+// the name it is called on, NAME.upper() as NAME.append(1), since the
+// reader cannot tell them apart; but a call through this or self, as
+// self.HOST.rstrip('/'), changes its member only when the method is one of
+// the row's Methods, and self.f() changes nothing.
+func (o *observer) call(p *parser, c *chain) {
+	if !c.self {
+		o.change(c, p.stmt)
+		return
+	}
+	if c.members >= 2 && slices.Contains(p.syn.Methods, c.last) {
+		o.taint(c.first, p.stmt)
+	}
+}
+
+// change notes that statement stmt changes c's name, and for a chain from
+// this or self in a class, the member of the class it names first: this.x
+// = 1 in a method changes the class's x.
+func (o *observer) change(c *chain, stmt int) {
+	o.taint(c.name, stmt)
+	if c.self && c.first != "" {
+		o.taint(c.first, stmt)
+	}
 }

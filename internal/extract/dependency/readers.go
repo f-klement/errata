@@ -97,9 +97,12 @@ func tree(rd *reading, data []byte, format *core.Format, parse func([]byte) (*co
 }
 
 // text is n's text when n is a string, or the refusal of a node that is
-// not, which the file's tool refuses too. what names n for the message.
+// not, which the file's tool refuses too. A TOML date or time, such as
+// version = 1979-05-27, is no string: Cargo refuses it, and tomllib reads
+// it as a date, which no Python tool takes for a requirement or a version.
+// what names n for the message.
 func text(n *core.Node, what string) (string, error) {
-	if n.Shape != core.Scalar || n.Type != core.TypeString {
+	if n.Shape != core.Scalar || n.Type != core.TypeString || n.Form == core.FormDateTime {
 		return "", core.LineError(n.Line, "%s is %s, not a string, which the tool that reads the file refuses", what, describe(n))
 	}
 	return n.Text, nil
@@ -116,6 +119,8 @@ func describe(n *core.Node) string {
 		return "a number"
 	case n.Type == core.TypeBool:
 		return "a boolean"
+	case n.Form == core.FormDateTime:
+		return "a date or a time"
 	case n.Type == core.TypeString:
 		return "a string"
 	default:

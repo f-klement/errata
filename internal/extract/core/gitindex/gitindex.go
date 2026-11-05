@@ -1,9 +1,16 @@
-// Package gitindex reads git's index, the list of files a clone of the
-// repository holds (ADR 0008), and holds every rule errata keeps on its
-// entries. Its entries are reachable only through the methods of Index,
-// and every list of paths they give leaves out the fixtures of witnesses
-// (check.Witnessed, ADR 0015), so no reader of the index, in core or
-// elsewhere, globs a planted break.
+// Package gitindex reads git's own files without running git (ADR 0002),
+// and holds two readers that share the finding of the git directory and
+// the bounded reads of its files.
+//
+// The index reader (this file) reads git's index, the list of files a
+// clone of the repository holds (ADR 0008), and holds every rule errata
+// keeps on its entries. Its entries are reachable only through the
+// methods of Index, and every list of paths they give leaves out the
+// fixtures of witnesses (check.Witnessed, ADR 0015), so no reader of the
+// index, in core or elsewhere, globs a planted break.
+//
+// The tag reader (tags.go) lists the tags on HEAD from the refs, packed
+// refs and objects git writes (HeadTags), for package_version's tag.
 package gitindex
 
 import (
@@ -688,16 +695,9 @@ func isGitDir(dir string, l Limits) error {
 	if !headRef(filepath.Join(dir, "HEAD")) {
 		return errors.New("it holds no HEAD git takes: a file, or a symlink into refs/")
 	}
-	common := dir
-	data, err := readCapped(filepath.Join(dir, "commondir"), l.gitFile())
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("read its commondir: %w", bare(err))
-	}
-	if err == nil {
-		common = strings.TrimRight(string(data), "\r\n")
-		if !filepath.IsAbs(common) {
-			common = filepath.Join(dir, common)
-		}
+	common, err := commonDir(dir, l)
+	if err != nil {
+		return err
 	}
 	for _, sub := range []string{"objects", "refs"} {
 		if info, err := os.Stat(filepath.Join(common, sub)); err != nil || !info.IsDir() {
@@ -729,22 +729,11 @@ func headRef(head string) bool {
 // never checks out, is refused rather than waited on, and O_NOCTTY keeps a
 // terminal swapped in after the check from becoming errata's own.
 func readCapped(name string, limit int64) ([]byte, error) {
-	// A Stat that fails is left to the open, which fails the same way.
-	if info, err := os.Stat(name); err == nil && info.Mode()&fs.ModeDevice != 0 {
-		return nil, ErrDevice
-	}
-	f, err := os.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOCTTY, 0)
+	f, err := openRegular(name)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	info, err := f.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if !info.Mode().IsRegular() {
-		return nil, errors.New("it is not a regular file")
-	}
 	data, err := io.ReadAll(io.LimitReader(f, limit+1))
 	if err != nil {
 		return nil, err
@@ -753,6 +742,28 @@ func readCapped(name string, limit int64) ([]byte, error) {
 		return nil, fmt.Errorf("the file is over the limit of %d bytes", limit)
 	}
 	return data, nil
+}
+
+// openRegular opens the regular file name for reading, as readCapped
+// reads it, and refuses anything else. The caller closes it.
+func openRegular(name string) (*os.File, error) {
+	// A Stat that fails is left to the open, which fails the same way.
+	if info, err := os.Stat(name); err == nil && info.Mode()&fs.ModeDevice != 0 {
+		return nil, ErrDevice
+	}
+	f, err := os.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOCTTY, 0)
+	if err != nil {
+		return nil, err
+	}
+	info, err := f.Stat()
+	if err == nil && !info.Mode().IsRegular() {
+		err = errors.New("it is not a regular file")
+	}
+	if err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	return f, nil
 }
 
 // parseIndex reads the entries of an index whose object names are hash

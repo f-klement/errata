@@ -443,6 +443,14 @@ func TestDependencyRefusesFiles(t *testing.T) {
 		{"package.json", `{"dependencies": `, "package.json: "},
 		{"package.json", `[]`, "package.json: line 1: the file is no mapping of keys, as package.json is"},
 		{"Cargo.toml", "[dependencies]\nx = { version = 1 }\n", "Cargo.toml: line 2: version is a number, not a string"},
+		// A TOML date or time is no string (#168); planted break: text
+		// without its FormDateTime refusal, which read the date's text.
+		{"Cargo.toml", "[dependencies]\nx = 1979-05-27\n", "Cargo.toml: line 2: dependencies of the package is a date or a time, not a string, which the tool that reads the file refuses"},
+		{"Cargo.toml", "[workspace.dependencies]\nx = { version = 1979-05-27 }\n", "Cargo.toml: line 2: version is a date or a time, not a string"},
+		{"Cargo.lock", "[[package]]\nname = \"x\"\nversion = 1979-05-27\n", "Cargo.lock: line 3: version is a date or a time, not a string"},
+		{"pyproject.toml", "[tool.poetry.dependencies]\nx = 07:32:00\n", "pyproject.toml: line 2: tool.poetry.dependencies of the package is a date or a time, not a string"},
+		{"pyproject.toml", "[project]\ndependencies = [1979-05-27]\n", "pyproject.toml: line 2: a requirement of project.dependencies is a date or a time, not a string"},
+		{"poetry.lock", "[[package]]\nname = \"x\"\nversion = 1979-05-27 07:32:00\n", "poetry.lock: line 3: version is a date or a time, not a string"},
 		{"pyproject.toml", "[project]\ndependencies = \"x\"\n", "pyproject.toml: line 2: project.dependencies is a string, not a list of requirements"},
 		{"pyproject.toml", "\xef\xbb\xbf[project]\n", "pyproject.toml: "},
 		{"go.mod", "module m\nfrob x\n", "go.mod:2: unknown directive: frob"},

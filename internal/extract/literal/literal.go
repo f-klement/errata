@@ -15,11 +15,13 @@ import (
 
 	"github.com/f-klement/errata/internal/check"
 	"github.com/f-klement/errata/internal/extract/core"
+	"github.com/f-klement/errata/internal/extract/core/litparse"
 )
 
 // Spec reads Path in the literal data of File (Parse). Language names the
 // row of the lexer table the file is read with; left out, the file's name
-// chooses it (core.LanguageFor). Only a row with a Syntax is read.
+// chooses it (core.LanguageFor). Only a row with a Syntax is read, and not
+// one whose values are all in classes (core.Syntax.InClasses).
 type Spec struct {
 	core.OneFile
 	Path     string `json:"path"`
@@ -51,11 +53,16 @@ func chosen(s Spec) string {
 	if s.Language != "" {
 		return s.Language
 	}
-	if l, ok := core.LanguageFor(s.File); ok && l.Syntax != nil {
+	if l, ok := core.LanguageFor(s.File); ok && reads(l) {
 		return l.Name
 	}
 	return ""
 }
+
+// reads reports whether the reader reads l: a row with a Syntax, unless the
+// language writes every value inside a class, which only the code reader
+// reads.
+func reads(l core.Language) bool { return l.Syntax != nil && !l.Syntax.InClasses }
 
 // Describe is what the kind's extractor returns: flat values, any of which
 // may be computed.
@@ -67,7 +74,7 @@ func Describe(Spec) check.Description {
 func names() string {
 	var out []string
 	for _, l := range core.Languages() {
-		if l.Syntax != nil {
+		if reads(l) {
 			out = append(out, l.Name)
 		}
 	}
@@ -92,10 +99,10 @@ func Build(s Spec) (check.Extractor, error) {
 	var lang core.Language
 	var ok bool
 	if s.Language != "" {
-		if lang, ok = core.LanguageNamed(s.Language); !ok || lang.Syntax == nil {
+		if lang, ok = core.LanguageNamed(s.Language); !ok || !reads(lang) {
 			return nil, fmt.Errorf("literal: language %s is not one errata reads literal data of; write one of %s", core.Quote(s.Language), names())
 		}
-	} else if lang, ok = core.LanguageFor(s.File); !ok || lang.Syntax == nil {
+	} else if lang, ok = core.LanguageFor(s.File); !ok || !reads(lang) {
 		return nil, fmt.Errorf("literal: %s: its name chooses no language errata reads literal data of; set language: to one of %s", s.File, names())
 	}
 	path, err := core.CheckPath(Kind.Key, s.Path)
@@ -128,7 +135,7 @@ func (e extractor) FromData(data []byte) ([]check.Value, error) {
 	if err := e.CheckNodes(data, core.LiteralFormat); err != nil {
 		return nil, err
 	}
-	root, err := Parse(e.File, e.lang, data)
+	root, err := litparse.Parse(e.File, e.lang, data)
 	if err != nil {
 		return nil, err
 	}

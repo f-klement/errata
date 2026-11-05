@@ -1,7 +1,13 @@
-package literal
+// Package litparse is the parse of a file's literal data that the literal
+// and code readers share: one grammar of literal data for every language,
+// spelt by the lexer table's row (core.Syntax), into core's tree, with
+// whatever the file computes marked NotLiteral. Nothing is run, imported or
+// evaluated (ADR 0002).
+package litparse
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode"
@@ -17,19 +23,50 @@ import (
 // word. What is not literal data is a scalar marked NotLiteral, with the
 // text the file wrote. Nothing is run, imported or evaluated.
 func Parse(file string, lang core.Language, data []byte) (*core.Node, error) {
+	t, err := parse(file, lang, data, false)
+	return t.Root, err
+}
+
+// Tree is what ParseMembers reads: the tree, and for the root and each
+// class's mapping in it, whether a word of the row's Constants declared each
+// of its keys where it was assigned last (Const).
+type Tree struct {
+	Root   *core.Node
+	consts map[*core.Node]map[string]bool
+}
+
+// Const reports whether a word of the row's Constants declared key, a key of
+// m, the root or a class's mapping, where it was assigned last.
+func (t Tree) Const(m *core.Node, key string) bool { return t.consts[m][key] }
+
+// ParseMembers is Parse that also reads the members of each class, object
+// or module the row's Classes open, at the top or in another class, into a
+// mapping under the class's name, and the members of a class with no name,
+// as Kotlin's companion object, into the class around it. A member is an
+// assignment in the class's body, after any of the row's Modifiers, and in
+// a Typed row after its type. The code reader reads through it.
+func ParseMembers(file string, lang core.Language, data []byte) (Tree, error) {
+	return parse(file, lang, data, true)
+}
+
+// parse is Parse, reading members too when members is set.
+func parse(file string, lang core.Language, data []byte, members bool) (Tree, error) {
 	lines := core.LineIndex(data)
 	p := &parser{
-		t:     newTokenizer(file, lang, data, lines),
-		syn:   lang.Syntax,
-		lang:  lang,
-		src:   string(data),
-		root:  core.NewMapping(1),
-		defs:  map[string]def{},
-		own:   map[owned]bool{},
-		made:  map[*core.Node]bool{},
-		pos:   map[*core.Node]map[string]int{},
-		fuel:  2*len(data) + 4*core.MaxDepth + 64,
-		calls: map[*core.Node]bool{},
+		members:  members,
+		consts:   map[string]bool{},
+		constsOf: map[*core.Node]map[string]bool{},
+		t:        newTokenizer(file, lang, data, lines),
+		syn:      lang.Syntax,
+		lang:     lang,
+		src:      string(data),
+		root:     core.NewMapping(1),
+		defs:     map[string]def{},
+		own:      map[owned]bool{},
+		made:     map[*core.Node]bool{},
+		pos:      map[*core.Node]map[string]int{},
+		fuel:     2*len(data) + 4*core.MaxDepth + 64,
+		calls:    map[*core.Node]bool{},
 	}
 	p.tok = p.t.token()
 	defer p.t.stop()
@@ -43,10 +80,11 @@ func Parse(file string, lang core.Language, data []byte) (*core.Node, error) {
 		p.closed()
 	}
 	if p.err != nil {
-		return nil, p.err
+		return Tree{}, p.err
 	}
 	p.computed()
-	return p.root, nil
+	p.constsOf[p.root] = p.consts
+	return Tree{Root: p.root, consts: p.constsOf}, nil
 }
 
 // parser reads the statements of a file from its tokens.
@@ -79,7 +117,37 @@ type parser struct {
 	obs observer
 	// fuel is how many more times advance may be called.
 	fuel int
+
+	// members reads the members of classes (ParseMembers); sc is the scope
+	// being read, the top of the file or a class's body; consts is whether
+	// a Constants word declared each key of the scope's root, and constsOf
+	// that of each class's mapping read so far.
+	members  bool
+	sc       scope
+	consts   map[string]bool
+	constsOf map[*core.Node]map[string]bool
 }
+
+// scope is where the statements being read stand: the brackets and blocks
+// open around them, the column a body's statements start at, which body
+// they are in and how deeply classes nest there.
+type scope struct {
+	open, blocks, col int
+	body              uint8
+	depth             int
+	// constant is whether every member of the body is a constant
+	// (Syntax.ConstantBodies).
+	constant bool
+}
+
+// The bodies a scope is: the top of the file, or a class's body that its
+// indentation, an End word or a } ends.
+const (
+	bodyTop uint8 = iota
+	bodyIndent
+	bodyEnd
+	bodyBrace
+)
 
 // opened is a bracket open: the byte that closes it and where it opened.
 type opened struct {
@@ -231,12 +299,13 @@ func (p *parser) valueEnd(t token) bool {
 	}
 }
 
-// top reports whether no bracket or block is open.
-func (p *parser) top() bool { return len(p.open) == 0 && len(p.blocks) == 0 }
+// top reports whether no bracket or block is open in the scope.
+func (p *parser) top() bool { return len(p.open) == p.sc.open && len(p.blocks) == p.sc.blocks }
 
 // atEnd reports whether tok ends the statement: the end of the file, a ;, or
-// a line end with no bracket or block open, unless the language ends its
-// statements only at ; or the next line goes on with an operator.
+// a line end with no bracket or block open, unless the next line goes on
+// with an operator. A language that ends its statements at ; ends one at a
+// line end only after a } , as a function's body ends.
 func (p *parser) atEnd() bool {
 	t := p.tok
 	if t.kind == tEOF {
@@ -245,11 +314,15 @@ func (p *parser) atEnd() bool {
 	if !p.top() || t.start == p.first {
 		return false // a statement's first token does not end it
 	}
-	if p.t.is(t, ";") {
+	if p.t.is(t, ";") || p.closes(t) {
 		return true
 	}
-	if p.syn.Semicolons || !t.line {
+	if !t.line {
 		return false
+	}
+	if p.syn.Semicolons {
+		// A function's or a class's body ends its statement with no ;.
+		return p.prev.kind == tClose && p.src[p.prev.start] == '}'
 	}
 	return p.syn.Indent || !p.continues(t)
 }
@@ -261,6 +334,18 @@ var operators = map[string]bool{
 	"*": true, "/": true, "%": true, "|>": true, "..": true, "==": true, "!=": true, "<": true, ">": true,
 	"<=": true, ">=": true, "=": true, "=>": true, "->": true, "|": true, "&": true, "^": true, "<<": true,
 	">>": true, "**": true, "::": true, ",": true, "&.": true, "<>": true, "//": true, "!": true,
+}
+
+// closes reports whether t, with no bracket or block open in the scope,
+// ends the class body the scope is: its } or its End word.
+func (p *parser) closes(t token) bool {
+	switch p.sc.body {
+	case bodyBrace:
+		return t.kind == tClose
+	case bodyEnd:
+		return p.t.is(t, p.syn.End) && !p.member(p.prev)
+	}
+	return false
 }
 
 // continues reports whether t, first on its line, goes on with the
@@ -298,9 +383,12 @@ func (p *parser) statement() {
 		p.advance()
 		return
 	}
-	if s.Indent && first.first && first.col > 0 || !p.top() {
+	if s.Indent && first.first && first.col > p.sc.col || !p.top() {
 		p.endStatement()
 		return
+	}
+	if p.members {
+		p.annotations()
 	}
 	if s.Return != "" && p.t.is(first, s.Return) && !p.name() {
 		p.advance()
@@ -308,10 +396,14 @@ func (p *parser) statement() {
 		p.endStatement()
 		return
 	}
-	declared := false
-	for p.t.oneOf(p.tok, s.Declare) && !p.name() {
+	declared, constant := false, false
+	for (p.t.oneOf(p.tok, s.Declare) || p.members && p.t.oneOf(p.tok, s.Modifiers)) && !p.name() {
+		constant = constant || p.t.oneOf(p.tok, s.Constants)
 		p.advance()
 		declared = true
+	}
+	if declared && s.Default != "" && p.t.is(p.tok, s.Default) && p.members && p.t.oneOf(p.peek(), s.Classes) {
+		p.advance() // export default class C reads as export class C
 	}
 	if declared && s.Default != "" && p.t.is(p.tok, s.Default) {
 		p.advance()
@@ -319,7 +411,15 @@ func (p *parser) statement() {
 		p.endStatement()
 		return
 	}
+	if p.members && p.t.oneOf(p.tok, s.Classes) && !p.name() {
+		p.class(first)
+		return
+	}
 	head := p.tok
+	if p.members && s.Typed && p.sc.depth > 0 && !p.keyword(head) && (head.kind != tIdent || !p.assign(p.peek())) {
+		p.typed(first, constant)
+		return
+	}
 	if head.kind != tIdent || p.keyword(head) && !p.name() {
 		p.endStatement()
 		return
@@ -345,7 +445,9 @@ func (p *parser) statement() {
 	case p.assign(p.tok):
 		p.advance()
 		p.define(names, first, p.statementValue())
-	case declared || len(names) > 1:
+		p.consts[strings.Join(names, ".")] = constant || p.sc.constant
+	case declared || len(names) > 1 || p.sc.depth > 0:
+		// A call in a class's body is a method's head, not a call.
 	case p.tok.kind == tOpen && p.src[p.tok.start] == '(' && !p.tok.line:
 		v := p.finish(head, p.call(head, 1), ctx{top: true}, 0, 0)
 		p.called(names[0], head, v)
@@ -491,17 +593,29 @@ func (p *parser) called(name string, head token, v *core.Node) {
 // after it imports every name of a module over, as computed: the value the
 // file wrote for it is not the value it ends with.
 func (p *parser) computed() {
-	for _, t := range p.obs.taints {
-		d, ok := p.defs[t.name]
-		if !ok || p.own[owned{t.stmt, t.name}] {
-			continue
-		}
-		p.set(p.root, t.name, p.notLiteral(d.start, d.end))
-	}
+	p.tainted(0)
 	for i, k := range p.root.Keys {
 		if d := p.defs[k]; d.stmt < p.star {
 			p.root.Vals[i] = p.notLiteral(d.start, d.end)
 			p.root.Field[k] = p.root.Vals[i]
+		}
+	}
+}
+
+// tainted marks each key of the scope's root that the observer saw a
+// statement from first on change, other than one that sets the key, as
+// computed, and no constant. It looks up each key's changes from first on,
+// and stops at the first that is no statement setting the key, so each
+// change is read once for each scope that sets its name in it (ADR 0003).
+func (p *parser) tainted(first int) {
+	for k, d := range p.defs {
+		stmts := p.obs.taints[k]
+		for i := sort.SearchInts(stmts, first); i < len(stmts); i++ {
+			if !p.own[owned{stmts[i], k}] {
+				p.set(p.root, k, p.notLiteral(d.start, d.end))
+				p.consts[k] = false
+				break
+			}
 		}
 	}
 }
@@ -562,6 +676,14 @@ func (p *parser) value(c ctx) *core.Node {
 func (p *parser) finish(start token, n *core.Node, c ctx, depth, blocks int) *core.Node {
 	if n != nil && p.stop(c, depth, blocks) {
 		return n
+	}
+	if n != nil && start.kind == tString && !n.NotLiteral && p.syn.Frozen != "" && p.t.is(p.tok, ".") &&
+		p.peek().kind == tIdent && p.t.is(p.peek(), p.syn.Frozen) {
+		p.advance() // "1.2".freeze is the string 1.2
+		p.advance()
+		if p.stop(c, depth, blocks) {
+			return n
+		}
 	}
 	cast := n != nil && !n.NotLiteral && p.t.oneOf(p.tok, p.syn.Casts)
 	for !p.stop(c, depth, blocks) {

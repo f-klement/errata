@@ -60,10 +60,11 @@ func parse(
 
 // version adds n as a version, refusing one that is not a string, which
 // npm, the Python packaging tools and Cargo all refuse: a TOML float such as
-// version = 1.0 is no version, and neither is a table. what names n's key
-// for the message.
+// version = 1.0 is no version, and neither is a table, nor a TOML date such
+// as version = 1979-05-27, which tomllib reads as a date and Cargo refuses.
+// what names n's key for the message.
 func version(n *core.Node, what string, add func(string, int, bool) error) error {
-	if n.Shape != core.Scalar || n.Type != core.TypeString {
+	if n.Shape != core.Scalar || n.Type != core.TypeString || n.Form == core.FormDateTime {
 		return core.LineError(n.Line, "%s is %s, not a string; the tool that reads the file refuses it", what, describe(n))
 	}
 	return add(n.Text, n.Line, false)
@@ -80,6 +81,8 @@ func describe(n *core.Node) string {
 		return "a number"
 	case n.Type == core.TypeBool:
 		return "a boolean"
+	case n.Form == core.FormDateTime:
+		return "a date or a time"
 	default:
 		return "null"
 	}

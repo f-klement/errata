@@ -60,8 +60,10 @@ func readPackageJSON(x *extractor, f file, data []byte, add func(string, int) er
 // start of data is dropped first when the file's kind skips it; the mark
 // holds no line end, so no line moves. A path that selects a
 // mapping, such as Cargo's rust-version.workspace = true, adds nothing: the
-// version is the workspace's. last, when set, turns the scalar of the last
-// path into a version, or drops it.
+// version is the workspace's. A TOML date or time, such as
+// channel = 2024-01-01, is refused: rustup, Cargo and the Python tools each
+// read the key as a string and refuse a date. last, when set, turns the
+// scalar of the last path into a version, or drops it.
 func readTree(x *extractor, f file, data []byte, format *core.Format, parse func([]byte) (*core.Node, error), add func(string, int) error, last func(*core.Node) (string, bool)) error {
 	if parse == nil {
 		return fmt.Errorf("errata was built without the reader for %s", f.kind.name)
@@ -91,6 +93,9 @@ func readTree(x *extractor, f file, data []byte, format *core.Format, parse func
 		for _, n := range nodes {
 			if n.Shape != core.Scalar {
 				continue
+			}
+			if n.Form == core.FormDateTime {
+				return core.LineError(n.Line, "the version is a date or a time, not a string; the tool that reads the file refuses it")
 			}
 			text := n.Text
 			if last != nil && i == len(paths)-1 {

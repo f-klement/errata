@@ -469,3 +469,36 @@ func TestAnIndexListingReadsAsADirectoryDoes(t *testing.T) {
 		_ = f.Close()
 	}
 }
+
+// HeadTags reads the repository that holds the root, found above a root
+// below its top as git finds it, through a symlink to the root too, and on
+// a witness's run the real root's repository, since a fixture holds no
+// .git. Planted breaks: the root taken for the top, which found no
+// repository below it; the witness's real root not taken, which found none
+// at the fixture.
+func TestHeadTagsReadsTheRepositoryOfTheRoot(t *testing.T) {
+	root := repo(t, map[string]string{"sub/a": "x", ".errata/witness/w/a": "y"})
+	git(t, root, "commit", "-q", "-m", "c")
+	git(t, root, "tag", "v1")
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(filepath.Join(root, "sub"), link); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name string
+		ctx  context.Context
+		at   string
+	}{
+		{"the top", t.Context(), root},
+		{"a root below the top", t.Context(), filepath.Join(root, "sub")},
+		{"a link to a root below the top", t.Context(), link},
+		{"a witness", check.OnWitness(t.Context(), root), t.TempDir()},
+	} {
+		got, err := HeadTags(c.ctx, c.at, "v")
+		if err != nil || !slices.Equal(got, []string{"v1"}) {
+			t.Errorf("%s: got %q, %v, want v1", c.name, got, err)
+		}
+	}
+	_, err := HeadTags(t.Context(), filepath.Join(root, "none"), "")
+	extracttest.WantError(t, err, "open the repository root: no such file or directory")
+}

@@ -60,8 +60,10 @@ var table = []Language{
 	{Name: "cpp", Family: "c", Extensions: []string{".cc", ".cpp", ".cxx", ".c++", ".hh", ".hpp", ".hxx", ".h++"},
 		Forms: []Form{slashLine, slashBlock, dquoteLine, char,
 			{Kind: String, Open: `R"`, Fence: cppDelimiter, FenceMax: 16, Inner: "(", Close: ")", Outer: `"`}}},
-	{Name: "java", Family: "c", Extensions: []string{".java"},
-		Forms: []Form{slashLine, slashBlock, dtriple, dquoteLine, char}},
+	{Name: "java", Family: "c", Extensions: []string{".java"}, Syntax: &java,
+		// A text block takes off the indentation its lines share, by rules
+		// the code reader does not follow, so it is computed.
+		Forms: []Form{slashLine, slashBlock, {Kind: String, Open: `"""`, Close: `"""`, Escape: '\\', Computed: true}, dquoteLine, char}},
 	{Name: "kotlin", Family: "c", Extensions: []string{".kt", ".kts"}, Syntax: &kotlin,
 		Forms: []Form{slashLine, nestedBlock, interp(dtripleGreedy, "$"), interp(dquoteLine, "$"), char}},
 	{Name: "javascript", Family: "c", Extensions: []string{".js", ".mjs", ".cjs", ".jsx"}, Syntax: &javascript,

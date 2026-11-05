@@ -60,7 +60,7 @@ FUZZ_TARGETS = $(shell find internal -name testdata -prune -o -name '*_test.go' 
 	| xargs grep -HE '^func Fuzz[A-Za-z0-9_]*[(][A-Za-z_][A-Za-z0-9_]* \*testing\.F[)]' \
 	| sed 's|^\(.*\)/[^/]*_test\.go:func \(Fuzz[A-Za-z0-9_]*\).*|./\1:\2|' | LC_ALL=C sort -u)
 
-.PHONY: check gate precheck build tools lint fmt test cover slow fuzz mutation vuln dogfood public-dry release-dry image-dry ci-local ci-test tool-sums hooks cli-doc cli-doc-check clean
+.PHONY: check gate precheck build tools lint fmt test cover slow fuzz mutation vuln dogfood public-dry release-dry image-dry ci-local ci-test tool-sums hooks cli-doc cli-doc-check loc clean
 
 # ci/ is stripped from the public mirror, so a public clone runs the gate
 # without the publish and autopatch targets. CI's test job passes CI_TEST=apart
@@ -414,6 +414,12 @@ cli-doc:
 
 cli-doc-check:
 	$(GO) run ./scripts/clidoc --check docs/cli.md
+
+# How many lines of the tree are code, by bucket (source, tests, tooling, examples, docs,
+# generated) and language: files, raw lines, code lines, and code with Python's docstrings.
+# scripts/loccensus says how it sorts and counts. It is for a reader; nothing in CI runs it.
+loc:
+	$(GO) run ./scripts/loccensus .
 
 # The commit-msg hook: commit subjects are published on the mirror, so they
 # are checked before the commit exists. CI runs the same check on every push.

@@ -37,10 +37,15 @@ var Kind = core.Kind[Spec]{Key: kindKey, Place: Place, Resolve: Resolve, Describ
 // chooses takes, for the env kind, a name that starts with .env or ends in
 // .env, such as prod.env, which compose's env_file: and systemd's
 // EnvironmentFile= name. It leaves .envrc, direnv's shell script, and a
-// name that ends in .sh to the shell reader.
+// name that ends in .sh to the shell reader. It leaves a code file too, a
+// name whose lexer row has a Syntax, which the literal reader reads, such
+// as .env.d.ts or .env.py; a data name, such as .env.yaml, stays its own.
 func chooses(file string) bool {
 	base := path.Base(file)
 	if base == ".envrc" || strings.HasSuffix(base, ".sh") {
+		return false
+	}
+	if l, ok := core.LanguageFor(base); ok && l.Syntax != nil {
 		return false
 	}
 	return strings.HasPrefix(base, ".env") || strings.HasSuffix(base, ".env")

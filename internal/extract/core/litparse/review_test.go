@@ -1,4 +1,4 @@
-package literal
+package litparse
 
 import (
 	"strings"
@@ -160,5 +160,18 @@ func TestDelta3Values(t *testing.T) {
 		{"ruby", "X = {\"b\":[], \"c\":1}\n", "X.c", "1@1"},
 		{"ruby", "X = {\"b\":-1}\n", "X.b", "-1@1"},
 		{"ruby", "X = {'b':c}\n", "X.b", "~c@1"},
+	})
+}
+
+// In PHP, which ends a statement at ;, a function, a class or an if ends at
+// its body's }, so the statement on the next line is read. Planted break:
+// atEnd never ends a statement of a Semicolons row at a line end.
+func TestPHPStatementAfterABody(t *testing.T) {
+	cases(t, []struct{ lang, src, path, want string }{
+		{"php", "<?php\nfunction f() { return 1; }\n$x = 1;\n", "x", "1@3"},
+		{"php", "<?php\nclass A {\n  const X = 2;\n}\n$x = 1;\n", "x", "1@5"},
+		{"php", "<?php\nif ($a) {\n  $b = 1;\n} else {\n  $b = 2;\n}\n$x = 1;\n", "x", "1@7"},
+		{"php", "<?php\n$f = function () {\n  return 1;\n};\n$x = 1;\n", "x", "1@5"},
+		{"php", "<?php\n$x = [\n  'a' => 1\n]\n+ [];\n", "x", "~[\n  'a' => 1\n]\n+ []@2"},
 	})
 }

@@ -2,6 +2,7 @@ package marker
 
 import (
 	"math"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -41,6 +42,22 @@ func markerLine(file string, words []string, wrap, next bool) string {
 	return "on <!-- errata: r -->" + value + "<!-- /errata --> here"
 }
 
+// orderedMarker is a word that opens an ordered list at a line's start.
+var orderedMarker = regexp.MustCompile(`^[0-9]+\.$`)
+
+// A value whose line starts with 1. and a space starts an ordered list in
+// Markdown, so the value is the item's text, without the marker. Planted
+// break: TestValueLine's skip left out, at seed 12134170186251476206.
+func TestValueOrderedListLine(t *testing.T) {
+	found, err := Scan("a.md", []byte("\non <!-- errata: r -->\n1. .<!-- /errata --> here\n\n"), 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(found) != 1 || found[0].Value.Text != "." || found[0].Value.At.Line != 3 {
+		t.Fatalf("found %+v, want one value \".\" at line 3", found)
+	}
+}
+
 // The value of a marker is its words on one line, at the line where it
 // starts, wherever in the file the marker stands, whether or not a line
 // wrap splits it, and whether it starts on the opener's line or the next. Planted breaks: found taking the opener's line for the
@@ -53,6 +70,14 @@ func TestValueLine(t *testing.T) {
 		words := rapid.SliceOfN(rapid.StringMatching(`[a-z0-9.]{1,6}`), 1, 3).Draw(t, "words")
 		wrap := len(words) > 1 && rapid.Bool().Draw(t, "wrap")
 		next := rapid.Bool().Draw(t, "next")
+		// In Markdown a word of digits and a dot that starts a line opens an
+		// ordered list, whose marker is no text of the value
+		// (TestValueOrderedListLine), so such a draw is skipped.
+		for i, w := range words {
+			if file == "a.md" && ((i == 0 && next) || (i > 0 && wrap)) && orderedMarker.MatchString(w) {
+				t.Skip("an ordered list marker starts a line of the value")
+			}
+		}
 		// A blank line before the marker keeps it out of a quote or a
 		// list item, whose block would otherwise hold it.
 		parts := append(append(append([]string{}, before...), "", markerLine(file, words, wrap, next)), append([]string{""}, after...)...)

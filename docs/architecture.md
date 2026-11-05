@@ -200,6 +200,7 @@ flowchart TB
         text["internal/extract/text"]
         comment["internal/extract/comment"]
         literal["internal/extract/literal"]
+        code["internal/extract/code"]
         markdown["internal/extract/markdown"]
         asciidoc["internal/extract/asciidoc"]
         rst["internal/extract/rst"]
@@ -230,6 +231,7 @@ flowchart TB
         mdparse["internal/extract/core/mdparse"]
         htmlparse["internal/extract/core/htmlparse"]
         gomod["internal/extract/core/gomod"]
+        litparse["internal/extract/core/litparse"]
     end
     subgraph testonly ["imported only by test files"]
         coretest["internal/extract/coretest"]
@@ -266,14 +268,20 @@ flowchart TB
     gomod --> core
     toolversion --> gomod
     dependency --> gomod
+    litparse --> core
+    literal --> litparse
+    code --> litparse
     coretest --> core
     extracttest --> check
     extracttest --> lineend
 ```
 
 The lexer table sits in `core/lexer`, and `core` imports it, so a reader reaches it through `core`.
-The comment, marker and literal readers read the same rows: the literal reader takes a row's
-string forms and its `Syntax`, and keeps no table of its own. The parses and the selectors that several markup readers share sit in a box of their
+The comment, marker, literal and code readers read the same rows: `core/litparse`, the parse the
+literal and code readers read through, takes a row's string forms and its `Syntax`, and keeps no
+table of its own. The code reader reads Go itself, with the standard library's `go/parser` and
+`go/constant`, and every other language through `core/litparse`, which reads the members of classes
+for it alone. The parses and the selectors that several markup readers share sit in a box of their
 own, since they import `core`, while `core` imports the packages of the other box. `config` imports
 `marker`, the one reader it names, for the built-in check `errata-unbound-markers`: it walks the
 files the rules' marker extractors walk, together, and reports each marker no rule reads.
@@ -294,15 +302,17 @@ reader imports `core` and no other reader, and `core` imports no reader.
 | `internal/minimatch` | a port of minimatch, the glob matcher Renovate reads a file pattern with, its quirks included, under bounds on brace expansion, nodes, regex source and steps; `rule`'s Renovate helpers match with it | files, rules, CEL |
 | `internal/extract` | the kinds of extractor a rule names: the list of kinds, each a reader's `core.Kind` with its `Build`, and the `Spec` a rule's entry decodes into, which finds its kind by key and dispatches `Build`, `Place`, `Resolved` and `Describe` to it | how any kind reads a file; rules, config, output |
 | `internal/extract/core` | what every reader shares: the source held inside the repository and to its size cap, the walk of the repository and the directories it passes over, the limits on nodes, values, depth and bytes, the tree and the path grammar with its filters, the line index, quoting, the clocked regex search, the entry extractor and work meter of the INI, properties and env file readers, the files git's index tracks, read without git, and the parse of a manifest under its node limit, which package_version and dependency share | any one format |
-| `internal/extract/core/gitindex` | git's index, the list of files a clone holds (ADR [0008](adr/0008-an-extractor-reads-a-file-set-from-git-and-cel-groups-by-file.md)), reachable only through `Index`'s methods, whose every list leaves out the fixtures of witnesses | any reader |
+| `internal/extract/core/gitindex` | git's index, the list of files a clone holds (ADR [0008](adr/0008-an-extractor-reads-a-file-set-from-git-and-cel-groups-by-file.md)), reachable only through `Index`'s methods, whose every list leaves out the fixtures of witnesses; and the tags on HEAD, read from the refs and objects git writes, which `package_version`'s `tag` reads through core | any reader |
 | `internal/extract/core/clip` | cutting file text or a path for a message, kept apart so `gitindex`, which `core` imports, quotes as `core` does | everything else |
 | `internal/extract/core/lineend` | the one rule of where a line ends, at a LF, a CRLF or a lone CR, by which every reader numbers its lines and folds its text; `core` hands it on as `LineCursor`, `LineIndex`, `LineOf`, `LastLine`, `LineStart`, `NextLine` and `LineFeeds`, and it is kept apart so `extracttest`, which `core`'s own tests import, counts lines by it too | everything else |
 | `internal/extract/yaml`, `internal/extract/json`, `internal/extract/toml` | one reader each that parses its format into core's tree, for core's path to select from | each other |
 | `internal/extract/regex` | the regex extractor, which is core's search over the file | the other readers |
 | `internal/extract/text` | Markdown prose, searched with core's search | the other readers |
 | `internal/extract/comment` | the comments of a source file, found with the lexer table and searched with core's search | the other readers |
-| `internal/extract/literal` | the literal data of a file written in a programming language: the statements at its top parsed into core's tree with one grammar, spelt by the lexer table's row, and whatever the file computes marked not literal (ADR [0002](adr/0002-errata-reads-configuration-and-never-runs-it.md)) | the other readers; every language's evaluation |
-| `internal/extract/core/lexer` | the lexer table, one row per language with its comment delimiters, its string literal forms and heredocs and how each decodes, and for the literal reader its syntax of literal data; and the walk that finds a file's comments and strings in one pass | any one reader |
+| `internal/extract/literal` | the literal data of a file written in a programming language, read through core/litparse's parse and selected with core's path | the other readers; every language's evaluation |
+| `internal/extract/code` | the value of one name a source file declares: a Go file's package level const or var, read with go/parser and evaluated with go/constant as the compiler evaluates a constant, and any other language's module level names and class members through core/litparse, with what the program computes marked not literal and a const: that names no constant refused | the other readers; compiling or running the program, and every file of a package but the one it reads |
+| `internal/extract/core/litparse` | the parse of literal data the literal and code readers share: the statements at a file's top parsed into core's tree with one grammar, spelt by the lexer table's row, and whatever the file computes marked not literal (ADR [0002](adr/0002-errata-reads-configuration-and-never-runs-it.md)), and for the code reader the members of each class and which names a constant word declares | any one reader; every language's evaluation |
+| `internal/extract/core/lexer` | the lexer table, one row per language with its comment delimiters, its string literal forms and heredocs and how each decodes, and for the literal and code readers its syntax of literal data and of classes; and the walk that finds a file's comments and strings in one pass | any one reader |
 | `internal/extract/markdown` | a Markdown file's comments, sections under a heading path, fenced code blocks and table cells | the other readers |
 | `internal/extract/rst` | a reStructuredText file's comments, sections under a heading path, literal and code blocks and table cells, from a parse of its own | the other readers |
 | `internal/extract/core/markup` | what every reader of a document markup shares: the fields a rule writes to pick a comment, section, code block or table cell, their checks, the heading path and the headings it names, and the values a target's pieces give | any one markup |
@@ -330,8 +340,9 @@ reader imports `core` and no other reader, and `core` imports no reader.
 | `internal/heapcap` | the heap watchdog that every package's tests link under the `mutation` tag only | errata's own code: only test files built with the tag import it |
 | `internal/check` | the domain types: `Check`, `Rule`, `Extractor`, `Assertion`, `Value`, `Location`, `Extracted`, `Scope`, `Verdict`, `Result`, `Report`, and `ExtractorKind` with the `Description` and `Shape` it gives of what an extractor returns | every other package |
 
-`scripts/casecover` and `scripts/slowtests` are tools of the build, run by `make mutation` and
-`make slow`; errata's binary does not import them, and the graphs leave them out.
+`scripts/casecover`, `scripts/slowtests`, `scripts/clidoc` and `scripts/loccensus` are tools of
+the build, run by `make mutation`, `make slow`, `make cli-doc` and `make loc`; errata's binary
+does not import them, and the graphs leave them out.
 
 ## The seams
 
@@ -444,6 +455,7 @@ flowchart LR
         k_text["text"]
         k_comment["comment"]
         k_literal["literal"]
+        k_code["code"]
         k_markdown["markdown"]
         k_asciidoc["asciidoc"]
         k_rst["rst"]

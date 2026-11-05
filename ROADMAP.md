@@ -228,7 +228,8 @@ Values written in code, and one version pinned in many places.
 - Dependency versions across manifests and lockfiles (Go, npm, pnpm, Yarn, Python, Cargo, Ruby,
   Composer, Maven, Gradle, NuGet), so one rule checks that a package pinned in several places
   agrees.
-- A package's version read from the git tag on HEAD, and unknown on a checkout with no tags.
+- A package's version read from the git tag on HEAD, and unknown on a shallow checkout that holds
+  no tags.
 - A TOML date written as a version is refused, as Cargo and the Python tools refuse it. A TOML
   date, a YAML timestamp or a binary value is not parsed as an embedded document.
 - The rest of CEL's strings extension, each function with a guard on the size it builds or the

@@ -1,9 +1,11 @@
 package core
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 
+	"github.com/f-klement/errata/internal/check"
 	"github.com/f-klement/errata/internal/extract/core/gitindex"
 )
 
@@ -36,6 +38,24 @@ func rootIndex(root string) (gitindex.Index, error) {
 		return ix, err
 	}
 	return ix.Within(below)
+}
+
+// HeadTags is the names of the tags on HEAD that start with prefix, in
+// the repository that holds root, found as git finds it (repositoryOf),
+// read from git's files under the bounds of its index
+// (gitindex.HeadTags). On a witness's run it is the real root's
+// repository, as a program of the check starts there: a fixture holds
+// files, and no .git.
+func HeadTags(ctx context.Context, root, prefix string) ([]string, error) {
+	if real, ok := check.RealRoot(ctx); ok {
+		root = real
+	}
+	real, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return nil, fmt.Errorf("open the repository root: %w", bare(err))
+	}
+	top, _ := repositoryOf(real)
+	return gitindex.HeadTags(ctx, top, prefix, indexLimits)
 }
 
 // fixtureIndex is the index of the fixture at rel, a path inside the

@@ -1,4 +1,4 @@
-package literal
+package litparse
 
 import (
 	"strconv"

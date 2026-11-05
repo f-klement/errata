@@ -179,6 +179,7 @@ its own in the reference.
 | a claim a document tags with the id of the rule that checks it | [`marker`](reference.md#marker) |
 | a value at a path in a structured file | [`yaml`](reference.md#yaml), [`json`](reference.md#json), [`toml`](reference.md#toml), [`xml`](reference.md#xml) |
 | a value a file written in a programming language assigns, such as a Django setting | [`literal`](reference.md#literal) |
+| a constant or a name source code declares, such as a version constant in Go or `__version__` in Python | [`code`](reference.md#code) |
 | a key in a flat config file | [`ini`](reference.md#ini), [`properties`](reference.md#properties), [`envfile`](reference.md#envfile) |
 | the version of a tool, or of the package itself | [`tool_version`](reference.md#tool_version), [`package_version`](reference.md#package_version) |
 | one dependency's version in every manifest and lockfile, or a go.mod's module path | [`dependency`](reference.md#dependency) |

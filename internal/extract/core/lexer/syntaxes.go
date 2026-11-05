@@ -25,8 +25,12 @@ var python = Syntax{
 	Prefixes: []Prefix{{Word: "r", Fold: true, Raw: true}, {Word: "b", Fold: true, Bytes: true}, {Word: "u", Fold: true},
 		{Word: "rb", Fold: true, Raw: true, Bytes: true}, {Word: "br", Fold: true, Raw: true, Bytes: true}},
 	// An f-string is a form of its own in the row, whose code the lexer walks.
-	Indent:  true,
-	Escapes: "\\'\"abfnrtv0xuU\n",
+	Indent:      true,
+	Classes:     []string{"class"},
+	Annotations: true,
+	Escapes:     "\\'\"abfnrtv0xuU\n",
+	Selves:      []string{"self", "cls"},
+	Methods:     []string{"append", "extend", "insert", "remove", "pop", "popitem", "clear", "update", "setdefault", "sort", "reverse", "add", "discard"},
 }
 
 var ruby = Syntax{
@@ -46,7 +50,11 @@ var ruby = Syntax{
 	Lead:     []string{"if", "unless", "while", "until"},
 	Loops:    []string{"while", "until", "for"},
 	Do:       "do", End: "end",
+	Classes: []string{"class", "module"},
 	Escapes: "\\'\"abefnrstv0xu{#\n",
+	Selves:  []string{"self"},
+	Frozen:  "freeze",
+	Methods: []string{"push", "pop", "shift", "unshift", "concat", "insert", "delete", "clear", "replace", "merge!", "update", "store", "sort!", "map!", "reverse!"},
 }
 
 var javascript = Syntax{
@@ -58,9 +66,14 @@ var javascript = Syntax{
 	Entry:    []string{":"},
 	NameKeys: []string{":"},
 	True:     trueFalseNull.t, False: trueFalseNull.f, Null: []string{"null", "undefined"},
-	Brackets: []Bracket{squareItems, braceEntries},
-	Default:  "default",
-	Escapes:  "\\'\"bfnrtv0xu{`$\n",
+	Brackets:  []Bracket{squareItems, braceEntries},
+	Default:   "default",
+	Classes:   []string{"class"},
+	Modifiers: []string{"static"},
+	Constants: []string{"const"},
+	Escapes:   "\\'\"bfnrtv0xu{`$\n",
+	Selves:    []string{"this"},
+	Methods:   []string{"push", "pop", "shift", "unshift", "splice", "sort", "reverse", "fill", "copyWithin", "set", "delete", "add", "clear"},
 }
 
 // typescript is javascript with type annotations, the words of types, and
@@ -72,6 +85,9 @@ var typescript = func() Syntax {
 	s.Rebind = append([]string{"interface", "type", "enum", "namespace"}, javascript.Rebind...)
 	s.Annotate = true
 	s.Casts = []string{"as", "satisfies"}
+	s.Modifiers = []string{"static", "readonly", "public", "private", "protected", "override", "abstract"}
+	s.Constants = []string{"const", "readonly"}
+	s.Annotations = true
 	return s
 }()
 
@@ -92,6 +108,12 @@ var php = Syntax{
 	Return:     "return",
 	Semicolons: true,
 	Escapes:    "\\\"$efnrtv0x{",
+	Classes:    []string{"class", "interface", "trait", "enum"},
+	Modifiers:  []string{"public", "private", "protected", "static", "final", "readonly", "var", "abstract"},
+	Constants:  []string{"const"},
+	Typed:      true,
+	Selves:     []string{"this", "self", "static"},
+	Methods:    []string{"append", "offsetSet", "offsetUnset", "exchangeArray"},
 }
 
 var groovy = Syntax{
@@ -103,9 +125,16 @@ var groovy = Syntax{
 	NameKeys: []string{":"},
 	Keyword:  []string{":"},
 	True:     trueFalseNull.t, False: trueFalseNull.f, Null: trueFalseNull.n,
-	Brackets: []Bracket{squareEither},
-	Command:  true,
-	Escapes:  "\\'\"bfnrt$u",
+	Brackets:    []Bracket{squareEither},
+	Command:     true,
+	Escapes:     "\\'\"bfnrt$u",
+	Classes:     []string{"class", "interface", "enum", "trait"},
+	Modifiers:   []string{"abstract"},
+	Constants:   []string{"final"},
+	Typed:       true,
+	Annotations: true,
+	Selves:      []string{"this"},
+	Methods:     []string{"add", "addAll", "put", "putAll", "remove", "removeAll", "retainAll", "clear", "set", "sort", "push", "pop", "leftShift"},
 }
 
 var kotlin = Syntax{
@@ -119,6 +148,13 @@ var kotlin = Syntax{
 	True:     trueFalseNull.t, False: trueFalseNull.f, Null: trueFalseNull.n,
 	Brackets: []Bracket{squareItems},
 	Escapes:  "\\'\"bnrt$u",
+	Classes:  []string{"object", "class", "interface"},
+	Modifiers: []string{"companion", "data", "enum", "sealed", "abstract", "open", "override", "protected",
+		"annotation", "inner", "final"},
+	Constants:   []string{"const", "val"},
+	Annotations: true,
+	Selves:      []string{"this"},
+	Methods:     []string{"add", "addAll", "put", "putAll", "remove", "removeAll", "removeAt", "retainAll", "clear", "set", "sort", "append"},
 }
 
 var scala = Syntax{
@@ -133,7 +169,13 @@ var scala = Syntax{
 	True:     trueFalseNull.t, False: trueFalseNull.f, Null: trueFalseNull.n,
 	Brackets: []Bracket{parenItems},
 	// s, f and raw are forms of the row, whose code the lexer walks.
-	Escapes: "\\'\"bfnrtu",
+	Escapes:     "\\'\"bfnrtu",
+	Classes:     []string{"object", "class", "trait"},
+	Modifiers:   []string{"case", "sealed", "abstract"},
+	Constants:   []string{"val"},
+	Annotations: true,
+	Selves:      []string{"this"},
+	Methods:     []string{"append", "prepend", "update", "clear", "remove", "insert", "addOne", "subtractOne", "put"},
 }
 
 var swift = Syntax{
@@ -146,9 +188,15 @@ var swift = Syntax{
 	Entry:    []string{":"},
 	Keyword:  []string{":"},
 	True:     trueFalseNull.t, False: trueFalseNull.f, Null: []string{"nil"},
-	Brackets: []Bracket{squareEither, parenItems},
-	Members:  true,
-	Escapes:  "\\'\"0nrt{",
+	Brackets:    []Bracket{squareEither, parenItems},
+	Members:     true,
+	Escapes:     "\\'\"0nrt{",
+	Classes:     []string{"class", "struct", "enum"},
+	Modifiers:   []string{"final", "open"},
+	Constants:   []string{"let"},
+	Annotations: true,
+	Selves:      []string{"self"},
+	Methods:     []string{"append", "insert", "remove", "removeAll", "removeFirst", "removeLast", "sort", "reverse", "updateValue", "removeValue"},
 }
 
 var elixir = Syntax{
@@ -187,4 +235,27 @@ var lua = Syntax{
 	Repeat: "repeat", Until: "until",
 	Return:  "return",
 	Escapes: "\\'\"abfnrtvxz{",
+}
+
+// java writes every value in a class: a field, whose type stands before its
+// name. Only the code reader reads it.
+var java = Syntax{
+	Keywords: []string{"if", "else", "for", "while", "do", "switch", "class", "interface", "enum", "record",
+		"import", "package", "return", "try", "catch", "finally", "throw", "new", "assert", "break", "continue",
+		"synchronized"},
+	Rebind:  []string{"class", "interface", "enum", "record", "import", "for", "catch"},
+	Keyword: []string{"="},
+	True:    trueFalseNull.t, False: trueFalseNull.f, Null: trueFalseNull.n,
+	Brackets:       []Bracket{{Open: '{', Close: '}', Items: true}},
+	Semicolons:     true,
+	Escapes:        "\\'\"bfnrts0u",
+	Classes:        []string{"class", "interface", "enum", "record"},
+	Modifiers:      []string{"public", "private", "protected", "static", "final", "transient", "volatile", "abstract", "sealed"},
+	Constants:      []string{"final"},
+	Typed:          true,
+	Annotations:    true,
+	InClasses:      true,
+	Selves:         []string{"this"},
+	ConstantBodies: []string{"interface"},
+	Methods:        []string{"add", "addAll", "put", "putAll", "putIfAbsent", "remove", "removeAll", "retainAll", "clear", "set", "sort", "replaceAll", "push", "pop", "offer", "poll", "append", "insert", "delete", "setLength", "compute", "merge"},
 }

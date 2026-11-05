@@ -91,6 +91,43 @@ type Syntax struct {
 	// Default is the word after Declare that names a value, as export
 	// default does in JavaScript.
 	Default string
+	// Frozen is a method that, called on a string literal, returns that
+	// string, as Ruby's freeze: "1.2".freeze is the string 1.2.
+	Frozen string
+
+	// The fields below are read only by the code reader, which reads the
+	// members of a class as well as the statements at the top.
+
+	// Classes are the words that open a class, an object or a module whose
+	// body's assignments are its members, as Python's class or Kotlin's
+	// object.
+	Classes []string
+	// Modifiers are the words that may stand before a member's name or a
+	// class's word besides Declare, as Java's public static final.
+	Modifiers []string
+	// ConstantBodies are the words of Classes whose members are all
+	// constants, as a Java interface's fields are.
+	ConstantBodies []string
+	// Selves are the names a method reaches its class's members through,
+	// as this or self: this.x = 1 in a method changes the member x.
+	Selves []string
+	// Methods are the methods that change the value they are called on,
+	// as Python's append: self.items.append(1) changes the member items,
+	// while self.HOST.rstrip('/') only reads HOST.
+	Methods []string
+	// Constants are the words of Declare or Modifiers that make the name
+	// after them a constant, which the program cannot assign again, as
+	// JavaScript's const or Java's final.
+	Constants []string
+	// Typed reads a member whose type stands before its name, as Java's
+	// int X = 1: the name is the word before the =.
+	Typed bool
+	// Annotations skips an @Name, and its arguments in parentheses, before
+	// a member or a class, as Java's @Deprecated.
+	Annotations bool
+	// InClasses marks a language that writes every value inside a class,
+	// as Java does, so only the code reader reads it.
+	InClasses bool
 }
 
 // Bracket is a pair of brackets that holds a list, a mapping, or either.

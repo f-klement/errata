@@ -323,6 +323,8 @@ func TestEnvChooses(t *testing.T) {
 	for file, want := range map[string]bool{
 		".env": true, ".env.local": true, "app/.env.production": true, "a.env": true, "config/prod.env": true,
 		".envrc": false, ".env.sh": false, "a.env.sh": false, "env": false, "a.envx": false, "deploy.sh": false,
+		".env.py": false, "src/.env.d.ts": false, ".env.JS": false, ".env.local.py": false,
+		".env.yaml": true, ".env.yml": true, ".env.toml": true, ".env.json": true, ".env.example": true,
 	} {
 		if got := Kind.Env.Chooses(file); got != want {
 			t.Errorf("%s: %t, want %t", file, got, want)

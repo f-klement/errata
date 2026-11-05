@@ -300,6 +300,8 @@ var describes = []string{
 	`{"text": {"file": "a.md", "pattern": "(x)"}}`,
 	`{"comment": {"file": "a.go", "pattern": "(x)"}}`,
 	`{"literal": {"file": "settings.py", "path": "DEBUG"}}`,
+	`{"code": {"file": "server.go", "const": "DefaultPort"}}`,
+	`{"code": {"file": "__init__.py", "name": "__version__"}}`,
 	`{"markdown": {"file": "a.md", "target": "table", "section": "Ports", "column": "Port", "key": "Host", "row": "web", "pattern": "(\\d+)"}}`,
 	`{"asciidoc": {"file": "a.adoc", "target": "code", "section": "Install", "language": "sh", "pattern": "(\\S+)"}}`,
 	`{"rst": {"file": "a.rst", "target": "code", "section": "Install", "language": "sh", "pattern": "(\\S+)"}}`,
@@ -339,6 +341,8 @@ var mayNotLiteral = map[string]bool{
 	`{"github-actions": {"file": "ci.yml", "job": "j", "key": "runs-on"}}`:  true,
 	`{"env": {"name": "A", "files": [".env"]}}`:                             true,
 	`{"literal": {"file": "settings.py", "path": "DEBUG"}}`:                 true,
+	`{"code": {"file": "server.go", "const": "DefaultPort"}}`:               true,
+	`{"code": {"file": "__init__.py", "name": "__version__"}}`:              true,
 }
 
 // builtNotLiteral is whether x, built from raw, may return a not literal

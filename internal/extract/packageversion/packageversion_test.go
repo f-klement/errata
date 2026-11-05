@@ -3,6 +3,7 @@ package packageversion
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -161,6 +162,13 @@ func TestPackageVersionRefuses(t *testing.T) {
 		{"a boolean Cargo version", "Cargo.toml", "[package]\nversion = true\n", "Cargo.toml: line 2: package.version is a boolean, not a string"},
 		{"a null version", "package.json", `{"version": null}`, "package.json: line 1: version is null, not a string"},
 		{"a number workspace version", "Cargo.toml", "[workspace.package]\nversion = 3\n", "Cargo.toml: line 2: workspace.package.version is a number, not a string"},
+		// A TOML date or time is no string (#168): tomllib reads a date, and
+		// Cargo refuses one. Planted break: version without its
+		// FormDateTime refusal, which read 1979-05-27 as the version.
+		{"a TOML date as project.version", "pyproject.toml", "[project]\nversion = 1979-05-27\n", "pyproject.toml: line 2: project.version is a date or a time, not a string; the tool that reads the file refuses it"},
+		{"a TOML time as Poetry's version", "pyproject.toml", "[tool.poetry]\nversion = 07:32:00\n", "pyproject.toml: line 2: tool.poetry.version is a date or a time, not a string"},
+		{"a TOML date and time as package.version", "Cargo.toml", "[package]\nversion = 1979-05-27T07:32:00Z\n", "Cargo.toml: line 2: package.version is a date or a time, not a string"},
+		{"a local date and time as the workspace version", "Cargo.toml", "[workspace.package]\nversion = 1979-05-27 07:32:00\n", "Cargo.toml: line 2: workspace.package.version is a date or a time, not a string"},
 		{"both set and dynamic", "pyproject.toml", "[project]\nversion = \"1\"\ndynamic = [\"version\"]\n", "pyproject.toml: line 3: dynamic lists version and project.version sets it at line 2, which PEP 621 forbids"},
 		{"workspace = false", "Cargo.toml", "[package]\nversion.workspace = false\n", "Cargo.toml: line 2: package.version is a table other than { workspace = true }, which Cargo refuses"},
 		{"a table without workspace", "Cargo.toml", "[package]\nversion = { path = \"x\" }\n", "Cargo.toml: line 2: package.version is a table other than { workspace = true }"},
@@ -279,9 +287,107 @@ func TestPackageVersionPlace(t *testing.T) {
 	if strings.Join(a.Files, ",") != "VERSION,package.json" || a.MaxBytes != 0 || strings.Join(b.Files, ",") != strings.Join(a.Files, ",") {
 		t.Errorf("places %+v and %+v", a, b)
 	}
-	if p := Place(Spec{MaxBytes: 5}); p.Files != nil || p.MaxBytes != 0 {
+	if p := Place(Spec{MaxBytes: 5}); p.Files != nil || p.MaxBytes != 0 || p.Tag != nil {
 		t.Errorf("the root's place is %+v", p)
 	}
+	// The tag's prefix decides what is read, so two prefixes are two
+	// places; the place holds a copy. Planted break: Place dropping Tag.
+	tag := "v"
+	p := Place(Spec{Tag: &tag})
+	if p.Tag == nil || *p.Tag != "v" || p.Tag == &tag {
+		t.Errorf("the tag's place is %+v", p)
+	}
+}
+
+// Resolve writes max_bytes out and copies the files and the tag, so errata
+// list's spec shares nothing with the config's. Planted break: Resolve
+// keeping the config's tag pointer.
+func TestPackageVersionResolve(t *testing.T) {
+	tag := "v"
+	s := Spec{Files: []string{"VERSION"}, Tag: &tag}
+	r := Resolve(s)
+	if r.MaxBytes != core.MaxBytes(0) || r.Tag == &tag || *r.Tag != "v" || &r.Files[0] == &s.Files[0] {
+		t.Errorf("resolved %+v", r)
+	}
+	if Resolve(Spec{}).Tag != nil {
+		t.Error("Resolve gave a tag to a spec of none")
+	}
+}
+
+// gitRun runs git in dir with a fixed identity and no user or system
+// config, and fails the test on an error.
+func gitRun(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.CommandContext(t.Context(), "git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
+// tagged is a git repository of files, committed, with tags on HEAD and
+// before ones on the commit before it.
+func tagged(t *testing.T, files map[string]string, tags, before []string) string {
+	t.Helper()
+	root := extracttest.Repo(t, files)
+	gitRun(t, root, "init", "-q")
+	gitRun(t, root, "commit", "-q", "--allow-empty", "-m", "old")
+	for _, tag := range before {
+		gitRun(t, root, "tag", tag)
+	}
+	gitRun(t, root, "add", "-A")
+	gitRun(t, root, "commit", "-q", "--allow-empty", "-m", "c")
+	for _, tag := range tags {
+		gitRun(t, root, "tag", "-a", "-m", "release", tag)
+	}
+	return root
+}
+
+// tag is a pointer to the prefix p.
+func tag(p string) *string { return &p }
+
+// With tag:, each tag on HEAD that starts with the prefix gives the rest
+// of its name, at its ref, after the files' versions; a tag on another
+// commit gives nothing, and so does a tag that is the prefix alone.
+// Without tag:, no tag is read. Planted breaks: the prefix kept in the
+// version; the prefix-alone tag given as an empty version, which the
+// version check refused.
+func TestPackageVersionReadsTheTagsOnHEAD(t *testing.T) {
+	files := map[string]string{"package.json": "{\n\"version\": \"1.2.0\"\n}\n"}
+	root := tagged(t, files, []string{"v1.2.0", "latest", "v", "api/v3"}, []string{"v1.1.0"})
+	for _, c := range []struct {
+		name string
+		spec Spec
+		want string
+	}{
+		{"prefix v", Spec{Tag: tag("v")}, "1.2.0@package.json:2 1.2.0@refs/tags/v1.2.0:0"},
+		{"every tag", Spec{Tag: tag("")}, "1.2.0@package.json:2 api/v3@refs/tags/api/v3:0 latest@refs/tags/latest:0 v@refs/tags/v:0 v1.2.0@refs/tags/v1.2.0:0"},
+		{"a prefix with a slash", Spec{Files: []string{"package.json"}, Tag: tag("api/v")}, "1.2.0@package.json:2 3@refs/tags/api/v3:0"},
+		{"no tag matches", Spec{Tag: tag("release-")}, "1.2.0@package.json:2"},
+		{"no tag:", Spec{}, "1.2.0@package.json:2"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got := marked(extracttest.MustRun(t, build, c.spec, root)); got != c.want {
+				t.Errorf("got  %s\nwant %s", got, c.want)
+			}
+		})
+	}
+}
+
+// A tag on HEAD whose rest is no version, and a repository errata cannot
+// read the tags of, make the rule unknown, each with its reason. Planted
+// breaks: the version check dropped from tags; the error of HeadTags
+// dropped, which gave the files' versions alone.
+func TestPackageVersionTagRefusals(t *testing.T) {
+	root := tagged(t, nil, []string{"v1\u202e2"}, nil)
+	_, err := extracttest.Run(t, build, Spec{Tag: tag("v")}, root)
+	extracttest.WantError(t, err, `"refs/tags/v1\u202e2": the version "1\u202e2" holds a control character, a direction control`)
+
+	plain := extracttest.Repo(t, map[string]string{"VERSION": "1\n"})
+	_, err = extracttest.Run(t, build, Spec{Tag: tag("v")}, plain)
+	extracttest.WantError(t, err, "read the tags on HEAD: no git repository holds the root")
 }
 
 // A build without a parser names the reader it lacks rather than crashing.

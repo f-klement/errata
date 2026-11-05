@@ -308,6 +308,11 @@ func TestToolVersionRefusesWhatDoesNotParse(t *testing.T) {
 		{".python-version", "python", "3.12\n3\x7f\n", ".python-version: line 2: the version"},
 		{"runtime.txt", "python", "python-3\x01\n", "runtime.txt: line 1: the version"},
 		{"pyproject.toml", "python", "[project]\nrequires-python = \"\"\n", "pyproject.toml: line 2: the version is empty"},
+		// A TOML date or time is no string (#168); planted break: readTree
+		// without its FormDateTime refusal, which read the date's text.
+		{"rust-toolchain.toml", "rust", "[toolchain]\nchannel = 2024-01-01\n", "rust-toolchain.toml: line 2: the version is a date or a time, not a string; the tool that reads the file refuses it"},
+		{"Cargo.toml", "rust", "[package]\nrust-version = 07:32:00\n", "Cargo.toml: line 2: the version is a date or a time, not a string"},
+		{"pyproject.toml", "python", "[project]\nrequires-python = 1979-05-27T07:32:00Z\n", "pyproject.toml: line 2: the version is a date or a time, not a string"},
 	} {
 		got := refusal(t, map[string]string{c.name: c.body}, Spec{Tool: c.tool, Files: []string{c.name}})
 		if !strings.Contains(got, c.want) {

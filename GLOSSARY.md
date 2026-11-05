@@ -146,6 +146,12 @@ The `literal` extractor reads the literal data a file written in a programming l
 at its top, through one grammar for every language and one row of the lexer table for each
 (ADR 0002). Anything else in a value's place is not literal.
 
+**Declared name.** A name a source file gives a value: a Go `const` or `var` at the top of the
+file, a module level assignment, or a member of a class such as `Config.PORT`. The `code`
+extractor reads one, without compiling or running the program. A constant is a name the file
+declares with a word that keeps the program from assigning it again, such as Go's `const`, Java's
+`final` or Kotlin's `val`; `const:` reads only a constant.
+
 **Marker.** A claim a document or a code comment tags inline with the id of the rule that checks
 it: `<!-- errata: api-port -->8080<!-- /errata -->`. The text between the two HTML comments is
 its value, which the `marker` extractor of the rule with that id reads, at its file and line.
@@ -235,7 +241,9 @@ loader retypes, such as `3.10`, `shell` a value the shell computes and errata do
 resolve, such as `$(git describe)` or `"$HOME/bin"`, `github-actions` a `${{ }}` expression
 other than a matrix variable, or a number YAML retypes, `jenkins` a value Groovy computes,
 such as `credentials('id')` or `"${BUILD_NUMBER}"`, `literal` a value a program computes, such
-as `os.environ["PORT"]`, or a name the file changes after it assigns it, and `env` any of these
+as `os.environ["PORT"]`, or a name the file changes after it assigns it, `code` the same and a Go
+value only the running program knows, such as `os.Getenv("PORT")` or a `var` the file assigns,
+and `env` any of these
 that the reader of its file marks.
 
 **Condition.** What must hold for a value to be the one a reader names, for a reader that returns
