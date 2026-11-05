@@ -18,8 +18,9 @@ Each check is a program. errata runs it, prints every claim shown false with the
 was written, and says how many checks ran, how many it skipped, and the gap behind each skip.
 
 **Source, issues and the full documentation:**
-[github.com/f-klement/errata](https://github.com/f-klement/errata). This page covers running the
-image.
+[github.com/f-klement/errata](https://github.com/f-klement/errata). The
+[handbook](https://github.com/f-klement/errata/blob/main/docs/handbook.md) teaches errata from
+the first check on. This page covers running the image.
 
 ## Run it
 
@@ -44,47 +45,17 @@ is unknown: not an erratum, since the claim was not shown false, but it fails th
 
 ## In CI
 
-GitLab CI:
-
-```yaml
-errata:
-  image:
-    name: fklement/errata:latest
-    entrypoint: [""]
-  script:
-    - errata check --root "$CI_PROJECT_DIR" --output junit=errata.xml
-  artifacts:
-    when: always
-    reports:
-      junit: errata.xml
-```
-
-GitHub Actions:
-
-```yaml
-jobs:
-  errata:
-    runs-on: ubuntu-latest
-    container: fklement/errata:latest
-    steps:
-      - uses: actions/checkout@v5
-      - run: errata check --root "$GITHUB_WORKSPACE"
-```
+The [handbook](https://github.com/f-klement/errata/blob/main/docs/handbook.md#ci) has the jobs
+for GitLab CI and GitHub Actions, and the workflow that uploads SARIF to GitHub code scanning.
+Each runs this image.
 
 ## Configuration
 
-| Flag | Default | Meaning |
-|---|---|---|
-| `--root` | `.` | the repository root, and the checks' working directory |
-| `--config`, `-c` | `<root>/errata.yaml` | the config file |
-| `--format`, `-f` | `text` | `text`, or `junit` for CI |
-| `--fail-on-skip` | off | `check` only: a skipped check fails the run with exit code 1 |
-
-| Exit code | Meaning |
-|---|---|
-| 0 | every check that ran found its claim true |
-| 1 | at least one erratum (a claim shown false) or unknown (a check that could not evaluate), or with `--fail-on-skip` at least one skipped check |
-| 2 | bad flags, or a config that does not load |
+[docs/cli.md](https://github.com/f-klement/errata/blob/main/docs/cli.md) is the command line
+reference: every command and flag, and the exit codes. `docker run --rm fklement/errata --help`
+prints the same text, and
+[docs/reference.md](https://github.com/f-klement/errata/blob/main/docs/reference.md) has every key
+of `errata.yaml`.
 
 ### What is in the image
 

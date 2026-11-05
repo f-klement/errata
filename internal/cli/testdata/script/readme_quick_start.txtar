@@ -1,0 +1,60 @@
+# The README's Quick Start: a program check that fails closed. It is false
+# while a document names another node than builder, holds once every document
+# names builder, and is unknown, exit 2, when no document names a node at all,
+# so a pattern that stopped matching does not pass. errata.yaml's check
+# docs-examples-are-run holds every block of the Quick Start equal to its
+# section here, in order.
+! exec errata check
+cmp stdout false.txt
+! stderr .
+
+cp ci.fixed.md docs/ci.md
+exec errata check
+stdout '^0 errata, 0 unknown. Coverage: ran 1, skipped 0.$'
+! stderr .
+
+cp ci.reworded.md docs/ci.md
+! exec errata check
+stdout '^UNKNOWN docs-name-the-ci-node \(repo\)$'
+stdout '^  said: exit status 2$'
+stdout '^        no document says which node CI runs on$'
+stdout '^0 errata, 1 unknown. Coverage: ran 1, skipped 0.$'
+! stderr .
+
+-- errata.yaml --
+checks:
+  - id: docs-name-the-ci-node
+    reason: >
+      CI moved to the node `builder`. A document that names another node sends whoever reads it,
+      person or agent, to the wrong machine.
+    scope: repo
+    run: [sh, checks/ci-node.sh]
+-- checks/ci-node.sh --
+#!/bin/sh
+said=$(grep -rn 'runs on node' docs/) || {
+    echo "no document says which node CI runs on"
+    exit 2
+}
+if printf '%s\n' "$said" | grep -v builder; then
+    exit 1
+fi
+-- false.txt --
+FALSE docs-name-the-ci-node (repo)
+  why:  CI moved to the node `builder`. A document that names another node sends whoever reads it, person or agent, to the wrong machine.
+  said: docs/ci.md:4:CI runs on node atlas.
+
+1 erratum, 0 unknown. Coverage: ran 1, skipped 0.
+-- docs/ci.md --
+# CI
+
+The pipeline builds on every push.
+CI runs on node atlas.
+-- ci.fixed.md --
+# CI
+
+The pipeline builds on every push.
+CI runs on node builder.
+-- ci.reworded.md --
+# CI
+
+The pipeline builds on every push, on the node the runbook names.

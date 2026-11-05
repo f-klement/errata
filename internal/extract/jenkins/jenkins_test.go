@@ -320,6 +320,28 @@ func TestJenkinsNotLiteral(t *testing.T) {
 	}
 }
 
+// A lone CR ends a line as Groovy 2.4's lexer reads it (groovy.g, ONE_NL,
+// the Macintosh newline): it ends a // comment, separates two statements,
+// is joined to the line before by a backslash, and ends a one line string,
+// which Groovy refuses. The planted breaks: a // comment run to the LF
+// alone (the review's probe hid the environment), a lone CR read as a
+// blank, and a lone CR taken into a one line string.
+func TestJenkinsLoneCREndsALine(t *testing.T) {
+	for body, want := range map[string]string{
+		"pipeline {\n  agent any // c\renvironment { X = '1' }\n}\n": "1@3",
+		"env.Y = 'b'\renv.X = 'a'\n":                                 "a@2",
+		"env.X = \\\r'a'\n":                                          "a@2",
+		"env.X = \\\r\n'a'\n":                                        "a@2",
+	} {
+		if g := got(t, body, Spec{Variable: "X"}); g != want {
+			t.Errorf("%q: got %q, want %q", body, g, want)
+		}
+	}
+	if g := got(t, "env.X = 'a\rb'\n", Spec{Variable: "X"}); !strings.Contains(g, "line 1: a string in ' ends at the line's end") {
+		t.Errorf("a lone CR in a one line string: got %q", g)
+	}
+}
+
 // Text in a comment or a string is no assignment, and neither is an
 // assignment to another name, a member of another object or a variable of
 // a block that is no environment block.

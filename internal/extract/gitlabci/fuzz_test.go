@@ -49,7 +49,7 @@ func FuzzGitLabCI(f *testing.F) {
 		}
 		for _, v := range got {
 			body, ok := files[v.At.File]
-			if !ok || v.At.Line < 1 || v.At.Line > strings.Count(body, "\n")+1 {
+			if !ok || v.At.Line < 1 || v.At.Line > core.LastLine([]byte(body)) {
 				t.Fatalf("%q at %s:%d, outside the files read", v.Text, v.At.File, v.At.Line)
 			}
 		}

@@ -44,12 +44,14 @@ func FuzzAsciidoc(f *testing.F) {
 		if len(d.text) > len(data)+1 {
 			t.Fatalf("%+v: the text read is %d bytes, of a file of %d", s, len(d.text), len(data))
 		}
-		file := strings.Split(strings.TrimPrefix(data, core.BOM), "\n")
+		// The file's lines as the reader numbers them, every line end one
+		// LF (core.LineFeeds): a lone CR ends a line too.
+		file := strings.Split(string(core.LineFeeds([]byte(strings.TrimPrefix(data, core.BOM)))), "\n")
 		for _, v := range values {
 			if v.At.Line < 1 || v.At.Line > len(file) {
 				t.Fatalf("%+v: %q at line %d of %d", s, v.Text, v.At.Line, len(file))
 			}
-			if !atItsLine(s, v, strings.TrimSuffix(file[v.At.Line-1], "\r")) {
+			if !atItsLine(s, v, file[v.At.Line-1]) {
 				t.Fatalf("%+v: %q is not at its line %d, %q", s, v.Text, v.At.Line, file[v.At.Line-1])
 			}
 		}

@@ -81,17 +81,19 @@ func Build(p Spec) (check.Extractor, error) {
 // (appendJava); load(InputStream) reads each byte as one ISO 8859-1
 // character instead. A \uXXXX surrogate pair is its one
 // character, and a surrogate on its own is U+FFFD, since UTF-8 cannot hold
-// one. Lines are counted at \n, as every extractor counts them, so a file
-// that ends its lines with a lone \r is one line long.
+// one. Lines are numbered at the same line ends, as every extractor numbers
+// them (core.LineCursor), so a file that ends its lines with a lone \r has as
+// many lines as an editor shows.
 func readProperties(data []byte, m *core.Meter, visit func(*core.Entry) error) error {
-	r := propertiesReader{data: data, line: 1}
+	r := propertiesReader{data: data, lines: core.NewLineCursor(data)}
 	var e core.Entry
 	// Each logical line is charged its bytes and lineWork for each line end
 	// it took, the comment and blank lines skipped before it too, a lone \r
 	// as much as a \n.
-	last, lastEnds := 0, 0
-	for ; r.logicalLine(); last, lastEnds = r.pos, r.ends {
-		if err := m.Charge(core.LineWork*max(1, r.ends-lastEnds) + r.pos - last); err != nil {
+	last, lastLine := 0, 1
+	for ; r.logicalLine(); last = r.pos {
+		line := r.lines.At(r.pos)
+		if err := m.Charge(core.LineWork*max(1, line-lastLine) + r.pos - last); err != nil {
 			return err
 		}
 		// The escapes are read in place: none is shorter than what it
@@ -108,8 +110,9 @@ func readProperties(data []byte, m *core.Meter, visit func(*core.Entry) error) e
 		if err := visit(&e); err != nil {
 			return err
 		}
+		lastLine = line
 	}
-	return m.Charge(core.LineWork*(r.ends-lastEnds) + len(r.data) - last)
+	return m.Charge(core.LineWork*(r.lines.At(len(r.data))-lastLine) + len(r.data) - last)
 }
 
 // propertiesReader is Java's LineReader over data: logicalLine reads the
@@ -118,22 +121,9 @@ func readProperties(data []byte, m *core.Meter, visit func(*core.Entry) error) e
 type propertiesReader struct {
 	data  []byte
 	pos   int
-	line  int // the line of the byte at pos
-	ends  int // the line ends before pos: \n, \r\n and a lone \r
+	lines *core.LineCursor // the line of an offset, past the line ends before it: \n, \r\n and a lone \r
 	buf   []byte
 	start int
-}
-
-// end counts the line end c, read at pos-1, once: a \r before a \n is
-// counted at the \n.
-func (r *propertiesReader) end(c byte) {
-	switch {
-	case c == '\n':
-		r.line++
-		r.ends++
-	case c == '\r' && (r.pos == len(r.data) || r.data[r.pos] != '\n'):
-		r.ends++
-	}
 }
 
 func isPropertiesSpace(c byte) bool { return c == ' ' || c == '\t' || c == '\f' }
@@ -153,9 +143,8 @@ func (r *propertiesReader) logicalLine() bool {
 			}
 			return true
 		}
-		c, line := r.data[r.pos], r.line
+		c := r.data[r.pos]
 		r.pos++
-		r.end(c)
 		if skipSpace {
 			if isPropertiesSpace(c) || (!joined && (c == '\r' || c == '\n')) {
 				continue
@@ -169,7 +158,7 @@ func (r *propertiesReader) logicalLine() bool {
 		}
 		if c != '\n' && c != '\r' {
 			if len(r.buf) == 0 {
-				r.start = line
+				r.start = r.lines.At(r.pos - 1)
 			}
 			if !sized {
 				// One allocation for the physical line as Java decodes it,
@@ -212,7 +201,6 @@ func (r *propertiesReader) logicalLine() bool {
 			skipSpace, joined, backslash, sized = true, true, false, false
 			if c == '\r' && r.data[r.pos] == '\n' {
 				r.pos++
-				r.end('\n')
 			}
 		default:
 			return true
@@ -225,7 +213,6 @@ func (r *propertiesReader) skipComment() {
 	for r.pos < len(r.data) {
 		c := r.data[r.pos]
 		r.pos++
-		r.end(c)
 		if c == '\r' || c == '\n' {
 			return
 		}

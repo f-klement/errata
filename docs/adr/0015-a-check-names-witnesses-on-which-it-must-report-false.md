@@ -116,7 +116,7 @@ job reads as one answer.
 
 A config's checks can carry their own planted breaks, and a check that cannot fail fails the run.
 A program check that reads its working directory where it should read `ERRATA_ROOT` cannot take a
-witness until it is fixed; the README says so in the check protocol. `errata list` gains a
+witness until it is fixed; [the check protocol](../reference.md#the-check-protocol) says so. `errata list` gains a
 `witness` key on every check, an empty list when it names none, which the listing's version 1
 allows. The tree `.errata/witness/` is reserved, in any case of its names: a repository that
 kept files there, or in `.Errata/Witness/`, for another purpose has them passed over by globs and

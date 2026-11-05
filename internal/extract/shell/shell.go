@@ -192,7 +192,7 @@ func parseError(err error, data []byte, g *guard, lang syntax.LangVariant, why s
 
 // lineAt is the line, counted from 1, of offset off in data.
 func lineAt(data []byte, off int) int {
-	return 1 + bytes.Count(data[:min(max(off, 0), len(data))], []byte("\n"))
+	return core.LineOf(data, min(max(off, 0), len(data)))
 }
 
 // chooseLanguage is the dialect a script is parsed in, and why, for a

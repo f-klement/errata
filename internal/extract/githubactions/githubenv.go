@@ -30,7 +30,7 @@ var namesGitHubEnv = regexp.MustCompile(`(?i)github_env|github\.env\b|github\s*\
 //     download-path.
 //
 // A later version of one of them could start to export a variable, which
-// errata would not see; the README says so.
+// errata would not see; docs/reference.md#github-actions says so.
 var quietActions = map[string]bool{
 	"actions/checkout":          true,
 	"actions/cache":             true,

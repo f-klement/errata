@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"pgregory.net/rapid"
+
+	"github.com/f-klement/errata/internal/extract/core"
 )
 
 // stackAfter runs ops on a nest, each "<x" a start tag that opens x, "<x/"
@@ -93,8 +95,12 @@ func TestNestStack(t *testing.T) {
 		{"<table <tbody <tr <td </tbody </table", ""}, // and so do a section's and a row's end
 		{"<table <tr <td </tr", "table tbody"},
 		{"<table <tr <td <table </td", "table tbody tr td table"}, // not past a table inside the cell
-		{"<a <a", "a"},            // a link ends the link open
-		{"<a <div <a", "a div a"}, // not past a special element
+		{"<a <a", "a"},                               // a link ends the link open
+		{"<a <div <a", "div a"},                      // the first ends around the div, as the adoption agency does
+		{"<table <td <col/", "table"},                // a col closes the cell (in cell, FuzzBrowser: <tABle><td><Col >0)
+		{"<table <td <colgroup", "table colgroup"},   // so does a colgroup
+		{"<table <tr <td <caption", "table caption"}, // and a caption, which opens in the table
+		{"<td <col/ <caption", ""},                   // outside a table each is ignored
 	} {
 		if got := stackAfter(row[0], false); got != row[1] {
 			t.Errorf("%q: got %q, want %q", row[0], got, row[1])
@@ -153,8 +159,8 @@ func TestScannerEdges(t *testing.T) {
 		t.Errorf("<pre/>: in a pre %s", pre)
 	}
 	for src, want := range map[string]string{
-		"<svg><svg/></svg><![CDATA[a]]>b": "b",
-		"</svg><svg><![CDATA[a]]></svg>":  "a",
+		"<svg><svg/></svg><![CDATA[a]]>b":      "b",
+		"</svg><svg><text><![CDATA[a]]></svg>": "a",
 	} {
 		var got []string
 		for s := NewScanner([]byte(src), 100); s.Next(); {
@@ -171,20 +177,41 @@ func TestScannerEdges(t *testing.T) {
 // A carriage return after <pre> is the pre's first line feed: the HTML
 // standard reads a lone CR, and a CR before a LF, as one LF before it
 // tokenizes, so a browser drops it and reopens no formatting element
-// before it. A textarea's first line feed is the tag's too, and a CR alone
-// in a pre leaves it empty, so the CR after a tag a browser ignores is
-// dropped as well. The planted breaks: only '\n' dropped, which keeps the
-// CR as text and refuses the find (FuzzHTML, the round after 04c52e9); a
-// CRLF dropped as one byte; a CR alone not taken as the line feed alone.
+// before it. The scanner reads the source folded, as its callers hand it
+// over (core.LineFeeds). A textarea's first line feed is the tag's too,
+// and a line feed alone in a pre leaves it empty, so the one after a tag a
+// browser ignores is dropped as well. The planted breaks: no line feed
+// dropped, which refuses the find (FuzzHTML, the round after 04c52e9); the
+// line feed alone not taken as alone.
 func TestPreFirstCarriageReturn(t *testing.T) {
 	for src, want := range map[string]string{
 		"<pre>\rx</pre>":               "<pre|pre:x|</pre",
 		"<pre>\r\nx</pre>":             "<pre|pre:x|</pre",
 		"<pre>\r</pre>":                "<pre|</pre",
-		"<pre>\r\rx</pre>":             "<pre|pre:\rx|</pre",
+		"<pre>\r\rx</pre>":             "<pre|pre:\nx|</pre",
 		"<pre>\r</li>\rx":              "<pre|</li|pre:x",
 		"<textarea>\rx</textarea>":     "<textarea|pre:x|</textarea",
 		"<p ><Code ><pre>\r<p></Code>": "<p|<code|<pre|<p|</code",
+	} {
+		if got := strings.Join(tokens(string(core.LineFeeds([]byte(src))), 100), "|"); got != want {
+			t.Errorf("%q: got %q, want %q", src, got, want)
+		}
+	}
+}
+
+// A textarea inside svg or math is a foreign element, as x/net's parser
+// reads it: the tokenizer reads what follows as markup, not raw text, and
+// the line feed after the tag is text. A self closing svg or math opens
+// none, so a textarea after it is HTML's. The planted breaks: the textarea
+// read raw in foreign content (its <b> is text), its line feed dropped, and
+// a self closing svg taken to open one.
+func TestTextareaInForeignContentIsMarkup(t *testing.T) {
+	for src, want := range map[string]string{
+		"<svg><textarea>a<b>c</b></textarea></svg>": "<svg|<textarea|<b|text:c|</b|</textarea|</svg", // a: svg text outside a text element
+		"<math><textarea>\nx</textarea></math>":     "<math|<textarea|text:\nx|</textarea|</math",
+		"<svg/><textarea>a<b>c</textarea>":          "<svg|<textarea|pre:a<b>c|</textarea",
+		"<math/><![CDATA[a]]>b":                     "<math|text:b",
+		"<textarea>\na<b></textarea>":               "<textarea|pre:a<b>|</textarea",
 	} {
 		if got := strings.Join(tokens(src, 100), "|"); got != want {
 			t.Errorf("%q: got %q, want %q", src, got, want)
@@ -300,7 +327,7 @@ func TestFormattingList(t *testing.T) {
 		{"<b <div </div </b", " / "},                         // its own end takes it off
 		{"<div <b </div", " / b~"},                           // a block's end closes it
 		{"<div <b </div </b", " / "},                         // and its end tag then takes it off
-		{"<b <div </b", "b div / "},                          // around a block: off the list, errata leaves the element
+		{"<b <div </b", "div / "},                            // around a block: off the list and the stack (adopt)
 		{"<pre <b <div </b", "refused"},                      // inside a pre: refused
 		{"<table <tr <td <b </td", "table tbody tr / "},      // a cell's marker, cleared with it
 		{"<b <td", "b / b"},                                  // a cell outside a table opens nothing
@@ -308,7 +335,7 @@ func TestFormattingList(t *testing.T) {
 		{"<b <b <b <i <b </i", "b b b / b b b~"},             // the list shifts under the open ones
 		{"<table <td <b", "table tbody tr td b / | b"},       //
 		{"<a <a", "a / a"},                                   // a link ends a link
-		{"<a <div <a", "a div a / a"},                        // around a block, the first leaves the list
+		{"<a <div <a", "div a / a"},                          // around a block, the first leaves the list and the stack
 		{"<h1 <a <table <a", "h1 table a / a"},               // past a table, the first leaves the list and the stack
 		{"<h1 <a <table <a </table <h1", "h1 / a~"},          // so the next heading ends the first
 		{"<a <table <b <a </b", "table / a~"},                // the entries above move down with their elements
@@ -316,6 +343,18 @@ func TestFormattingList(t *testing.T) {
 		{"<a <table <a", "table a / a"},                      // the link at the bottom too
 		{"<a <table <div <div <a </div </div", "table / a~"}, // each of two alike moves down
 		{"<b <b <b <b </b </b </b </b", " / "},               // the one the clause took off has no entry
+		// The adoption agency, outside a pre or a heading (adopt): the
+		// fourth formatting element and on below the block leave the list
+		// and the stack, an element not on the list leaves the stack, the
+		// clone's entry goes after the nearest one kept, and after eight
+		// passes the clone stays open (foreign review, round 2).
+		{"<b <i <u <s <em <div </b", "u s em div / u s em"},
+		{"<b <span <div </b", "div / "},
+		{"<b <i" + strings.Repeat(" <div", 8) + " </b", "i" + strings.Repeat(" div", 8) + " b / i b"},
+		{"<b" + strings.Repeat(" <div", 7) + " </b", strings.TrimSpace(strings.Repeat(" div", 7)) + " / "},
+		{"<b <i <u <s <div </b", "i u s div / i u s"},                                                // three below the block stay
+		{"<u <b <i <div </b", "u i div / u i"},                                                       // an entry before the element's
+		{"<b" + strings.Repeat(" <div", 8) + " <i </b", "div div div div div div div div b i / b i"}, // no bookmark: the clone's entry stays in place
 	} {
 		if got := afeAfter(row[0], false); got != row[1] {
 			t.Errorf("%q: got %q, want %q", row[0], got, row[1])
@@ -465,7 +504,7 @@ func (n *nest) broken() string {
 		}
 	}
 	lists := map[string][]int{"bounds": n.bounds, "buttons": n.buttons, "specials": n.specials,
-		"notADP": n.notADP, "heading": n.heading, "tabular": n.tabular, "sections": n.sections}
+		"notADP": n.notADP, "heading": n.heading, "tabular": n.tabular, "sections": n.sections, "htmls": n.htmls}
 	for list, idx := range lists {
 		for m, i := range idx {
 			if i < 0 || i >= len(n.stack) || m > 0 && idx[m-1] >= i {
@@ -473,8 +512,11 @@ func (n *nest) broken() string {
 			}
 		}
 	}
-	var specials, bounds, heading []int
+	var specials, bounds, heading, htmls []int
 	for i, name := range n.stack {
+		if namespace(name) == "" {
+			htmls = append(htmls, i)
+		}
 		if special[name] || isHeading(name) {
 			specials = append(specials, i)
 		}
@@ -485,8 +527,8 @@ func (n *nest) broken() string {
 			heading = append(heading, i)
 		}
 	}
-	if !slices.Equal(specials, n.specials) || !slices.Equal(bounds, n.bounds) || !slices.Equal(heading, n.heading) {
-		return fmt.Sprintf("specials %v, bounds %v, heading %v over %v", n.specials, n.bounds, n.heading, n.stack)
+	if !slices.Equal(specials, n.specials) || !slices.Equal(bounds, n.bounds) || !slices.Equal(heading, n.heading) || !slices.Equal(htmls, n.htmls) {
+		return fmt.Sprintf("specials %v, bounds %v, heading %v, htmls %v over %v", n.specials, n.bounds, n.heading, n.htmls, n.stack)
 	}
 	return ""
 }
@@ -499,7 +541,7 @@ func (n *nest) broken() string {
 // re-indexes the entries after the one removed starting one entry late.
 func TestTheNestsIndexesKeepInStep(t *testing.T) {
 	names := strings.Fields(`a b i code em nobr font table tbody tr td th caption p div pre h1 h2
-		li ul button xmp span img br select option object marquee template`)
+		li ul button xmp span img br select option object marquee template svg math g title foreignObject mi style`)
 	rapid.Check(t, func(t *rapid.T) {
 		var b strings.Builder
 		var cuts []int

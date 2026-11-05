@@ -1,0 +1,776 @@
+# errata.example.yaml: every feature of errata, each shown twice, in the files of a made up
+# service called Larder. The comment above each check says the claim it checks, why someone
+# would want it, and which sections of the reference explain the keys it uses.
+#
+# README.md in this directory says how to run it. internal/cli/example_test.go runs it on every
+# push, and internal/config/example_test.go fails when an extractor kind, a key of a kind, a
+# scope or a key errata knows appears here fewer than two times.
+#
+# The run reports one check more than the file holds: errata-unbound-markers, which errata adds
+# whenever a rule reads markers, and which is false for a marker that no rule reads. See
+# docs/reference.md#marker.
+
+# required lists every check the file must hold, one id a line, so a change that deletes a
+# check deletes its line here in the same diff. See docs/reference.md#required.
+required:
+  - api-port-agrees
+  - docs-give-the-api-port
+  - docker-run-port-agrees
+  - status-page-ports-agree
+  - start-script-port-agrees
+  - every-api-port-agrees
+  - log-level-agrees
+  - admin-port-agrees
+  - node-version-agrees
+  - python-version-agrees
+  - ci-tests-in-the-runtime-image
+  - release-version-agrees
+  - sdk-versions-follow-the-release
+  - guava-pinned-once
+  - deploy-tag-agrees
+  - images-are-pinned
+  - images-come-from-allowed-registries
+  - pushes-are-signed
+  - deploys-are-linted
+  - ingress-has-a-certificate
+  - public-host-agrees
+  - replicas-cover-the-zones
+  - cache-outlives-the-refresh
+  - feeds-use-https
+  - majors-never-automerge
+  - icons-come-from-the-submodule
+  - icons-path-agrees
+  - ssh-port-agrees
+  - restore-reads-the-backup-dir
+  - app-env-sets-every-value
+  - every-route-is-documented
+  - scripts-never-apply
+  - legacy-settings-stay-removed
+  - logo-is-shipped-small
+  - agent-notes-stay-short
+  - migrations-are-numbered
+  - no-todo-without-issue
+  - migrations-are-reversible
+  - ports-list-is-current
+  - authors-list-is-current
+  - deployed-image-matches-chart
+  - ingress-answers
+  - apply-changes-nothing
+  - no-field-kept-by-another-manager
+
+# defaults.run is the command of every program check that writes no run of its own. Here each
+# such check is a script named after its id. See docs/reference.md#defaults.
+defaults:
+  run: [sh, checks/<errata.id>.sh]
+
+checks:
+  # Claim: every place a person or a tool reads the API's port from names 8080. A marker in the
+  # operations guide tags the sentence with this check's id, so the docs name the check rather
+  # than the check naming each document. text with code reads the port out of a docker run in
+  # a fenced block, and comment reads the comments of two files whose names choose no
+  # language, so each names its own.
+  # See docs/reference.md#marker; #text; #comment; #envfile.
+  - id: api-port-agrees
+    reason: >
+      The chart opens the port, the docs tell an operator which port to allow, and the
+      healthcheck polls it. When one of them moves alone, the load balancer or the healthcheck
+      talks to a port nothing listens on.
+    scope: repo
+    extract:
+      doc: {marker: {files: ['docs/**']}}
+      chart: {yaml: {file: deploy/values.yaml, path: service.port}}
+      dotenv: {envfile: {file: .env, name: API_PORT}}
+      readme: {text: {file: README.md, pattern: 'docker run -p (\d+):', code: true}}
+      probe: {comment: {file: src/healthcheck, pattern: 'localhost:(\d+)/health', language: shell}}
+      direnv: {comment: {file: .envrc, pattern: 'API starts on port (\d+)', language: shell}}
+    agree: [doc, chart, dotenv, readme, probe, direnv]
+
+  # Claim: the port tables of the four documentation formats, and the config the task definition
+  # hands the API as a JSON string, name the port the chart opens. markdown, asciidoc, rst and
+  # html each read a table cell by its column and by the row whose Service is api, and json with
+  # embedded reads the document inside the string.
+  # See docs/reference.md#markdown; #asciidoc; #rst; #html; #documents-in-strings.
+  - id: docs-give-the-api-port
+    reason: >
+      Each format reaches a different reader: the guide on call, the handbook new staff, the
+      admin guide operators and the site customers. A table left behind sends one of them to
+      the wrong port.
+    scope: repo
+    extract:
+      chart: {yaml: {file: deploy/values.yaml, path: service.port}}
+      guide: {markdown: {file: docs/operations.md, target: table, column: Port, key: Service, row: api}}
+      handbook: {asciidoc: {file: docs/handbook.adoc, target: table, column: Port, key: Service, row: api}}
+      admin: {rst: {file: docs/admin.rst, target: table, column: Port, key: Service, row: api}}
+      site: {html: {file: docs/index.html, target: table, column: Port, key: Service, row: api}}
+      task:
+        json:
+          file: deploy/task.json
+          path: "containerDefinitions[*].environment[?@.name == 'APP_CONFIG'].value"
+          embedded: [{format: json, path: port}]
+    agree: [chart, guide, handbook, admin, site, task]
+
+  # Claim: the docker run command in each format's code block publishes the port the chart
+  # opens. Each reads a code block by its language, and three narrow it to a section.
+  # See docs/reference.md#markdown; #asciidoc; #rst; #html.
+  - id: docker-run-port-agrees
+    reason: >
+      Readers copy the docker run line as it stands. One that publishes another port starts a
+      container nothing can reach, and the reader blames the image.
+    scope: repo
+    extract:
+      chart: {yaml: {file: deploy/values.yaml, path: service.port}}
+      readme: {markdown: {file: README.md, target: code, language: bash, section: Install, pattern: 'docker run -p (\d+):'}}
+      handbook: {asciidoc: {file: docs/handbook.adoc, target: code, language: shell, pattern: 'docker run -p (\d+):'}}
+      admin: {rst: {file: docs/admin.rst, target: code, language: bash, section: Start, pattern: 'docker run -p (\d+):'}}
+      site: {html: {file: docs/index.html, target: code, language: bash, section: Install, pattern: 'docker run -p (\d+):'}}
+    agree: [chart, readme, handbook, admin, site]
+
+  # Claim: the services file the status page reads lists the API and the admin console on the
+  # ports their configs set. json with files takes in every JSON file under docs/, and as:
+  # record gives one record of the named fields for each service.
+  # See docs/reference.md#a-set-of-files; #records; #assert.
+  - id: status-page-ports-agree
+    reason: >
+      The status page probes the ports in docs/services.json. A port it does not follow shows a
+      healthy service as down, and on call is paged for nothing.
+    scope: repo
+    extract:
+      services: {json: {files: ['docs/*.json'], path: 'services[*]', as: record, fields: {name: name, port: port}}}
+      api: {yaml: {file: deploy/values.yaml, path: service.port}}
+      admin: {properties: {file: config/application.properties, key: admin.port}}
+    assert: |
+      services.exists(s, s.name == 'api' && s.port == api[0]) &&
+      services.exists(s, s.name == 'admin' && s.port == admin[0])
+
+  # Claim: the start scripts and the Jenkins pipeline start the API on one port. shell reads what
+  # each script assigns; dev.zsh is a zsh script, which language reads as bash, since errata has
+  # no zsh dialect. jenkins reads what the pipeline's top level environment block sets.
+  # See docs/reference.md#shell; #jenkins.
+  - id: start-script-port-agrees
+    reason: >
+      Developers start the API with scripts/start.sh and CI tests it through Jenkins. A port
+      that differs between them makes the tests pass against a server no developer runs.
+    scope: repo
+    extract:
+      script: {shell: {file: scripts/start.sh, name: API_PORT}}
+      dev: {shell: {file: scripts/dev.zsh, name: API_PORT, language: bash}}
+      pipeline: {jenkins: {file: Jenkinsfile, variable: API_PORT}}
+    agree: [script, dev, pipeline]
+
+  # Claim: every file that sets API_PORT sets 8080. env reads one variable across files of
+  # different kinds, each with the reader its name chooses, and a glob takes in every script.
+  # ci/build.yml is a GitLab CI file under a name that chooses no reader, so readers names one.
+  # See docs/reference.md#env; #a-set-of-files.
+  - id: every-api-port-agrees
+    reason: >
+      API_PORT is set in four kinds of file read by four tools. One rule over all of them catches
+      the file nobody remembered, including a script added later.
+    scope: repo
+    extract:
+      port:
+        env:
+          name: API_PORT
+          files: [.env, 'scripts/*.sh', .gitlab-ci.yml, ci/build.yml, Jenkinsfile]
+          readers: {ci/build.yml: gitlab-ci}
+    agree: [port]
+
+  # Claim: every place that sets the log level sets one: the app's env file, the included CI
+  # file, and three JSON or YAML documents held in strings. ci/build.yml is a GitLab CI file
+  # under a name that chooses no reader, so readers names it. embedded reads a document inside
+  # a YAML, a JSON and a TOML string. normalize trims and lower cases every value before they
+  # are compared, since the logger reads INFO and info alike.
+  # See docs/reference.md#env; #documents-in-strings; #rules.
+  - id: log-level-agrees
+    reason: >
+      A failure is debugged from the build's logs. When the build logs at another level than
+      production, a line production writes is missing from the build's logs, or the reverse.
+    scope: repo
+    extract:
+      level:
+        env:
+          name: LOG_LEVEL
+          files: [deploy/app.env, ci/build.yml]
+          readers: {ci/build.yml: gitlab-ci}
+      configmap:
+        yaml:
+          file: deploy/manifests.yaml
+          kind: ConfigMap
+          name: logging
+          path: "data['logging.json']"
+          embedded: [{format: json, path: level}]
+      task:
+        json:
+          file: deploy/task.json
+          path: "containerDefinitions[*].environment[?@.name == 'LOG_CONFIG'].value"
+          embedded: [{format: yaml, path: level}]
+      service: {toml: {file: config/larder.toml, path: logging.config, embedded: [{format: json, path: level}]}}
+    agree: [level, configmap, task, service]
+    normalize: [trim, lower]
+
+  # Claim: the admin console's port is 9090 in its config, in its code comment, and in the port
+  # tables of the handbook and the web page. properties reads a Java properties file, asciidoc
+  # and html read a table cell by its column and its row, and toml with embedded reads the JSON
+  # the service's TOML config holds in a string.
+  # See docs/reference.md#properties; #comment; #asciidoc; #html; #documents-in-strings.
+  - id: admin-port-agrees
+    reason: >
+      The admin console must stay off the public network, and the firewall rules are written
+      from the handbook's table. A table that names the wrong port leaves the console open.
+    scope: repo
+    extract:
+      config: {properties: {file: config/application.properties, key: admin.port}}
+      code: {comment: {file: src/admin.py, pattern: 'listens on port (\d+)'}}
+      handbook: {asciidoc: {file: docs/handbook.adoc, target: table, column: Port, key: Service, row: admin}}
+      site: {html: {file: docs/index.html, target: table, column: Port, key: Service, row: admin}}
+      settings: {toml: {file: config/larder.toml, path: admin.settings, embedded: [{format: json, path: port}]}}
+    agree: [config, code, handbook, site, settings]
+
+  # Claim: the Node the developer's version manager pins, the image builds with, CI tests on and
+  # the docs require are one release line. compare: semver lets 20, 20.11 and 20.11.1 agree at
+  # the precision each states. tool_version walks the tree for the files that pin node, and with
+  # files reads package.json's engines range, which no walk takes in.
+  # See docs/reference.md#compare; #tool_version; #github-actions; #markdown; #html.
+  - id: node-version-agrees
+    reason: >
+      The web client is built in the image, tested in CI and developed locally. Three Node
+      versions mean a build that passes CI and breaks in the image.
+    scope: repo
+    extract:
+      pins: {tool_version: {tool: node}}
+      engines: {tool_version: {tool: node, files: [package.json]}}
+      image: {regex: {file: Dockerfile, pattern: '^FROM node:([\d.]+)'}}
+      ci: {github-actions: {file: .github/workflows/ci.yml, job: test, step: setup, key: with.node-version}}
+      readme: {markdown: {file: README.md, target: section, section: Install > Requirements, pattern: 'Node (\S+)'}}
+      site: {html: {file: docs/index.html, target: section, section: Install > Requirements, pattern: 'Node (\S+)'}}
+    agree: [pins, engines, image, ci, readme, site]
+    compare: semver
+
+  # Claim: the Python the API runs on is one release line wherever it is named: the image, the
+  # version files, the three pipelines and the README. tool_version with files reads
+  # pyproject.toml's requires-python, a range, beside .python-version; semver lets a range
+  # agree with the versions that satisfy it. github-actions reads a job's env and a step's
+  # with:, and jenkins the environment of the test stage.
+  # See docs/reference.md#compare; #tool_version; #gitlab-ci; #github-actions; #jenkins; #text.
+  - id: python-version-agrees
+    reason: >
+      The image, both pipelines and the README name the Python the API needs. A pipeline left
+      on an older Python tests code the image never runs.
+    scope: repo
+    extract:
+      image: {regex: {file: Dockerfile, pattern: '^FROM python:([\d.]+)'}}
+      pins: {tool_version: {tool: python, files: [.python-version, pyproject.toml]}}
+      gitlab: {gitlab-ci: {file: .gitlab-ci.yml, job: test, variable: PYTHON_VERSION}}
+      github: {github-actions: {file: .github/workflows/ci.yml, job: lint, variable: PYTHON_VERSION}}
+      setup: {github-actions: {file: .github/workflows/ci.yml, job: typecheck, step: setup-python, key: with.python-version}}
+      jenkins: {jenkins: {file: Jenkinsfile, variable: PYTHON_VERSION, stage: test}}
+      readme: {text: {file: README.md, pattern: 'Python (\d+\.\d+) or later'}}
+    agree: [image, pins, gitlab, github, setup, jenkins, readme]
+    compare: semver
+
+  # Claim: both GitLab test jobs run in the image the Dockerfile builds the API from. gitlab-ci
+  # with key reads a job keyword rather than a variable.
+  # See docs/reference.md#gitlab-ci.
+  - id: ci-tests-in-the-runtime-image
+    reason: >
+      Tests in another image than production's pass on libraries production lacks. Pinning
+      the jobs to the runtime image makes CI fail where production would.
+    scope: repo
+    extract:
+      test: {gitlab-ci: {file: .gitlab-ci.yml, job: test, key: image}}
+      lint: {gitlab-ci: {file: .gitlab-ci.yml, job: lint, key: image}}
+      runtime: {regex: {file: Dockerfile, pattern: '^FROM (python:\S+)$'}}
+    agree: [test, lint, runtime]
+
+  # Claim: the changelog's newest heading and the web page name the release the package
+  # manifests give. The markers sit in a Markdown heading and in an HTML comment, and
+  # package_version with no keys reads every manifest at the root.
+  # See docs/reference.md#marker; #package_version.
+  - id: release-version-agrees
+    reason: >
+      A release bumps package.json and pyproject.toml. The changelog and the site are written by
+      hand, and a stale one tells users a fix has not shipped.
+    scope: repo
+    extract:
+      tagged: {marker: {files: [CHANGELOG.md, docs/index.html]}}
+      release: {package_version: {}}
+    agree: [tagged, release]
+
+  # Claim: the JavaScript and Java SDKs carry the service's release. package_version with files
+  # names the manifests to read, xml reads the POM's version through its namespace, and json
+  # with files reads one path from two package.json files.
+  # See docs/reference.md#package_version; #xml-namespaces.
+  - id: sdk-versions-follow-the-release
+    reason: >
+      Users pick the SDK by the service's version. An SDK published under another number reads
+      as built for another release of the API.
+    scope: repo
+    extract:
+      js: {package_version: {files: [clients/js/package.json]}}
+      java:
+        xml:
+          file: clients/java/pom.xml
+          path: /m:project/m:version
+          namespaces: {m: http://maven.apache.org/POM/4.0.0}
+      service: {package_version: {files: [pyproject.toml]}}
+      npm: {json: {files: [package.json, clients/js/package.json], path: version}}
+    agree: [js, java, service, npm]
+
+  # Claim: Maven and Gradle build the Java SDK against one Guava. The witness guava-drifts holds
+  # a copy of both files with Gradle on a newer Guava, so every run shows the rule can fail.
+  # See docs/reference.md#xml-paths; #properties; #witness.
+  - id: guava-pinned-once
+    reason: >
+      The SDK ships one jar from either build. Two Guava versions give Android users and server
+      users different behaviour from one release.
+    scope: repo
+    extract:
+      maven:
+        xml:
+          file: clients/java/pom.xml
+          path: "//m:dependency[m:artifactId='guava']/m:version"
+          namespaces: {m: http://maven.apache.org/POM/4.0.0}
+      gradle: {properties: {file: clients/java/gradle.properties, key: guavaVersion}}
+    agree: [maven, gradle]
+    witness: [guava-drifts]
+
+  # Claim: GitLab, Jenkins and GitHub deploy the tag the chart and compose name. gitlab-ci reads
+  # the value the deploy job sees, jenkins the value the deploy stage sees, github-actions the
+  # value the publish job's env sets, and regex with as: record splits each compose image into
+  # its repository and its tag.
+  # See docs/reference.md#gitlab-ci; #jenkins; #github-actions; #records.
+  - id: deploy-tag-agrees
+    reason: >
+      The pipelines push the image under one tag and the chart pulls another. The rollout then
+      waits on an image that is not in the registry.
+    scope: repo
+    extract:
+      gitlab: {gitlab-ci: {file: .gitlab-ci.yml, job: deploy, variable: IMAGE_TAG}}
+      jenkins: {jenkins: {file: Jenkinsfile, variable: IMAGE_TAG, stage: deploy}}
+      github: {github-actions: {file: .github/workflows/ci.yml, job: publish, variable: IMAGE_TAG}}
+      chart: {yaml: {file: deploy/values.yaml, path: image.tag}}
+      compose: {regex: {file: deploy/compose.yaml, pattern: 'image: (?P<repo>[^:\s]+):(?P<tag>\S+)', as: record}}
+    agree: [gitlab, jenkins, github, chart, compose.tag]
+
+  # Claim: no image in the manifests, compose or the task definition is tagged latest. yaml and
+  # json with as: record give each container's name and image, regex with as: record splits
+  # every image reference in deploy/ into its parts, and max_bytes caps what the yaml read
+  # holds at 1 MiB, far above any manifest here.
+  # See docs/reference.md#a-set-of-files; #records; #limits.
+  - id: images-are-pinned
+    reason: >
+      A latest tag changes under a deploy nobody made. A rollback then lands on a different
+      image than the one that worked.
+    scope: repo
+    extract:
+      pods:
+        yaml:
+          files: ['deploy/*.yaml']
+          kind: Deployment
+          path: 'spec.template.spec.containers[*]'
+          as: record
+          fields: {name: name, image: image}
+          max_bytes: 1048576
+      refs: {regex: {files: ['deploy/*.yaml'], pattern: 'image: (?P<repo>[^:\s]+):(?P<tag>\S+)', as: record}}
+      task: {json: {file: deploy/task.json, path: 'containerDefinitions[*]', as: record, fields: {name: name, image: image}}}
+    assert: |
+      pods.all(c, !c.image.endsWith(':latest')) && refs.all(r, r.tag != 'latest') &&
+      task.all(c, !c.image.endsWith(':latest'))
+
+  # Claim: every image in deploy/ comes from a registry the allow list names. The list's lines
+  # are patterns, so values_as: pattern puts each into the second regex as RE2 syntax rather
+  # than as text.
+  # See docs/reference.md#values-of-another-extractor; #a-set-of-files.
+  - id: images-come-from-allowed-registries
+    reason: >
+      The cluster pulls from any registry it can reach. An image from one the team does not
+      run is code nobody scanned.
+    scope: repo
+    extract:
+      allowed: {regex: {file: config/registries.txt, pattern: '^(\S+)$'}}
+      images: {regex: {files: ['deploy/*.yaml'], pattern: 'image: (\S+)$'}}
+      approved: {regex: {files: ['deploy/*.yaml'], pattern: 'image: ((?{allowed}))$', values_as: pattern}}
+    allow_empty: [approved]
+    assert: size(approved) == size(images)
+
+  # Claim: every docker push in a script has a cosign sign on the line before or after it, and
+  # no line beside it turns Docker's content trust off. The second regex's context is the push's line
+  # and one line either side; it keeps a push only when one of them signs and none of them
+  # sets DOCKER_CONTENT_TRUST=0.
+  # See docs/reference.md#the-context-of-a-match.
+  - id: pushes-are-signed
+    reason: >
+      The cluster admits only signed images. A push that is not signed is an image the next
+      deploy cannot start.
+    scope: repo
+    extract:
+      pushes: {regex: {files: ['scripts/*.sh'], pattern: '(docker push) '}}
+      signed: {regex: {files: ['scripts/*.sh'], pattern: '(docker push) ', context: {before: 1, after: 1, with: '^cosign sign ', without: 'DOCKER_CONTENT_TRUST=0'}}}
+    allow_empty: [signed]
+    assert: size(signed) == size(pushes)
+
+  # Claim: the GitLab deploy job lints the chart on the line before it upgrades the release, and
+  # waits for the rollout on the line after. One context looks a line back for helm lint, the
+  # other a line on for a rollout status that watches, since --watch=false returns at once.
+  # See docs/reference.md#the-context-of-a-match; #gitlab-ci.
+  - id: deploys-are-linted
+    reason: >
+      helm upgrade applies a chart that renders, even a wrong one. Linting first stops a typo
+      before it reaches the cluster.
+    scope: repo
+    extract:
+      upgrades: {regex: {file: .gitlab-ci.yml, pattern: '(helm upgrade)'}}
+      linted: {regex: {file: .gitlab-ci.yml, pattern: '(helm upgrade)', context: {before: 1, with: 'helm lint'}}}
+      watched:
+        regex:
+          file: .gitlab-ci.yml
+          pattern: '(helm upgrade)'
+          context: {after: 1, with: 'kubectl rollout status', without: '--watch=false'}
+    allow_empty: [linted, watched]
+    assert: size(linted) == size(upgrades) && size(watched) == size(upgrades)
+
+  # Claim: every Ingress in deploy/ asks cert-manager for its certificate. yaml with as: map
+  # hands each annotations mapping to the assert whole, so it can ask for a key.
+  # See docs/reference.md#mappings-whole; #a-set-of-files.
+  - id: ingress-has-a-certificate
+    reason: >
+      An Ingress without the annotation serves the cluster's default certificate, and browsers
+      refuse the site.
+    scope: repo
+    extract:
+      annotations: {yaml: {files: ['deploy/*.yaml'], kind: Ingress, path: metadata.annotations, as: map}}
+    assert: annotations.all(a, 'cert-manager.io/cluster-issuer' in a)
+
+  # Claim: the README names the host the Ingress serves. The README writes it in mixed case, so
+  # normalize lower cases and trims both before they are compared.
+  # See docs/reference.md#rules; #several-yaml-documents.
+  - id: public-host-agrees
+    reason: >
+      Users bookmark the host the README gives. A host the Ingress no longer serves sends them
+      to an error page.
+    scope: repo
+    extract:
+      readme: {regex: {file: README.md, pattern: 'served at https://([^/\s]+)/'}}
+      ingress: {yaml: {file: deploy/manifests.yaml, kind: Ingress, path: 'spec.rules[0].host'}}
+    agree: [readme, ingress]
+    normalize: [trim, lower]
+
+  # Claim: the web Deployment runs a replica in every zone the zones ConfigMap lists, and the
+  # operations guide states the count. kind and name pick one document of the manifest file,
+  # and embedded reads the TOML document the ConfigMap holds in a string.
+  # See docs/reference.md#several-yaml-documents; #documents-in-strings; #markdown; #assert.
+  - id: replicas-cover-the-zones
+    reason: >
+      Fewer replicas than zones leaves a zone with no web server, and its users wait on another
+      zone's. The guide's count is what on call engineers scale back to.
+    scope: repo
+    extract:
+      replicas: {yaml: {file: deploy/manifests.yaml, kind: Deployment, name: web, path: spec.replicas}}
+      zones:
+        yaml:
+          file: deploy/manifests.yaml
+          kind: ConfigMap
+          path: "data['zones.toml']"
+          embedded: [{format: toml, path: 'zones[*]'}]
+      guide: {markdown: {file: docs/operations.md, target: table, column: Replicas, key: Service, row: web}}
+    assert: int(replicas[0]) >= size(zones) && guide == replicas
+
+  # Claim: a cached price list stays fresh longer than the worker takes to refresh it, and longer
+  # than each feed's schedule. toml reads the cache setting and, with files and as: record, the
+  # schedules; yaml reads the worker's env var through a filter, and every env entry as a record.
+  # See docs/reference.md#extractors; #filters; #records; #assert.
+  - id: cache-outlives-the-refresh
+    reason: >
+      A cache that expires before the next refresh serves every request from the feed for the
+      rest of the interval, and the feed rate limits the API.
+    scope: repo
+    extract:
+      ttl: {toml: {file: config/larder.toml, path: cache.ttl_seconds}}
+      refresh:
+        yaml:
+          file: deploy/manifests.yaml
+          kind: Deployment
+          name: worker
+          path: "spec.template.spec.containers[*].env[?@.name == 'REFRESH_SECONDS'].value"
+      env:
+        yaml:
+          file: deploy/manifests.yaml
+          kind: Deployment
+          name: worker
+          path: 'spec.template.spec.containers[*].env[*]'
+          as: record
+          fields: {name: name, value: value}
+      schedules: {toml: {files: ['config/*.toml'], path: 'schedules[*]', as: record, fields: {name: name, every: every_seconds}}}
+    assert: |
+      int(ttl[0]) > int(refresh[0]) && schedules.all(s, int(s.every) < int(ttl[0])) &&
+      env.exists(e, e.name == 'REFRESH_SECONDS' && e.value == refresh[0])
+
+  # Claim: every feed the service pulls is fetched over HTTPS. toml with files reads every TOML
+  # config, and as: record gives one record of the named fields for each feed table.
+  # See docs/reference.md#records; #assert.
+  - id: feeds-use-https
+    reason: >
+      The feeds carry prices and product recalls. One fetched over plain HTTP can be altered on
+      the way, and a forged recall empties a pantry.
+    scope: repo
+    extract:
+      feeds: {toml: {files: ['config/*.toml'], path: 'feeds[*]', as: record, fields: {name: name, url: url}}}
+    assert: feeds.all(f, f.url.startsWith('https://'))
+
+  # Claim: no Renovate rule automerges a major update. json with as: map hands each package rule
+  # to the assert whole, so the expression can ask which keys a rule has. max_bytes caps the read
+  # at 64 KiB, which a Renovate config past that size would break loudly.
+  # See docs/reference.md#mappings-whole; #assert; #limits.
+  - id: majors-never-automerge
+    reason: >
+      A major update changes an API the code calls. Merged without review, it ships a break the
+      tests may not cover.
+    scope: repo
+    extract:
+      rules: {json: {file: renovate.json, path: 'packageRules[*]', as: map, max_bytes: 65536}}
+    assert: |
+      rules.all(r, !has(r.automerge) || r.automerge != 'true' ||
+        (has(r.matchUpdateTypes) && !('major' in r.matchUpdateTypes)))
+
+  # Claim: the handbook names the URL the icons submodule clones from. ini reads .gitmodules
+  # with git's own rules, a subsection naming the submodule, and asciidoc a section's prose.
+  # See docs/reference.md#ini; #asciidoc.
+  - id: icons-come-from-the-submodule
+    reason: >
+      Designers fork the icon set from the URL the handbook gives. A handbook that names an old
+      repository has them change icons the build never reads.
+    scope: repo
+    extract:
+      submodule: {ini: {file: .gitmodules, section: submodule, subsection: vendor/icons, key: url}}
+      handbook: {asciidoc: {file: docs/handbook.adoc, target: section, section: Assets, pattern: 'icons come from (\S+),'}}
+    agree: [submodule, handbook]
+
+  # Claim: the icons submodule is checked out where the image build copies the icons from. ini
+  # names the git dialect, which the file's name would choose anyway, and reads the
+  # submodule's path.
+  # See docs/reference.md#ini; #regex.
+  - id: icons-path-agrees
+    reason: >
+      A submodule moved without the Dockerfile builds an image with no icons, and the build
+      passes, since COPY of an empty directory succeeds.
+    scope: repo
+    extract:
+      submodule: {ini: {file: .gitmodules, dialect: git, section: submodule, subsection: vendor/icons, key: path}}
+      build: {regex: {file: Dockerfile, pattern: '^COPY (vendor/\S+) '}}
+    agree: [submodule, build]
+
+  # Claim: the admin guide's host table gives the SSH port Ansible connects on, for both hosts.
+  # ini reads the inventory as Ansible does, a host's variable in its group, the second time
+  # naming the ansible dialect outright; rst reads a reStructuredText table.
+  # See docs/reference.md#ini; #rst.
+  - id: ssh-port-agrees
+    reason: >
+      An operator who logs in by hand uses the port the guide gives. When Ansible moves the port,
+      the guide locks the operator out during an incident.
+    scope: repo
+    extract:
+      inventory: {ini: {file: inventory/hosts, section: web, host: web1, key: ansible_port}}
+      second: {ini: {file: inventory/hosts, dialect: ansible, section: web, host: web2, key: ansible_port}}
+      guide: {rst: {file: docs/admin.rst, target: table, column: SSH port, key: Host, row: web1}}
+    agree: [inventory, second, guide]
+
+  # Claim: the restore command in the admin guide reads from the directory the backup script
+  # writes to. The script lets an operator point it elsewhere through a variable, a value
+  # errata cannot know, so skip_not_literal leaves that assignment out and compares the rest.
+  # The guide, the handbook, the admin guide and the site each give the command in a code block.
+  # See docs/reference.md#shell; #values-a-file-only-computes; #markdown; #text; #asciidoc; #rst; #html.
+  - id: restore-reads-the-backup-dir
+    reason: >
+      A restore that reads another directory than the backup writes finds no dump, and an
+      outage becomes a data loss.
+    scope: repo
+    extract:
+      script: {shell: {file: scripts/backup.sh, name: BACKUP_DIR, language: bash}}
+      admin: {rst: {file: docs/admin.rst, target: code, language: bash, section: Restore, pattern: '--from (\S+)'}}
+      guide: {markdown: {file: docs/operations.md, target: code, language: bash, pattern: '--from (\S+)'}}
+      prose: {text: {file: docs/operations.md, code: true, pattern: 'restore --from (\S+)'}}
+      handbook: {asciidoc: {file: docs/handbook.adoc, target: code, language: bash, section: Restore, pattern: '--from (\S+)'}}
+      site: {html: {file: docs/index.html, target: code, language: bash, pattern: '--from (\S+)'}}
+    agree: [script, admin, guide, prose, handbook, site]
+    skip_not_literal: [script]
+
+  # Claim: the app's env file sets every key it lists to a value. envfile with no name gives the
+  # value of every key. CACHE_DIR expands HOME, which the file never sets, so its value is not
+  # literal, and skip_not_literal leaves it out rather than failing the rule. envfile with a name
+  # reads one key: the deploy must not point at a database on localhost.
+  # See docs/reference.md#envfile; #values-a-file-only-computes.
+  - id: app-env-sets-every-value
+    reason: >
+      The app reads an empty value as a setting and starts with it. A key left empty in the
+      deploy's env file starts the service against no database host.
+    scope: repo
+    extract:
+      every: {envfile: {file: deploy/app.env}}
+      db: {envfile: {file: deploy/app.env, name: DATABASE_HOST}}
+    skip_not_literal: [every]
+    assert: every.all(v, v != '') && db[0] != 'localhost'
+
+  # Claim: every route the API serves is named in the operations guide. The second regex holds a
+  # reference to the first, so it is searched once for each route, each put in as text, which
+  # values_as: literal says outright. allow_empty lets a route the guide lacks come back as no
+  # value, which makes the assert false rather than the rule unknown.
+  # See docs/reference.md#values-of-another-extractor; #assert.
+  - id: every-route-is-documented
+    reason: >
+      Support answers customers from the operations guide. A route missing there is one they
+      cannot help with.
+    scope: repo
+    extract:
+      routes: {regex: {file: src/routes.py, pattern: '@app\.route\("([^"]+)"\)'}}
+      documented: {regex: {file: docs/operations.md, pattern: '`((?{routes}))`', values_as: literal}}
+    allow_empty: [documented]
+    assert: routes.all(r, r in documented)
+
+  # Claim: no script runs kubectl apply. The glob takes in every script, and context drops a
+  # match on a comment line, so the backup script's warning does not count. allow_empty lets
+  # the extractor find nothing, which is the claim holding.
+  # See docs/reference.md#a-set-of-files; #the-context-of-a-match.
+  - id: scripts-never-apply
+    reason: >
+      Deploys go through the pipeline, which records who changed what. A script that applies by
+      hand changes the cluster with no record.
+    scope: repo
+    extract:
+      applies:
+        regex:
+          files: ['scripts/*.sh']
+          pattern: '(kubectl\s+apply)'
+          context: {without: '^\s*#'}
+    allow_empty: [applies]
+    assert: size(applies) == 0
+
+  # Claim: the old settings file stays deleted. exists is false, not unknown, when no file is
+  # there.
+  # See docs/reference.md#exists-and-size.
+  - id: legacy-settings-stay-removed
+    reason: >
+      The service still reads config/settings.ini when it is there, ahead of larder.toml. A merge
+      that brings it back silently overrides the current settings.
+    scope: repo
+    extract:
+      old: {exists: {file: config/settings.ini}}
+    assert: old[0] == 'false'
+
+  # Claim: the logo is shipped, and small enough to inline in the page. exists and size read the
+  # same file and are two places, since their kinds differ.
+  # See docs/reference.md#exists-and-size.
+  - id: logo-is-shipped-small
+    reason: >
+      The page inlines the logo to save a request. A logo over 2 KiB doubles the first paint on
+      a slow phone.
+    scope: repo
+    extract:
+      there: {exists: {file: assets/logo.svg}}
+      bytes: {size: {file: assets/logo.svg}}
+    assert: there[0] == 'true' && int(bytes[0]) <= 2048
+
+  # Claim: the notes coding agents read stay under 4000 bytes. size gives a file's size in bytes,
+  # in decimal.
+  # See docs/reference.md#exists-and-size.
+  - id: agent-notes-stay-short
+    reason: >
+      An agent loads the notes on every turn, and the cost grows with each line. A cap keeps a
+      new rule from landing there when it belongs elsewhere.
+    scope: repo
+    extract:
+      notes: {size: {file: docs/agent-notes.md}}
+    assert: int(notes[0]) <= 4000
+
+  # Claim: the migrations are numbered in sequence. A program check runs any program; this one
+  # sets its own run and timeout, and reads the tree from ERRATA_ROOT, so its witness
+  # migration-gap, a copy of the directory with 002 missing, shows it can fail.
+  # See docs/reference.md#checks; #witness; #the-check-protocol.
+  - id: migrations-are-numbered
+    reason: >
+      The migrator applies files in name order and records the last number. A gap or a number
+      used twice skips a migration on every database that is already past it.
+    scope: repo
+    run: [sh, scripts/check-migrations.sh]
+    timeout: 10s
+    witness: [migration-gap]
+
+  # Claim: every TODO in the API's code names its issue. The check writes no run, so it runs
+  # defaults.run: sh checks/no-todo-without-issue.sh.
+  # See docs/reference.md#defaults.
+  - id: no-todo-without-issue
+    reason: >
+      A TODO without an issue is work nobody plans. Naming the issue puts it on the board.
+    scope: repo
+
+  # Claim: no migration drops a table. It takes defaults.run as the check above does.
+  # See docs/reference.md#defaults.
+  - id: migrations-are-reversible
+    reason: >
+      A release is rolled back by deploying the previous image. A dropped table makes that
+      impossible without a restore.
+    scope: repo
+
+  # Claim: docs/ports.txt is what scripts/gen-ports.sh prints from .env today. A generated check
+  # compares the committed file with its generator's output byte for byte, and max_bytes keeps
+  # a list this small from growing past 1 KiB unnoticed.
+  # See docs/reference.md#generated.
+  - id: ports-list-is-current
+    reason: >
+      The firewall team reads docs/ports.txt and never .env. A port added to .env and not
+      regenerated into the list stays closed in production.
+    scope: repo
+    generated:
+      file: docs/ports.txt
+      run: [sh, scripts/gen-ports.sh]
+      max_bytes: 1024
+
+  # Claim: AUTHORS is the sorted team list. max_bytes bounds what errata reads of the file and
+  # holds of the generator's output, and timeout bounds the generator.
+  # See docs/reference.md#generated.
+  - id: authors-list-is-current
+    reason: >
+      The package metadata credits AUTHORS. A member added to the team list and not to AUTHORS
+      goes uncredited in the release.
+    scope: repo
+    timeout: 5s
+    generated:
+      file: AUTHORS
+      run: [sh, scripts/gen-authors.sh]
+      max_bytes: 4096
+
+  # Claim: the cluster runs the tag the chart names. A live check asks the running system, so
+  # errata skips it until a provider can read one, and the coverage line names the gap.
+  # See docs/reference.md#scopes.
+  - id: deployed-image-matches-chart
+    reason: >
+      Argo can report Synced while a hand edit pins an older image. The chart then describes a
+      release the cluster does not run.
+    scope: live
+    run: [sh, checks/live/deployed-image.sh]
+    timeout: 20s
+
+  # Claim: the public host answers on HTTPS. Another live check, this one taking defaults.run.
+  # See docs/reference.md#scopes; #defaults.
+  - id: ingress-answers
+    reason: >
+      DNS, the certificate and the Ingress are three changes in three places. A host that stops
+      answering is the sum of them, and only a request shows it.
+    scope: live
+
+  # Claim: applying the manifests would change nothing. An applied check asks what an apply
+  # would do, by a dry run only; errata skips it as it does a live check.
+  # See docs/reference.md#scopes; #defaults.
+  - id: apply-changes-nothing
+    reason: >
+      A difference between git and the cluster that nobody applied is either drift or a change
+      about to land unreviewed. Either way the next sync does something nobody planned.
+    scope: applied
+
+  # Claim: a server side dry run leaves no field to another manager, so git can remove every
+  # field it set.
+  # See docs/reference.md#scopes.
+  - id: no-field-kept-by-another-manager
+    reason: >
+      A field that kubectl edit took over stays in the cluster after git deletes it. The
+      manifest then claims a removal the cluster never made.
+    scope: applied
+    run: [sh, checks/applied/no-foreign-manager.sh]

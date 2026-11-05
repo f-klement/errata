@@ -476,3 +476,63 @@ func TestBelowKeepsWhatASparseCheckoutLeavesOut(t *testing.T) {
 		t.Errorf("below the fixture a sparse checkout leaves out %q, want b and d/", below.left)
 	}
 }
+
+// Within cuts the index to a root below the top: the paths below it, with
+// its path cut, in git's order, and nothing above it or beside it, not
+// app2/x, which sorts among them, nor x. A fixture below the root keeps
+// its path below the root, so the real run's globs still pass over it and
+// Below still finds it. What a sparse checkout leaves out below the root is
+// cut too. Planted breaks: the prefix cut without its slash, which took
+// app2/x as 2/x; the cut path not kept, which listed app/a.
+func TestWithinCutsTheIndexToARoot(t *testing.T) {
+	ix := sparseIndex(t, []string{"app/.errata/witness/w/f", "app/a", "app/b/c", "app2/x", "x"}, "app/d/", "app/e", "y")
+	in, err := ix.Within("app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := listed(in.entries); got != ".errata/witness/w/f a b/c" {
+		t.Errorf("within app: %q", got)
+	}
+	if got := globbedOf(in); got != "a b/c" {
+		t.Errorf("a glob within app: %q, want the fixture passed over", got)
+	}
+	if !slices.Equal(in.left, []string{"d/", "e"}) {
+		t.Errorf("within app a sparse checkout leaves out %q, want d/ and e", in.left)
+	}
+	if fixture, err := in.Below(".errata/witness/w"); err != nil || globbedOf(fixture) != "f" {
+		t.Errorf("the fixture within app: %q, %v", globbedOf(fixture), err)
+	}
+}
+
+// Within refuses a root in a witness's fixture, in .errata/witness or that
+// is a directory .errata in any case, one in a directory a sparse index
+// lists as one entry, one below which the index lists a file only in another
+// case, and one below which it lists nothing, each by its reason. The case refusal names the index's spelling
+// of the root alone, never a file below it. Planted breaks: each refusal
+// removed; the case refusal quoting the entry, which named Examples/sibling.
+func TestWithinRefuses(t *testing.T) {
+	ix := sparseIndex(t, []string{".errata/witness/w/f", "A/Examples/secret", "Examples/sibling", "a/examples/z", "app/a", "examples/y"}, "out/")
+	for dir, want := range map[string]string{
+		".errata/witness":     `the root ".errata/witness" is in the fixtures of the repository's witnesses, which errata reads only on a witness's run`,
+		".errata/witness/w":   `the root ".errata/witness/w" is in the fixtures of the repository's witnesses`,
+		".errata/witness/w/s": `the root ".errata/witness/w/s" is in the fixtures of the repository's witnesses`,
+		".errata":             `the root ".errata" is a directory .errata, which holds the repository's witnesses, read only on a witness's run`,
+		"x/.Errata":           `the root "x/.Errata" is a directory .errata`,
+		"out":                 `the sparse checkout leaves out "out/", the root itself, which git's sparse index lists as one entry`,
+		"out/sub":             `the sparse checkout leaves out "out/", the directory that holds the root "out/sub"`,
+		"examples":            `git's index spells the root "examples" as "Examples" for some of its entries, and macOS and Windows open the two as one directory, so errata cannot tell the files the root holds; give --root as git's index spells it, "Examples", or rename the directory in git`,
+		"a/examples":          `git's index spells the root "a/examples" as "A/Examples" for some of its entries`,
+		"none":                `git's index lists no file below the root "none"; a clone holds only the files git tracks`,
+		"app/a":               `git's index lists no file below the root "app/a"`,
+	} {
+		_, err := ix.Within(dir)
+		extracttest.WantError(t, err, want)
+		// No refusal names a file outside the root: on Linux the entries
+		// spelt in another case are another directory's.
+		for _, outside := range []string{"sibling", "secret"} {
+			if strings.Contains(err.Error(), outside) {
+				t.Errorf("%s: the refusal names %q, a file outside the root: %v", dir, outside, err)
+			}
+		}
+	}
+}

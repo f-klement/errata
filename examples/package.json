@@ -1,0 +1,7 @@
+{
+  "name": "larder",
+  "version": "1.4.0",
+  "license": "MIT",
+  "engines": {"node": ">=20.11"},
+  "scripts": {"test": "vitest run"}
+}

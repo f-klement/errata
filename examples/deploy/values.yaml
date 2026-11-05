@@ -1,0 +1,6 @@
+# Helm values for the Larder chart.
+service:
+  port: 8080
+image:
+  repository: registry.example.com/larder/api
+  tag: 1.4.0

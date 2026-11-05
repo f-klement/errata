@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 )
@@ -22,15 +23,12 @@ const (
 	ScopeApplied Scope = "applied"
 )
 
-// known reports whether s is one of the three scopes.
-func (s Scope) known() bool {
-	switch s {
-	case ScopeRepo, ScopeLive, ScopeApplied:
-		return true
-	default:
-		return false
-	}
-}
+// Scopes lists every scope, from the one that reads only the repository to
+// the one that asks the running system what an apply would change.
+var Scopes = []Scope{ScopeRepo, ScopeLive, ScopeApplied}
+
+// known reports whether s is one of Scopes.
+func (s Scope) known() bool { return slices.Contains(Scopes, s) }
 
 // Check is one test of one claim. Its Kind makes it a program check, a rule
 // or a generated check; Validate refuses a check with none, so every check

@@ -12,7 +12,7 @@ import (
 // ends and stages a file can hold, and nesting just under the depth limit,
 // again and again. None is quadratic, so each is bounded by
 // extracttest.OtherBound. make test reads them at 16 KiB and make slow at
-// 1 MiB; the README's Jenkins section gives the figures at 32 MiB.
+// 1 MiB; docs/reference.md#jenkins gives the figures at 32 MiB.
 func jenkinsReplays(size int) []extracttest.Replay[Spec] {
 	fill := func(unit string) string { return strings.Repeat(unit, size/len(unit)) }
 	x := Spec{File: "Jenkinsfile", Variable: "X"}

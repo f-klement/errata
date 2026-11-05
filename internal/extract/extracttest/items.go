@@ -28,12 +28,20 @@ func DrawItems(t *rapid.T, sections, keys, values *rapid.Generator[string]) []It
 type LineWriter struct {
 	Text strings.Builder
 	Line int
+	// End gives the line end each Add writes, a LF when End is nil. A
+	// property draws a LF, a CRLF or a lone CR from it, each of which ends
+	// one line (core/lineend).
+	End func() string
 }
 
 // Add writes a line of format and args, and returns its number.
 func (w *LineWriter) Add(format string, args ...any) int {
 	w.Line++
 	fmt.Fprintf(&w.Text, format, args...)
-	w.Text.WriteString("\n")
+	end := "\n"
+	if w.End != nil {
+		end = w.End()
+	}
+	w.Text.WriteString(end)
 	return w.Line
 }

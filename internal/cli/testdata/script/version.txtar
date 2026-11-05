@@ -2,7 +2,7 @@ exec errata version
 stdout '^dev$'
 
 exec errata --help
-stdout 'Check the claims a repository makes about itself'
+stdout '^errata checks the claims a repository makes about itself'
 
 ! exec errata nonsense
 stderr 'unknown command'

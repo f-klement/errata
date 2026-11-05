@@ -17,8 +17,8 @@ type fileKind struct {
 }
 
 // kinds is the table of every file the extractor reads, by name, in the
-// order a run without files: reads the root's. The README's package_version
-// section is the same table, in prose.
+// order a run without files: reads the root's.
+// docs/reference.md#package_version is the same table, in prose.
 var kinds = []*fileKind{
 	{name: "package.json", read: readPackageJSON},
 	{name: "pyproject.toml", read: readPyproject},
@@ -245,19 +245,22 @@ func readCargo(x *extractor, f file, data []byte, add func(string, int, bool) er
 // and is refused.
 func readVersionFile(_ *extractor, _ file, data []byte, add func(string, int, bool) error) error {
 	data = core.DropBOM(data)
-	for n := 1; len(data) > 0; n++ {
-		text, after, _ := bytes.Cut(data, []byte("\n"))
-		data = after
-		text, _, _ = bytes.Cut(text, []byte("#"))
+	for left := data; len(left) != 0; { // != leaves no boundary that loops for ever
+		raw, after, _ := bytes.Cut(left, []byte("\n"))
+		at := len(data) - len(left) // where raw starts in the file
+		left = after
+		raw, _, _ = bytes.Cut(raw, []byte("#"))
 		// The first field is cut out by hand: bytes.Fields would make a
 		// slice of every field of a line that may hold millions.
-		text = bytes.TrimLeftFunc(text, unicode.IsSpace)
+		text := bytes.TrimLeftFunc(raw, unicode.IsSpace)
 		if len(text) > 0 {
 			end := bytes.IndexFunc(text, unicode.IsSpace)
 			if end < 0 {
 				end = len(text)
 			}
-			return add(string(text[:end]), n, false)
+			// The tool ends a line at \n alone; errata numbers the version's
+			// line at a lone \r too, as it numbers every file's.
+			return add(string(text[:end]), core.LineOf(data, at+len(raw)-len(text)), false)
 		}
 	}
 	return core.LineError(1, "the file holds no version, only blank lines and comments")

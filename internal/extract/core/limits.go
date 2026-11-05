@@ -22,7 +22,7 @@ import (
 // file times the threads its pattern keeps alive, and the time limit stops
 // it. Each limit fails closed: a file over a limit makes the rule unknown,
 // with a message that names the limit, the file, and what to do. The
-// measurements are in the README's extractor section.
+// measurements are in docs/reference.md#limits.
 const (
 	// DefaultMaxBytes is the largest file an extractor reads unless it sets
 	// max_bytes:, checked before reading. One cap serves every kind. An

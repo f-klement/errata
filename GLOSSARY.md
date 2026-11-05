@@ -125,6 +125,13 @@ shell, the way a program check's program runs. errata compares what it prints an
 `defaults` key, with the check's id put in for its placeholders. It is a program errata starts, as
 any `run` is.
 
+**Line.** Where a value stands in its file, counted from 1. A line ends at a LF, a CRLF or a lone
+CR, as the HTML standard reads a file and an editor shows one, in every kind; `yaml` and the kinds
+read through it also end one at NEL, LS and PS, as yaml.v3 does (ADR 0007). The rule is for lines
+only: a kind that builds its own text from a file, such as `regex`, `text` or `html`, reads each
+line end as one LF, and a kind that reads a format with a grammar of its own, such as `shell` or
+`ini`, reads a CR in a value as its tool does.
+
 **Extractor.** The part of a rule that gets values from one place. A YAML path, an XPath into an XML
 file, a key in an INI, properties or env file, a regular expression capture, a sentence of Markdown
 prose, a Markdown, AsciiDoc, reStructuredText or HTML comment, section, code block or table

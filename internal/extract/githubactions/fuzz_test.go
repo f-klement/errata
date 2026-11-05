@@ -1,8 +1,9 @@
 package githubactions
 
 import (
-	"strings"
 	"testing"
+
+	"github.com/f-klement/errata/internal/extract/core"
 )
 
 // Any workflow resolves without a crash, into values each at a line of the
@@ -30,7 +31,7 @@ func FuzzGitHubActions(f *testing.F) {
 		if err != nil {
 			return
 		}
-		lines := strings.Count(body, "\n") + 1
+		lines := core.LastLine([]byte(body))
 		for _, v := range got {
 			if v.At.File != wf || v.At.Line < 1 || v.At.Line > lines {
 				t.Fatalf("%q at %s:%d, outside the file", v.Text, v.At.File, v.At.Line)

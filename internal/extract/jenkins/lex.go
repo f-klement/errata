@@ -73,8 +73,8 @@ func (t token) body(data []byte) []byte {
 type lexer struct {
 	data []byte
 	pos  int
-	// line is the line pos is on, and lineAt the offset it was counted to.
-	line, lineAt int
+	// lines is the line of an offset, counted on from the offset asked before.
+	lines *core.LineCursor
 	// regexOK is whether a / here starts a slashy string rather than a
 	// division: after a token that ends a value it does not.
 	regexOK bool
@@ -114,14 +114,12 @@ type frame struct {
 }
 
 func newLexer(data []byte, m *core.Meter) *lexer {
-	return &lexer{data: data, line: 1, regexOK: true, parens: []int{0}, m: m}
+	return &lexer{data: data, lines: core.NewLineCursor(data), regexOK: true, parens: []int{0}, m: m}
 }
 
 // lineOf is the line of offset off, which never moves back.
 func (l *lexer) lineOf(off int) int {
-	l.line += bytes.Count(l.data[l.lineAt:off], []byte("\n"))
-	l.lineAt = off
-	return l.line
+	return l.lines.At(off)
 }
 
 // next is the next token. A string is read whole, with what it
@@ -159,15 +157,13 @@ func (l *lexer) read(regexOK *bool) (token, error) {
 		}
 		c := d[l.pos]
 		switch {
-		case c == ' ' || c == '\t' || c == '\r' || c == '\f':
+		case c == ' ' || c == '\t' || c == '\f':
 			l.pos++
 			continue
-		case c == '\\' && l.pos+1 < len(d) && d[l.pos+1] == '\n':
-			// A backslash before a line end joins the two lines.
-			l.pos += 2
-			continue
-		case c == '\\' && l.pos+2 < len(d) && d[l.pos+1] == '\r' && d[l.pos+2] == '\n':
-			l.pos += 3
+		case c == '\\' && lineEndAt(d, l.pos+1):
+			// A backslash before a line end, a LF, a CRLF or a lone CR as
+			// Groovy's ONE_NL reads them, joins the two lines.
+			l.pos = core.NextLine(d, l.pos+1)
 			continue
 		case c == '#' && l.pos == 0 && len(d) > 1 && d[1] == '!':
 			l.pos = lineEnd(d, 0)
@@ -186,8 +182,8 @@ func (l *lexer) read(regexOK *bool) (token, error) {
 		start := l.pos
 		t := token{start: start, line: l.lineOf(start)}
 		switch {
-		case c == '\n':
-			l.pos++
+		case c == '\n' || c == '\r': // a CRLF is one, and so is a lone CR, the Macintosh newline of groovy.g's ONE_NL
+			l.pos = core.NextLine(d, l.pos)
 			t.kind = tokNewline
 			if l.parens[len(l.parens)-1] == 0 {
 				*regexOK = true
@@ -293,7 +289,7 @@ func (l *lexer) inside() error {
 				return err
 			}
 			c := d[l.pos]
-			if c == '\n' && (q == single || q == double) {
+			if (c == '\n' || c == '\r') && (q == single || q == double) {
 				return l.lexError(l.pos, "a string in %s ends at the line's end; Groovy reads a string over several lines only in ''' or \"\"\"", opening[q])
 			}
 			// An escape comes before the end, so \" and $/ do not close.
@@ -399,9 +395,15 @@ func escape(d []byte, off int, q quote) int {
 // interpolates reports whether a string of form q reads ${ } and $name.
 func interpolates(q quote) bool { return q != single && q != tripleSingle }
 
-// lineEnd is the offset of the line end at or after off, or the end of d.
+// lineEndAt reports whether a line end, a LF or a CR, starts at offset i
+// of d. It reads the one byte: the lexer asks at every backslash, and a
+// scan to the next line end there made a run of backslashes quadratic.
+func lineEndAt(d []byte, i int) bool { return i < len(d) && (d[i] == '\n' || d[i] == '\r') }
+
+// lineEnd is the offset of the line end at or after off, a LF or a CR, or
+// the end of d: groovy.g's SL_COMMENT stops before either.
 func lineEnd(d []byte, off int) int {
-	if i := bytes.IndexByte(d[off:], '\n'); i >= 0 {
+	if i := bytes.IndexAny(d[off:], "\r\n"); i >= 0 {
 		return off + i
 	}
 	return len(d)

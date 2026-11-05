@@ -121,12 +121,12 @@ func (e Each) FromShared(data []byte, _ *Spent) ([]check.Value, error) {
 }
 
 // FromData searches data with the pattern of each value, each as
-// Search.FromData does, with CRLF read as LF. The matches of all of them
+// Search.FromData does, with every line end read as LF. The matches of all of them
 // are held to MaxValues, and the bytes of their values to the file's
 // limit, since two values can match the same text; both count the matches
 // before the context drops any.
 func (e Each) FromData(data []byte) ([]check.Value, error) {
-	data = lineFeeds(data)
+	data = LineFeeds(data)
 	var all []Match
 	var held int64
 	for i, v := range e.values {

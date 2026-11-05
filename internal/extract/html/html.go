@@ -109,14 +109,12 @@ func (e extractor) FromShared(data []byte, _ *core.Spent) ([]check.Value, error)
 var errTooManyValues = errors.New("too many values")
 
 // FromData returns the values in data, the bytes of the file, as Extract
-// does once it has read them. CRLF reads as LF, and a byte order mark is
-// dropped, so the lines are the file's.
+// does once it has read them. Every line end reads as LF, a CRLF and a lone
+// CR alike, as the HTML standard reads them before it tokenizes, and a byte
+// order mark is dropped, so the lines are the file's.
 func (e extractor) FromData(data []byte) ([]check.Value, error) {
 	size := len(data)
-	if crlf := []byte("\r\n"); bytes.Contains(data, crlf) {
-		data = bytes.ReplaceAll(data, crlf, []byte("\n"))
-	}
-	data = core.DropBOM(data)
+	data = core.DropBOM(core.LineFeeds(data))
 	r := newReading(e.sel, data, e.src.Limit)
 	if err := r.read(); err != nil {
 		if errors.Is(err, errTooManyValues) {
@@ -341,6 +339,9 @@ func (r *reading) text() {
 
 // tag follows the elements a start or end tag opens and closes.
 func (r *reading) tag() error {
+	if r.s.Foreign() {
+		return nil // an svg's td is no cell, nor its a a link: it ends no pre or heading
+	}
 	name, opens, at := r.s.Name(), r.s.Kind() == htmlparse.StartTag, r.s.Start()
 	if r.s.BreaksLine() {
 		if r.sel.Target == markup.TargetSection {
@@ -548,7 +549,8 @@ func (r *reading) tableTag(name string, opens bool, at int) error {
 	case t == nil:
 	case name == "table":
 		r.endTable()
-	case name == "tr" || name == "thead" || name == "tbody" || name == "tfoot" || name == "caption":
+	case name == "tr" || name == "thead" || name == "tbody" || name == "tfoot" || name == "caption" ||
+		(name == "col" || name == "colgroup") && opens: // a column closes the row, as the scanner does
 		r.endRow(t)
 		t.inCaption = name == "caption" && opens
 		if name == "tr" && opens {

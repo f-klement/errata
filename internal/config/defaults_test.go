@@ -245,7 +245,7 @@ func TestAnInvalidIDWithADefaultDoesNotLoad(t *testing.T) {
 }
 
 // A number or a bool in defaults.run loads as the text written, as it does in
-// a check's own run (README, Checks). The planted break: typedFile without
+// a check's own run (docs/reference.md#the-config-file). The planted break: typedFile without
 // its Defaults field, which reads 5 as a JSON number the decode refuses.
 func TestDefaultRunTakesNumbersAndBoolsAsWritten(t *testing.T) {
 	cfg, err := parseRaw([]byte("defaults: {run: [head, -n, 5, 20.04, true]}\nchecks:\n- {id: a, reason: r, scope: repo}\n"))

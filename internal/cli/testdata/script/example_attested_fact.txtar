@@ -1,11 +1,11 @@
-# The fourth worked example of docs/examples.md: an attested fact. The
+# The fourth worked example of docs/handbook.md: an attested fact. The
 # router's firewall is set in its web interface, which no tool reads, so
 # facts/router-wan-ssh.yaml records what someone saw there, with the source,
 # the day they looked and how many days that look is trusted. A rule holds the
 # network document to the fact's value; a program check fails once the fact is
 # older than its lifetime. ATTESTED_TODAY fixes the date the program reads, so
 # every verdict here is the same on any day. errata.yaml's check
-# docs-examples-are-run holds every block of this example in docs/examples.md
+# docs-examples-are-run holds every block of this example in docs/handbook.md
 # equal to its section here, in order.
 env ATTESTED_TODAY=2026-11-03
 ! exec errata check

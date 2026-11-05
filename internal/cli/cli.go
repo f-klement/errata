@@ -46,10 +46,9 @@ type loader func(root, path string) (config.Config, error)
 // one that wraps config.Load, to run a reader that the extract package does
 // not have yet, such as one that marks a value not literal.
 func execute(ctx context.Context, args []string, stdout, stderr io.Writer, load loader) int {
-	root := newRoot(load)
+	root := newRoot(load, stdout, stderr)
+	root.Annotations = map[string]string{"reference": referenceURL(resolveVersion(Version, debug.ReadBuildInfo))}
 	root.SetArgs(args)
-	root.SetOut(stdout)
-	root.SetErr(stderr)
 
 	err := root.ExecuteContext(ctx)
 	switch {
@@ -66,22 +65,38 @@ func execute(ctx context.Context, args []string, stdout, stderr io.Writer, load 
 	}
 }
 
-func newRoot(load loader) *cobra.Command {
+// newRoot is errata's command tree, writing to stdout and stderr. It adds
+// the help and completion commands, which cobra would add only when it
+// runs, so the help, docs/cli.md and the tests see the tree a user does.
+// They come after SetOut: a completion command keeps the stream it is made
+// with.
+func newRoot(load loader, stdout, stderr io.Writer) *cobra.Command {
 	root := &cobra.Command{
 		Use:           "errata",
 		Short:         "Check the claims a repository makes about itself",
+		Long:          rootLong,
+		Example:       rootExample,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
+	root.SetOut(stdout)
+	root.SetErr(stderr)
 	root.AddCommand(newCheckCmd(load), newListCmd(load), newVersionCmd())
+	root.InitDefaultHelpCmd()
+	root.InitDefaultCompletionCmd()
+	documentBuiltIns(root)
+	root.SetHelpTemplate(root.HelpTemplate() + helpFooter)
+	root.SetUsageTemplate(wrapFlags(root.UsageTemplate()))
 	return root
 }
 
 func newVersionCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "version",
-		Short: "Print the errata version",
-		Args:  cobra.NoArgs,
+		Use:     "version",
+		Short:   "Print the errata version",
+		Long:    versionLong,
+		Example: versionExample,
+		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			_, err := fmt.Fprintln(cmd.OutOrStdout(), resolveVersion(Version, debug.ReadBuildInfo))
 			return err
@@ -112,8 +127,8 @@ type configFlags struct {
 }
 
 func (f *configFlags) add(cmd *cobra.Command) {
-	cmd.Flags().StringVar(&f.repoRoot, "root", ".", "repository root; checks run with this as their working directory")
-	cmd.Flags().StringVarP(&f.configPath, "config", "c", "", "config file (default <root>/"+config.DefaultFile+")")
+	cmd.Flags().StringVar(&f.repoRoot, "root", ".", "the repository root `DIR`")
+	cmd.Flags().StringVarP(&f.configPath, "config", "c", "", "the config `FILE` (default <root>/"+config.DefaultFile+")")
 }
 
 // file is the config file the flags name: --config, or errata.yaml in the
@@ -151,12 +166,11 @@ func newCheckCmd(load loader) *cobra.Command {
 		failOnSkip bool
 	)
 	cmd := &cobra.Command{
-		Use:   "check",
-		Short: "Run the checks in errata.yaml and print the errata",
-		Long: "Run every check the available providers can reach, skip the rest with the reason,\n" +
-			"and print the errata and the coverage. errata never applies anything.\n" +
-			"--format picks what goes to stdout; each --output FORMAT=PATH writes one more file.",
-		Args: cobra.NoArgs,
+		Use:     "check",
+		Short:   "Run the checks in errata.yaml and print the errata",
+		Long:    checkLong(),
+		Example: checkExample,
+		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			newReporter, ok := report.Formats[format]
 			if !ok {
@@ -198,8 +212,8 @@ func newCheckCmd(load loader) *cobra.Command {
 		},
 	}
 	flags.add(cmd)
-	cmd.Flags().StringVarP(&format, "format", "f", "text", "output format: "+strings.Join(report.FormatNames(), ", "))
-	cmd.Flags().StringArrayVarP(&outputs, "output", "o", nil, "also write the report in FORMAT to PATH, as FORMAT=PATH; repeatable")
+	cmd.Flags().StringVarP(&format, "format", "f", "text", "the `NAME` of the format on stdout: "+strings.Join(report.FormatNames(), ", "))
+	cmd.Flags().StringArrayVarP(&outputs, "output", "o", nil, "also write the report in FORMAT to the file PATH, as `FORMAT=PATH`; repeatable")
 	cmd.Flags().BoolVar(&failOnSkip, "fail-on-skip", false, "exit 1 when a check was skipped, as on an unknown")
 	return cmd
 }
@@ -210,11 +224,11 @@ func newListCmd(load loader) *cobra.Command {
 		format string
 	)
 	cmd := &cobra.Command{
-		Use:   "list",
-		Short: "Print the checks errata.yaml holds, as errata check loads them",
-		Long: "Print every check the config holds, with the values errata check would run it with,\n" +
-			"defaults filled in. It runs nothing. A config that does not load exits 2, as with check.",
-		Args: cobra.NoArgs,
+		Use:     "list",
+		Short:   "Print the checks errata.yaml holds, as errata check loads them",
+		Long:    listLong(),
+		Example: listExample,
+		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			lister, ok := report.ListFormats[format]
 			if !ok {
@@ -228,6 +242,6 @@ func newListCmd(load loader) *cobra.Command {
 		},
 	}
 	flags.add(cmd)
-	cmd.Flags().StringVarP(&format, "format", "f", "text", "output format: "+strings.Join(report.ListFormatNames(), ", "))
+	cmd.Flags().StringVarP(&format, "format", "f", "text", "the `NAME` of the format on stdout: "+strings.Join(report.ListFormatNames(), ", "))
 	return cmd
 }

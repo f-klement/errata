@@ -30,7 +30,7 @@ The `exists` holds the rule to the never-automerge rule itself, since `all` over
   scalar or a sequence makes the rule unknown, naming its line, as a mapping does for a flat value.
 - In `assert`, such an extractor is a `list(map(string, dyn))`, one map for each mapping, in file
   order. A value in a map is a map again for a nested mapping, a `list` for a sequence, and a
-  `string` for a scalar: the text a flat value would have (README, Values), so `automerge: false`
+  `string` for a scalar: the text a flat value would have ([reference, Values](../reference.md#values)), so `automerge: false`
   is `'false'`, `prPriority: 5` is `'5'`, and `int()` converts it. JSON `false` and `"false"` are
   one value, and so are `null` and `"null"`, `'null'`. A key set to null is set, so `has()` is true
   for it. A key is its text, so YAML's `1` and `0x1` are two keys. A map's keys come in the order

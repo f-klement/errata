@@ -30,8 +30,9 @@ assert: by_file(ignores).all(f, f in by_file(options) && 'RespectIgnoreDifferenc
   `infra/a/b/c.yaml`, and `a/**` matches `a` and everything below it. A `**` inside a segment,
   such as `a**`, is a `*`, as `.gitignore` reads it.
 - A glob matches the files git's index lists, read from `.git/index` without running git: the files
-  a clone holds, never an untracked or ignored one or a submodule. A glob needs the root to be the
-  top of a git repository, or the rule is unknown.
+  a clone holds, never an untracked or ignored one or a submodule. A glob needs a git repository
+  to hold the root, or the rule is unknown. A root below the top reads the index of the repository
+  above it, cut to its entries below the root ([ADR 0018](0018-a-root-below-the-top-reads-the-index-of-the-repository-above.md)).
 - A sparse checkout makes a rule unknown wherever it cuts the set, and the message names the
   sparse checkout: a glob that would match a file git marks skip-worktree that the working tree
   lacks, or may match a path below a directory a sparse index lists as one entry. A skip-worktree

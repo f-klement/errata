@@ -86,12 +86,14 @@ func TestEmbeddedReadsEachFormat(t *testing.T) {
 // |, which yaml.v3 gives the line of the anchor or the tag, and an alias of
 // such an anchor reports the anchor's lines. A UTF-8 byte order mark takes
 // no column. In a UTF-16 file the | is not looked for, so the value is at
-// the line the string starts. In a file whose lines before the block end in
-// a CR or an LS, which yaml.v3 counts and errata does not, no value lands
-// past the file's last line. The planted breaks: Block set to the event's
-// line, which put y at line 4; the cursor not skipping a UTF-8 byte order
-// mark, or not set off for UTF-16, which read the | in s| as the block's;
-// and the clamp to the last line removed, which put y at line 5 of 2.
+// the line the string starts. A lone CR ends a line, for yaml.v3 and errata
+// alike. In a file whose lines before the block end in an LS, which yaml.v3
+// counts and errata does not, no value lands past the file's last line.
+// The planted breaks: Block set to the event's line, which put y at line 4;
+// the cursor not skipping a UTF-8 byte order mark, or not set off for
+// UTF-16, which read the | in s| as the block's; the clamp to the last line
+// removed, which put y at line 5 of 2; and the last line counted at LF
+// alone, which put cr.yaml's y at line 2.
 func TestEmbeddedBlockLinesFromTheIndicator(t *testing.T) {
 	root := extracttest.Repo(t, map[string]string{
 		"anchor.yaml":  "a: 0\ns: &a\n  |\n  x = 1\n  y = 2\nt: *a\n",
@@ -120,9 +122,9 @@ func TestEmbeddedBlockLinesFromTheIndicator(t *testing.T) {
 		// string starts, 1. Without the UTF-16 check, yaml.v3's column read
 		// in the file's bytes would land on the key's |.
 		{"utf16b.yaml", "['s|']", "x", "1@1"},
-		{"cr.yaml", "s", "y", "2@2"},
+		{"cr.yaml", "s", "y", "2@4"},
 		{"ls.yaml", "s", "y", "2@2"},
-		{"crs.yaml", "s", "y", "2@1"},
+		{"crs.yaml", "s", "y", "2@4"},
 	} {
 		got := mustRun(t, extract.Of(yaml.Kind, yaml.Spec{File: c.file, Path: c.path, Embedded: steps("toml", c.key)}), root)
 		if extracttest.Texts(got) != c.want {

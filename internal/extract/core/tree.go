@@ -1,13 +1,13 @@
 package core
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"slices"
 	"sort"
 
 	"github.com/f-klement/errata/internal/check"
+	"github.com/f-klement/errata/internal/extract/core/lineend"
 )
 
 // Shape is what a node holds: one scalar, a mapping from keys to nodes, or a
@@ -113,15 +113,9 @@ func (n *Node) Set(key string, v *Node) {
 // TOML file as a node; JSON and regex use a lineCursor.
 type Lines []int
 
-// LineIndex is the index of the lines of data.
+// LineIndex is the index of the lines of data, which end as lineend says.
 func LineIndex(data []byte) Lines {
-	l := Lines{0}
-	for i, b := range data {
-		if b == '\n' {
-			l = append(l, i+1)
-		}
-	}
-	return l
+	return Lines(lineend.Starts(data))
 }
 
 // At returns the line, counted from 1, that holds byte offset off.
@@ -151,10 +145,25 @@ func (s Source) SharedValues(p Path, spent *Spent, roots ...*Node) ([]check.Valu
 }
 
 // LastLine is the line data ends on, counted from 1 as errata counts a
-// file's lines, by its \n.
+// file's lines (lineend).
 func LastLine(data []byte) int {
-	return bytes.Count(data, newline) + 1
+	return lineend.Line(data, len(data))
 }
+
+// LineOf is the line, counted from 1, that holds byte offset off of data.
+func LineOf(data []byte, off int) int { return lineend.Line(data, off) }
+
+// LineStart is the offset where the line that holds off starts.
+func LineStart(data []byte, off int) int { return lineend.Start(data, off) }
+
+// NextLine is the offset past the end of the line that holds off, its line
+// end included, or len(data) when no line end closes it.
+func NextLine(data []byte, off int) int { return lineend.Next(data, off) }
+
+// LineFeeds is data with every line end read as one LF, a CRLF and a lone
+// CR alike, so a reader that builds its text from the file keeps the lines
+// errata numbers. Data with no CR is data itself.
+func LineFeeds(data []byte) []byte { return lineend.Fold(data) }
 
 // values turns the nodes a reading selected into values, each at the line
 // of the file its lineMap gives, as Values says. Their bytes are held to
@@ -178,8 +187,8 @@ func (r *reading) values(nodes []*Node, at []lineMap) ([]check.Value, error) {
 	return out, nil
 }
 
-// LineCursor gives the line of an offset in data by counting the newlines
-// between it and the offset asked before, so offsets in file order take one
+// LineCursor gives the line of an offset in data by counting the line ends
+// (lineend) between it and the offset asked before, so offsets in file order take one
 // pass over the file and no memory for each line.
 type LineCursor struct {
 	data []byte
@@ -196,9 +205,9 @@ func NewLineCursor(data []byte) *LineCursor {
 // offset before the one asked before counts back.
 func (c *LineCursor) At(off int) int {
 	if off >= c.off {
-		c.line += bytes.Count(c.data[c.off:off], newline)
+		c.line += lineend.Count(c.data, c.off, off)
 	} else {
-		c.line -= bytes.Count(c.data[off:c.off], newline)
+		c.line -= lineend.Count(c.data, off, c.off)
 	}
 	c.off = off
 	return c.line

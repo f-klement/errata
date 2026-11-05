@@ -40,8 +40,8 @@ type fileKind struct {
 	read     func(x *extractor, f file, data []byte, add func(text string, line int) error) error
 }
 
-// kinds is the table of every file the extractor reads, by name. The
-// README's tool_version section is the same table, in prose.
+// kinds is the table of every file the extractor reads, by name.
+// docs/reference.md#tool_version is the same table, in prose.
 var kinds = []*fileKind{
 	{name: ".tool-versions", searched: true, read: readToolVersions},
 	{name: ".sdkmanrc", searched: true, read: readSdkmanrc},
@@ -87,7 +87,7 @@ func (k *fileKind) pinned() string {
 // notLiteral reports whether a version names no version until a tool
 // resolves it: an alias that moves, such as latest, stable or lts/*, the
 // system's own install, or another source, such as ref: or path: in a
-// .tool-versions file. Each word is one the README lists, with the tool that
+// .tool-versions file. Each word is one docs/reference.md#tool_version lists, with the tool that
 // reads it. A partial version such as 20 is literal: it is what the file
 // wrote, and comparing it with 20.11.1 is a comparison's work.
 func notLiteral(v string) bool {
@@ -137,21 +137,25 @@ func isDate(s string) bool {
 }
 
 // eachLine calls line with the first field of each line of data that holds
-// one, the line's other fields, and its number; a # and what follows it are
-// left out. Fields are split at white space, a \r too, so a file with CRLF
-// line ends reads as one with LF. A line that holds only a comment, or
+// one, the line's other fields, and the first field's line; a # and what
+// follows it are left out. The tools end a line at \n alone, and split
+// fields at white space, a \r too, so a file with CRLF line ends reads as
+// one with LF; errata numbers a field's line at a lone \r as well, as it
+// numbers every file's (rest.line). A line that holds only a comment, or
 // nothing, is passed over.
 func eachLine(data []byte, line func(first []byte, rest *fields, n int) error) error {
 	// Kept, a byte order mark would hide a .tool-versions line's tool and
 	// stick to a version as a character no one sees.
 	data = core.DropBOM(data)
-	for n := 1; len(data) > 0; n++ {
-		text, after, _ := bytes.Cut(data, []byte("\n"))
-		data = after
+	lines := core.NewLineCursor(data)
+	for left := data; len(left) != 0; { // != leaves no boundary that loops for ever
+		text, after, _ := bytes.Cut(left, []byte("\n"))
+		rest := fields{rest: text, off: len(data) - len(left), lines: lines}
+		left = after
 		text, _, _ = bytes.Cut(text, []byte("#"))
-		rest := fields{text}
+		rest.rest = text
 		if first, ok := rest.next(); ok {
-			if err := line(first, &rest, n); err != nil {
+			if err := line(first, &rest, rest.line()); err != nil {
 				return err
 			}
 		}
@@ -163,7 +167,15 @@ func eachLine(data []byte, line func(first []byte, rest *fields, n int) error) e
 // time, where bytes.Fields would make a slice of them all: a line of 16
 // million versions took 480 MB for that slice before the value limit
 // refused it.
-type fields struct{ rest []byte }
+type fields struct {
+	rest  []byte
+	off   int              // where rest starts in the file
+	at    int              // where the field next gave last starts in the file
+	lines *core.LineCursor // the line of an offset in the file
+}
+
+// line is the line in the file of the field next gave last.
+func (f *fields) line() int { return f.lines.At(f.at) }
 
 // next is the next field, and false when the line has no more.
 func (f *fields) next() ([]byte, bool) {
@@ -172,13 +184,13 @@ func (f *fields) next() ([]byte, bool) {
 		f.rest = nil
 		return nil, false
 	}
-	f.rest = f.rest[start:]
+	f.rest, f.at = f.rest[start:], f.off+start
 	end := bytes.IndexFunc(f.rest, unicode.IsSpace)
 	if end < 0 {
 		end = len(f.rest)
 	}
 	field := f.rest[:end]
-	f.rest = f.rest[end:]
+	f.rest, f.off = f.rest[end:], f.at+end
 	return field, true
 }
 
@@ -195,12 +207,12 @@ var errDone = errors.New("done")
 // after it a fallback. Every version of the tool is a value; a line under
 // the tool's alias (nodejs, golang) is the tool's too.
 func readToolVersions(x *extractor, _ file, data []byte, add func(string, int) error) error {
-	return eachLine(data, func(name []byte, versions *fields, n int) error {
+	return eachLine(data, func(name []byte, versions *fields, _ int) error {
 		if string(name) != x.tool && aliases[string(name)] != x.tool {
 			return nil
 		}
 		for v, ok := versions.next(); ok; v, ok = versions.next() {
-			if err := add(string(v), n); err != nil {
+			if err := add(string(v), versions.line()); err != nil {
 				return err
 			}
 		}
@@ -210,28 +222,36 @@ func readToolVersions(x *extractor, _ file, data []byte, add func(string, int) e
 
 // readSdkmanrc reads an .sdkmanrc file, as sdk env reads it: a candidate,
 // =, and its version on each line. A line without = is refused, and so is a
-// candidate the spec names with no version.
+// candidate the spec names with no version. sdk env ends a line at \n
+// alone; errata numbers each line where its text starts, past white space
+// and a lone \r, as it numbers every file's lines.
 func readSdkmanrc(x *extractor, _ file, data []byte, add func(string, int) error) error {
 	data = core.DropBOM(data)
-	for n := 1; len(data) > 0; n++ {
-		text, rest, _ := bytes.Cut(data, []byte("\n"))
-		data = rest
-		text, _, _ = bytes.Cut(text, []byte("#"))
-		if len(bytes.TrimSpace(text)) == 0 {
+	lines := core.NewLineCursor(data)
+	for left := data; len(left) != 0; { // != leaves no boundary that loops for ever
+		raw, after, _ := bytes.Cut(left, []byte("\n"))
+		at := len(data) - len(left) // where raw starts in the file
+		left = after
+		raw, _, _ = bytes.Cut(raw, []byte("#"))
+		text := bytes.TrimLeftFunc(raw, unicode.IsSpace)
+		at += len(raw) - len(text)
+		if text = bytes.TrimRightFunc(text, unicode.IsSpace); len(text) == 0 {
 			continue
 		}
+		n := lines.At(at)
 		key, value, ok := bytes.Cut(text, []byte("="))
 		if !ok {
-			return core.LineError(n, "%s is not candidate=version, the form sdk env reads", core.Quote(string(bytes.TrimSpace(text))))
+			return core.LineError(n, "%s is not candidate=version, the form sdk env reads", core.Quote(string(text)))
 		}
 		if string(bytes.TrimSpace(key)) != x.tool {
 			continue
 		}
-		value = bytes.TrimSpace(value)
-		if len(value) == 0 {
+		trimmed := bytes.TrimLeftFunc(value, unicode.IsSpace)
+		at += len(key) + 1 + len(value) - len(trimmed) // where the version starts
+		if value = bytes.TrimRightFunc(trimmed, unicode.IsSpace); len(value) == 0 {
 			return core.LineError(n, "%s names no version", x.tool)
 		}
-		if err := add(string(value), n); err != nil {
+		if err := add(string(value), lines.At(at)); err != nil {
 			return err
 		}
 	}
@@ -299,7 +319,7 @@ func readRustToolchain(x *extractor, f file, data []byte, add func(string, int) 
 		}
 		if _, err := x.parsers.TOML(data); err != nil {
 			lead := len(data) - len(bytes.TrimLeftFunc(data, unicode.IsSpace))
-			return add(string(text), 1+bytes.Count(data[:lead], []byte("\n")))
+			return add(string(text), core.LineOf(data, lead))
 		}
 	}
 	return readTOML(x, f, raw, add)

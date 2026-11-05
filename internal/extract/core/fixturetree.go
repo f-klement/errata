@@ -308,8 +308,9 @@ func heldAt(ctx context.Context, root string) (heldFixture, bool, error) {
 }
 
 // runIndex is git's index as a glob of a run at root reads it. On a real
-// run it is the index at root, whose globs pass over the fixtures of
-// witnesses (gitindex.Index). On a run of a witness (check.RealRoot) root
+// run it is the index of the repository that holds root, cut to root when
+// root sits below its top (rootIndex), whose globs pass over the fixtures
+// of witnesses (gitindex.Index). On a run of a witness (check.RealRoot) root
 // is the fixture, which holds no .git: the index is the one OnFixture read
 // for the fixture held, the real root's entries below the fixture with the
 // fixture's path cut, so a glob reads the files the fixture commits and
@@ -320,7 +321,7 @@ func runIndex(ctx context.Context, root string) (gitindex.Index, error) {
 		return gitindex.Index{}, err
 	}
 	if !witness {
-		return readIndex(root)
+		return rootIndex(root)
 	}
 	return held.index, nil
 }
@@ -352,11 +353,31 @@ func openTree(ctx context.Context, root string) (tree, error) {
 	if err != nil {
 		return tree{}, fmt.Errorf("open the repository root: %w", bare(err))
 	}
+	if err := inFixture(realRoot); err != nil {
+		return tree{}, err
+	}
 	r, err := os.OpenRoot(realRoot)
 	if err != nil {
 		return tree{}, fmt.Errorf("open the repository root: %w", bare(err))
 	}
 	return tree{Root: r, real: realRoot, dirs: &chain{}, git: &gitIndexOnce{}}, nil
+}
+
+// inFixture refuses a real run's root, a path with its links resolved, that
+// sits in the fixture of a witness or in .errata/witness of the repository
+// above it, or is a directory .errata below its top (gitindex.InFixture),
+// for every read under it, as Within refuses it for every list of the
+// index (ADR 0018). Only a root whose path holds such a directory, or is
+// one named .errata, pays the look up.
+func inFixture(realRoot string) error {
+	slashed := filepath.ToSlash(realRoot)
+	if !check.Witnessed(slashed+"/") && !strings.EqualFold(path.Base(slashed), ".errata") {
+		return nil
+	}
+	if _, below := repositoryOf(realRoot); below != "" {
+		return gitindex.InFixture(below)
+	}
+	return nil
 }
 
 // close closes the directories t holds below its root, and t, unless it
@@ -434,26 +455,42 @@ func (t tree) leftOut(file string, err error) error {
 	}
 	for _, p := range paths {
 		at, left := ix.LeftOut(path.Join(below, filepath.ToSlash(p)))
-		switch {
-		case !left:
+		if !left {
 			continue
-		case strings.HasSuffix(at, "/"):
-			return fmt.Errorf("the sparse checkout leaves out %s, the directory that holds it, which git's sparse index lists as one entry, so errata cannot read what a clone holds there; add the directory to the sparse checkout (git sparse-checkout add), or run errata in a full checkout", Quote(at))
-		default:
-			return fmt.Errorf("git marks %s skip-worktree and the working tree does not hold it, as a sparse checkout leaves a file out, so errata cannot read what a clone holds there; add it to the sparse checkout (git sparse-checkout add), or run errata in a full checkout", Quote(at))
 		}
+		named := rootRelative(at, below)
+		if strings.HasSuffix(at, "/") {
+			return fmt.Errorf("the sparse checkout leaves out %s, the directory that holds it, which git's sparse index lists as one entry, so errata cannot read what a clone holds there; add the directory to the sparse checkout (git sparse-checkout add), or run errata in a full checkout", named)
+		}
+		return fmt.Errorf("git marks %s skip-worktree and the working tree does not hold it, as a sparse checkout leaves a file out, so errata cannot read what a clone holds there; add it to the sparse checkout (git sparse-checkout add), or run errata in a full checkout", named)
 	}
 	return err
 }
 
+// rootRelative is at, a path of git's index what a sparse checkout leaves
+// out, quoted as a message names it: below the root, as every path errata
+// reports (ADR 0018), when it is in the root below, the root's path below
+// the repository's top. A directory at the root or above it has no such
+// name, so it is named from the top, and the message says so.
+func rootRelative(at, below string) string {
+	if below == "" {
+		return Quote(at)
+	}
+	if in, ok := strings.CutPrefix(at, below+"/"); ok && in != "" {
+		return Quote(in)
+	}
+	return Quote(at) + " (a path from the top of the repository, at or above the root)"
+}
+
 // maxAbove is how many directories above a root repositoryOf looks in for
-// the .git that holds it.
+// the .git that holds it, besides the root itself.
 const maxAbove = 64
 
 // repositoryOf is the top of the git repository that holds root, a path
 // with its links resolved, and root's path below it written with slashes,
 // "" when root is the top. It looks as git's discovery looks: in root, then
-// in each directory above it, at most maxAbove up, for a .git. A .git
+// in each directory above it, at most maxAbove up, for a .git, so in
+// maxAbove+1 directories in all. A .git
 // directory that is no git directory (gitindex.IsGitDir), such as an empty
 // one, is passed over, and the look goes on up; a .git file stops it, and
 // readIndex reads or refuses what it names. The look stops where the
@@ -463,7 +500,7 @@ const maxAbove = 64
 func repositoryOf(root string) (string, string) {
 	dev, known := deviceOf(root)
 	dir := root
-	for range maxAbove {
+	for range maxAbove + 1 {
 		dot := filepath.Join(dir, ".git")
 		if info, err := os.Lstat(dot); err == nil && (!info.IsDir() || gitindex.IsGitDir(dot, indexLimits)) {
 			rel, err := filepath.Rel(dir, root)

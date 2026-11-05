@@ -645,7 +645,7 @@ func BenchmarkParseRange(b *testing.B) {
 // ranges.
 func TestReaderRefusesPastMaxIntervals(t *testing.T) {
 	if MaxIntervals != 1_000_000 || maxIntervals != MaxIntervals {
-		t.Fatalf("the bound is %d and %d, want 1000000, as the README states", MaxIntervals, maxIntervals)
+		t.Fatalf("the bound is %d and %d, want 1000000, as docs/reference.md#compare states", MaxIntervals, maxIntervals)
 	}
 	maxIntervals = 3
 	t.Cleanup(func() { maxIntervals = MaxIntervals })

@@ -163,7 +163,7 @@ const pom = `<project xmlns="http://maven.apache.org/POM/4.0.0"
 var pomNS = map[string]string{"m": "http://maven.apache.org/POM/4.0.0", "y": "urn:x"}
 
 // A step without a prefix selects elements in no namespace, so under a
-// default namespace it selects nothing: the trap the README shows with this
+// default namespace it selects nothing: the trap docs/reference.md#xml-namespaces shows with this
 // file. A prefix of the spec matches by the namespace it names, whatever
 // prefix the file writes. A namespace declaration is not an attribute.
 func TestXMLNamespaces(t *testing.T) {

@@ -24,6 +24,17 @@ import (
 // close, and at most core.MaxDepth elements are open.
 type nest struct {
 	headings bool
+	// inert is whether the nest follows a template's content, of which
+	// nothing is read, so that no pre or heading in it is watched.
+	inert bool
+	// work is the elements and entries a rebuild touched (adopt), which the
+	// scanner charges as tokens and sets back to 0.
+	work int
+	// standardOnly is whether a rebuild took a fourth formatting element
+	// off the stack, where x/net leaves it (adopt), and rebuilds how many
+	// rebuilds the nest followed.
+	standardOnly bool
+	rebuilds     int
 	// outside is whether elements may have opened before the block, and
 	// quirks whether the document is in a browser's quirks mode, which
 	// the page's first doctype sets (doctypeQuirks).
@@ -35,8 +46,11 @@ type nest struct {
 	ignored, closedLine bool
 	stack               []string
 	// pre and heads count the pre or listing elements and the headings
-	// open.
-	pre, heads int
+	// open, veiled the elements open that veil their text (drawn.go).
+	pre, heads, veiled int
+	// drawn holds, for each element of stack, what a browser draws of it
+	// (drawn.go).
+	drawn []draw
 	// pos holds, for each name, the indexes in stack of its elements and
 	// the name's kind, found once; open, for each element of stack, its
 	// name's entry. The rest are indexes of the elements of a kind, each
@@ -50,6 +64,7 @@ type nest struct {
 	heading  []int
 	tabular  []int // table, td, th and caption
 	sections []int // tbody, thead and tfoot
+	htmls    []int // the HTML elements, where an end tag in foreign content stops (foreign.go)
 	// afe is the browser's list of active formatting elements, which it
 	// reopens after a block's end closed them: each formatting element,
 	// with its index in stack while open and -1 once closed so, and a
@@ -149,7 +164,7 @@ func reconstructs(name string) bool {
 var reopenFirst = set(`applet marquee object area br embed img keygen wbr input select button xmp`)
 
 // watching reports whether a pre or a followed heading is open.
-func (n *nest) watching() bool { return n.pre > 0 || n.headings && n.heads > 0 }
+func (n *nest) watching() bool { return !n.inert && (n.pre > 0 || n.headings && n.heads > 0) }
 
 // formattingEnd follows the end tag of a formatting element in afe, entry
 // j, as the adoption agency does, in its order: one closed by a block's end
@@ -168,6 +183,10 @@ func (n *nest) formattingEnd(name string, j int) string {
 		if n.watching() {
 			return fmt.Sprintf("</%s> ends a formatting element around a block still open inside it, which a browser rebuilds in a way errata does not follow; close the elements in order; %s", name, core.OtherWay)
 		}
+		// Outside them the rebuild moves no text errata reads, but what it
+		// leaves open decides what follows, an svg among it (adopt).
+		n.adopt(j)
+		return ""
 	default:
 		n.popThrough(at)
 	}
@@ -217,7 +236,7 @@ func (n *nest) start(name string, opens bool) string {
 		if i := n.last(n.tabular); i >= 0 && n.stack[i] == "table" {
 			n.popThrough(i)
 		}
-	case "td", "th", "tr", "tbody", "thead", "tfoot":
+	case "td", "th", "tr", "tbody", "thead", "tfoot", "caption", "col", "colgroup":
 		if !n.tablePart(name) {
 			n.ignored = true // outside a table a browser ignores it
 			return ""
@@ -247,8 +266,12 @@ func (n *nest) start(name string, opens bool) string {
 
 // tablePart clears what a table part's start tag closes, as a browser's
 // table modes do: a cell or a caption open, then everything above the row
-// for a cell, above the section for a row, above the table for a section.
-// It reports false outside a table, where a browser ignores the tag.
+// for a cell, above the section for a row, above the table for a section,
+// a caption, a col or a colgroup. In a cell, each of these start tags
+// closes the cell and is read again in the row, as the HTML standard's
+// "in cell" mode reads caption, col, colgroup, tbody, td, tfoot, th, thead
+// and tr. It reports false outside a table, where a browser ignores the
+// tag.
 func (n *nest) tablePart(name string) bool {
 	t := n.last(n.posOf("table"))
 	if t < 0 {
@@ -388,7 +411,7 @@ func (n *nest) pushElement(name string) int {
 		if n.pos == nil {
 			n.pos = map[string]*opened{}
 		}
-		e = &opened{kinded: special[name] || isHeading(name), line: LineTag(name), marker: markers[name]}
+		e = &opened{kinded: special[name] || isHeading(name) || namespace(name) == "", line: LineTag(name), marker: markers[name]}
 		n.pos[name] = e
 	}
 	e.at = append(e.at, i)
@@ -399,6 +422,10 @@ func (n *nest) pushElement(name string) int {
 		}
 	}
 	n.count(name, 1)
+	n.drawn = append(n.drawn, n.drawOf(name))
+	if n.drawn[i]&veils != 0 {
+		n.veiled++
+	}
 	return i
 }
 
@@ -415,6 +442,10 @@ func (n *nest) pop() {
 		}
 	}
 	n.count(name, -1)
+	if n.drawn[i]&veils != 0 {
+		n.veiled--
+	}
+	n.drawn = n.drawn[:i]
 	n.closedLine = n.closedLine || e.line
 	if j := n.afeAt[i]; j >= 0 {
 		n.afe[j].at = -1 // closed by a block's end: the browser reopens it
@@ -432,7 +463,7 @@ func (n *nest) pop() {
 
 // remove takes the element at index i, a link, off the stack, not one
 // above it, each of which moves down one. A link is on no kind's stack
-// (kinds) and counts as no pre or heading. It costs the elements above i,
+// (kinds) but htmls, and counts as no pre or heading. It costs the elements above i,
 // each of which opened after the link, so each element moves once.
 func (n *nest) remove(i int) {
 	// No link is open above it: one opened later would have ended it
@@ -442,6 +473,7 @@ func (n *nest) remove(i int) {
 	n.stack = append(n.stack[:i], n.stack[i+1:]...)
 	n.open = append(n.open[:i], n.open[i+1:]...)
 	n.afeAt = append(n.afeAt[:i], n.afeAt[i+1:]...)
+	n.drawn = append(n.drawn[:i], n.drawn[i+1:]...) // a link's: it veils nothing
 	for j := i; j < len(n.stack); j++ {
 		o := n.open[j]
 		for m := len(o.at) - 1; m >= 0; m-- {
@@ -454,9 +486,13 @@ func (n *nest) remove(i int) {
 			n.afe[a].at = j
 		}
 	}
-	for _, k := range []*[]int{&n.bounds, &n.buttons, &n.specials, &n.notADP, &n.heading, &n.tabular, &n.sections} {
-		for m := len(*k) - 1; m >= 0 && (*k)[m] > i; m-- {
+	for _, k := range []*[]int{&n.bounds, &n.buttons, &n.specials, &n.notADP, &n.heading, &n.tabular, &n.sections, &n.htmls} {
+		m := len(*k) - 1
+		for ; m >= 0 && (*k)[m] > i; m-- {
 			(*k)[m]--
+		}
+		if m >= 0 && (*k)[m] == i {
+			*k = append((*k)[:m], (*k)[m+1:]...) // the link itself, an HTML element
 		}
 	}
 }
@@ -490,6 +526,9 @@ func (n *nest) kinds(name string) []*[]int {
 	}
 	if name == "tbody" || name == "thead" || name == "tfoot" {
 		out = append(out, &n.sections)
+	}
+	if namespace(name) == "" {
+		out = append(out, &n.htmls)
 	}
 	return out
 }

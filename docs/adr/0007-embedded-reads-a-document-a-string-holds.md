@@ -49,9 +49,9 @@ region:
   lines there and a JSON or TOML document does not, and one in a UTF-16 file, whose bytes are
   not the text yaml.v3 reads. Any other string folds or escapes its lines, so every value in it
   is reported at the line where the outermost such string starts. No line passes the file's
-  last, counted by its `\n`: yaml.v3 also breaks lines on CR, NEL, LS and PS, so in a file with
-  such breaks before a block its lines run ahead of errata's count, and a value past the end is
-  reported at the last line.
+  last, counted at its LF, CRLF and lone CR line ends: yaml.v3 also breaks lines on NEL, LS and
+  PS, so in a file with such breaks before a block its lines run ahead of errata's count, and a
+  value past the end is reported at the last line.
 
 ## Considered options
 

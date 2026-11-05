@@ -45,7 +45,7 @@ func FuzzShell(f *testing.F) {
 			}
 			return
 		}
-		lines := strings.Count(data, "\n") + 1
+		lines := core.LastLine([]byte(data))
 		for _, v := range got {
 			if v.At.Line < 1 || v.At.Line > lines {
 				t.Fatalf("%q at line %d of %d", v.Text, v.At.Line, lines)

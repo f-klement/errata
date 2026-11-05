@@ -9,10 +9,33 @@ checks:
 
   - id: docs-relative-links-resolve
     reason: >
-      The README and docs link to each other by relative path. A renamed file leaves a link
-      that 404s on the forge and sends a reader nowhere, with no error anywhere.
+      The README and docs link to each other by relative path, most often to a heading's anchor
+      in docs/reference.md, and errata's messages and code comments point into it the same way,
+      as docs/reference.md#comment. A renamed file or heading leaves a link that 404s on the
+      forge, or opens a page at its top, and sends a reader nowhere, with no error anywhere.
     scope: repo
     run: [sh, checks/relative-links.sh]
+
+  - id: reference-contents-list-every-section
+    reason: >
+      docs/reference.md is read by lookup, from its Contents list. A section added, renamed or
+      moved without its line there is one a reader does not find from the top of the page, and a
+      line whose text names one heading and whose anchor another sends the reader elsewhere. The
+      check holds each line to a heading of level 2 or 3, in order, by its text and its anchor.
+    scope: repo
+    run: [sh, checks/contents.sh, docs/reference.md]
+
+  - id: handbook-names-every-extractor-kind
+    reason: >
+      The handbook's table The extractors by task is where a new user finds the kind for a value,
+      and it is written by hand. A kind the reference's table of kinds lists and the handbook's
+      table does not is one a reader who starts from the handbook never meets, and a kind only
+      the handbook names sends the reader to a section that is not there.
+    scope: repo
+    extract:
+      reference: {markdown: {file: docs/reference.md, target: table, section: Extractors, column: Key}}
+      handbook: {markdown: {file: docs/handbook.md, target: table, section: The extractors by task, column: Kinds, pattern: '([a-z][a-z_-]*)'}}
+    assert: same_set(reference, handbook)
 
   - id: go-toolchain-agrees
     reason: >
@@ -42,106 +65,126 @@ checks:
 
   - id: docs-state-the-max-bytes-bounds
     reason: >
-      The README and ADR 0003 tell a user the file size an extractor reads by default and the most
-      max_bytes accepts, and the README's errata list section and its generated check's keys give
-      them in bytes, as does its check protocol section for a program check's output. A bound
+      docs/reference.md and ADR 0003 tell a user the file size an extractor reads by default and
+      the most max_bytes accepts, and the reference's errata list section and its generated check's
+      keys give them in bytes, as does its check protocol section for a program check's output. A bound
       changed in internal/check/description.go or internal/extract/core/limits.go and not in them has a user pick max_bytes from a
       number errata no longer enforces, and a file the documentation says loads is refused.
     scope: repo
     extract:
       code_default: {regex: {file: internal/check/description.go, pattern: '^\s*DefaultMaxBytes = (\d+) << 20$'}}
       code_ceiling: {regex: {file: internal/extract/core/limits.go, pattern: '^\s*MaxMaxBytes = (\d+) << 20$'}}
-      readme_default: {regex: {file: README.md, pattern: '(?:\| file size \| |writing 0, keeps )(\d+) MiB'}}
-      readme_ceiling: {regex: {file: README.md, pattern: 'or one over \d+ \((\d+) MiB\)'}}
-      readme_ceiling_bytes: {regex: {file: README.md, pattern: 'or one over (\d+) \(\d+ MiB\)'}}
-      readme_list_default: {regex: {file: README.md, pattern: '^- `max_bytes` of every extractor and of a generated check: (\d+) \(\d+ MiB\)'}}
-      readme_list_default_mib: {regex: {file: README.md, pattern: '^- `max_bytes` of every extractor and of a generated check: \d+ \((\d+) MiB\)'}}
-      readme_generated_ceiling: {regex: {file: README.md, pattern: '^\| `generated.max_bytes` \| no \| .*from 1 to (\d+) \(\d+ MiB\)'}}
-      readme_generated_default: {regex: {file: README.md, pattern: '^\| `generated.max_bytes` \| no \| .*default (\d+) \(\d+ MiB\)'}}
-      readme_program_bound: {regex: {file: README.md, pattern: '^errata holds at most (\d+) bytes \(\d+ MiB\) of stdout'}}
-      readme_program_bound_mib: {regex: {file: README.md, pattern: '^errata holds at most \d+ bytes \((\d+) MiB\) of stdout'}}
+      reference_default: {regex: {file: docs/reference.md, pattern: '(?:\| file size \| |writing 0, keeps )(\d+) MiB'}}
+      reference_ceiling: {regex: {file: docs/reference.md, pattern: 'or one over \d+ \((\d+) MiB\)'}}
+      reference_ceiling_bytes: {regex: {file: docs/reference.md, pattern: 'or one over (\d+) \(\d+ MiB\)'}}
+      reference_list_default: {regex: {file: docs/reference.md, pattern: '^- `max_bytes` of every extractor and of a generated check: (\d+) \(\d+ MiB\)'}}
+      reference_list_default_mib: {regex: {file: docs/reference.md, pattern: '^- `max_bytes` of every extractor and of a generated check: \d+ \((\d+) MiB\)'}}
+      reference_generated_ceiling: {regex: {file: docs/reference.md, pattern: '^\| `generated.max_bytes` \| no \| .*from 1 to (\d+) \(\d+ MiB\)'}}
+      reference_generated_default: {regex: {file: docs/reference.md, pattern: '^\| `generated.max_bytes` \| no \| .*default (\d+) \(\d+ MiB\)'}}
+      reference_program_bound: {regex: {file: docs/reference.md, pattern: '^errata holds at most (\d+) bytes \(\d+ MiB\) of stdout'}}
+      reference_program_bound_mib: {regex: {file: docs/reference.md, pattern: '^errata holds at most \d+ bytes \((\d+) MiB\) of stdout'}}
       adr_default: {regex: {file: docs/adr/0003-extractors-bound-time-and-size-and-let-memory-fail-closed.md, pattern: 'a file size cap \((\d+) MiB by default'}}
       adr_ceiling: {regex: {file: docs/adr/0003-extractors-bound-time-and-size-and-let-memory-fail-closed.md, pattern: 'never above (\d+) MiB'}}
     assert: |
-      readme_default.all(v, v == code_default[0]) && adr_default.all(v, v == code_default[0]) &&
-      readme_ceiling.all(v, v == code_ceiling[0]) && adr_ceiling.all(v, v == code_ceiling[0]) &&
-      readme_ceiling_bytes.all(v, int(v) == int(code_ceiling[0]) * 1048576) &&
-      readme_list_default.all(v, int(v) == int(code_default[0]) * 1048576) &&
-      readme_list_default_mib.all(v, v == code_default[0]) &&
-      readme_generated_ceiling.all(v, int(v) == int(code_ceiling[0]) * 1048576) &&
-      readme_generated_default.all(v, int(v) == int(code_default[0]) * 1048576) &&
-      readme_program_bound.all(v, int(v) == int(code_default[0]) * 1048576) &&
-      readme_program_bound_mib.all(v, v == code_default[0])
+      reference_default.all(v, v == code_default[0]) && adr_default.all(v, v == code_default[0]) &&
+      reference_ceiling.all(v, v == code_ceiling[0]) && adr_ceiling.all(v, v == code_ceiling[0]) &&
+      reference_ceiling_bytes.all(v, int(v) == int(code_ceiling[0]) * 1048576) &&
+      reference_list_default.all(v, int(v) == int(code_default[0]) * 1048576) &&
+      reference_list_default_mib.all(v, v == code_default[0]) &&
+      reference_generated_ceiling.all(v, int(v) == int(code_ceiling[0]) * 1048576) &&
+      reference_generated_default.all(v, int(v) == int(code_default[0]) * 1048576) &&
+      reference_program_bound.all(v, int(v) == int(code_default[0]) * 1048576) &&
+      reference_program_bound_mib.all(v, v == code_default[0])
 
-  - id: readme-names-the-zone-database
+  - id: reference-names-the-zone-database
     reason: >
-      The README names the IANA time zone release errata embeds, because zone rules change only
-      with an errata upgrade and a user reads the release there. internal/rule/zoneinfo.version
-      moves whenever the database is copied from a newer toolchain, and a README left behind
+      docs/reference.md names the IANA time zone release errata embeds, because zone rules change
+      only with an errata upgrade and a user reads the release there. internal/rule/zoneinfo.version
+      moves whenever the database is copied from a newer toolchain, and a reference left behind
       names rules errata no longer applies.
     scope: repo
     extract:
       embedded: {regex: {file: internal/rule/zoneinfo.version, pattern: '^(\w+)$'}}
-      readme: {regex: {file: README.md, pattern: '\(release (\w+) in this version\)'}}
-    agree: [embedded, readme]
+      reference: {regex: {file: docs/reference.md, pattern: '\(release (\w+) in this version\)'}}
+    agree: [embedded, reference]
 
-  - id: readme-load-errors-are-run
+  - id: reference-load-errors-are-run
     reason: >
-      The README shows the errors errata prints for two configs that do not load, each under the
-      command that prints it. internal/cli/testdata/script/readme_load_errors.txtar runs those
-      commands on those configs and compares what errata prints. A README example that differs
+      docs/reference.md shows the errors errata prints for two configs that do not load, each
+      under the command that prints it. internal/cli/testdata/script/reference_load_errors.txtar
+      runs those commands on those configs and compares what errata prints. An example there that differs
       from the script's shows output nobody ran: the README once showed errata.yaml, the name
       only -c prints, where its plain errata check prints the absolute path.
     scope: repo
     extract:
-      readme_commands: {regex: {file: README.md, pattern: '^\$ (errata check[^\n]*)\nerrata: load '}}
-      readme_errors: {regex: {file: README.md, pattern: '^\$ errata check[^\n]*\n(errata: load [^\n]*(?:\n    [^\n]*)*)$'}}
-      script_commands: {regex: {file: internal/cli/testdata/script/readme_load_errors.txtar, pattern: '^! exec (errata check[^\n]*)\ncmp stderr \w+\.txt$'}}
-      script_errors: {regex: {file: internal/cli/testdata/script/readme_load_errors.txtar, pattern: '^-- \w+\.txt --\n(errata: load [^\n]*(?:\n    [^\n]*)*)$'}}
-    assert: readme_commands == script_commands && readme_errors == script_errors
+      reference_commands: {regex: {file: docs/reference.md, pattern: '^\$ (errata check[^\n]*)\nerrata: load '}}
+      reference_errors: {regex: {file: docs/reference.md, pattern: '^\$ errata check[^\n]*\n(errata: load [^\n]*(?:\n    [^\n]*)*)$'}}
+      script_commands: {regex: {file: internal/cli/testdata/script/reference_load_errors.txtar, pattern: '^! exec (errata check[^\n]*)\ncmp stderr \w+\.txt$'}}
+      script_errors: {regex: {file: internal/cli/testdata/script/reference_load_errors.txtar, pattern: '^-- \w+\.txt --\n(errata: load [^\n]*(?:\n    [^\n]*)*)$'}}
+    assert: reference_commands == script_commands && reference_errors == script_errors
 
-  - id: readme-states-the-config-limit
+  - id: reference-states-the-config-limit
     reason: >
-      The README's Limits table tells a user the largest errata.yaml errata reads. A limit
-      changed in internal/config/config.go and not there has a user write a config the README
-      says loads and errata refuses, or keep a config small for a limit errata no longer has.
+      The Limits table of docs/reference.md tells a user the largest errata.yaml errata reads. A
+      limit changed in internal/config/config.go and not there has a user write a config the
+      reference says loads and errata refuses, or keep a config small for a limit errata no longer has.
     scope: repo
     extract:
       code: {regex: {file: internal/config/config.go, pattern: '^const MaxConfigBytes = (\d+) << 20$'}}
-      readme_mib: {regex: {file: README.md, pattern: '^\| the config file \| (\d+) MiB \(\d+ bytes\) \|'}}
-      readme_bytes: {regex: {file: README.md, pattern: '^\| the config file \| \d+ MiB \((\d+) bytes\) \|'}}
-    assert: readme_mib.all(v, v == code[0]) && readme_bytes.all(v, int(v) == int(code[0]) * 1048576)
+      reference_mib: {regex: {file: docs/reference.md, pattern: '^\| the config file \| (\d+) MiB \(\d+ bytes\) \|'}}
+      reference_bytes: {regex: {file: docs/reference.md, pattern: '^\| the config file \| \d+ MiB \((\d+) bytes\) \|'}}
+    assert: reference_mib.all(v, v == code[0]) && reference_bytes.all(v, int(v) == int(code[0]) * 1048576)
 
   - id: docs-examples-are-run
     reason: >
-      docs/examples.md shows four examples: the files, the checks and what errata prints. Four
-      API tests in internal/cli/testdata/script run those checks on those files and compare what
-      errata prints. A block on the page that differs from its test's section is one nobody ran,
-      and a reader who copies it gets another verdict than the page shows. The page's blocks are
-      compared in order with the sections, so a block added, dropped or moved fails too.
+      The README's Quick Start and three sections of docs/handbook.md show the files, the checks
+      and what errata prints: The first check, Reading a failure and an unknown, and the four
+      Worked examples. An API test in internal/cli/testdata/script runs each on those files and
+      compares what errata prints. A block on the page that differs from its test's section is
+      one nobody ran, and a reader who copies it gets another verdict than the page shows. Each
+      section's blocks are compared in order with the test's sections, so a block added, dropped
+      or moved fails too, and so does a section renamed out from under the rule, which finds no
+      block.
     scope: repo
     extract:
-      page: {regex: {file: docs/examples.md, pattern: '^```[a-z]*\n((?:[^\n]*\n)*?)```$'}}
-      port_agents: {regex: {file: internal/cli/testdata/script/example_wrong_port.txtar, pattern: '^-- AGENTS\.md --\n((?:[^\n]*\n)*?)-- \S+ --$'}}
-      port_config: {regex: {file: internal/cli/testdata/script/example_wrong_port.txtar, pattern: '^-- config/staging\.toml --\n((?:[^\n]*\n)*?)-- \S+ --$'}}
-      port_rules: {regex: {file: internal/cli/testdata/script/example_wrong_port.txtar, pattern: '^-- errata\.yaml --\n((?:[^\n]*\n)*?)-- \S+ --$'}}
-      port_output: {regex: {file: internal/cli/testdata/script/example_wrong_port.txtar, pattern: '^-- false\.txt --\n((?:[^\n]*\n)*?)-- \S+ --$'}}
-      number_cronjob: {regex: {file: internal/cli/testdata/script/example_derived_number.txtar, pattern: '^-- deploy/backup-cronjob\.yaml --\n((?:[^\n]*\n)*?)-- \S+ --$'}}
-      number_config: {regex: {file: internal/cli/testdata/script/example_derived_number.txtar, pattern: '^-- backup\.toml --\n((?:[^\n]*\n)*?)-- \S+ --$'}}
-      number_rules: {regex: {file: internal/cli/testdata/script/example_derived_number.txtar, pattern: '^-- errata\.yaml --\n((?:[^\n]*\n)*?)-- \S+ --$'}}
-      number_output: {regex: {file: internal/cli/testdata/script/example_derived_number.txtar, pattern: '^-- false\.txt --\n((?:[^\n]*\n)*?)-- \S+ --$'}}
-      prereq_runbook: {regex: {file: internal/cli/testdata/script/example_unmet_prerequisite.txtar, pattern: '^-- docs/runbook\.md --\n((?:[^\n]*\n)*?)-- \S+ --$'}}
-      prereq_tasks: {regex: {file: internal/cli/testdata/script/example_unmet_prerequisite.txtar, pattern: '^-- ansible/roles/node/tasks/main\.yml --\n((?:[^\n]*\n)*?)-- \S+ --$'}}
-      prereq_sysctl: {regex: {file: internal/cli/testdata/script/example_unmet_prerequisite.txtar, pattern: '^-- ansible/roles/node/files/99-node\.conf --\n((?:[^\n]*\n)*?)-- \S+ --$'}}
-      prereq_rules: {regex: {file: internal/cli/testdata/script/example_unmet_prerequisite.txtar, pattern: '^-- errata\.yaml --\n((?:[^\n]*\n)*?)-- \S+ --$'}}
-      prereq_output: {regex: {file: internal/cli/testdata/script/example_unmet_prerequisite.txtar, pattern: '^-- false\.txt --\n((?:[^\n]*\n)*?)-- \S+ --$'}}
-      prereq_file_check: {regex: {file: internal/cli/testdata/script/example_unmet_prerequisite.txtar, pattern: '^-- files\.yaml --\n((?:[^\n]*\n)*?)-- \S+ --$'}}
-      fact_file: {regex: {file: internal/cli/testdata/script/example_attested_fact.txtar, pattern: '^-- facts/router-wan-ssh\.yaml --\n((?:[^\n]*\n)*?)-- \S+ --$'}}
-      fact_doc: {regex: {file: internal/cli/testdata/script/example_attested_fact.txtar, pattern: '^-- docs/network\.md --\n((?:[^\n]*\n)*?)-- \S+ --$'}}
-      fact_script: {regex: {file: internal/cli/testdata/script/example_attested_fact.txtar, pattern: '^-- scripts/attested-age\.sh --\n((?:[^\n]*\n)*?)-- \S+ --$'}}
-      fact_rules: {regex: {file: internal/cli/testdata/script/example_attested_fact.txtar, pattern: '^-- errata\.yaml --\n((?:[^\n]*\n)*?)-- \S+ --$'}}
-      fact_output: {regex: {file: internal/cli/testdata/script/example_attested_fact.txtar, pattern: '^-- false\.txt --\n((?:[^\n]*\n)*?)-- \S+ --$'}}
+      quick: {markdown: {file: README.md, target: code, section: Quick Start}}
+      quick_rules: {regex: {file: internal/cli/testdata/script/readme_quick_start.txtar, pattern: '^-- errata\.yaml --\n((?:[^\n]*\n)*?[^\n]*)\n-- \S+ --$'}}
+      quick_script: {regex: {file: internal/cli/testdata/script/readme_quick_start.txtar, pattern: '^-- checks/ci-node\.sh --\n((?:[^\n]*\n)*?[^\n]*)\n-- \S+ --$'}}
+      quick_output: {regex: {file: internal/cli/testdata/script/readme_quick_start.txtar, pattern: '^-- false\.txt --\n((?:[^\n]*\n)*?[^\n]*)\n-- \S+ --$'}}
+      first: {markdown: {file: docs/handbook.md, target: code, section: The first check}}
+      reading: {markdown: {file: docs/handbook.md, target: code, section: Reading a failure and an unknown}}
+      page: {markdown: {file: docs/handbook.md, target: code, section: Worked examples}}
+      first_readme: {regex: {file: internal/cli/testdata/script/handbook_first_check.txtar, pattern: '^-- README\.md --\n((?:[^\n]*\n)*?[^\n]*)\n-- \S+ --$'}}
+      first_nvmrc: {regex: {file: internal/cli/testdata/script/handbook_first_check.txtar, pattern: '^-- \.nvmrc --\n((?:[^\n]*\n)*?[^\n]*)\n-- \S+ --$'}}
+      first_rules: {regex: {file: internal/cli/testdata/script/handbook_first_check.txtar, pattern: '^-- errata\.yaml --\n((?:[^\n]*\n)*?[^\n]*)\n-- \S+ --$'}}
+      first_list: {regex: {file: internal/cli/testdata/script/handbook_first_check.txtar, pattern: '^-- list\.txt --\n((?:[^\n]*\n)*?[^\n]*)\n-- \S+ --$'}}
+      first_true: {regex: {file: internal/cli/testdata/script/handbook_first_check.txtar, pattern: '^-- true\.txt --\n((?:[^\n]*\n)*?[^\n]*)\n-- \S+ --$'}}
+      reading_false: {regex: {file: internal/cli/testdata/script/handbook_first_check.txtar, pattern: '^-- false\.txt --\n((?:[^\n]*\n)*?[^\n]*)\n-- \S+ --$'}}
+      reading_readme: {regex: {file: internal/cli/testdata/script/handbook_first_check.txtar, pattern: '^-- README\.reworded\.md --\n((?:[^\n]*\n)*?[^\n]*)\n-- \S+ --$'}}
+      reading_unknown: {regex: {file: internal/cli/testdata/script/handbook_first_check.txtar, pattern: '^-- unknown\.txt --\n((?:[^\n]*\n)*?[^\n]*)\n-- \S+ --$'}}
+      port_agents: {regex: {file: internal/cli/testdata/script/example_wrong_port.txtar, pattern: '^-- AGENTS\.md --\n((?:[^\n]*\n)*?[^\n]*)\n-- \S+ --$'}}
+      port_config: {regex: {file: internal/cli/testdata/script/example_wrong_port.txtar, pattern: '^-- config/staging\.toml --\n((?:[^\n]*\n)*?[^\n]*)\n-- \S+ --$'}}
+      port_rules: {regex: {file: internal/cli/testdata/script/example_wrong_port.txtar, pattern: '^-- errata\.yaml --\n((?:[^\n]*\n)*?[^\n]*)\n-- \S+ --$'}}
+      port_output: {regex: {file: internal/cli/testdata/script/example_wrong_port.txtar, pattern: '^-- false\.txt --\n((?:[^\n]*\n)*?[^\n]*)\n-- \S+ --$'}}
+      number_cronjob: {regex: {file: internal/cli/testdata/script/example_derived_number.txtar, pattern: '^-- deploy/backup-cronjob\.yaml --\n((?:[^\n]*\n)*?[^\n]*)\n-- \S+ --$'}}
+      number_config: {regex: {file: internal/cli/testdata/script/example_derived_number.txtar, pattern: '^-- backup\.toml --\n((?:[^\n]*\n)*?[^\n]*)\n-- \S+ --$'}}
+      number_rules: {regex: {file: internal/cli/testdata/script/example_derived_number.txtar, pattern: '^-- errata\.yaml --\n((?:[^\n]*\n)*?[^\n]*)\n-- \S+ --$'}}
+      number_output: {regex: {file: internal/cli/testdata/script/example_derived_number.txtar, pattern: '^-- false\.txt --\n((?:[^\n]*\n)*?[^\n]*)\n-- \S+ --$'}}
+      prereq_runbook: {regex: {file: internal/cli/testdata/script/example_unmet_prerequisite.txtar, pattern: '^-- docs/runbook\.md --\n((?:[^\n]*\n)*?[^\n]*)\n-- \S+ --$'}}
+      prereq_tasks: {regex: {file: internal/cli/testdata/script/example_unmet_prerequisite.txtar, pattern: '^-- ansible/roles/node/tasks/main\.yml --\n((?:[^\n]*\n)*?[^\n]*)\n-- \S+ --$'}}
+      prereq_sysctl: {regex: {file: internal/cli/testdata/script/example_unmet_prerequisite.txtar, pattern: '^-- ansible/roles/node/files/99-node\.conf --\n((?:[^\n]*\n)*?[^\n]*)\n-- \S+ --$'}}
+      prereq_rules: {regex: {file: internal/cli/testdata/script/example_unmet_prerequisite.txtar, pattern: '^-- errata\.yaml --\n((?:[^\n]*\n)*?[^\n]*)\n-- \S+ --$'}}
+      prereq_output: {regex: {file: internal/cli/testdata/script/example_unmet_prerequisite.txtar, pattern: '^-- false\.txt --\n((?:[^\n]*\n)*?[^\n]*)\n-- \S+ --$'}}
+      prereq_file_check: {regex: {file: internal/cli/testdata/script/example_unmet_prerequisite.txtar, pattern: '^-- files\.yaml --\n((?:[^\n]*\n)*?[^\n]*)\n-- \S+ --$'}}
+      fact_file: {regex: {file: internal/cli/testdata/script/example_attested_fact.txtar, pattern: '^-- facts/router-wan-ssh\.yaml --\n((?:[^\n]*\n)*?[^\n]*)\n-- \S+ --$'}}
+      fact_doc: {regex: {file: internal/cli/testdata/script/example_attested_fact.txtar, pattern: '^-- docs/network\.md --\n((?:[^\n]*\n)*?[^\n]*)\n-- \S+ --$'}}
+      fact_script: {regex: {file: internal/cli/testdata/script/example_attested_fact.txtar, pattern: '^-- scripts/attested-age\.sh --\n((?:[^\n]*\n)*?[^\n]*)\n-- \S+ --$'}}
+      fact_rules: {regex: {file: internal/cli/testdata/script/example_attested_fact.txtar, pattern: '^-- errata\.yaml --\n((?:[^\n]*\n)*?[^\n]*)\n-- \S+ --$'}}
+      fact_output: {regex: {file: internal/cli/testdata/script/example_attested_fact.txtar, pattern: '^-- false\.txt --\n((?:[^\n]*\n)*?[^\n]*)\n-- \S+ --$'}}
     assert: |
+      quick == quick_rules + quick_script + quick_output &&
+      first == first_readme + first_nvmrc + first_rules + first_list + first_true &&
+      reading == reading_false + reading_readme + reading_unknown &&
       page == port_agents + port_config + port_rules + port_output + number_cronjob +
         number_config + number_rules + number_output + prereq_runbook + prereq_tasks +
         prereq_sysctl + prereq_rules + prereq_output + prereq_file_check + fact_file + fact_doc +

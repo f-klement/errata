@@ -1,0 +1,77 @@
+# The first check of docs/handbook.md, and the unknown it reads. The README
+# names the Node a developer installs, and .nvmrc pins the one CI installs. The
+# rule holds while they agree, is an erratum once .nvmrc moves on, and is
+# unknown once the README is reworded so that its pattern finds nothing.
+# errata.yaml's check docs-examples-are-run holds every block of the
+# handbook's The first check and Reading a failure and an unknown sections
+# equal to its section here, in order.
+exec errata list
+cmp stdout list.txt
+! stderr .
+
+exec errata check
+cmp stdout true.txt
+! stderr .
+
+cp nvmrc.drifted .nvmrc
+! exec errata check
+cmp stdout false.txt
+! stderr .
+
+cp README.reworded.md README.md
+! exec errata check
+cmp stdout unknown.txt
+! stderr .
+
+-- README.md --
+# Shop
+
+## Development
+
+Install Node 20.11, then run `npm ci`.
+-- .nvmrc --
+20.11.1
+-- errata.yaml --
+checks:
+  - id: readme-names-the-node-version
+    reason: >
+      The README tells a new developer which Node to install, and .nvmrc pins the Node that nvm
+      and CI install. A README that names another version sets up a machine that differs from CI.
+    scope: repo
+    extract:
+      readme: {markdown: {file: README.md, target: section, section: Development, pattern: 'Install Node ([0-9.]+)'}}
+      pinned: {tool_version: {tool: node}}
+    agree: [readme, pinned]
+    compare: semver
+-- list.txt --
+readme-names-the-node-version (repo) rule
+  why: The README tells a new developer which Node to install, and .nvmrc pins the Node that nvm and CI install. A README that names another version sets up a machine that differs from CI.
+  extract: pinned: tool_version tool node, max_bytes 33554432
+           readme: markdown file README.md, max_bytes 33554432, target section, section Development, pattern `Install Node ([0-9.]+)`
+  agree: readme, pinned (compare semver)
+
+1 check: 1 rule, 0 program checks.
+-- true.txt --
+0 errata, 0 unknown. Coverage: ran 1, skipped 0.
+-- false.txt --
+FALSE readme-names-the-node-version (repo)
+  why:  The README tells a new developer which Node to install, and .nvmrc pins the Node that nvm and CI install. A README that names another version sets up a machine that differs from CI.
+  said: agree: the versions "20.11" and "22.12.0" differ at the precision both state
+          "20.11" (version 20.11) at README.md:5 (readme)
+          "22.12.0" (version 22.12.0) at .nvmrc:1 (pinned)
+
+1 erratum, 0 unknown. Coverage: ran 1, skipped 0.
+-- README.reworded.md --
+# Shop
+
+## Development
+
+Install the Node version in `.nvmrc`, then run `npm ci`.
+-- unknown.txt --
+UNKNOWN readme-names-the-node-version (repo)
+  why:  The README tells a new developer which Node to install, and .nvmrc pins the Node that nvm and CI install. A README that names another version sets up a machine that differs from CI.
+  said: extractor "readme" found no value
+
+0 errata, 1 unknown. Coverage: ran 1, skipped 0.
+-- nvmrc.drifted --
+22.12.0

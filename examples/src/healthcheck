@@ -1,0 +1,3 @@
+#!/bin/sh
+# Polls http://localhost:8080/health and exits 1 when the API does not answer.
+exec wget -q -O /dev/null http://localhost:8080/health

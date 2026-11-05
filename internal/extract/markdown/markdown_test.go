@@ -180,7 +180,7 @@ func TestBuildRefuses(t *testing.T) {
 // each target's construct and of a file of every kind of block.
 func TestEveryValueLineIsInsideItsFile(t *testing.T) {
 	for _, body := range []string{comments, sections, code, table, "\xef\xbb\xbf---\na: 1\n---\n# A\r\n\r\n<!-- x -->\r\n", "", "# A"} {
-		lines := strings.Count(strings.ReplaceAll(body, "\r\n", "\n"), "\n") + 1
+		lines := core.LastLine([]byte(body))
 		for _, s := range specs {
 			values := fromData(t, s, body)
 			for _, v := range values {

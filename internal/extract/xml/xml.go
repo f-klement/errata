@@ -26,7 +26,8 @@ import (
 // text of every element inside it too, without the white space at its ends;
 // an attribute's is its value, with each tab, CR and LF written in it read
 // as a space (normalise), and text()'s the text as the file has it. Lines
-// end as XML ends them (xmlLines).
+// end as XML 1.0 section 2.11 ends them, at a CRLF, a lone CR or a LF,
+// which is the rule every reader numbers lines by (core.LineCursor).
 type Spec struct {
 	core.OneFile
 	Path       string            `json:"path"`
@@ -281,7 +282,7 @@ func intern(m map[string]int32, s string) int32 {
 type xmlBuilder struct {
 	doc   *xmlDoc
 	data  []byte
-	lines *xmlLines
+	lines *core.LineCursor
 	open  []openElem
 	// The elements open[pending:] have no text content yet that is not
 	// white space, so their trim0 is not known; solid is where the last
@@ -329,7 +330,7 @@ func parseXML(data []byte, limit int64) (*xmlDoc, error) {
 	b := &xmlBuilder{
 		doc:   &xmlDoc{spaces: map[string]int32{"": 0}, names: map[string]int32{}},
 		data:  data,
-		lines: &xmlLines{data: data, line: 1},
+		lines: core.NewLineCursor(data),
 		bound: map[string]int32{},
 		limit: limit,
 	}
@@ -342,7 +343,7 @@ func parseXML(data []byte, limit int64) (*xmlDoc, error) {
 			break
 		}
 		if err != nil {
-			return nil, xmlError(err, b.lines.at(int(d.InputOffset())))
+			return nil, xmlError(err, b.lines.At(int(d.InputOffset())))
 		}
 		switch t := tok.(type) {
 		case xml.StartElement:
@@ -399,8 +400,8 @@ func asciiOnly(data []byte) func(string, io.Reader) (io.Reader, error) {
 }
 
 // xmlError is the decoder's error, at line, cut to a length a message may
-// have. line is where the decoder stopped, as xmlLines counts it: the
-// decoder's own line counts LF only.
+// have. line is where the decoder stopped, as core.LineCursor counts it:
+// the decoder's own line counts LF only.
 func xmlError(err error, line int) error {
 	var se *xml.SyntaxError
 	if !errors.As(err, &se) {
@@ -430,7 +431,7 @@ func (b *xmlBuilder) count(n int, line int) error {
 }
 
 func (b *xmlBuilder) start(t xml.StartElement, off, end int) error {
-	line := b.lines.at(off)
+	line := b.lines.At(off)
 	if len(b.open) == 0 && b.rooted {
 		return fmt.Errorf("line %d: <%s> is a second root element; an XML file has one", line, core.Clip(qname(t.Name)))
 	}
@@ -466,7 +467,7 @@ func (b *xmlBuilder) start(t xml.StartElement, off, end int) error {
 		if _, ok := declares(a.Name); ok {
 			continue
 		}
-		aline := b.lines.at(off + spans[k].name)
+		aline := b.lines.At(off + spans[k].name)
 		aspace, err := b.resolve(a.Name, false, aline)
 		if err != nil {
 			return err
@@ -666,7 +667,7 @@ func appendReference(out []byte, ref string) []byte {
 // one a document may hold is a DOCTYPE, before the root element, once.
 func (b *xmlBuilder) directive(t xml.Directive, off int) error {
 	b.inText = false
-	line := b.lines.at(off)
+	line := b.lines.At(off)
 	end := bytes.IndexFunc(t, func(r rune) bool { return ('A' > r || r > 'Z') && ('a' > r || r > 'z') })
 	if end < 0 {
 		end = len(t)
@@ -700,7 +701,7 @@ func (b *xmlBuilder) procInst(t xml.ProcInst, off int) error {
 	if !strings.EqualFold(t.Target, "xml") {
 		return nil
 	}
-	line := b.lines.at(off)
+	line := b.lines.At(off)
 	switch {
 	case t.Target != "xml":
 		return fmt.Errorf("line %d: the processing instruction target %s is reserved for the XML declaration", line, core.Quote(t.Target))
@@ -713,55 +714,14 @@ func (b *xmlBuilder) procInst(t xml.ProcInst, off int) error {
 	return nil
 }
 
-// xmlLines gives the line of an offset in data as XML 1.0 section 2.11 ends
-// lines: at a CRLF, a lone CR or a lone LF. The other readers count LF only
-// (lineCursor), which their formats define; XML's readers, editors and the
-// spec count a lone CR too, as classic Mac OS wrote it. Like lineCursor it
-// counts from the offset asked before, so offsets in file order take one
-// pass over the file.
-type xmlLines struct {
-	data []byte
-	off  int // the offset asked before
-	line int // its line, counted from 1
-}
-
-func (c *xmlLines) at(off int) int {
-	if off >= c.off {
-		c.line += c.ends(c.off, off)
-	} else {
-		c.line -= c.ends(off, c.off)
-	}
-	c.off = off
-	return c.line
-}
-
-// ends counts the line ends that start in data[from:to]: each LF, and each
-// CR that no LF follows. The CR of a CRLF is not counted, its LF is, so a
-// CRLF split across two ranges counts once.
-func (c *xmlLines) ends(from, to int) int {
-	seg := c.data[from:to]
-	n := bytes.Count(seg, newline)
-	for i := bytes.IndexByte(seg, '\r'); i >= 0; {
-		if j := from + i + 1; j == len(c.data) || c.data[j] != '\n' {
-			n++
-		}
-		next := bytes.IndexByte(seg[i+1:], '\r')
-		if next < 0 {
-			break
-		}
-		i += next + 1
-	}
-	return n
-}
-
 func (b *xmlBuilder) end(t xml.EndElement, off int) error {
 	n := len(b.open)
 	if n == 0 {
-		return fmt.Errorf("line %d: </%s> closes no element", b.lines.at(off), core.Clip(qname(t.Name)))
+		return fmt.Errorf("line %d: </%s> closes no element", b.lines.At(off), core.Clip(qname(t.Name)))
 	}
 	top := b.open[n-1]
 	if t.Name != top.name {
-		return fmt.Errorf("line %d: </%s> closes <%s>, opened at line %d", b.lines.at(off), core.Clip(qname(t.Name)), core.Clip(qname(top.name)), top.line)
+		return fmt.Errorf("line %d: </%s> closes <%s>, opened at line %d", b.lines.At(off), core.Clip(qname(t.Name)), core.Clip(qname(top.name)), top.line)
 	}
 	el := &b.doc.elems[top.index]
 	if n-1 >= b.pending {
@@ -794,14 +754,14 @@ func (b *xmlBuilder) chars(t xml.CharData, off int) error {
 	n := len(b.open)
 	if n == 0 {
 		if first >= 0 {
-			return fmt.Errorf("line %d: text outside the root element", b.lines.at(off+first))
+			return fmt.Errorf("line %d: text outside the root element", b.lines.At(off+first))
 		}
 		return nil
 	}
 	doc := b.doc
 	start := len(doc.buf)
 	if !b.inText {
-		line := b.lines.at(off)
+		line := b.lines.At(off)
 		if err := b.count(1, line); err != nil {
 			return err
 		}
@@ -831,9 +791,6 @@ func (b *xmlBuilder) chars(t xml.CharData, off int) error {
 	b.inText = true
 	return nil
 }
-
-// newline is a line break, as bytes.Count takes it.
-var newline = []byte("\n")
 
 // isDigit reports whether c is an ASCII digit.
 func isDigit(c byte) bool { return '0' <= c && c <= '9' }

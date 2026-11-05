@@ -102,9 +102,9 @@ func spanList(t *testing.T, name, src string) []string {
 	return out
 }
 
-// What the README's Code comments says the lexer does not understand, as it
+// What docs/reference.md#comment says the lexer does not understand, as it
 // reads it. Each case pins a stated limit, so a change to one shows here and
-// the README is read again.
+// the reference is read again.
 func TestKnownLimits(t *testing.T) {
 	for _, c := range []struct {
 		lang, src string

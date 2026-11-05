@@ -1,7 +1,7 @@
 // Package marker is the marker extractor: the values of the markers that tag
 // a claim in a document or a code comment with the id of the rule that
 // checks it, found in the files git tracks that a rule's files: names (ADR
-// 0017, README Markers). An opening marker is an HTML comment whose text is
+// 0017, docs/reference.md#marker). An opening marker is an HTML comment whose text is
 // errata, a colon and the id; a closing one, an HTML comment whose text is
 // a slash and errata. No comment here writes either whole, since a walk of
 // errata's own files would read it as one. A Markdown file is read through
@@ -387,11 +387,11 @@ func Scan(file string, data []byte, limit int64) ([]Found, error) {
 	if IsMarkdown(file) {
 		return scanMarkdown(file, data, limit)
 	}
-	data = bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n"))
+	data = core.LineFeeds(data)
 	lang, ok := core.LanguageFor(file)
 	if !ok {
 		if at := markerish(data, 0, len(data)); at >= 0 {
-			return nil, fmt.Errorf("%s: %s: line %d: a marker, in a file errata reads no markers in: it reads them in Markdown and in the comments of the languages its comment lexer lists (README, Markers)",
+			return nil, fmt.Errorf("%s: %s: line %d: a marker, in a file errata reads no markers in: it reads them in Markdown and in the comments of the languages its comment lexer lists (docs/reference.md#marker)",
 				Kind.Key, file, core.NewLineCursor(data).At(at))
 		}
 		return nil, nil

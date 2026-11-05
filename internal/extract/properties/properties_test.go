@@ -106,10 +106,11 @@ func TestPropertiesLines(t *testing.T) {
 		{"\\ and a newline at the end", "a=x\\\n", "a", "x@1"},
 		{"a joined empty line ends it", "a=x\\\n\nb=y\n", "a", "x@1"},
 		{"a joined blank line ends it", "a=x\\\n   \nb=y\n", "b", "y@3"},
-		{"CR ends a line", "a=1\rb=2\r", "b", "2@1"},
+		{"CR ends a line", "a=1\rb=2\r", "b", "2@2"},
 		{"CRLF", "a=1\r\nb=2\r\n", "b", "2@2"},
 		{"\\ and CRLF joins", "a=1\\\r\n  2\r\nb=3\r\n", "a", "12@1"},
 		{"\\ and CR joins", "a=1\\\r  2\rb=3\r", "a", "12@1"},
+		{"the line of a key after CRs", "a=1\\\r  2\rb=3\r", "b", "3@3"},
 		{"form feed is white space", "\fa\f=\f1\n", "a", "1@1"},
 		{"one separator, then white space", "a = = 1\n", "a", "= 1@1"},
 		{"white space, then a separator", "a   :  1\n", "a", "1@1"},
@@ -231,6 +232,23 @@ func TestPropertiesWorkMeterChargesEveryLine(t *testing.T) {
 		if budget := core.NewMeter(len(data)).Budget; spent > budget {
 			t.Errorf("%q: %d units for %d lines, over the read's budget of %d", comment, spent, lines, budget)
 		}
+	}
+}
+
+// The lines before an entry, a lone \r's among them, are charged before the
+// entry is visited, so a budget they pass refuses the read there and not
+// at its end. The planted break: an entry charged as one line, the lines
+// before it left to the read's last charge.
+func TestPropertiesChargesTheLinesBeforeAnEntryFirst(t *testing.T) {
+	data := []byte(strings.Repeat("# c\r", 1000) + "k=1\n")
+	m := core.NewMeter(len(data))
+	var spent int64
+	err := readProperties(data, m, func(*core.Entry) error {
+		spent = m.Spent
+		return nil
+	})
+	if err != nil || spent < 1000*core.LineWork {
+		t.Errorf("at the entry: %d units and %v, want at least %d", spent, err, 1000*core.LineWork)
 	}
 }
 

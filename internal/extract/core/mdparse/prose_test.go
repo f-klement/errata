@@ -224,7 +224,7 @@ func TestProseReadsHTMLBlocksThroughTheHTMLParse(t *testing.T) {
 		"tail kept": {"<pre>a</pre> CI runs on node builder\n", claim, "builder@3"},
 		"details":   {"<details><summary>Log</summary><pre>\nout\n</details>\n\nCI runs on node builder\n", `^(.*)$`, "Build@1 Log@3 out@4 CI runs on node builder@7"},
 		"div":       {"<div align=center><pre>\nx  y\n</div>\nCI runs on node builder\n", `^(.*)$`, "Build@1 x y@4 CI runs on node builder@6"},
-		"lone CR":   {"<p><code><pre>\r<p></code>\n\nCI runs on node builder\n", claim, "builder@5"}, // the pre's first line feed reopens nothing (FuzzHTML)
+		"lone CR":   {"<p><code><pre>\r<p></code>\n\nCI runs on node builder\n", claim, "builder@6"}, // the pre's first line feed reopens nothing (FuzzHTML)
 	} {
 		if got := texts(t, "# Build\n\n"+c.body, c.pattern, false); got != c.want {
 			t.Errorf("%s: got %q, want %q", name, got, c.want)

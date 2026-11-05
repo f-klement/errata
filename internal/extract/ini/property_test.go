@@ -4,13 +4,21 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"pgregory.net/rapid"
 
+	"github.com/f-klement/errata/internal/extract/core"
 	"github.com/f-klement/errata/internal/extract/extracttest"
 )
+
+// anyEnd is a line end drawn from the three that end a line: a LF, a CRLF
+// and a lone CR, for the dialects whose tool ends a line at each.
+func anyEnd(t *rapid.T) func() string {
+	return func() string { return rapid.SampledFrom([]string{"\n", "\r\n", "\r"}).Draw(t, "end") }
+}
 
 // checkItems extracts every item's section, host and key from data and
 // checks that each comes back with its value, in file order, at the line the
@@ -19,7 +27,7 @@ func checkItems(t *rapid.T, root, name string, data []byte, items []extracttest.
 	if err := os.WriteFile(filepath.Join(root, name), data, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	fileLines := strings.Split(string(data), "\n")
+	fileLines := strings.Split(string(core.LineFeeds(data)), "\n")
 	want := map[string][]string{}
 	for _, it := range items {
 		id := it.Section + "\x00" + it.Host + "\x00" + it.Key
@@ -47,7 +55,7 @@ func TestPropertyPlainValuesSitAtTheirLine(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		items := extracttest.DrawItems(t, rapid.StringMatching(`[a-z][a-z:.-]{0,6}`), rapid.StringMatching(`[a-z][a-z_. -]{0,6}[a-z]`),
 			rapid.StringMatching(`[a-z0-9]([a-z0-9.;#=:% -]{0,10}[a-z0-9])?`))
-		var w extracttest.LineWriter
+		w := extracttest.LineWriter{End: anyEnd(t)}
 		for i := range items {
 			if i == 0 || items[i].Section != items[i-1].Section {
 				w.Add("[%s]", items[i].Section)
@@ -61,12 +69,40 @@ func TestPropertyPlainValuesSitAtTheirLine(t *testing.T) {
 	})
 }
 
+// PHP ends a line at a LF, a CRLF and a lone CR, and numbers lines as
+// every dialect does. The planted break: the dialect's cursor counting a
+// LF alone.
+func TestPropertyPHPValuesSitAtTheirLine(t *testing.T) {
+	root := t.TempDir()
+	rapid.Check(t, func(t *rapid.T) {
+		// A key PHP reads as a boolean or null is refused, as PHP refuses
+		// it (TestDialectsRefuseWhatTheirToolRefuses), so none is drawn.
+		keys := rapid.StringMatching(`[a-z][a-z_]{0,6}`).Filter(func(k string) bool {
+			return !slices.ContainsFunc(phpWords, func(w string) bool { return strings.EqualFold(w, k) })
+		})
+		items := extracttest.DrawItems(t, rapid.StringMatching(`[a-z]{1,4}`), keys, rapid.StringMatching(`x[a-z0-9]{0,6}`))
+		w := extracttest.LineWriter{End: anyEnd(t)}
+		for i := range items {
+			if i == 0 || items[i].Section != items[i-1].Section {
+				w.Add("[%s]", items[i].Section)
+				if rapid.Bool().Draw(t, "comment") {
+					w.Add("; k = x")
+				}
+			}
+			items[i].Line = w.Add("%s = %s", items[i].Key, items[i].Value)
+		}
+		checkItems(t, root, "php.ini", []byte(w.Text.String()), items, func(it extracttest.Item) Spec { return ini("php.ini", it.Section, it.Key) })
+	})
+}
+
 func TestPropertyGitValuesSitAtTheirLine(t *testing.T) {
 	root := t.TempDir()
 	rapid.Check(t, func(t *rapid.T) {
 		items := extracttest.DrawItems(t, rapid.StringMatching(`[a-z]{1,4}( [a-zA-Z "\\./]{0,6})?`), rapid.StringMatching(`[a-z][a-z0-9-]{0,6}`),
 			rapid.StringMatching(`[a-z0-9 ;#"\\\t]{0,10}[a-z0-9]`))
-		var w extracttest.LineWriter
+		// git ends a line at a LF alone, a CR before it dropped; a lone CR is a
+		// byte of the line to git, and ends one to errata's numbers.
+		w := extracttest.LineWriter{End: func() string { return rapid.SampledFrom([]string{"\n", "\r\n"}).Draw(t, "end") }}
 		for i := range items {
 			section, sub, hasSub := strings.Cut(items[i].Section, " ")
 			if i == 0 || items[i].Section != items[i-1].Section {
@@ -75,6 +111,10 @@ func TestPropertyGitValuesSitAtTheirLine(t *testing.T) {
 				} else {
 					w.Add("[%s]", section)
 				}
+			}
+			if rapid.Bool().Draw(t, "comment") {
+				w.Add("# c\rx")
+				w.Line++
 			}
 			value := `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\t", `\t`).Replace(items[i].Value) + `"`
 			items[i].Line = w.Add("\t%s = %s ; c", items[i].Key, value)
@@ -97,7 +137,7 @@ func TestPropertyAnsibleValuesSitAtTheirLine(t *testing.T) {
 			// A value that starts with a letter is no Python literal, so a # in
 			// it is text, as ansible reads it.
 			rapid.StringMatching(`[a-z]([a-z0-9.#= -]{0,10}[a-z0-9])?`))
-		var w extracttest.LineWriter
+		w := extracttest.LineWriter{End: anyEnd(t)}
 		for i := range items {
 			if i == 0 || items[i].Section != items[i-1].Section {
 				w.Add("[%s]", items[i].Section)

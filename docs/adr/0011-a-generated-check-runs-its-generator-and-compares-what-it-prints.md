@@ -117,7 +117,7 @@ reader sees what will run before it does.
 
 ## Consequences
 
-A config can run a third kind of program, and the README's warning about the programs a config
+A config can run a third kind of program, and the warning in [Checks](../reference.md#checks) about the programs a config
 runs on a ref you do not trust covers generators too. `type` in `errata list --format json` has
 a third value, `generated`, which the listing's version 1 allows. A generator must print the file to
 stdout, so a generator that only writes a file needs a mode that prints it, as

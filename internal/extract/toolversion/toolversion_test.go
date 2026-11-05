@@ -377,7 +377,7 @@ func TestToolVersionRefusesAFileOfNoVersion(t *testing.T) {
 	}
 }
 
-// Each word the README lists as not literal is marked, and the versions
+// Each word docs/reference.md#tool_version lists as not literal is marked, and the versions
 // around them are not.
 func TestToolVersionNotLiteral(t *testing.T) {
 	for v, want := range map[string]bool{

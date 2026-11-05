@@ -3,11 +3,13 @@ package htmlparse
 import (
 	"bytes"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
 	"golang.org/x/net/html"
 
+	"github.com/f-klement/errata/internal/extract/core"
 	"github.com/f-klement/errata/internal/extract/extracttest"
 )
 
@@ -18,7 +20,8 @@ import (
 // with & where they say, and decode to what html.UnescapeString gives. Cut
 // into blocks at points cuts picks, one scanner over the blocks gives what
 // a scanner for each block gives (TestBlocksReadAsAlone). The pres and
-// headings the scan finds are the HTML standard's tree builder's.
+// headings the scan finds are the HTML standard's tree builder's, svg's and
+// math's foreign content among them (extracttest.ForeignShapes seeds it).
 func FuzzScan(f *testing.F) {
 	for _, s := range []string{
 		"<!doctype html><p class=x>a &amp; b<script>x<!--y</script><template><p>t</template>",
@@ -27,7 +30,11 @@ func FuzzScan(f *testing.F) {
 	} {
 		f.Add(s, uint32(0x00070301))
 	}
+	for _, s := range slices.Concat(extracttest.ForeignShapes, extracttest.LonecrShapes, extracttest.RoundTwoShapes) {
+		f.Add(s, uint32(0x00070301))
+	}
 	f.Fuzz(func(t *testing.T, data string, cuts uint32) {
+		data = string(core.LineFeeds([]byte(data))) // the scanner reads folded line ends (NewScanner)
 		src := []byte(data)
 		s := NewScanner(src, MaxTokens(int64(len(src))))
 		end := 0

@@ -22,14 +22,24 @@ type BrowserRead struct {
 	// RebuiltIn holds each formatting name the tree builder rebuilt around
 	// or inside a pre or a heading, as the adoption agency does (rebuiltIn).
 	RebuiltIn map[string]bool
+	// StandardOnly is, of a reader's read, whether it followed a rule of
+	// the HTML standard that x/net, the oracle, does not
+	// (htmlparse.Scanner.StandardOnly): such a read is compared with
+	// StandardReads, if anything.
+	StandardOnly bool
+	// Rebuilt is, of a reader's read where the reader can tell, whether it
+	// followed an adoption agency's rebuild, so that a property test can
+	// say how often its documents meet one.
+	Rebuilt bool
 }
 
 // BrowserReads is what golang.org/x/net/html's tree builder, which follows
 // the HTML standard, puts in the same elements: the text of each pre and
 // listing not inside another, less a newline at its end; the text of each
 // heading, less a link to itself (selfLink); and the cells of each row, a cell's text to the first table
-// inside it. Text is what a browser shows: a line element's tags are a
-// space, blanks fold, and scripts, styles and comments show nothing.
+// inside it, each element HTML's, not svg's or math's. Text is what a
+// browser shows: a line element's tags are a space, blanks fold, and
+// scripts, styles, comments and an svg's title show nothing (leftOut).
 // lineTag names the line elements, htmlparse.LineTag, which extracttest
 // takes as an argument so that htmlparse's own tests can use it; with
 // dropSelfLinks a heading's link to itself is left out, as the html kind
@@ -42,7 +52,10 @@ func BrowserReads(src string, lineTag func(string) bool, dropSelfLinks bool) Bro
 	var out BrowserRead
 	var walk func(n *xhtml.Node, inPre bool)
 	walk = func(n *xhtml.Node, inPre bool) {
-		if n.Type == xhtml.ElementNode {
+		if isTemplate(n) {
+			return // a template's content is no part of the page
+		}
+		if n.Type == xhtml.ElementNode && n.Namespace == "" {
 			switch {
 			case (n.Data == "pre" || n.Data == "listing") && !inPre:
 				out.Pres = append(out.Pres, strings.TrimSuffix(textOf(n, false, false, lineTag, false), "\n"))
@@ -55,7 +68,7 @@ func BrowserReads(src string, lineTag func(string) bool, dropSelfLinks bool) Bro
 			case n.Data == "tr":
 				var cells []string
 				for c := n.FirstChild; c != nil; c = c.NextSibling {
-					if c.Type == xhtml.ElementNode && (c.Data == "td" || c.Data == "th") {
+					if c.Type == xhtml.ElementNode && c.Namespace == "" && (c.Data == "td" || c.Data == "th") {
 						cells = append(cells, Fold(textOf(c, true, true, lineTag, false)))
 					}
 				}
@@ -86,7 +99,7 @@ func textOf(n *xhtml.Node, spaced, toTable bool, lineTag func(string) bool, noSe
 		for c := n.FirstChild; c != nil && !stopped; c = c.NextSibling {
 			switch c.Type {
 			case xhtml.TextNode:
-				if p := c.Parent; p == nil || p.Type != xhtml.ElementNode || !leftOut[p.Data] {
+				if !hiddenText(c) {
 					b.WriteString(c.Data)
 				}
 			case xhtml.ElementNode:
@@ -94,10 +107,10 @@ func textOf(n *xhtml.Node, spaced, toTable bool, lineTag func(string) bool, noSe
 					stopped = true
 					return
 				}
-				if noSelfLinks && selfLink(c, lineTag) {
+				if noSelfLinks && selfLink(c, lineTag) || isTemplate(c) {
 					continue
 				}
-				line := spaced && lineTag(c.Data)
+				line := spaced && c.Namespace == "" && lineTag(c.Data)
 				if line {
 					b.WriteByte(' ')
 				}
@@ -114,11 +127,17 @@ func textOf(n *xhtml.Node, spaced, toTable bool, lineTag func(string) bool, noSe
 	return b.String()
 }
 
+// isTemplate reports whether n is an HTML template, whose content x/net
+// puts below it and a reader leaves out.
+func isTemplate(n *xhtml.Node) bool {
+	return n.Type == xhtml.ElementNode && n.Namespace == "" && n.Data == "template"
+}
+
 // selfLink reports whether n is a heading's link to itself, which a reader
 // leaves out of the heading's text: an a whose href starts with # and
 // whose text is blank or only permalink marks.
 func selfLink(n *xhtml.Node, lineTag func(string) bool) bool {
-	if n.Data != "a" {
+	if n.Data != "a" || n.Namespace != "" {
 		return false
 	}
 	for _, at := range n.Attr {
@@ -129,10 +148,83 @@ func selfLink(n *xhtml.Node, lineTag func(string) bool) bool {
 	return false
 }
 
-// leftOut are the elements whose text a reader leaves out: a script's and
-// a style's, which a browser does not show, and an xmp's and a
-// plaintext's, which it shows and errata leaves out (README).
-var leftOut = map[string]bool{"script": true, "style": true, "xmp": true, "plaintext": true}
+// leftOut are the HTML elements whose text a reader leaves out: a
+// script's, a style's, a title's, an iframe's, a noscript's, a noembed's and
+// a noframes', which a browser does not show, and an xmp's and a
+// plaintext's, which it shows and errata leaves out (docs/reference.md#html).
+var leftOut = map[string]bool{"script": true, "style": true, "title": true, "iframe": true, "noscript": true,
+	"noembed": true, "noframes": true, "xmp": true, "plaintext": true}
+
+// veiledForeign are the svg and math elements a browser draws nothing of,
+// below which a reader leaves out all text, the text of any HTML inside
+// them too: SVG 2's never-rendered elements (3.2.1), a filter (Filter
+// Effects 1, 7), MathML's annotations, which a semantics hides (MathML
+// Core 3.8), and an mphantom, which it lays out unpainted (3.3.7). The
+// names are x/net's, in its case.
+var veiledForeign = map[string]map[string]bool{
+	"svg": {"clipPath": true, "defs": true, "desc": true, "linearGradient": true, "marker": true, "mask": true,
+		"metadata": true, "pattern": true, "radialGradient": true, "script": true, "style": true, "title": true,
+		"symbol": true, "filter": true},
+	"math": {"annotation": true, "annotation-xml": true, "mphantom": true},
+}
+
+// svgTextDrawers are the svg elements whose character data a browser
+// draws: SVG 2's text content elements (11.1.1) and a foreignObject.
+var svgTextDrawers = map[string]bool{"text": true, "tspan": true, "textPath": true, "foreignObject": true}
+
+// veiledByElement reports whether a browser draws nothing below p: an
+// element of veiledForeign, or a child of an svg switch other than the
+// one it renders, the first child element with no requiredExtensions or
+// systemLanguage that is not itself veiled (SVG 2, 5.6.3; the conditions
+// are not evaluated).
+func veiledByElement(p *xhtml.Node) bool {
+	if veiledForeign[p.Namespace][p.Data] {
+		return true
+	}
+	sw := p.Parent
+	if p.Namespace != "svg" || sw == nil || sw.Type != xhtml.ElementNode || sw.Namespace != "svg" || sw.Data != "switch" {
+		return false
+	}
+	for c := sw.FirstChild; c != nil; c = c.NextSibling {
+		if c.Type != xhtml.ElementNode || veiledForeign[c.Namespace][c.Data] {
+			continue
+		}
+		conditional := false
+		for _, a := range c.Attr {
+			conditional = conditional || strings.EqualFold(a.Key, "requiredExtensions") || strings.EqualFold(a.Key, "systemLanguage")
+		}
+		if !conditional {
+			return c != p
+		}
+	}
+	return true
+}
+
+// hiddenText reports whether a reader leaves out the text node n: its
+// parent is an HTML element of leftOut, an svg or math element a browser
+// draws nothing of holds it, however deep (veiledByElement), or it is svg
+// character data outside a text content element.
+func hiddenText(n *xhtml.Node) bool {
+	if p := n.Parent; p != nil && p.Type == xhtml.ElementNode && p.Namespace == "" && leftOut[p.Data] {
+		return true
+	}
+	for p := n.Parent; p != nil; p = p.Parent {
+		if p.Type == xhtml.ElementNode && veiledByElement(p) {
+			return true
+		}
+	}
+	// In svg a browser draws character data only in a text content element
+	// or a foreignObject, nearer than the svg element holding it.
+	for p := n.Parent; p != nil && p.Type == xhtml.ElementNode && p.Namespace == "svg"; p = p.Parent {
+		if svgTextDrawers[p.Data] {
+			return false
+		}
+		if p.Data == "svg" {
+			return true
+		}
+	}
+	return false
+}
 
 // formattingNames are the HTML standard's formatting elements.
 var formattingNames = map[string]bool{"a": true, "b": true, "big": true, "code": true, "em": true, "font": true, "i": true,
@@ -147,29 +239,25 @@ var formattingNames = map[string]bool{"a": true, "b": true, "big": true, "code":
 // or inside a clone the next rebuild put there. A reconstruction's clone sits so too where text
 // starts a block, so the property tests still cap how often it is met.
 func rebuiltIn(src string, doc *xhtml.Node) map[string]bool {
-	tags := map[string]int{}
-	z := xhtml.NewTokenizer(strings.NewReader(src))
-	for tt := z.Next(); tt != xhtml.ErrorToken; tt = z.Next() {
-		if tt == xhtml.StartTagToken || tt == xhtml.SelfClosingTagToken {
-			name, _ := z.TagName()
-			tags[string(name)]++
-		}
-	}
+	tags := startTags(src)
 	elements, rebuilt := map[string]int{}, map[string]bool{}
+	formatting := func(n *xhtml.Node) bool {
+		return n.Type == xhtml.ElementNode && n.Namespace == "" && formattingNames[n.Data]
+	}
 	var walk func(n *xhtml.Node, in bool)
 	walk = func(n *xhtml.Node, in bool) {
-		if n.Type == xhtml.ElementNode {
-			if formattingNames[n.Data] {
-				elements[n.Data]++
-				top := n // the outermost of the formatting elements n is the first child of
-				for p := top.Parent; p != nil && p.Type == xhtml.ElementNode && formattingNames[p.Data] && p.FirstChild == top; p = top.Parent {
-					top = p
-				}
-				p := top.Parent
-				if p != nil && p.Type == xhtml.ElementNode && !formattingNames[p.Data] && p.FirstChild == top && (in || holdsBlock(n)) {
-					rebuilt[n.Data] = true
-				}
+		if formatting(n) {
+			elements[n.Data]++
+			top := n // the outermost of the formatting elements n is the first child of
+			for p := top.Parent; p != nil && formatting(p) && p.FirstChild == top; p = top.Parent {
+				top = p
 			}
+			p := top.Parent
+			if p != nil && p.Type == xhtml.ElementNode && !formatting(p) && p.FirstChild == top && (in || holdsBlock(n)) {
+				rebuilt[n.Data] = true
+			}
+		}
+		if n.Type == xhtml.ElementNode && n.Namespace == "" {
 			in = in || blockWatched(n.Data)
 		}
 		for c := n.FirstChild; c != nil; c = c.NextSibling {
@@ -182,6 +270,82 @@ func rebuiltIn(src string, doc *xhtml.Node) map[string]bool {
 		out[name] = elements[name] > tags[name]
 	}
 	return out
+}
+
+// startTags counts the start tags of each formatting element's name in src
+// that make an HTML element, as the tree builder reads src. The tokenizer
+// alone reads it so but in svg and math, where the tree builder reads a
+// title, a style or a textarea as markup (NextIsNotRawText), and a start
+// tag of a formatting name may make an svg's element. With svg or math in
+// src, each start tag of such a name is placed by parsing src up to its
+// end and finding the element it made, the last of its name: a cost of
+// the file for each, which the documents compared bear.
+func startTags(src string) map[string]int {
+	lower := strings.ToLower(src)
+	foreign := strings.Contains(lower, "<svg") || strings.Contains(lower, "<math")
+	tags := map[string]int{}
+	treeTags(src, func(name string, _, end int) {
+		if !foreign || !formattingNames[name] || madeIn(src[:end], name) == "" {
+			tags[name]++
+		}
+	})
+	return tags
+}
+
+// treeTags calls tag with the name and the offsets of each start tag in
+// src, as the tree builder's tokenizer reads them: in a page with svg or
+// math, the text after a raw text element's start tag is read as markup
+// where the tag made a foreign element (madeIn), as x/net's parser tells
+// its tokenizer (NextIsNotRawText).
+func treeTags(src string, tag func(name string, start, end int)) {
+	lower := strings.ToLower(src)
+	foreign := strings.Contains(lower, "<svg") || strings.Contains(lower, "<math")
+	z := xhtml.NewTokenizer(strings.NewReader(src))
+	end := 0
+	for tt := z.Next(); tt != xhtml.ErrorToken; tt = z.Next() {
+		start := end
+		end += len(z.Raw())
+		if tt != xhtml.StartTagToken && tt != xhtml.SelfClosingTagToken {
+			continue
+		}
+		b, _ := z.TagName()
+		name := string(b)
+		if foreign && rawNames[name] && madeIn(src[:end], name) != "" {
+			z.NextIsNotRawText()
+		}
+		tag(name, start, end)
+	}
+}
+
+// rawNames are the elements whose text the tokenizer reads raw after their
+// start tag.
+var rawNames = map[string]bool{"title": true, "textarea": true, "style": true, "xmp": true, "iframe": true,
+	"noembed": true, "noframes": true, "script": true, "noscript": true, "plaintext": true}
+
+// madeIn is the namespace of the last element of name in the tree of
+// prefix, in tree order, "" for HTML's or for none. That is most often the
+// element the last start tag of prefix made, but not always: a clone the
+// adoption agency made, or an element fostered out of a table, moves the
+// elements' order away from the tags'. The gap points the strict way, so at
+// worst a caller rejects a refusal that is in fact correct (foreign delta
+// review 1).
+func madeIn(prefix, name string) string {
+	doc, err := xhtml.Parse(strings.NewReader(prefix))
+	if err != nil {
+		panic(err)
+	}
+	ns := ""
+	var walk func(n *xhtml.Node)
+	walk = func(n *xhtml.Node) {
+		if n.Type == xhtml.ElementNode && strings.EqualFold(n.Data, name) {
+			ns = n.Namespace
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(doc)
+	return ns
 }
 
 // blockWatched reports whether an element of name is a pre or a heading.
@@ -212,13 +376,35 @@ func Fold(s string) string {
 
 // GenHTML draws HTML of the elements the readers follow, nested at most
 // depth deep, each end tag sometimes left out, with text, comments, scripts,
-// textareas and stray end tags between them. A table holds sections and
+// textareas, svg and math (genForeign) and stray end tags between them. A table holds sections and
 // rows, and a row cells, as pages write them; a table's end tag is never
 // left out, and no stray end tag of a table's part is drawn, so that no
 // text lands in a table outside a cell: a browser moves such text before
 // the table (foster parenting), and errata, which reads in file order, does
 // not.
 func GenHTML(t *rapid.T, depth int) string {
+	src := genHTML(t, depth)
+	if rapid.IntRange(0, 11).Draw(t, "rebuild") == 11 { // rapid draws the low end most: rebuild at the high one
+		src = genRebuild(t) + src
+	}
+	return src
+}
+
+// genRebuild draws an end tag the adoption agency rebuilds around a
+// block, at the start of a document, so that no pre or heading is open
+// around it, where a reader refuses one: a bold holding text, up to two
+// formatting elements, a div or a p, and inside that, sometimes, an svg or
+// a math left open, then the bold's end tag and the block's. In about one
+// document in twelve, so that the property tests meet a rebuild in a few
+// of each hundred (foreign delta review 3, finding 1).
+func genRebuild(t *rapid.T) string {
+	inner := rapid.SampledFrom([]string{"", "<i>", "<i><u>", "<em>"}).Draw(t, "rebuild inner")
+	block := rapid.SampledFrom([]string{"div", "p"}).Draw(t, "rebuild block")
+	foreign := rapid.SampledFrom([]string{"", "<svg><g>", "<svg><desc>", "<svg><switch><text>", "<svg><text>", "<math><mi>"}).Draw(t, "rebuild foreign")
+	return "<b>x" + inner + "y<" + block + ">z" + foreign + "q</b>w</" + block + ">v"
+}
+
+func genHTML(t *rapid.T, depth int) string {
 	var b strings.Builder
 	n := rapid.IntRange(0, 4).Draw(t, "children")
 	for range n {
@@ -228,10 +414,14 @@ func GenHTML(t *rapid.T, depth int) string {
 }
 
 var (
-	htmlFlowTags = []string{"div", "details", "pre", "listing", "h1", "h2", "h3", "h6", "table", "a", "a", "p", "ul", "ol", "li"} // "a" draws an inline element
+	htmlFlowTags = []string{"div", "details", "pre", "listing", "h1", "h2", "h3", "h6", "table", "a", "a", "p", "ul", "ol", "li", "svg", "math"} // "a" draws an inline element
 	htmlLeaves   = []string{"x", "y z", "\n", "  w\n", "<!--c-->", "<script>s<p>q</script>", "<textarea>t</textarea>", "</div>", "</p>", "</li>", "</h2>", "</pre>", "<br>",
-		"<button>t</button>", "<xmp>t</xmp>", "<span>s</span>", "<img>"} // these reopen formatting elements first
+		"<button>t</button>", "<xmp>t</xmp>", "<span>s</span>", "<img>", templateLeaf} // these reopen formatting elements first
 	htmlInline = []string{"a", "code", "b"}
+	// templateLeaf is a template whose content holds an svg style, which
+	// hides nothing after the template. Where x/net drops it, in an
+	// integration point, the tests compare nothing (XNetDropsTemplate).
+	templateLeaf = "<template><svg><style>s</template>"
 )
 
 // genHTMLInline draws a formatting element, a link, code or bold, around
@@ -269,12 +459,14 @@ func genHTMLNode(t *rapid.T, depth int) string {
 		return genHTMLTable(t, depth)
 	case "a":
 		return genHTMLInline(t, rapid.SampledFrom(htmlInline).Draw(t, "inline tag"), depth-1)
+	case "svg", "math":
+		return genForeign(t, tag, depth)
 	}
 	end := "</" + tag + ">"
 	if rapid.IntRange(0, 3).Draw(t, "omit") == 0 {
 		end = ""
 	}
-	return "<" + tag + ">" + GenHTML(t, depth-1) + end
+	return "<" + tag + ">" + genHTML(t, depth-1) + end
 }
 
 func genHTMLTable(t *rapid.T, depth int) string {
@@ -288,7 +480,7 @@ func genHTMLTable(t *rapid.T, depth int) string {
 		b.WriteString("<tr>")
 		for range rapid.IntRange(0, 3).Draw(t, "cells") {
 			cell := rapid.SampledFrom([]string{"td", "th"}).Draw(t, "cell")
-			b.WriteString("<" + cell + ">" + GenHTML(t, depth-1))
+			b.WriteString("<" + cell + ">" + genHTML(t, depth-1))
 			if rapid.Bool().Draw(t, "close cell") {
 				b.WriteString("</" + cell + ">")
 			}
@@ -391,6 +583,12 @@ var BrowserShapes = []string{
 	"<h1>T<p><code><pre>\n<p></code>x</pre><h2>U</h2>",
 	"<h1>T<p><code><pre>\nx<p></code></pre><h2>U</h2>",
 	"<p ><Code ><pre>\r<p></Code>", // a lone CR is a line feed too (FuzzHTML, the round after 04c52e9)
+	// A textarea in svg or math is a foreign element: its text is markup,
+	// a <b> in it ends the svg, and the line feed after its tag is text.
+	"<h1>A<svg><textarea>B<b>C</b></textarea></svg>D</h1>",
+	"<pre><svg><textarea>\nx<p>y</textarea></svg></pre>",
+	"<pre><math><textarea>\nx</textarea></math></pre>",
+	"<pre><svg/><textarea>\nx<b>y</textarea></pre>",
 	// The page's mode by the standard's rules on its first doctype: a table
 	// opens in a p in quirks mode, and closes it in standards mode, where
 	// the h2 lands in the reopened code inside the h1. The names are in
@@ -438,8 +636,50 @@ var BrowserRefusals = map[string]string{
 // apart, and a doctype changes the parse's mode. golang.org/x/net/html's
 // caption mode leaves th out of the tags that end a caption, which the HTML
 // standard lists (x/net v0.62.0, inCaptionIM), so with a caption the oracle
-// is not the standard.
+// is not the standard, and it drops a template opened in an svg's or a
+// math's integration point and everything after it (XNetDropsTemplate),
+// where it is not either. A reader's read that followed the standard
+// where x/net does not (BrowserRead.StandardOnly) is not compared either.
 func BrowserComparable(src string) bool {
 	return !strings.ContainsAny(src, "&\r\x00") && !strings.Contains(src, "<!") && !strings.Contains(src, "<?") &&
-		!strings.Contains(strings.ToLower(src), "<caption")
+		!strings.Contains(strings.ToLower(src), "<caption") && !XNetDropsTemplate(src)
+}
+
+// XNetDropsTemplate reports whether x/net v0.62.0's tree builder makes no
+// element of a template start tag in src, as it does for one opened in an
+// svg's or a math's integration point, dropping all that follows, where
+// the HTML standard keeps them: the tree of src up to the tag holds no
+// more template elements than the tree up to its start. Only a page with
+// svg or math is parsed so, twice for each such tag.
+func XNetDropsTemplate(src string) bool {
+	lower := strings.ToLower(src)
+	if !strings.Contains(lower, "<template") || !strings.Contains(lower, "<svg") && !strings.Contains(lower, "<math") {
+		return false
+	}
+	dropped := false
+	treeTags(src, func(name string, start, end int) {
+		dropped = dropped || name == "template" && templates(src[:end]) == templates(src[:start])
+	})
+	return dropped
+}
+
+// templates counts the template elements, of any namespace, in the tree
+// x/net builds of src.
+func templates(src string) int {
+	doc, err := xhtml.Parse(strings.NewReader(src))
+	if err != nil {
+		panic(err)
+	}
+	count := 0
+	var walk func(n *xhtml.Node)
+	walk = func(n *xhtml.Node) {
+		if n.Type == xhtml.ElementNode && n.Data == "template" {
+			count++
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(doc)
+	return count
 }

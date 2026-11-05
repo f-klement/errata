@@ -28,6 +28,7 @@ func FuzzParse(f *testing.F) {
 	}
 	f.Add("---\na\n---\n- \tx\n\n\t\t\tcode\n", true, uint16(3), false)
 	f.Add("> ```\n> \tcode\n>\n\t> x\n", true, uint16(0), false)
+	f.Add("<A>\r\xfc", true, uint16(0), false) // a lone CR is a line feed in the prose (FuzzParse, round 4)
 	f.Add("a\r\nb\r\n\r\n    c\r\n", true, uint16(1), false)
 	f.Add("\xef\xbb\xbf---\na\n...\n<!-- x --> y <b>z</b>\n", false, uint16(2), false)
 	// Seeds that cross each bound: definitions, continuations under the
@@ -116,7 +117,7 @@ func FuzzParse(f *testing.F) {
 		if len(p.Text) > 2*len(data) {
 			t.Fatalf("prose of %d bytes from %d", len(p.Text), len(data))
 		}
-		orig := bytes.TrimPrefix(bytes.ReplaceAll([]byte(data), []byte("\r\n"), []byte("\n")), []byte(core.BOM))
+		orig := bytes.TrimPrefix(core.LineFeeds([]byte(data)), []byte(core.BOM)) // as parse folds it
 		for i, pc := range p.pieces {
 			end := len(p.Text)
 			if i+1 < len(p.pieces) {

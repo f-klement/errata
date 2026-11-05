@@ -15,18 +15,18 @@ import (
 	"github.com/f-klement/errata/internal/config"
 )
 
-// listSection is the README's section on errata list.
+// listSection is the reference's section on errata list.
 func listSection(t *testing.T) string {
 	t.Helper()
-	readme, err := os.ReadFile("../../README.md")
+	ref, err := os.ReadFile("../../docs/reference.md")
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, after, ok := strings.Cut(string(readme), "\n### Listing the checks\n")
+	_, after, ok := strings.Cut(string(ref), "\n## Listing the checks\n")
 	if !ok {
-		t.Fatal("README has no section Listing the checks")
+		t.Fatal("docs/reference.md has no section Listing the checks")
 	}
-	section, _, _ := strings.Cut(after, "\n### ")
+	section, _, _ := strings.Cut(after, "\n## ")
 	return section
 }
 
@@ -35,18 +35,18 @@ func fenced(t *testing.T, section, lang string) string {
 	t.Helper()
 	_, block, ok := strings.Cut(section, "```"+lang+"\n")
 	if !ok {
-		t.Fatalf("the README's section has no %s block", lang)
+		t.Fatalf("the reference's section has no %s block", lang)
 	}
 	block, _, _ = strings.Cut(block, "```")
 	return block
 }
 
-// The README's example is what errata list prints: its errata.yaml, loaded
+// The reference's example is what errata list prints: its errata.yaml, loaded
 // by the loader errata runs with from a root of its own, listed as JSON,
-// equals the JSON the README shows, at every depth, extractor entries and
+// equals the JSON the reference shows, at every depth, extractor entries and
 // defaults included. The planted break: renaming at.outside to external in
 // ListJSON, which TestListJSONKeysAreDocumented also catches; and the
-// README's example without the replicas extractor's max_bytes.
+// reference's example without the replicas extractor's max_bytes.
 func TestListJSONExampleIsWhatListPrints(t *testing.T) {
 	section := listSection(t)
 	root := t.TempDir()
@@ -56,7 +56,7 @@ func TestListJSONExampleIsWhatListPrints(t *testing.T) {
 	}
 	cfg, err := config.Load(root, path)
 	if err != nil {
-		t.Fatalf("the README's errata.yaml does not load: %v", err)
+		t.Fatalf("the reference's errata.yaml does not load: %v", err)
 	}
 	var buf bytes.Buffer
 	if err := (ListJSON{}).WriteList(&buf, cfg.Checks, cfg.Required); err != nil {
@@ -67,14 +67,14 @@ func TestListJSONExampleIsWhatListPrints(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := json.Unmarshal([]byte(fenced(t, section, "json")), &want); err != nil {
-		t.Fatalf("the README's example is not JSON: %v", err)
+		t.Fatalf("the reference's example is not JSON: %v", err)
 	}
 	if !reflect.DeepEqual(got, want) {
-		t.Errorf("errata list prints\n%s\nfor the README's errata.yaml, and the README shows\n%s", buf.String(), fenced(t, section, "json"))
+		t.Errorf("errata list prints\n%s\nfor the reference's errata.yaml, and the reference shows\n%s", buf.String(), fenced(t, section, "json"))
 	}
 }
 
-// keyPaths adds to into every key of v that the README's table names, with
+// keyPaths adds to into every key of v that the reference's table names, with
 // prefix before it: the keys of the document and of each check as they are,
 // and those of any object further in as at.file and relation.agree, however
 // deep. An extractor's entry is errata.yaml's, which the section on
@@ -100,9 +100,9 @@ func keyPaths(v map[string]any, prefix string, into map[string]bool) {
 	}
 }
 
-// The README's table documents every key the JSON holds, nested ones
+// The reference's table documents every key the JSON holds, nested ones
 // included, and no other, for a check of each kind. A key added to the
-// output or renamed without the README fails here. The planted breaks: the
+// output or renamed without the reference fails here. The planted breaks: the
 // table without its row for at, ListJSON writing at.outside as external,
 // and the table without its row for generated.max_bytes.
 func TestListJSONKeysAreDocumented(t *testing.T) {
@@ -125,12 +125,12 @@ func TestListJSONKeysAreDocumented(t *testing.T) {
 		}
 	}
 	if !maps.Equal(written, documented) {
-		t.Errorf("the JSON holds keys %v, the README's table documents %v", slices.Sorted(maps.Keys(written)), slices.Sorted(maps.Keys(documented)))
+		t.Errorf("the JSON holds keys %v, the reference's table documents %v", slices.Sorted(maps.Keys(written)), slices.Sorted(maps.Keys(documented)))
 	}
 }
 
 // keyPaths walks every object but an extractor's entry, however deep, so a
-// nested object a later shape adds has its keys held by the README's table
+// nested object a later shape adds has its keys held by the reference's table
 // too. The planted break: walking only at and relation, by name.
 func TestKeyPathsWalkEveryObject(t *testing.T) {
 	got := map[string]bool{}

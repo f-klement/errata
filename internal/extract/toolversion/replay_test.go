@@ -20,7 +20,7 @@ func slowOnly(t *testing.T) {
 // tokens, each go.mod under its limit of lines and tokens up to 1 MiB.
 // None is quadratic, so each is bounded by extracttest.OtherBound.
 // make test reads them at 16 KiB and make slow at 1 MiB. Measured at 32 MiB
-// on a cluster node, the README's tool_version section gives the figures.
+// on a cluster node, docs/reference.md#tool_version gives the figures.
 func toolVersionReplays(size int) []extracttest.Replay[Spec] {
 	fill := func(unit string) string { return strings.Repeat(unit, size/len(unit)) }
 	at := func(tool, file string) Spec { return Spec{Tool: tool, Files: []string{file}} }

@@ -176,7 +176,7 @@ func TestListNeedsGitForAGlob(t *testing.T) {
 	}
 	glob, _ := CheckFiles("json", []string{"*.yaml"}, 0)
 	_, err := glob.List(t.Context(), root)
-	extracttest.WantError(t, err, `json: files lists the glob "*.yaml": the repository root holds no .git`)
+	extracttest.WantError(t, err, `json: files lists the glob "*.yaml": no git repository holds the root`)
 }
 
 // The files are held to FileLimit, witnessed at 2 with the message naming
@@ -556,7 +556,7 @@ func TestTrackedReadsTheIndexOnce(t *testing.T) {
 		t.Errorf("the second key: %v, %v", got, err)
 	}
 	_, err := second.List(t.Context(), root)
-	extracttest.WantError(t, err, "the repository root holds no .git")
+	extracttest.WantError(t, err, "no git repository holds the root")
 }
 
 // skipWorktree is a full checkout of files, committed, with each of marked
@@ -632,9 +632,10 @@ func TestAReadThroughALinkIntoWhatASparseCheckoutLeavesOut(t *testing.T) {
 
 // A root below the top of a sparse checkout finds the repository above it,
 // as git does, so a file the checkout leaves out below the root is unknown
-// there too; a missing file the index does not name is still missing.
-// Planted break: repositoryOf looking only at the root, which read out/b
-// as missing.
+// there too, named by its path below the root; a missing file the index
+// does not name is still missing. Planted breaks: repositoryOf looking only
+// at the root, which read out/b as missing; rootRelative quoting the path
+// from the top, which named s/out/b.
 func TestARootBelowTheTopOfASparseCheckout(t *testing.T) {
 	files := map[string]string{"s/top": "", "s/in/a": "", "s/out/b": ""}
 	for _, index := range []bool{false, true} {
@@ -642,6 +643,12 @@ func TestARootBelowTheTopOfASparseCheckout(t *testing.T) {
 		_, err := Source{File: "out/b", Limit: DefaultMaxBytes}.Stat(t.Context(), root)
 		extracttest.WantError(t, err, "stat out/b: ")
 		extracttest.WantError(t, err, "sparse checkout")
+		// The message names the path below the root, as every message does.
+		want := map[bool]string{false: `git marks "out/b" skip-worktree`, true: `the sparse checkout leaves out "out/", the directory that holds it`}[index]
+		extracttest.WantError(t, err, want)
+		if strings.Contains(err.Error(), "s/out") {
+			t.Errorf("sparse index %v: the message names the path from the top: %v", index, err)
+		}
 		_, err = Source{File: "in/gone", Limit: DefaultMaxBytes}.Stat(t.Context(), root)
 		if !errors.Is(err, fs.ErrNotExist) {
 			t.Errorf("sparse index %v: a file the index does not name: %v, want a missing file", index, err)
@@ -755,5 +762,161 @@ func TestReaderOpen(t *testing.T) {
 	_, _, err = r.Open(Source{File: "a", Limit: 4})
 	if !errors.Is(err, ErrTooLarge) {
 		t.Errorf("Open over the limit: %v", err)
+	}
+}
+
+// globAt is the files the glob lists at root, joined with spaces.
+func globAt(t *testing.T, root, glob string) (string, error) {
+	t.Helper()
+	f, err := CheckFiles("yaml", []string{glob}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	named, err := f.List(t.Context(), root)
+	files := make([]string, len(named))
+	for i, n := range named {
+		files[i] = n.File
+	}
+	return strings.Join(files, " "), err
+}
+
+// A glob at a root below the top of its repository matches the files git
+// tracks below the root, relative to it, and none above or beside it, also
+// when the root is named through a symlink from outside the repository
+// (ADR 0018). Planted breaks: rootIndex handing back the top's index uncut,
+// which matched a.yaml and sub/b.yaml; rootIndex looking up from the root
+// as named, not from its target, which found no repository above link.
+func TestAGlobBelowTheTopOfARepository(t *testing.T) {
+	top := repo(t, map[string]string{"a.yaml": "", "sub/b.yaml": "", "sub/c/d.yaml": "", "sub2/e.yaml": ""})
+	link := filepath.Join(t.TempDir(), "link")
+	extracttest.Symlink(t, filepath.Join(top, "sub"), link)
+	for _, root := range []string{filepath.Join(top, "sub"), link} {
+		if got, err := globAt(t, root, "**/*.yaml"); err != nil || got != "b.yaml c/d.yaml" {
+			t.Errorf("%s: %q, %v, want b.yaml c/d.yaml", root, got, err)
+		}
+	}
+}
+
+// The repository of a root is the nearest one above it, as git finds it:
+// a repository nested in another, untracked by it, lists its own files
+// for a root inside it, and the outer one's are not read. Planted break:
+// repositoryOf taking only a .git file, which passed over the inner .git
+// directory, and the outer one, and refused the root.
+func TestAGlobInANestedRepository(t *testing.T) {
+	outer := repo(t, map[string]string{"in/s/outer.yaml": ""})
+	if err := os.WriteFile(filepath.Join(outer, "in", "s", "inner.yaml"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	git(t, filepath.Join(outer, "in"), "init", "-q")
+	git(t, filepath.Join(outer, "in"), "add", "s/inner.yaml")
+	if got, err := globAt(t, filepath.Join(outer, "in", "s"), "*.yaml"); err != nil || got != "inner.yaml" {
+		t.Errorf("a root in a nested repository: %q, %v, want inner.yaml", got, err)
+	}
+}
+
+// A sparse checkout below a root holds a glob there to the rule of ADR
+// 0008: one that may match what the checkout leaves out below the root is
+// unknown, naming the sparse checkout, and one that stays in the cone
+// reads as in a full checkout. Planted break: Within dropping what the
+// checkout leaves out, which matched in/a.yaml alone.
+func TestAGlobBelowARootInASparseCheckout(t *testing.T) {
+	files := map[string]string{"s/top.yaml": "", "s/in/a.yaml": "", "s/out/b.yaml": ""}
+	for _, index := range []bool{false, true} {
+		root := filepath.Join(extracttest.Sparse(t, files, index, "s/in"), "s")
+		_, err := globAt(t, root, "**/*.yaml")
+		extracttest.WantError(t, err, "sparse checkout")
+		if got, err := globAt(t, root, "in/*.yaml"); err != nil || got != "in/a.yaml" {
+			t.Errorf("sparse index %v: a glob in the cone: %q, %v", index, got, err)
+		}
+	}
+}
+
+// A sparse checkout that leaves out a directory above the root names it
+// from the top, the one name it has, and says so. Planted break:
+// rootRelative taking every path for one below the root, which named "s/"
+// without saying it is a path from the top.
+func TestASparseDirectoryAboveTheRootIsNamedFromTheTop(t *testing.T) {
+	top := extracttest.Sparse(t, map[string]string{"top": "", "in/a": "", "s/sub/b": ""}, true, "in")
+	root := filepath.Join(top, "s", "sub")
+	if err := os.MkdirAll(root, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Source{File: "b", Limit: DefaultMaxBytes}.Stat(t.Context(), root)
+	extracttest.WantError(t, err, `the sparse checkout leaves out "s/" (a path from the top of the repository, at or above the root), the directory that holds it`)
+}
+
+// Every read at a root in a witness's fixture, in .errata/witness or at a
+// directory .errata is refused, a file:, exists and a walk as a glob: the
+// files there are a planted break, read only on its witness's run. A root
+// whose own path holds the names but that is the top of its repository is
+// no fixture of it. Planted breaks: openTree not asking inFixture, which
+// read conf/a.yaml; inFixture asking for the root's absolute path, not its
+// path below the top, which refused the repository at .errata/witness/top;
+// the test of a root .errata dropped, which walked witness/w; every root
+// named .errata refused before the look-up, which refused a repository
+// whose top is named so.
+func TestEveryReadAtARootInAFixtureIsRefused(t *testing.T) {
+	top := repo(t, map[string]string{".errata/witness/w/conf/a.yaml": "port: 9090\n", "conf/a.yaml": "port: 8080\n"})
+	const refused = "is in the fixtures of the repository's witnesses, which errata reads only on a witness's run"
+	for _, rel := range []string{".errata/witness/w", ".errata/witness", ".errata/witness/w/conf"} {
+		root := filepath.Join(top, filepath.FromSlash(rel))
+		_, err := Source{File: "conf/a.yaml", Limit: DefaultMaxBytes}.Read(t.Context(), root)
+		extracttest.WantError(t, err, refused)
+		_, err = Source{File: "a.yaml", Limit: DefaultMaxBytes}.Stat(t.Context(), root)
+		extracttest.WantError(t, err, refused)
+		err = Walk(t.Context(), root, DefaultWalk, func(string, string) bool { return true }, func(string, []string) error { return nil })
+		extracttest.WantError(t, err, refused)
+	}
+	// At a root .errata the directory witness has no parent .errata, so a
+	// walk would enter it: such a root is refused for every read too.
+	errataRoot := filepath.Join(top, ".errata")
+	_, err := Source{File: "witness/w/conf/a.yaml", Limit: DefaultMaxBytes}.Read(t.Context(), errataRoot)
+	extracttest.WantError(t, err, "is a directory .errata, which holds the repository's witnesses")
+	err = Walk(t.Context(), errataRoot, DefaultWalk, func(string, string) bool { return true }, func(string, []string) error { return nil })
+	extracttest.WantError(t, err, "is a directory .errata, which holds the repository's witnesses")
+	own := repo(t, map[string]string{".errata/witness/top/conf/a.yaml": "port: 7070\n"})
+	inner := filepath.Join(own, ".errata", "witness", "top")
+	git(t, inner, "init", "-q")
+	if _, err := (Source{File: "conf/a.yaml", Limit: DefaultMaxBytes}).Read(t.Context(), inner); err != nil {
+		t.Errorf("a repository of its own whose path holds .errata/witness: %v", err)
+	}
+	// A repository whose top is named .errata is no root below a top: it
+	// is read, its witness/w included, since its own fixtures would sit in
+	// .errata/.errata/witness.
+	named := filepath.Join(extracttest.Repo(t, map[string]string{".errata/conf/a.yaml": "port: 6060\n", ".errata/witness/w/conf/a.yaml": "port: 5050\n"}), ".errata")
+	git(t, named, "init", "-q")
+	git(t, named, "add", "-A")
+	if _, err := (Source{File: "conf/a.yaml", Limit: DefaultMaxBytes}).Read(t.Context(), named); err != nil {
+		t.Errorf("a repository whose top is named .errata: %v", err)
+	}
+	walked := false
+	err = Walk(t.Context(), named, DefaultWalk, func(string, string) bool { return true }, func(dir string, _ []string) error {
+		walked = walked || dir == "witness/w/conf"
+		return nil
+	})
+	if err != nil || !walked {
+		t.Errorf("the walk of a repository whose top is named .errata: entered witness/w/conf %v, %v", walked, err)
+	}
+}
+
+// The look for the repository above a root goes 64 directories up, besides
+// the root: a .git 64 up is found, one 65 up is not. Planted break: the
+// loop counting the root among the 64, which missed the .git 64 up.
+func TestTheRepositoryAboveARootIsAtMost64Up(t *testing.T) {
+	for _, up := range []int{maxAbove, maxAbove + 1} {
+		top := repo(t, map[string]string{"x": ""})
+		root := filepath.Join(append([]string{top}, slices.Repeat([]string{"d"}, up)...)...)
+		if err := os.MkdirAll(root, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		real, err := filepath.EvalSymlinks(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, _ := repositoryOf(real)
+		realTop, _ := filepath.EvalSymlinks(top)
+		if found := got == realTop; found != (up == maxAbove) {
+			t.Errorf("a .git %d up: found %v", up, found)
+		}
 	}
 }

@@ -22,7 +22,7 @@ import (
 // reads each byte once, so a file's tokens are at most its bytes; the bound
 // is what a reader spends on each token it keeps, a piece of text, a cell
 // or an item. The densest of the real pages measured, RE2's syntax page,
-// has a token for every 6.4 bytes (README, Limits).
+// has a token for every 6.4 bytes (docs/reference.md#limits).
 const BytesPerToken = 4
 
 // MaxTokens is the most tokens a file of up to limit bytes may hold: one
@@ -86,7 +86,8 @@ const restartTokens = 4096 / BytesPerToken
 // browser shows; it leaves out a doctype, a processing instruction and
 // other bogus comments, the text of the hidden elements, and everything
 // from a <template> to its </template>. Inside an svg or a math element it
-// reads CDATA as text, as a browser does.
+// reads CDATA as text and every element as foreign content (foreign.go),
+// as a browser does, and leaves out the text of the veiled ones.
 //
 // src may hold several blocks of HTML, one after another, each read as a
 // file of its own (Blocks): the Markdown readers scan every HTML block of a
@@ -107,6 +108,9 @@ type Scanner struct {
 	class      string
 	href       string
 	attrsRead  bool
+	fontAttr   bool   // whether the start tag has a color, a face or a size
+	encoding   []byte // the start tag's encoding attribute
+	cond       bool   // whether the start tag has a requiredExtensions or a systemLanguage
 	tokens     int64
 	maxTokens  int64
 	err        error
@@ -115,8 +119,8 @@ type Scanner struct {
 	ends       []int  // where each block ends in src
 	block      int    // the block of the token
 	split      [2]int // text the tokenizer read past a block's end, still to give
-	template   int    // the template elements open
-	foreign    int    // the svg and math elements open
+	tmpl       *nest  // the elements open in a template's content, nil outside one
+	foreign    bool   // whether the tag is a foreign element's (Foreign)
 	raw        string // the element whose text the next token is, if the tokenizer reads it raw
 	rawOpen    string // the element whose text the tokenizer reads raw, until its end tag
 	rawFrom    int    // where that element's start tag starts
@@ -129,6 +133,9 @@ type Scanner struct {
 }
 
 // NewScanner scans src, one block, and refuses it past maxTokens tokens.
+// src has every line end read as LF (core.LineFeeds), as the HTML standard
+// reads a CRLF and a lone CR before it tokenizes; the html kind and the
+// Markdown parse fold it so.
 func NewScanner(src []byte, maxTokens int64) *Scanner {
 	s := &Scanner{z: html.NewTokenizer(bytes.NewReader(src)), src: src, maxTokens: maxTokens, ends: []int{len(src)}, limit: len(src)}
 	s.nest.quirks = true // until the first doctype says otherwise
@@ -175,7 +182,7 @@ func (s *Scanner) Next() bool {
 				return false
 			}
 		}
-		s.z.AllowCDATA(s.foreign > 0)
+		s.z.AllowCDATA(namespace(s.active().top()) != "") // CDATA is text in foreign content
 		tt := s.z.Next()
 		if tt == html.ErrorToken {
 			if err := s.z.Err(); !errors.Is(err, io.EOF) {
@@ -280,7 +287,7 @@ func (s *Scanner) nextBlock(restart bool) bool {
 		return false
 	}
 	s.block++
-	s.template, s.foreign, s.raw, s.rawOpen, s.dropLF = 0, 0, "", "", false
+	s.tmpl, s.raw, s.rawOpen, s.dropLF = nil, "", "", false
 	s.nest.reset()
 	if restart || s.limit < len(s.src) {
 		s.restart(s.ends[s.block-1], len(s.src))
@@ -316,14 +323,11 @@ func (s *Scanner) restart(at, end int) {
 }
 
 // lineFeed is the length of the line feed text starts with, 0 for none,
-// and whether text is that line feed alone. A line feed is a LF, a CR
-// before a LF, or a lone CR, each of which the HTML standard reads as one
-// LF before it tokenizes.
+// and whether text is that line feed alone. src's line ends are folded, so
+// a line feed is a LF.
 func lineFeed(text []byte) (n int, alone bool) {
-	for _, lf := range [...]string{"\r\n", "\n", "\r"} {
-		if bytes.HasPrefix(text, []byte(lf)) {
-			return len(lf), len(text) == len(lf)
-		}
+	if bytes.HasPrefix(text, []byte("\n")) {
+		return 1, len(text) == 1
 	}
 	return 0, false
 }
@@ -331,11 +335,11 @@ func lineFeed(text []byte) (n int, alone bool) {
 // keep classifies the token the tokenizer is at, of type tt, after the raw
 // element raw and with dropLF, and reports whether Next gives it.
 func (s *Scanner) keep(tt html.TokenType, raw string, dropLF bool) bool {
-	s.name = ""
+	s.name, s.foreign = "", false
 	switch tt {
 	case html.TextToken:
 		s.modeSet = s.modeSet || len(bytes.Trim(s.src[s.start:s.end], " \t\r\n\f")) > 0
-		if s.template > 0 || hidden[raw] {
+		if s.tmpl != nil || hidden[raw] {
 			return false
 		}
 		if bytes.HasPrefix(s.src[s.start:s.end], []byte("<![CDATA[")) {
@@ -349,14 +353,17 @@ func (s *Scanner) keep(tt html.TokenType, raw string, dropLF bool) bool {
 			s.start += n
 			s.dropLF = alone // text of the line feed alone leaves the pre empty
 		}
-		// A browser reopens formatting elements before text it inserts: not
-		// a raw element's, nor NULs alone or a pre's first line feed, which
-		// it drops.
-		if raw == "" && len(bytes.Trim(s.src[s.start:s.end], "\x00")) > 0 {
+		// A browser reopens formatting elements before text it inserts as
+		// HTML's: not a raw element's, nor NULs alone or a pre's first line
+		// feed, which it drops, nor text in foreign content.
+		if raw == "" && len(bytes.Trim(s.src[s.start:s.end], "\x00")) > 0 && !s.foreignToken(&s.nest, false, false) {
 			if err := s.nest.reconstruct(); err != "" {
 				s.err = &NestError{At: s.start, msg: err}
 				return false
 			}
+		}
+		if !s.nest.textDrawn() {
+			return false // inside an svg title, say, or right inside an svg (drawn.go)
 		}
 		s.kind = Text
 		if s.nest.pre > 0 || raw != "" {
@@ -367,15 +374,27 @@ func (s *Scanner) keep(tt html.TokenType, raw string, dropLF bool) bool {
 		s.modeSet = true // no doctype first: quirks mode
 		name, attrs := s.z.TagName()
 		s.name, s.attrs, s.class, s.href, s.attrsRead = string(name), attrs, "", "", false
+		s.fontAttr, s.encoding, s.cond = false, nil, false
 		s.closing = tt == html.EndTagToken
 		kept := s.tag(tt == html.SelfClosingTagToken)
+		for _, n := range []*nest{&s.nest, s.tmpl} {
+			if n != nil && n.work > 0 {
+				// A rebuild's work counts as tokens, one for each element
+				// or entry it touched (adopt).
+				s.charge(n.work*BytesPerToken, s.start)
+				n.work = 0
+			}
+		}
+		if s.err != nil {
+			return false
+		}
 		if dropLF && tt == html.EndTagToken && s.nest.ignored {
 			s.dropLF = true // a browser ignores the tag: the pre is empty, its first line feed the tag's
 		}
 		return kept
 	case html.CommentToken:
 		s.kind = Comment
-		return s.template == 0 && bytes.HasPrefix(s.src[s.start:s.end], []byte("<!--"))
+		return s.tmpl == nil && bytes.HasPrefix(s.src[s.start:s.end], []byte("<!--"))
 	case html.DoctypeToken:
 		// The first doctype, before any other token but blanks and
 		// comments, sets the page's mode, by the standard's rules; any later
@@ -390,10 +409,17 @@ func (s *Scanner) keep(tt html.TokenType, raw string, dropLF bool) bool {
 }
 
 // tag follows the elements a tag opens or closes that change what the
-// scanner gives, and reports whether Next gives the tag. A self closing
-// tag opens its element, as a browser reads <pre/> as <pre>, but inside svg
-// or math.
+// scanner gives, and reports whether Next gives the tag. A tag in foreign
+// content is foreignTag's, unless it is read as HTML's. A self closing tag
+// opens its element, as a browser reads <pre/> as <pre>, but an svg or a
+// math, and any foreign element.
 func (s *Scanner) tag(selfClosing bool) bool {
+	n := s.active()
+	if s.foreignToken(n, true, !s.closing) {
+		if kept, html := s.foreignTag(n, selfClosing); !html {
+			return kept && s.tmpl == nil
+		}
+	}
 	// The tokenizer reads the text after a raw element's start tag raw,
 	// inside a template too, and a block that ends in it needs a fresh one.
 	switch {
@@ -402,30 +428,34 @@ func (s *Scanner) tag(selfClosing bool) bool {
 	case s.name == "textarea" || hidden[s.name]:
 		s.raw, s.rawOpen, s.rawFrom = s.name, s.name, s.start
 	}
+	if s.tmpl != nil {
+		return s.templateTag(selfClosing)
+	}
 	if s.name == "template" {
 		if !s.closing {
-			s.template++
-		} else if s.template > 0 {
-			s.template--
+			s.tmpl = &nest{inert: true, quirks: s.nest.quirks}
 		}
-		return false
-	}
-	if s.template > 0 {
 		return false
 	}
 	s.kind = StartTag
 	if s.closing {
 		s.kind = EndTag
-		s.foreignEnd()
 		if err := s.nest.end(s.name); err != "" {
 			s.err = &NestError{At: s.start, msg: err}
 			return false
 		}
 		return true
 	}
-	opens := !selfClosing || s.foreign == 0
-	s.foreignStart(opens)
-	if err := s.nest.start(s.name, opens && !void[s.name]); err != "" {
+	// An svg or a math opens foreign content, its own element in its
+	// namespace, unless it is self closing: a browser takes any start tag
+	// in their namespace as written.
+	name, opens := s.name, !selfClosing
+	if s.name == "svg" || s.name == "math" {
+		name, s.foreign = foreignKey(s.name, s.name), true
+	} else {
+		opens = true
+	}
+	if err := s.nest.start(name, opens && !void[name]); err != "" {
 		s.err = &NestError{At: s.start, msg: err}
 		return false
 	}
@@ -433,30 +463,6 @@ func (s *Scanner) tag(selfClosing bool) bool {
 	s.dropLF = s.name == "pre" || s.name == "listing" || s.name == "textarea"
 	return true
 }
-
-// foreignStart follows the svg and math elements a start tag opens, and the
-// HTML elements that end them in a browser (breaksForeign).
-func (s *Scanner) foreignStart(opens bool) {
-	switch {
-	case (s.name == "svg" || s.name == "math") && opens:
-		s.foreign++
-	case breaksForeign[s.name]:
-		s.foreign = 0
-	}
-}
-
-// foreignEnd follows an svg or a math element's end.
-func (s *Scanner) foreignEnd() {
-	if (s.name == "svg" || s.name == "math") && s.foreign > 0 {
-		s.foreign--
-	}
-}
-
-// breaksForeign are the HTML start tags a browser reads inside svg or
-// math as the end of it.
-var breaksForeign = set(`b big blockquote body br center code dd div dl dt em embed h1 h2 h3 h4 h5 h6
-	head hr i img li listing menu meta nobr ol p pre ruby s small span strong strike sub sup table
-	tt u ul var`)
 
 // void are the elements that have no end tag and hold nothing.
 var void = set(`area base br col embed hr img input keygen link meta param source track wbr`)
@@ -531,6 +537,12 @@ func (s *Scanner) readAttrs() {
 			s.class = string(val)
 		case "href":
 			s.href = string(val)
+		case "color", "face", "size":
+			s.fontAttr = true
+		case "encoding":
+			s.encoding = val
+		case "requiredextensions", "systemlanguage":
+			s.cond = true
 		}
 	}
 }
@@ -566,8 +578,20 @@ func (s *Scanner) Ignored() bool { return s.nest.ignored }
 // closes one, as a browser ignores a stray end tag such as </li> with no
 // li open, or a tag that closes one open, as </listing> closes a div.
 func (s *Scanner) BreaksLine() bool {
-	return (s.kind == StartTag || s.kind == EndTag) && (LineTag(s.name) && !s.nest.ignored || s.nest.closedLine)
+	return (s.kind == StartTag || s.kind == EndTag) && (LineTag(s.name) && !s.foreign && !s.nest.ignored || s.nest.closedLine)
 }
+
+// StandardOnly reports whether the scan has followed a rule of the HTML
+// standard that golang.org/x/net/html v0.62.0, the browser tests' oracle,
+// does not: the adoption agency took a fourth formatting element below a
+// block off the stack (adopt). The browser tests compare no such page
+// with the oracle.
+func (s *Scanner) StandardOnly() bool { return s.nest.standardOnly }
+
+// Foreign reports whether the tag is an element's of svg or math, an svg
+// or a math among them, which no reader takes for the HTML element of its
+// name: a td inside an svg is no cell.
+func (s *Scanner) Foreign() bool { return s.foreign }
 
 // lineTags are the elements a browser starts a new line at, or puts a cell
 // or a rule between. Any other tag, a comment or an inline element such as

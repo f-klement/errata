@@ -175,6 +175,16 @@ func (l *phpLexer) newline(i int) int {
 	return 0
 }
 
+// phpTrue and phpFalse are the words PHP's scanner reads as a boolean, and
+// phpNull the word it reads as null, in any case; phpWords is all of them.
+// A key that is one of them is refused, as PHP refuses it.
+var (
+	phpTrue  = []string{"true", "on", "yes"}
+	phpFalse = []string{"false", "off", "no", "none"}
+	phpNull  = "null"
+	phpWords = append(append(append([]string{}, phpTrue...), phpFalse...), phpNull)
+)
+
 // word is the length of one of words at i, in any case, then blanks.
 func (l *phpLexer) word(i int, words ...string) int {
 	if c := lower(l.at(i)); c != 't' && c != 'o' && c != 'y' && c != 'f' && c != 'n' {
@@ -341,8 +351,8 @@ func (l *phpLexer) lex() bool {
 		if l.at(i) == '[' {
 			section.n = 1
 		}
-		rule, n, past := best(section, offset, phpMatch{n: l.word(i, "true", "on", "yes")}, phpMatch{n: l.word(i, "false", "off", "no", "none")},
-			phpMatch{n: l.word(i, "null")}, label, eq, tokens, blank, eol, comment)
+		rule, n, past := best(section, offset, phpMatch{n: l.word(i, phpTrue...)}, phpMatch{n: l.word(i, phpFalse...)},
+			phpMatch{n: l.word(i, phpNull)}, label, eq, tokens, blank, eol, comment)
 		// No rule matches only a NUL, which readPHP refuses before it lexes.
 		if past || rule < 0 {
 			l.pos, l.tok = len(l.data)+1, phpEnd
@@ -389,7 +399,7 @@ func (l *phpLexer) lexLabel(i int) bool {
 	label := phpMatch{n: l.run(i, isPHPLabel)}
 	n := label.n
 	rule := 5
-	if b := l.word(i, "true", "on", "yes", "false", "off", "no", "none", "null"); b >= n {
+	if b := l.word(i, phpWords...); b >= n {
 		n, rule = b, 2
 	}
 	if label.n > 0 && l.at(i+label.n) == '[' && i+label.n < len(l.data) {
@@ -427,7 +437,10 @@ func (l *phpLexer) lexWord(i int) bool {
 	if c := l.number(i); c > 0 && c >= n {
 		n, tok = c, phpNumber
 	}
-	if c := l.word(i, "true", "on", "yes", "false", "off", "no", "none", "null"); c > 0 && c >= n {
+	// c > 0 decides nothing here while lexValue, the one caller, calls this
+	// only at a byte chars reads, so n is at least 1: its mutant c >= 0 is
+	// equivalent (lonecr delta review 3).
+	if c := l.word(i, phpWords...); c > 0 && c >= n {
 		n, tok = c, phpBool
 	}
 	l.pos = i + n
@@ -525,8 +538,8 @@ func (l *phpLexer) lexValue(i int) bool {
 	}
 	chars := l.chars(i, &phpValueStop, false, false)
 	any := phpMatch{n: 1}
-	rule, n, past := best(single, l.dollar(i), phpMatch{n: l.word(i, "true", "on", "yes")}, phpMatch{n: l.word(i, "false", "off", "no", "none")},
-		phpMatch{n: l.word(i, "null")}, eol, phpMatch{n: l.constant(i)}, phpMatch{n: l.number(i)}, op, eq, chars, l.quoteStart(i),
+	rule, n, past := best(single, l.dollar(i), phpMatch{n: l.word(i, phpTrue...)}, phpMatch{n: l.word(i, phpFalse...)},
+		phpMatch{n: l.word(i, phpNull)}, eol, phpMatch{n: l.constant(i)}, phpMatch{n: l.number(i)}, op, eq, chars, l.quoteStart(i),
 		phpMatch{n: l.blanks(i)}, l.comment(i), any)
 	if past {
 		l.pos, l.tok = len(l.data)+1, phpEnd
@@ -779,7 +792,7 @@ func (p *phpParser) took() { p.itemEnd = p.l.end }
 
 func readPHP(data []byte, m *core.Meter, visit func(*core.Entry) error) error {
 	if i := bytes.IndexByte(data, 0); i >= 0 {
-		return core.LineError(bytes.Count(data[:i], newline)+1, "a NUL byte, at which PHP stops reading the file")
+		return core.LineError(core.LineOf(data, i), "a NUL byte, at which PHP stops reading the file")
 	}
 	l := &phpLexer{data: data}
 	// PHP skips a byte order mark, and a file that is only the mark reads as
@@ -847,12 +860,7 @@ func readPHP(data []byte, m *core.Meter, visit func(*core.Entry) error) error {
 // phpLine is the line of data that holds offset i, for a message.
 func phpLine(data []byte, i int) []byte {
 	i = min(i, len(data))
-	start := bytes.LastIndexByte(data[:i], '\n') + 1
-	end := bytes.IndexByte(data[i:], '\n')
-	if end < 0 {
-		return data[start:]
-	}
-	return data[start : i+end]
+	return bytes.TrimRight(data[core.LineStart(data, i):core.NextLine(data, i)], "\r\n")
 }
 
 // valueOf reads string_or_value after a key's =.

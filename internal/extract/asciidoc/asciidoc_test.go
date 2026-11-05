@@ -336,11 +336,33 @@ func fromDataErr(s Spec, body string) ([]check.Value, error) {
 	return e.(extractor).FromData([]byte(body))
 }
 
+// A lone CR ends a line as a LF does, so a section's match after one is at
+// the line an editor shows; a \v is a character of its line, as \S reads
+// it, and ends none, as Asciidoctor splits lines at LF alone. The case of
+// gate 59da540's FuzzAsciidoc failure, whose property split at LF alone.
+// The planted break: the file read without its line ends folded, which
+// reads no heading after a lone CR. 99eabea, which neither folded nor
+// counted a lone CR, numbered t\vx at line 2.
+func TestALoneCREndsAnAsciiDocLine(t *testing.T) {
+	for body, want := range map[string]string{
+		"== Install\n\rt\vx\nin a block\n": "t\vx@3 in@4 a@4 block@4",
+		"= T\r== Install\rt\n":             "t@3", // the heading is a line of its own
+	} {
+		values, err := fromDataErr(sel(markup.Selector{Target: "section", Section: "Install", Pattern: `(\S+)`}), body)
+		if err != nil {
+			t.Fatalf("%q: %v", body, err)
+		}
+		if got := extracttest.Texts(values); got != want {
+			t.Errorf("%q: got %q, want %q", body, got, want)
+		}
+	}
+}
+
 // Every value of every target is at a line inside its file, on samples of
 // each target's construct.
 func TestEveryValueLineIsInsideItsFile(t *testing.T) {
 	for _, body := range []string{comments, sections, code, tables, lines, "", "= A", "----\n----", "|===\n|Port\n\n|\n|==="} {
-		n := strings.Count(body, "\n") + 1
+		n := core.LastLine([]byte(body))
 		for _, s := range specs {
 			values, err := fromDataErr(s, body)
 			if err != nil {

@@ -111,18 +111,19 @@ type parser struct {
 // stretch is count lines of the file one after the other, from line.
 type stretch struct{ line, count int }
 
-// parse reads data, past a byte order mark, for the target of sel, with
-// at most limit/bytesPerPiece pieces. Every line is read once, and only
+// parse reads data, past a byte order mark and with every line end read as
+// LF (core.LineFeeds), for the target of sel, with at most
+// limit/bytesPerPiece pieces. Every line is read once, and only
 // the delimited blocks the line is in are kept.
 func parse(data []byte, sel *markup.Select, limit int64) (*doc, error) {
-	data = core.DropBOM(data) // three bytes on the first line: the lines stay the file's
+	data = core.DropBOM(core.LineFeeds(data)) // three bytes on the first line: the lines stay the file's
 	p := &parser{d: &doc{}, sel: sel, maxPieces: int(limit / bytesPerPiece)}
 	if sel.Path != nil {
 		p.outline = markup.NewOutline(sel.Path)
 	}
 	for line := range bytes.Lines(data) {
 		p.n++
-		line = bytes.TrimSuffix(bytes.TrimSuffix(line, []byte("\n")), []byte("\r"))
+		line = bytes.TrimSuffix(line, []byte("\n"))
 		if err := p.line(line); err != nil {
 			return nil, err
 		}

@@ -195,7 +195,7 @@ func FuzzExtract(f *testing.F) {
 		if len(got) > core.MaxValues {
 			t.Fatalf("%d values, over the limit", len(got))
 		}
-		count := strings.Count(string(data), "\n") + 1
+		count := core.LastLine(data)
 		for _, v := range got {
 			if v.At.Line < 1 || v.At.Line > count || v.At.File != "f" {
 				t.Fatalf("value %q at %s:%d of %d lines", v.Text, v.At.File, v.At.Line, count)
@@ -281,7 +281,7 @@ func checkOwnLines(t *testing.T, data []byte, s yamlreader.Spec, got []check.Val
 	if len(reached) != len(got) {
 		return
 	}
-	lines := strings.Split(string(data), "\n")
+	lines := strings.Split(string(core.LineFeeds(data)), "\n")
 	for i, r := range reached {
 		if got[i].Text != r.v.Text {
 			return
@@ -289,7 +289,7 @@ func checkOwnLines(t *testing.T, data []byte, s yamlreader.Spec, got []check.Val
 		if !r.blocks {
 			continue
 		}
-		fl, dl := strings.TrimSuffix(lines[got[i].At.Line-1], "\r"), lineOf(r.doc, r.v.At.Line)
+		fl, dl := lines[got[i].At.Line-1], lineOf(r.doc, r.v.At.Line)
 		if !strings.HasSuffix(fl, dl) || strings.Trim(fl[:len(fl)-len(dl)], " ") != "" {
 			t.Fatalf("value %q reported at line %d, which reads %q, not its document's line %q", got[i].Text, got[i].At.Line, fl, dl)
 		}
@@ -380,7 +380,7 @@ func parseDocument(format, text string) ([]*core.Node, []*core.Node, error) {
 
 // lineOf is line k of text, counted from 1, or "" past its end.
 func lineOf(text string, k int) string {
-	lines := strings.Split(text, "\n")
+	lines := strings.Split(string(core.LineFeeds([]byte(text))), "\n")
 	if k < 1 || k > len(lines) {
 		return ""
 	}

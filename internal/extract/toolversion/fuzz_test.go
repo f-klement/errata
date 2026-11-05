@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"golang.org/x/mod/modfile"
+
+	"github.com/f-klement/errata/internal/extract/core"
 )
 
 // Every file of the table reads any bytes without a crash, into versions at
@@ -54,7 +56,7 @@ func FuzzToolVersion(f *testing.F) {
 		if err != nil {
 			return
 		}
-		lines := strings.Split(data, "\n")
+		lines := strings.Split(string(core.LineFeeds([]byte(data))), "\n")
 		tree := slices.Contains([]string{"rust-toolchain", "rust-toolchain.toml", "package.json", "pyproject.toml", "Cargo.toml"}, k.name)
 		for _, v := range got {
 			if v.At.File != "d/"+k.name || v.At.Line < 1 || v.At.Line > len(lines) {

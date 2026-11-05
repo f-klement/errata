@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/f-klement/errata/internal/extract/core"
 	"github.com/f-klement/errata/internal/extract/core/htmlparse"
 	"github.com/f-klement/errata/internal/extract/extracttest"
 )
@@ -36,7 +37,7 @@ func FuzzHTML(f *testing.F) {
 			}
 			return
 		}
-		file := bytes.ReplaceAll([]byte(data), []byte("\r\n"), []byte("\n"))
+		file := core.LineFeeds([]byte(data))
 		lines := bytes.Count(file, []byte("\n")) + 1
 		for _, v := range values {
 			if v.At.Line < 1 || v.At.Line > lines {

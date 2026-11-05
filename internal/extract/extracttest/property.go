@@ -10,6 +10,7 @@ import (
 	"pgregory.net/rapid"
 
 	"github.com/f-klement/errata/internal/check"
+	"github.com/f-klement/errata/internal/extract/core/lineend"
 )
 
 // GenDoc draws a document: mappings and sequences of plain strings. A key may
@@ -56,7 +57,7 @@ func CheckLeaves[S any](t *rapid.T, build func(S) (check.Extractor, error), root
 	if err := os.WriteFile(filepath.Join(root, name), data, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	fileLines := strings.Split(string(data), "\n")
+	fileLines := strings.Split(string(lineend.Fold(data)), "\n")
 	want := map[string]string{}
 	leaves(doc, "$", want)
 	for path, text := range want {

@@ -149,15 +149,15 @@ const lead = 24
 // its generator printed, out, and the place it names: the line, counted
 // from 1, and the column, a byte counted from 1, of the first byte where
 // they part. Each side is quoted from up to lead bytes before that byte to
-// the end of its line, its newline included, so a CR before the newline or
+// the end of its line, its line end included, so a CR before the newline or
 // a missing last newline shows.
 func difference(name string, file, out []byte) (string, check.Location) {
 	i := 0
 	for i < len(file) && i < len(out) && file[i] == out[i] {
 		i++
 	}
-	lineStart := bytes.LastIndexByte(file[:i], '\n') + 1
-	line := 1 + bytes.Count(file[:i], []byte("\n"))
+	lineStart := core.LineStart(file, i)
+	line := core.LineOf(file, i)
 	from := max(lineStart, i-lead)
 	// The bytes before i are the same on both sides, so one start serves
 	// both, moved back to the start of a character: at most UTFMax-1
@@ -179,10 +179,7 @@ func difference(name string, file, out []byte) (string, check.Location) {
 // after the line does begins with ..., and one of a side that ends at i,
 // the first difference, says so.
 func side(has, ended string, data []byte, from, i, lineStart int) string {
-	end := len(data)
-	if nl := bytes.IndexByte(data[i:], '\n'); nl >= 0 {
-		end = i + nl + 1
-	}
+	end := core.NextLine(data, i)
 	if from == end {
 		return ended
 	}

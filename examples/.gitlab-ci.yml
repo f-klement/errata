@@ -1,0 +1,22 @@
+variables:
+  PYTHON_VERSION: "3.12"
+  API_PORT: "8080"
+
+test:
+  image: python:3.12.4-slim
+  script:
+    - pytest
+
+lint:
+  image: python:3.12.4-slim
+  script:
+    - ruff check .
+
+deploy:
+  image: registry.example.com/tools/helm:3
+  variables:
+    IMAGE_TAG: "1.4.0"
+  script:
+    - helm lint chart
+    - helm upgrade --install larder chart --set image.tag=$IMAGE_TAG
+    - kubectl rollout status deployment/web

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+
+	"github.com/f-klement/errata/internal/extract/core"
 )
 
 // Every value of every target over arbitrary Markdown is at a line inside
@@ -29,7 +31,7 @@ func FuzzMarkdown(f *testing.F) {
 			}
 			return
 		}
-		file := bytes.ReplaceAll([]byte(data), []byte("\r\n"), []byte("\n"))
+		file := core.LineFeeds([]byte(data))
 		lines := bytes.Count(file, []byte("\n")) + 1
 		for _, v := range values {
 			if v.At.Line < 1 || v.At.Line > lines {

@@ -1,0 +1,24 @@
+pipeline {
+  agent any
+  environment {
+    API_PORT = '8080'
+  }
+  stages {
+    stage('test') {
+      environment {
+        PYTHON_VERSION = '3.12'
+      }
+      steps {
+        sh 'pytest'
+      }
+    }
+    stage('deploy') {
+      environment {
+        IMAGE_TAG = '1.4.0'
+      }
+      steps {
+        sh 'sh scripts/release.sh'
+      }
+    }
+  }
+}

@@ -19,10 +19,11 @@ func TestDialectsReadWhatTheirToolReads(t *testing.T) {
 		spec             Spec
 		want             string
 	}{
-		// ansible splits lines as str.splitlines does, and counts them at \n.
+		// ansible splits lines as str.splitlines does; errata numbers them at
+		// \n, \r\n and a lone \r, as it numbers every file's.
 		{"ansible: \\f breaks a line", "hosts", "[web]\nh1 a=b\fh2 c=d\n", a("web", "", ""), "h1@2 h2@2"},
 		{"ansible: \\v, \\x1c, NEL and U+2028 break a line", "hosts", "[web]\nh1\vh2\x1ch3\u0085h4 h5 h6\n", a("web", "", ""), "h1@2 h2@2 h3@2 h4@2 h5@2 h6@2"},
-		{"ansible: a lone \\r breaks a line", "hosts", "[web]\rh1 a=1\rh2\r", a("web", "", "a"), "1@1"},
+		{"ansible: a lone \\r breaks a line", "hosts", "[web]\rh1 a=1\rh2\r", a("web", "", "a"), "1@2"},
 		{"ansible: a byte that is not UTF-8 is kept", "hosts", "[web]\nh1 a=\xff\n", a("web", "h1", "a"), "\xff@2"},
 		// ansible drops the comment after a literal it evaluates.
 		{"ansible: a number and a comment", "hosts", "[web:vars]\nx = 8080 # http\n", a("web:vars", "", "x"), "8080@2"},
@@ -34,7 +35,7 @@ func TestDialectsReadWhatTheirToolReads(t *testing.T) {
 		{"ansible: 201 are no literal, and the comment stays", "hosts", "[web:vars]\nx = " + strings.Repeat("[", 201) + strings.Repeat("]", 201) + " # c\n", a("web:vars", "", "x"), strings.Repeat("[", 201) + strings.Repeat("]", 201) + " # c@2"},
 		{"ansible: a host with a port is valid", "hosts", "[web]\n[x]:22 b=2\n", a("web", "", "b"), "2@2"},
 		// configparser reads in text mode: a lone \r ends a line.
-		{"plain: a lone \\r ends a line", "f.ini", "[s]\rk = v\r", ini("f.ini", "s", "k"), "v@1"},
+		{"plain: a lone \\r ends a line", "f.ini", "[s]\rk = v\r", ini("f.ini", "s", "k"), "v@2"},
 		// tox strips a comment, joins a \ line and lowers keys.
 		{"tox: an inline comment", "tox.ini", "[testenv]\ndeps = pytest # pin\n", ini("tox.ini", "testenv", "deps"), "pytest@2"},
 		{"tox: an escaped #", "tox.ini", "[testenv]\ndeps = a\\#b # c\n", ini("tox.ini", "testenv", "deps"), "a#b@2"},
@@ -71,7 +72,7 @@ func TestDialectsRefuseWhatTheirToolRefuses(t *testing.T) {
 		{"ansible: a range of step 0", "hosts", "[web]\nweb[1:3:0]\n", Spec{File: "hosts", Section: "web"},
 			`hosts: line 2: the host "web[1:3:0]" has a range ansible refuses: its step is 0`},
 		{"plain: a lone \\r inside a value's line", "f.ini", "[s]\nk = v\nj = a\rb\n", ini("f.ini", "s", "k"),
-			`f.ini: line 3: "b" is no section header, comment or key with = or :`},
+			`f.ini: line 4: "b" is no section header, comment or key with = or :`},
 		{"plain: not UTF-8", "f.ini", "[s]\nk = \xff\n", ini("f.ini", "s", "k"),
 			"f.ini: line 2: the file is not UTF-8, which configparser refuses"},
 		{"tox: a key set twice", "tox.ini", "[testenv]\ndeps = a\nDeps = b\n", ini("tox.ini", "testenv", "deps"),
@@ -84,6 +85,9 @@ func TestDialectsRefuseWhatTheirToolRefuses(t *testing.T) {
 			"php.ini: line 2: PHP refuses this line: "},
 		{"php: a boolean as a key", "php.ini", "on = 1\n", ini("php.ini", "", "on"),
 			"php.ini: line 1: PHP refuses this line: "},
+		// TestPropertyPHPValuesSitAtTheirLine drew the key no, -rapid.seed=1322686822056283807.
+		{"php: a false word as a key", "php.ini", "[pyd]\r\nno = x\n", ini("php.ini", "pyd", "no"),
+			"php.ini: line 2: PHP refuses this line: "},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			if got := iniError(t, c.file, c.body, c.spec); !strings.HasPrefix(got, c.want) {

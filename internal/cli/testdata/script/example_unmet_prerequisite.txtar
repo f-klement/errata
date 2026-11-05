@@ -1,10 +1,10 @@
-# The third worked example of docs/examples.md: a procedure whose
+# The third worked example of docs/handbook.md: a procedure whose
 # prerequisite is unmet. The runbook for adding a node names the packages and
 # the kernel parameters the node needs; the Ansible role is what declares
 # them. Storage moved from NFS to iSCSI, and search moved off the nodes, and
 # the runbook still asks for nfs-common and vm.max_map_count. Each check is an
 # erratum. With the runbook fixed, both hold. errata.yaml's check
-# docs-examples-are-run holds every block of this example in docs/examples.md
+# docs-examples-are-run holds every block of this example in docs/handbook.md
 # equal to its section here, in order.
 ! exec errata check
 cmp stdout false.txt
@@ -16,8 +16,8 @@ stdout '^0 errata, 0 unknown. Coverage: ran 2, skipped 0.$'
 ! stdout 'FALSE|UNKNOWN'
 ! stderr .
 
-# The page's program check for a file the runbook depends on, which no rule
-# can state: it holds while the file is there and is an erratum once it is gone.
+# The page's exists rule for a file the runbook depends on: it holds while the
+# file is there and is an erratum once it is gone, not an unknown.
 exec errata check -c files.yaml
 stdout '^0 errata, 0 unknown. Coverage: ran 1, skipped 0.$'
 ! stderr .
@@ -78,7 +78,9 @@ checks:
       The runbook has the operator check the kernel parameters that the node role's sysctl file
       sets. If the file is gone, the role sets none of them, and every step that checks one fails.
     scope: repo
-    run: [test, -f, ansible/roles/node/files/99-node.conf]
+    extract:
+      sysctl: {exists: {file: ansible/roles/node/files/99-node.conf}}
+    assert: sysctl[0] == 'true'
 -- docs/runbook.md --
 # Adding a node
 

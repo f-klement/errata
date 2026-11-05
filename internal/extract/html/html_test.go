@@ -147,13 +147,16 @@ func TestCodeBlocksByLanguage(t *testing.T) {
 // A lone CR after <pre> is the pre's first line feed, which a browser
 // drops before it reopens a formatting element, so the </code> after it
 // ends a code the pre's start closed and is read, not refused. The find
-// of FuzzHTML the round after 04c52e9, its seed 66ff48555d1e4d7c. The
-// planted break: only '\n' dropped after <pre>.
+// of FuzzHTML the round after 04c52e9, its seed 66ff48555d1e4d7c. A lone CR
+// inside a pre is a line feed too, which ends its line. The planted breaks:
+// only '\n' dropped after <pre>; a lone CR kept as a CR.
 func TestPreFirstCarriageReturn(t *testing.T) {
 	got := read(t, sel("code", nil), "<p ><Code ><pre>\r<p></Code>")
 	want(t, "find", got, "1:")
 	got = read(t, sel("code", nil), "<pre>\rx\n</pre>")
-	want(t, "lone CR", got, "1:x")
+	want(t, "lone CR", got, "2:x")
+	got = read(t, sel("code", nil), "<pre>a\rb\r</pre>\rc<pre>d</pre>")
+	want(t, "lone CRs in a pre", got, "1:a\nb", "4:d")
 }
 
 const tables = "<table>\n" +
@@ -220,7 +223,7 @@ func fromData(t *testing.T, s Spec, body string) []check.Value {
 // no ending newline.
 func TestEveryValueLineIsInsideItsFile(t *testing.T) {
 	for _, body := range []string{comments, sections, code, tables, "\xef\xbb\xbf<h1>A</h1>\r\n<!-- x -->\r\n<pre>y\r\n</pre>", "", "<h1>A", "<table><td>Port<tr><td>1"} {
-		lines := strings.Count(strings.ReplaceAll(body, "\r\n", "\n"), "\n") + 1
+		lines := core.LastLine([]byte(body))
 		for _, s := range specs {
 			for _, v := range fromData(t, s, body) {
 				if v.At.Line < 1 || v.At.Line > lines {

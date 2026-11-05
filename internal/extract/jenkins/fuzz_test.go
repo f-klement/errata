@@ -57,7 +57,7 @@ func FuzzJenkins(f *testing.F) {
 			}
 			return
 		}
-		lines := strings.Count(data, "\n") + 1
+		lines := core.LastLine([]byte(data))
 		for _, v := range got {
 			if v.At.Line < 1 || v.At.Line > lines {
 				t.Fatalf("%q at line %d of %d", v.Text, v.At.Line, lines)
@@ -93,7 +93,7 @@ func checkTokens(t *testing.T, data []byte) {
 		if tok.start < end || tok.end < tok.start || tok.end > len(data) {
 			t.Fatalf("token %+v after offset %d, in %d bytes", tok, end, len(data))
 		}
-		if want := 1 + bytes.Count(data[:tok.start], []byte("\n")); tok.line != want {
+		if want := core.LineOf(data, tok.start); tok.line != want {
 			t.Fatalf("token %+v at line %d, want %d", tok, tok.line, want)
 		}
 		if tok.kind == tokEOF {

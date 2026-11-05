@@ -19,7 +19,11 @@ archives:
     format_overrides:
       - goos: windows
         formats: [zip]
-    files: [LICENSE, README.md]
+    # The pages the README's Documentation section links, so those links resolve in an unpacked
+    # archive as on the forge (ci/tests/pipeline.sh). The ADRs and GLOSSARY.md stay out: a link
+    # to one resolves on the forge only. examples/**/* matches no file directly in examples/, as a
+    # snapshot archive showed, so examples/* is there too.
+    files: [LICENSE, README.md, docs/*.md, examples/*, examples/**/*]
 
 kos:
   - main: ./cmd/errata

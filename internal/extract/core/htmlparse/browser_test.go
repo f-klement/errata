@@ -7,6 +7,7 @@ import (
 
 	"pgregory.net/rapid"
 
+	"github.com/f-klement/errata/internal/extract/core"
 	"github.com/f-klement/errata/internal/extract/extracttest"
 )
 
@@ -17,7 +18,7 @@ import (
 // scan's refusal.
 func scanReads(src string) (extracttest.BrowserRead, error) {
 	var out extracttest.BrowserRead
-	s := NewScanner([]byte(src), 1<<30)
+	s := NewScanner(core.LineFeeds([]byte(src)), 1<<30) // as the html kind folds it
 	s.Headings()
 	var pre, head strings.Builder
 	inPre, inHead := false, false
@@ -44,6 +45,7 @@ func scanReads(src string) (extracttest.BrowserRead, error) {
 			head.WriteByte(' ')
 		}
 	}
+	out.StandardOnly, out.Rebuilt = s.StandardOnly(), s.nest.rebuilds > 0
 	if err := s.Err(); err != nil {
 		return out, err
 	}
@@ -61,13 +63,22 @@ func scanReads(src string) (extracttest.BrowserRead, error) {
 // sameScan fails t unless the scanner places src's text in its pres and
 // headings as the HTML standard's tree builder does, or refuses src for a
 // heading inside a heading where the tree has one, for the adoption agency,
-// which it returns as "formatting", or past a bound.
+// which it returns as "formatting", or past a bound. It compares nothing
+// where the oracle is not the standard: "standard" where the scan says it
+// followed the standard where x/net does not, "template" where x/net
+// drops a template.
 func sameScan(t interface {
 	Helper()
 	Fatalf(string, ...any)
 }, src string) string {
 	t.Helper()
 	got, err := scanReads(src)
+	switch {
+	case got.StandardOnly:
+		return "standard" // errata followed the standard where x/net does not
+	case extracttest.XNetDropsTemplate(src):
+		return "template" // x/net drops the template and all after it
+	}
 	want := extracttest.BrowserReads(src, LineTag, false)
 	if err != nil {
 		switch msg := err.Error(); {
@@ -102,6 +113,12 @@ func TestScanShapes(t *testing.T) {
 	for _, src := range extracttest.BrowserShapes {
 		got, err := scanReads(src)
 		want := extracttest.BrowserReads(src, LineTag, false)
+		if std, ok := extracttest.StandardReads[src]; ok {
+			want.Pres, want.Headings = std.Pres, std.Headings // x/net is not the standard here
+		} else if got.StandardOnly || extracttest.XNetDropsTemplate(src) {
+			t.Errorf("%q: the oracle is not the standard here, and StandardReads holds no read", src)
+			continue
+		}
 		if refusal, ok := extracttest.BrowserRefusals[src]; ok {
 			if err == nil || !strings.Contains(err.Error(), refusal) {
 				t.Errorf("%q: got %v, want the refusal %q", src, err, refusal)
@@ -132,18 +149,29 @@ func TestScanShapes(t *testing.T) {
 // breaks: </table> blocked by an open cell (delta review 2 of 9195a5e,
 // finding 1); the list item scope taken out of </li>.
 func TestTheScanIsTheBrowsers(t *testing.T) {
-	cases, formatting := 0, 0
+	cases, rebuilt, why := 0, 0, map[string]int{}
 	rapid.Check(t, func(t *rapid.T) {
 		for range 20 {
 			cases++
-			if sameScan(t, extracttest.GenHTML(t, 4)) == "formatting" {
-				formatting++
+			src := extracttest.GenHTML(t, 4)
+			if got, _ := scanReads(src); got.Rebuilt {
+				rebuilt++
 			}
+			why[sameScan(t, src)]++
 		}
 	})
-	t.Logf("%d of %d generated documents refused for the adoption agency", formatting, cases)
-	if formatting*50 > cases {
-		t.Errorf("%d of %d generated documents were refused for the adoption agency, over one in fifty", formatting, cases)
+	t.Logf("of %d generated documents %d met a rebuild, %d were refused for the adoption agency, %d not compared where errata followed the standard and x/net does not, %d where x/net drops a template",
+		cases, rebuilt, why["formatting"], why["standard"], why["template"])
+	if rebuilt*100 < cases {
+		t.Errorf("%d of %d generated documents met a rebuild, under one in a hundred", rebuilt, cases)
+	}
+	if why["template"]*10 > cases {
+		t.Errorf("%d of %d generated documents were not compared, as x/net drops a template there, over one in ten", why["template"], cases)
+	}
+	for _, w := range []string{"formatting", "standard"} {
+		if why[w]*50 > cases {
+			t.Errorf("%d of %d generated documents were %s, over one in fifty", why[w], cases, map[string]string{"formatting": "refused for the adoption agency", "standard": "not compared, as errata followed the standard where x/net does not"}[w])
+		}
 	}
 }
 

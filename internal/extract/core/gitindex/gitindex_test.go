@@ -229,7 +229,7 @@ func TestReadKeepsWhatASparseCheckoutLeavesOut(t *testing.T) {
 // past, which listed only the split index's own few entries.
 func TestReadRefuses(t *testing.T) {
 	_, err := readIndex(extracttest.Repo(t, map[string]string{"a": "x"}))
-	extracttest.WantError(t, err, "the repository root holds no .git")
+	extracttest.WantError(t, err, "no git repository holds the root")
 
 	_, err = readIndex(extracttest.Repo(t, map[string]string{".git": "nothing\n"}))
 	extracttest.WantError(t, err, "the file .git names no gitdir")

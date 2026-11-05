@@ -18,7 +18,7 @@ import (
 // a key is removed or renamed or a value changes its meaning. A new key does
 // not change it, and neither does a new value of type or compare, or a new
 // kind of extractor: a consumer reads a check with one it does not know as
-// a check that changed. The README's "Listing the checks" says the same.
+// a check that changed. docs/reference.md#listing-the-checks says the same.
 const ListVersion = 1
 
 // Lister writes the checks a config loads, as errata list prints them, and
@@ -42,7 +42,7 @@ func ListFormatNames() []string {
 
 // ListJSON is the format a program reads: one object with the version of its
 // shape and every check in the order the config holds them, each with the
-// values the loader resolved. The README's "Listing the checks" documents
+// values the loader resolved. docs/reference.md#listing-the-checks documents
 // the keys; TestListJSONKeysAreDocumented holds the two together.
 //
 // The relation of a rule is an object, so a compare mode on agree is one

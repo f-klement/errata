@@ -39,8 +39,10 @@ type Limits struct {
 // and a path, which is at most l.Name long.
 func (l Limits) gitFile() int64 { return int64(l.Name) + 64 }
 
-// ErrNoRepository refuses a root that holds no .git.
-var ErrNoRepository = errors.New("the repository root holds no .git, so errata cannot list the files git tracks; run errata at the top of a git repository")
+// ErrNoRepository refuses a root that holds no .git. Read is handed the
+// top of the repository that holds a run's root, or the root itself when
+// none above it does (core's repositoryOf), so the message names both.
+var ErrNoRepository = errors.New("no git repository holds the root: neither it nor a directory above it holds a .git, so errata cannot list the files git tracks; run errata inside a git repository")
 
 // ErrDevice refuses a device, such as /dev/null, before it is opened.
 var ErrDevice = errors.New("it is a device, which errata does not open")
@@ -69,7 +71,8 @@ const (
 // git: the index of a worktree or a submodule is in the directory its .git
 // file names. Versions 2, 3 and 4 of the index are read, with SHA-1 or
 // SHA-256 object names; a split index, whose entries are in a second file,
-// is refused. A root that is not the top of a git repository is refused,
+// is refused. A root that holds no .git is refused (a root below the top
+// is read through the top's index, Within),
 // and so is a .git file that names a directory that is not there, an index
 // that is not a regular file, and one over l.Bytes bytes. A version 4
 // index writes each path as what it keeps of the path before and a
@@ -235,6 +238,89 @@ func (ix Index) Below(dir string) (Index, error) {
 	// A part of entries in git's order is in it, and so is what is left once
 	// one prefix is cut from every path.
 	return Index{entries: below, left: left, sorted: ix.sorted}, nil
+}
+
+// Within is the entries of ix below the directory dir, relative to ix's
+// root and written with slashes, with dir and its slash cut from each
+// path: what git's index lists below a root that sits below the top of
+// its repository (ADR 0018), so every list of paths and every lookup is
+// relative to that root and names nothing above it. What a sparse
+// checkout leaves out below dir is cut the same way. Each entry the
+// repository's own run passes over as a witness's fixture is passed over
+// still: one whose fixture is below dir keeps its path below dir, which
+// check.Witnessed reads as before. Within refuses:
+//
+//   - a dir in a fixture of a witness, in .errata/witness, or that is a
+//     directory .errata (InFixture): a planted break is read only on its
+//     witness's run (ADR 0015);
+//   - a dir in a directory a sparse index lists as one entry: the
+//     working tree lacks every file a clone holds below the root, so no
+//     glob there can know its set;
+//   - an entry below dir only in another case, such as Examples/x for
+//     examples, which macOS and Windows open as one directory, so the
+//     root would hold files there that the cut leaves out, as Below
+//     refuses one below a fixture;
+//   - a dir the index lists no file below: a clone holds no such
+//     directory, so a glob there would match nothing on a tree CI
+//     never sees.
+//
+// What Within keeps is a part of ix, so the bounds ix was read under hold.
+func (ix Index) Within(dir string) (Index, error) {
+	if err := InFixture(dir); err != nil {
+		return Index{}, err
+	}
+	if at, left := ix.LeftOut(dir); left && strings.HasSuffix(at, "/") {
+		holds := "the directory that holds the root " + clip.Quote(dir)
+		if at == dir+"/" {
+			holds = "the root itself"
+		}
+		return Index{}, fmt.Errorf("the sparse checkout leaves out %s, %s, which git's sparse index lists as one entry, so errata cannot list the files a clone holds there; add the directory to the sparse checkout (git sparse-checkout add), or run errata in a full checkout", clip.Quote(at), holds)
+	}
+	prefix := dir + "/"
+	segs := strings.Split(dir, "/")
+	within := []Entry{}
+	for _, e := range ix.entries {
+		in, ok := strings.CutPrefix(e.Path, prefix)
+		if !ok {
+			if _, folded := foldedBelow(e.Path, segs); folded {
+				// Only the index's spelling of the root is named, never
+				// the file below it: on Linux that is another directory,
+				// beside the root, whose files are no business of the run.
+				spelt := strings.Join(strings.SplitN(e.Path, "/", len(segs)+1)[:len(segs)], "/")
+				return Index{}, fmt.Errorf("git's index spells the root %s as %s for some of its entries, and macOS and Windows open the two as one directory, so errata cannot tell the files the root holds; give --root as git's index spells it, %s, or rename the directory in git so that one spelling is left", clip.Quote(dir), clip.Quote(spelt), clip.Quote(spelt))
+			}
+			continue
+		}
+		within = append(within, Entry{Path: in, Mode: e.Mode})
+	}
+	var left []string
+	for _, p := range ix.left {
+		if in, ok := strings.CutPrefix(p, prefix); ok && in != "" {
+			left = append(left, in)
+		}
+	}
+	if len(within) == 0 && len(left) == 0 {
+		return Index{}, fmt.Errorf("git's index lists no file below the root %s; a clone holds only the files git tracks, so errata cannot list what this root holds", clip.Quote(dir))
+	}
+	return Index{entries: within, left: left, sorted: ix.sorted}, nil
+}
+
+// InFixture refuses dir, a root's path below the top of its repository
+// written with slashes, when it is in the fixture of a witness or in
+// .errata/witness (check.Witnessed), or is itself a directory .errata, in
+// any case: the files there are a planted break, which errata reads only
+// on that witness's run (ADR 0015, ADR 0018). At a root .errata the
+// directory witness has no parent named .errata, so neither a glob nor a
+// walk would know to pass over it. Within refuses such a root for every
+// list of the index, and core for every read under it.
+func InFixture(dir string) error {
+	if strings.EqualFold(path.Base(dir), ".errata") {
+		return fmt.Errorf("the root %s is a directory .errata, which holds the repository's witnesses, read only on a witness's run; run errata at the repository's top, or at a directory outside .errata", clip.Quote(dir))
+	}
+	if !check.Witnessed(dir + "/") {
+		return nil
+	}
+	return fmt.Errorf("the root %s is in the fixtures of the repository's witnesses, which errata reads only on a witness's run; run errata at the repository's top, or at a directory outside .errata/witness", clip.Quote(dir))
 }
 
 // fileAndDir is a path entries list both as an entry and with entries

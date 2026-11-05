@@ -1,9 +1,9 @@
-# The first worked example of docs/examples.md: a document naming the wrong
+# The first worked example of docs/handbook.md: a document naming the wrong
 # port. AGENTS.md tells an agent where the staging database listens; the
 # staging config moved it to a connection pooler on 6432 and AGENTS.md still
 # says 5432. The host check holds and the port check is an erratum. With the
 # document fixed, both hold. errata.yaml's check
-# docs-examples-are-run holds every block of this example in docs/examples.md
+# docs-examples-are-run holds every block of this example in docs/handbook.md
 # equal to its section here, in order.
 ! exec errata check
 cmp stdout false.txt

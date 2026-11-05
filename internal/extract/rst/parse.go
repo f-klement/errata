@@ -15,11 +15,12 @@ type doc struct {
 	starts []int // the offset where each line starts; a byte order mark is no part of the first
 }
 
-// newDoc is data cut at its newlines. A CR before a newline is no part of
-// its line, so the lines are the file's whether it ends them with LF or
-// CRLF. A file that ends in a newline has an empty line after it, which
+// newDoc is data cut at its line ends, each read as LF, a CRLF and a lone
+// CR alike (core.LineFeeds), so the lines are the file's however it ends
+// them. A file that ends in a newline has an empty line after it, which
 // is blank and so reads as nothing.
 func newDoc(data []byte) *doc {
+	data = core.LineFeeds(data)
 	d := &doc{data: data, starts: []int{len(data) - len(core.DropBOM(data))}}
 	for i, c := range data {
 		if c == '\n' {
@@ -39,8 +40,7 @@ func (d *doc) line(i int) []byte {
 		end = d.starts[i+1]
 	}
 	l := d.data[d.starts[i]:end]
-	l = bytes.TrimSuffix(l, []byte("\n"))
-	return bytes.TrimSuffix(l, []byte("\r"))
+	return bytes.TrimSuffix(l, []byte("\n"))
 }
 
 // indent is the column of the first character of line i that is no

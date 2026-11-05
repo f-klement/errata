@@ -95,6 +95,20 @@ func TestRunGeneratedQuotesAroundTheDifference(t *testing.T) {
 	}
 }
 
+// The difference is at the line and column a lone CR starts, as at a LF,
+// and each side is quoted from that line's start to its end, its line end
+// included, a CRLF whole. The planted breaks: the line counted at LF alone
+// (line 1, column 5), the line's start found at the last LF, and the quote
+// cut at the CR of a CRLF.
+func TestRunGeneratedPlacesALoneCRsLine(t *testing.T) {
+	root, c := generated(t, []byte("a\rb\rcX\r\nz\n"), `printf 'a\rb\rcY\r\nz\n'`)
+	res := RunGenerated(context.Background(), root, c)
+	want := `out.md:3, column 2, differs from what its generator prints: the file has "cX\r\n", the generator printed "cY\r\n"`
+	if res.Message != want || res.At.Line != 3 {
+		t.Fatalf("message = %q at %d\nwant      %q at 3", res.Message, res.At.Line, want)
+	}
+}
+
 // A committed file that is not there is an erratum, not an unknown: the
 // generator ran and printed a file the repository lacks. Nothing at a name
 // below a file is no file either, as exists reads it. The result points at

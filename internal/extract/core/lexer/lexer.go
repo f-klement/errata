@@ -5,7 +5,7 @@
 // nests or is one character long. The lexer reads a file once, left to right,
 // and skips a string literal whole, so a comment marker inside one is no
 // comment. It parses nothing else: what a row cannot state, such as a shell
-// heredoc, it does not understand (README, Code comments).
+// heredoc, it does not understand (docs/reference.md#comment).
 //
 // A reader reads the table through core (core.Language), as it reads every
 // package below core. The comment extractor reads the comments of a row; the

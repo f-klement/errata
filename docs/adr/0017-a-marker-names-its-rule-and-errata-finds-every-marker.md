@@ -24,8 +24,8 @@ The API listens on port <!-- errata: api-port -->8080<!-- /errata -->.
   a line break among them, read as one space. Markers do not nest. A comment whose text starts
   with `errata:` or `/errata` and that is no opener or closer does not parse.
 - In Markdown a marker is a comment the CommonMark parse reads as HTML, inline or a comment block,
-  and its value is the prose between, in one block and one table cell. In a file the comment lexer reads (README,
-  Code comments), a marker is that HTML comment text written inside a comment of the language, and a value
+  and its value is the prose between, in one block and one table cell. In a file the comment lexer reads ([reference,
+  `comment`](../reference.md#comment)), a marker is that HTML comment text written inside a comment of the language, and a value
   runs on only through comments with blanks between them. In HTML and XML a marker is a comment of
   the file. A marker in a code block, a code span or a string literal is no marker; one in any
   other file, reStructuredText and AsciiDoc among them, or in Markdown's other HTML blocks, such

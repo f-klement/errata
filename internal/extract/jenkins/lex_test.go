@@ -2,10 +2,13 @@ package jenkins
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/f-klement/errata/internal/extract/core"
+	"github.com/f-klement/errata/internal/extract/extracttest"
 )
 
 // tokens is the lexer's reading of src, one token a word: n for a name,
@@ -45,6 +48,9 @@ func tokens(src string) string {
 func TestLexerTokens(t *testing.T) {
 	for _, c := range []struct{ src, want string }{
 		{"a = 'b' // c = 'd'\n", "n = s1'b' ;"},
+		{"a\r\nb\rc\r", "n ; n ; n ;"}, // a CRLF is one line end, a lone CR another (groovy.g, ONE_NL)
+		{"a \\\r\nb \\\rc \\", "n n n \\"},
+		{"a // c\rb", "n ; n"},
 		{"a /* = 'x' \n */ b", "n n"},
 		{"#!/usr/bin/env groovy\na", "; n"},
 		{"x #!", "n # !"},
@@ -213,5 +219,40 @@ func TestLexerHelpers(t *testing.T) {
 		if got := escape([]byte(c.src), 0, c.q); got != c.want {
 			t.Errorf("escape(%q, %d) is %d, want %d", c.src, c.q, got, c.want)
 		}
+	}
+}
+
+// A run of backslashes, each asked whether a line end follows it, lexes in
+// time in proportion to the file: sixteen times the bytes take at most 24
+// times the time, with a tenth of a second for the timer (ADR 0003). Each
+// size is the fastest of three reads, as extracttest's replay bounds take
+// it, so a throttled pod slowing one read cannot fail the test; the
+// quadratic form takes 256 times as long at 16 times the bytes, so a fast
+// node cannot pass it either. The planted break: lineEndAt scanning to the
+// next line end, which took 6.1 s for 128 KiB (delta review of b9e4bc4).
+func TestLexerIsLinearInBackslashes(t *testing.T) {
+	measure := func(size int) time.Duration {
+		data := []byte(strings.Repeat("\\ ", size/2))
+		best := time.Duration(math.MaxInt64)
+		for range 3 {
+			start := time.Now()
+			l := newLexer(data, nil)
+			for {
+				tok, err := l.next()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if tok.kind == tokEOF {
+					break
+				}
+			}
+			best = min(best, time.Since(start))
+		}
+		return best
+	}
+	t1, t16 := measure(16<<10), measure(256<<10)
+	t.Logf("16 KiB: %v; 256 KiB: %v", t1, t16)
+	if limit := 24*t1 + 100*time.Millisecond*extracttest.RaceSlowdown; t16 > limit {
+		t.Errorf("sixteen times the bytes took %v, over %v", t16, limit)
 	}
 }

@@ -1,9 +1,9 @@
-# The second worked example of docs/examples.md: a derived number that
+# The second worked example of docs/handbook.md: a derived number that
 # drifted from what derives it. The backup policy keeps a week of backups, and
 # the number of backups to keep follows from the schedule. The schedule went
 # from every 6 hours to every hour and keep_last stayed at 28, which now covers
 # 28 hours. With keep_last raised to 168, it holds. errata.yaml's check
-# docs-examples-are-run holds every block of this example in docs/examples.md
+# docs-examples-are-run holds every block of this example in docs/handbook.md
 # equal to its section here, in order.
 ! exec errata check
 cmp stdout false.txt

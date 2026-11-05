@@ -1,7 +1,6 @@
 package coretest
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"reflect"
@@ -83,7 +82,7 @@ func CheckEntryValues(t *testing.T, e core.EntryExtractor, data []byte, bound in
 	got, err := e.FromData(data)
 	var want []string
 	total := 0
-	lines := bytes.Count(data, []byte("\n")) + 1
+	lines := core.LastLine(data)
 	rerr := e.Read(data, nil, func(en *core.Entry) error {
 		if en.Line < 1 || en.Line > lines {
 			t.Fatalf("an entry at line %d of %d", en.Line, lines)

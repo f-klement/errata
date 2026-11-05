@@ -60,7 +60,7 @@ func checkLines(t interface{ Fatalf(string, ...any) }, lang lexer.Language, patt
 		}
 		t.Fatalf("%s %q: %v", lang.Name, data, err)
 	}
-	lf := bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n"))
+	lf := core.LineFeeds(data)
 	total := bytes.Count(lf, []byte("\n")) + 1
 	classed := commentLines(lang, lf)
 	for _, v := range vs {

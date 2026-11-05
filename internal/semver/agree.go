@@ -40,7 +40,7 @@ func (v Value) String() string {
 // MaxIntervals is the most intervals the ranges of one comparison may hold,
 // counted as a Reader parses them. Each alternative of a range, each piece
 // a != leaves, and each release a comparator names a pre-release of, is
-// one; real ranges hold one to a few. The README states
+// one; real ranges hold one to a few. docs/reference.md#compare states
 // the time the bound allows, measured with hostile ranges.
 const MaxIntervals = 1_000_000
 

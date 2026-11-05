@@ -1,0 +1,13 @@
+{
+  "family": "larder",
+  "containerDefinitions": [
+    {
+      "name": "api",
+      "image": "registry.example.com/larder/api:1.4.0",
+      "environment": [
+        {"name": "APP_CONFIG", "value": "{\"port\": 8080}"},
+        {"name": "LOG_CONFIG", "value": "level: info"}
+      ]
+    }
+  ]
+}

@@ -1,0 +1,156 @@
+# A --root below the top of a git repository reads the index of the
+# repository above it and sees only the entries below the root (ADR 0018).
+# Paths are reported relative to the root, and nothing above it is read:
+# the top's conf/a.yaml and b.yaml hold 7070, and no check may see them.
+env GIT_CONFIG_NOSYSTEM=1
+env GIT_CONFIG_GLOBAL=/dev/null
+symlink app/up.yaml -> ../b.yaml
+symlink app/docs/notes.md -> ../../notes.md
+exec git init -q
+exec git add conf b.yaml notes.md app
+
+# 1. A glob, the marker walk and a witness all read the index below app:
+# the rule finds app's 8080 at paths relative to app, the walk passes over
+# app/docs/notes.md, a link to the top's notes.md and its 7070, and the
+# witness's fixture, app/.errata/witness/drift, gives 9090, so it holds. Planted
+# break: the whole index read for the root, which makes the glob match no
+# file of app and refuses the witness's fixture.
+exec errata check --root app -c ok.yaml
+stdout '^0 errata, 0 unknown. Coverage: ran 2, skipped 0. 1 witness held.$'
+
+# 2. ** matches only what is below the root: the top's conf/a.yaml is not
+# read, and the paths in a report are relative to app. The assert is false
+# on purpose, so the report lists every value the glob found. Planted
+# break: the entries kept with their paths from the top, where **/a.yaml
+# finds conf/a.yaml at both levels.
+! exec errata check --root app -c every.yaml
+stdout '^FALSE every-port \(repo\)$'
+stdout '^ +port\[0\] = "8080" at conf/a.yaml:1$'
+! stdout 'port\[1\]'
+! stdout 'app/conf'
+! stdout 7070
+
+# 3. A tracked symlink below the root that leads above it is refused as one
+# that leads out, whether a glob matches it or files: names it. Planted
+# break: resolve's test of a name outside the root dropped, which read the
+# link as a path that escapes the root and not as one that leads out.
+! exec errata check --root app -c link.yaml
+stdout '^UNKNOWN by-glob \(repo\)$'
+stdout '^UNKNOWN by-name \(repo\)$'
+stdout -count=2 'a symlink leads outside the repository'
+! stdout 7070
+
+# 4. A glob that leaves the root does not load.
+! exec errata check --root app -c up.yaml
+stderr 'file "\.\./\*\.yaml" is outside the repository'
+
+# 5. A root inside a witness's fixture is refused for every read: a glob, a
+# file:, exists and a witness's own fixture. Its files are a planted break,
+# read only on the witness's run. Planted break: openTree not asking
+# inFixture, which read the fixture's 9090 by file: and exists.
+! exec errata check --root app/.errata/witness/drift -c every.yaml
+stdout 'the root "app/.errata/witness/drift" is in the fixtures of the repository''s witnesses'
+! exec errata check --root app/.errata/witness/drift -c named.yaml
+stdout '^UNKNOWN by-file \(repo\)$'
+stdout '^UNKNOWN by-exists \(repo\)$'
+stdout '^UNKNOWN by-file \[witness inner\] \(repo\)$'
+stdout -count=3 'the root "app/.errata/witness/drift" is in the fixtures of the repository''s witnesses'
+! stdout 9090
+
+# 6. A root that is a directory .errata is refused for every read: there its
+# directory witness has no parent .errata, so a walk would enter the
+# fixtures. Planted break: InFixture without the test of a root .errata,
+# where tool_version's walk read the fixture's 20.11.1.
+! exec errata check --root app/.errata -c walk.yaml
+stdout '^UNKNOWN by-walk \(repo\)$'
+stdout 'the root "app/.errata" is a directory .errata, which holds the repository''s witnesses'
+! stdout 20.11.1
+
+# 7. A root git tracks no file below is refused for a glob: a clone does not
+# hold it.
+mkdir untracked/conf
+cp app/conf/a.yaml untracked/conf/a.yaml
+! exec errata check --root untracked -c every.yaml
+stdout 'git''s index lists no file below the root "untracked"'
+
+-- conf/a.yaml --
+port: 7070
+-- b.yaml --
+port: 7070
+-- notes.md --
+The old port was <!-- errata: port -->7070<!-- /errata -->.
+-- app/conf/a.yaml --
+port: 8080
+-- app/docs/ops.md --
+The service listens on port <!-- errata: port -->8080<!-- /errata -->.
+-- app/.errata/witness/drift/conf/a.yaml --
+port: 9090
+-- app/.errata/witness/drift/docs/ops.md --
+The service listens on port <!-- errata: port -->8080<!-- /errata -->.
+-- app/.errata/witness/drift/.errata/witness/inner/conf/a.yaml --
+port: 9191
+-- ok.yaml --
+checks:
+  - id: port
+    reason: the runbook names the port the service listens on
+    scope: repo
+    extract:
+      conf: {yaml: {files: ['conf/*.yaml'], path: port}}
+      doc: {marker: {files: ['docs/*.md']}}
+    agree: [conf, doc]
+    witness: [drift]
+-- every.yaml --
+checks:
+  - id: every-port
+    reason: lists every value the glob finds
+    scope: repo
+    extract:
+      port: {regex: {files: ['**/a.yaml'], pattern: 'port: (\d+)'}}
+    assert: port.all(p, p == '9999')
+-- app/.errata/witness/drift/.nvmrc --
+20.11.1
+-- walk.yaml --
+checks:
+  - id: by-walk
+    reason: r
+    scope: repo
+    extract:
+      e: {tool_version: {tool: node}}
+    assert: e.all(v, v == '0')
+-- named.yaml --
+checks:
+  - id: by-file
+    reason: r
+    scope: repo
+    extract:
+      port: {yaml: {file: conf/a.yaml, path: port}}
+    assert: port.all(p, p == '0')
+    witness: [inner]
+  - id: by-exists
+    reason: r
+    scope: repo
+    extract:
+      there: {exists: {file: conf/a.yaml}}
+    assert: there.all(p, p == 'false')
+-- link.yaml --
+checks:
+  - id: by-glob
+    reason: r
+    scope: repo
+    extract:
+      port: {yaml: {files: ['*.yaml'], path: port}}
+    assert: size(port) > 0
+  - id: by-name
+    reason: r
+    scope: repo
+    extract:
+      port: {yaml: {file: up.yaml, path: port}}
+    assert: size(port) > 0
+-- up.yaml --
+checks:
+  - id: above
+    reason: r
+    scope: repo
+    extract:
+      port: {yaml: {files: ['../*.yaml'], path: port}}
+    assert: size(port) > 0

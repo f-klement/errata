@@ -351,7 +351,7 @@ func TestGlobNeedsGit(t *testing.T) {
 		t.Errorf("files alone: %q, %v", got, err)
 	}
 	_, _, err := run(t, Spec{Name: "A", Files: []string{"*.sh"}}, root)
-	extracttest.WantError(t, err, `env: files lists the glob "*.sh": the repository root holds no .git`)
+	extracttest.WantError(t, err, `env: files lists the glob "*.sh": no git repository holds the root`)
 }
 
 // A file over the bytes the files before it left is known by

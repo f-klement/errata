@@ -1,16 +1,17 @@
 package rst
 
 import (
-	"bytes"
 	"strings"
 	"testing"
+
+	"github.com/f-klement/errata/internal/extract/core"
 )
 
 // Every value of every target over arbitrary input is at a line inside its
 // file, and a file is refused only by a bound of the text read or of the
 // search, or for a form the reader names as one it does not read.
 func FuzzRST(f *testing.F) {
-	for _, s := range []string{comments, sections, titles, code, grids, simpleTable, lines, "", "..", "::", "``", "+-+\n|", "== ==\na\n== ==\n"} {
+	for _, s := range []string{comments, sections, titles, code, grids, simpleTable, lines, "", "..", "::", "``", "+-+\n|", "== ==\na\n== ==\n", "a\r\r.. v\r"} {
 		for i := range specs {
 			f.Add(s, uint8(i))
 		}
@@ -24,7 +25,7 @@ func FuzzRST(f *testing.F) {
 			}
 			return
 		}
-		lines := bytes.Count([]byte(data), []byte("\n")) + 1
+		lines := core.LastLine([]byte(data))
 		for _, v := range values {
 			if v.At.Line < 1 || v.At.Line > lines {
 				t.Fatalf("%+v: %q at line %d of %d", s, v.Text, v.At.Line, lines)

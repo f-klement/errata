@@ -123,12 +123,15 @@ func TestBuildRefusesPattern(t *testing.T) {
 
 // A CRLF line ending reads as LF: $ matches before it, no value ends in its
 // CR, and the lines are those of the file: ^()$ finds the empty line 3, and
-// nothing after the final CRLF, which ends line 4 (#205). A lone CR is kept.
-// The planted break is the CRLF file itself, which gave 1.2\r before.
+// nothing after the final CRLF, which ends line 5 (#205). A lone CR ends a
+// line as well, so x is on a line of its own. The planted breaks are the
+// CRLF file itself, which gave 1.2\r before, and a lone CR kept, which gave
+// 3\rx at line 4 and no x at line 5.
 func TestRegexReadsCRLFAsLF(t *testing.T) {
 	root := extracttest.Repo(t, map[string]string{"Dockerfile": "v=1.2\r\nw=x\r\n\r\nv=3\rx\r\n"})
 	for pattern, want := range map[string]string{
-		`^v=(.*)$`:     "1.2@1 3\rx@4",
+		`^v=(.*)$`:     "1.2@1 3@4",
+		`^(x)$`:        "x@5",
 		`(?s)w=(.*)v=`: "x\n\n@2",
 		`^()$`:         "@3",
 	} {

@@ -15,7 +15,7 @@ import (
 // the file. Two tests make the list. quiet is whether expanding a statement's words changes nothing,
 // which lets a reference inside it resolve. keeps is whether running it
 // leaves every variable as errata records it, which lets a reference after
-// it resolve. The README gives the same list.
+// it resolve. docs/reference.md#shell gives the same list.
 
 // keptCommands are the commands a statement that keeps the variables may
 // run, by their name written as plain text. printf, set, export and

@@ -112,7 +112,7 @@ func (s *gitScanner) next() byte {
 		c = '\n'
 		s.pos++
 	}
-	if c == '\n' {
+	if c == '\n' || c == '\r' { // a lone \r is a byte of the line to git, and ends one to errata's numbers
 		s.line++
 	}
 	return c
@@ -123,13 +123,13 @@ func (s *gitScanner) errorLine() int {
 	if s.pos == 0 {
 		return 1
 	}
-	return bytes.Count(s.data[:s.pos-1], newline) + 1
+	return core.LineOf(s.data, s.pos-1)
 }
 
 func readGit(data []byte, m *core.Meter, visit func(*core.Entry) error) error {
 	s := &gitScanner{data: data, line: 1}
 	if i := bytes.IndexByte(data, 0); i >= 0 {
-		return core.LineError(bytes.Count(data[:i], newline)+1, "a NUL byte, which git reads as the end of a name or a value")
+		return core.LineError(core.LineOf(data, i), "a NUL byte, which git reads as the end of a name or a value")
 	}
 	// git skips a byte order mark, and refuses a part of one.
 	if bytes.HasPrefix(data, []byte(core.BOM[:1])) {

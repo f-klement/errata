@@ -35,6 +35,35 @@ func TestLineAt(t *testing.T) {
 	}
 }
 
+// A line ends at a LF, a CRLF or a lone CR, whichever helper counts it: in
+// "a\r\rb\r\nc\r" b is on line 3, the LF of its CRLF too, c on line 4, and
+// the file ends on line 5. The planted breaks: LineIndex, the cursor and
+// LastLine each counting LF alone, which put b on line 1.
+func TestLinesEndAtALoneCR(t *testing.T) {
+	data := []byte("a\r\rb\r\nc\r")
+	l, c := LineIndex(data), NewLineCursor(data)
+	for off, want := range []int{1, 1, 2, 3, 3, 3, 4, 4, 5} {
+		if got := l.At(off); got != want {
+			t.Errorf("index at(%d) = %d, want %d", off, got, want)
+		}
+		if got := c.At(off); got != want {
+			t.Errorf("cursor at(%d) = %d, want %d", off, got, want)
+		}
+		if got := LineOf(data, off); got != want {
+			t.Errorf("LineOf(%d) = %d, want %d", off, got, want)
+		}
+	}
+	if got := LastLine(data); got != 5 {
+		t.Errorf("LastLine = %d, want 5", got)
+	}
+	if got := string(LineFeeds(data)); got != "a\n\nb\nc\n" {
+		t.Errorf("LineFeeds = %q", got)
+	}
+	if start, next := LineStart(data, 4), NextLine(data, 3); start != 3 || next != 6 {
+		t.Errorf("b's line runs from %d to %d, want 3 to 6", start, next)
+	}
+}
+
 // A step of a path that selects more than maxValues nodes stops the path,
 // even when a later step would select fewer.
 func TestEvalStopsAtTheValueLimit(t *testing.T) {

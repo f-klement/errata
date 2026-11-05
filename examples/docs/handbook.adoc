@@ -1,0 +1,28 @@
+= Larder handbook
+
+== Assets
+
+The icons come from https://git.example.com/larder/icons.git, vendored as a submodule.
+
+== Ports
+
+[%header]
+|===
+|Service |Port
+|api |8080
+|admin |9090
+|===
+
+== Start
+
+[source,shell]
+----
+docker run -p 8080:8080 larder:1.4.0
+----
+
+== Restore
+
+[source,bash]
+----
+larder restore --from /var/backups/larder
+----

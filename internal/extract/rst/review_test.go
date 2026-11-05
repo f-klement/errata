@@ -111,7 +111,7 @@ func TestHeadersOfMoreThanOneRow(t *testing.T) {
 	want(t, "no header", got)
 }
 
-// Every admonition and container the README names is read through: a
+// Every admonition and container docs/reference.md#rst names is read through: a
 // comment in its content is one, its content is prose, and an
 // admonition's text after its :: is prose too, a container's not
 // (finding 6).
@@ -127,7 +127,7 @@ func TestEveryAdmonitionAndContainer(t *testing.T) {
 		}
 	}
 	if len(admonitions) != 10 || len(containers) != 7 {
-		t.Errorf("%d admonitions and %d containers; the README names 10 and 7", len(admonitions), len(containers))
+		t.Errorf("%d admonitions and %d containers; docs/reference.md names 10 and 7", len(admonitions), len(containers))
 	}
 }
 

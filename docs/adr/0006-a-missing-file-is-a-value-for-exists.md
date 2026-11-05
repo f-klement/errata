@@ -31,7 +31,7 @@ exists for: a rule that a file stays removed could only ever be true or unknown,
 What ADR 0001 protects still holds, because `exists` is unknown wherever it truly cannot tell:
 
 - a symlink that leads outside the repository, whether or not its target exists, since errata
-  looks at nothing outside it (README, Extractors);
+  looks at nothing outside it ([reference, Extractors](../reference.md#extractors));
 - a directory on the way that errata cannot open, to read it and search it, where the file may
   be there or not: the `lstat` goes through Go's `os.Root`, which opens each directory on the
   way, so a directory that may be searched and not read (mode 0111) is unknown too;

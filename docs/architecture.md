@@ -219,6 +219,7 @@ flowchart TB
     end
     subgraph below ["below core: core's own, kept apart"]
         clip["internal/extract/core/clip"]
+        lineend["internal/extract/core/lineend"]
         gitindex["internal/extract/core/gitindex"]
         lexer["internal/extract/core/lexer"]
     end
@@ -248,6 +249,7 @@ flowchart TB
     marker --> markup
     marker --> mdparse
     core --> clip
+    core --> lineend
     core --> gitindex
     core --> lexer
     core --> check
@@ -260,6 +262,7 @@ flowchart TB
     htmlparse --> core
     coretest --> core
     extracttest --> check
+    extracttest --> lineend
 ```
 
 The comment kind's lexer table sits in `core/lexer`, and `core` imports it, so a reader reaches it
@@ -286,6 +289,7 @@ reader imports `core` and no other reader, and `core` imports no reader.
 | `internal/extract/core` | what every reader shares: the source held inside the repository and to its size cap, the walk of the repository and the directories it passes over, the limits on nodes, values, depth and bytes, the tree and the path grammar with its filters, the line index, quoting, the clocked regex search, the entry extractor and work meter of the INI, properties and env file readers, and the files git's index tracks, read without git | any one format |
 | `internal/extract/core/gitindex` | git's index, the list of files a clone holds (ADR [0008](adr/0008-an-extractor-reads-a-file-set-from-git-and-cel-groups-by-file.md)), reachable only through `Index`'s methods, whose every list leaves out the fixtures of witnesses | any reader |
 | `internal/extract/core/clip` | cutting file text or a path for a message, kept apart so `gitindex`, which `core` imports, quotes as `core` does | everything else |
+| `internal/extract/core/lineend` | the one rule of where a line ends, at a LF, a CRLF or a lone CR, by which every reader numbers its lines and folds its text; `core` hands it on as `LineCursor`, `LineIndex`, `LineOf`, `LastLine`, `LineStart`, `NextLine` and `LineFeeds`, and it is kept apart so `extracttest`, which `core`'s own tests import, counts lines by it too | everything else |
 | `internal/extract/yaml`, `internal/extract/json`, `internal/extract/toml` | one reader each that parses its format into core's tree, for core's path to select from | each other |
 | `internal/extract/regex` | the regex extractor, which is core's search over the file | the other readers |
 | `internal/extract/text` | Markdown prose, searched with core's search | the other readers |
@@ -310,7 +314,7 @@ reader imports `core` and no other reader, and `core` imports no reader.
 | `internal/extract/githubactions` | the value one step or job of a GitHub Actions workflow sees: env: precedence, the matrix's jobs, and the values only GitHub evaluates marked or unknown, read with the YAML parser the facade hands it | the other readers, whose parser it gets from the facade; the network |
 | `internal/extract/env` | one variable across the files a rule lists: the reader each file's name or shebang chooses, a glob over git's tracked files, and each value's origin, its reader and its job, step or stage | the readers, which the facade hands it as functions |
 | `internal/extract/filestat` | the `exists` and `size` kinds: whether a file is at a name and how many bytes it holds, from core's `Stat`, without opening the file | the other readers |
-| `internal/extract/extracttest`, `internal/extract/coretest` | what the extractors' tests share; only test files import them, and Gremlins and the `make cover` total leave them alone | any reader: `coretest` imports `core` alone, and `extracttest` nothing of errata's but `check`, since `core`'s own tests import it |
+| `internal/extract/extracttest`, `internal/extract/coretest` | what the extractors' tests share; only test files import them, and Gremlins and the `make cover` total leave them alone | any reader: `coretest` imports `core` alone, and `extracttest` nothing of errata's but `check` and `core/lineend`, since `core`'s own tests import it |
 | `internal/provider` | the provider interface, capabilities, the reconciler model, scope gating | any concrete live system (none yet) |
 | `internal/report` | output formats: `text`, `junit` and `sarif` for a run, `text` and `json` for `errata list` | where the results came from |
 | `internal/heapcap` | the heap watchdog that every package's tests link under the `mutation` tag only | errata's own code: only test files built with the tag import it |

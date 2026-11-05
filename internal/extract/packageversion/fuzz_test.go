@@ -3,6 +3,8 @@ package packageversion
 import (
 	"strings"
 	"testing"
+
+	"github.com/f-klement/errata/internal/extract/core"
 )
 
 // Every file of the table reads any bytes without a crash, into non-empty
@@ -32,7 +34,7 @@ func FuzzPackageVersion(f *testing.F) {
 		if err != nil {
 			return
 		}
-		lines := strings.Split(data, "\n")
+		lines := strings.Split(string(core.LineFeeds([]byte(data))), "\n")
 		for _, v := range got {
 			if v.At.File != "d/"+k.name || v.At.Line < 1 || v.At.Line > len(lines) {
 				t.Fatalf("%s: %q at %s:%d, outside the file's %d lines", k.name, v.Text, v.At.File, v.At.Line, len(lines))

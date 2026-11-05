@@ -12,7 +12,6 @@ import (
 	"math"
 	"reflect"
 	"strconv"
-	"strings"
 	"testing"
 
 	"github.com/pelletier/go-toml/v2"
@@ -24,7 +23,7 @@ import (
 // The tree may share a node through a YAML alias, so each is visited once.
 func WalkLines(t *testing.T, n *core.Node, data []byte) {
 	t.Helper()
-	count := strings.Count(string(data), "\n") + 1
+	count := core.LastLine(data)
 	seen := map[*core.Node]bool{}
 	stack := []*core.Node{n}
 	for len(stack) > 0 {

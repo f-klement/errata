@@ -60,7 +60,7 @@ FUZZ_TARGETS = $(shell find internal -name testdata -prune -o -name '*_test.go' 
 	| xargs grep -HE '^func Fuzz[A-Za-z0-9_]*[(][A-Za-z_][A-Za-z0-9_]* \*testing\.F[)]' \
 	| sed 's|^\(.*\)/[^/]*_test\.go:func \(Fuzz[A-Za-z0-9_]*\).*|./\1:\2|' | LC_ALL=C sort -u)
 
-.PHONY: check gate precheck build tools lint fmt test cover slow fuzz mutation vuln dogfood public-dry release-dry image-dry ci-local ci-test tool-sums hooks clean
+.PHONY: check gate precheck build tools lint fmt test cover slow fuzz mutation vuln dogfood public-dry release-dry image-dry ci-local ci-test tool-sums hooks cli-doc cli-doc-check clean
 
 # ci/ is stripped from the public mirror, so a public clone runs the gate
 # without the publish and autopatch targets. CI's test job passes CI_TEST=apart
@@ -405,6 +405,15 @@ ci-local:
 release-dry: $(BIN)/goreleaser
 	$(BIN)/goreleaser check
 	$(BIN)/goreleaser release --snapshot --clean --skip=publish,ko
+
+# docs/cli.md, the command line reference, from the help errata prints. A release runs
+# cli-doc in the commit it tags (ci/README.md, Setting it up); the tag pipeline's
+# check:cli-doc job runs cli-doc-check, which refuses a docs/cli.md that differs from the help.
+cli-doc:
+	$(GO) run ./scripts/clidoc docs/cli.md
+
+cli-doc-check:
+	$(GO) run ./scripts/clidoc --check docs/cli.md
 
 # The commit-msg hook: commit subjects are published on the mirror, so they
 # are checked before the commit exists. CI runs the same check on every push.

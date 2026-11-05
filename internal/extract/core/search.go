@@ -234,13 +234,13 @@ func (e Search) FromShared(data []byte, spent *Spent) ([]check.Value, error) {
 	return e.FromData(data)
 }
 
-// FromData matches data with every CRLF line ending read as LF, so $ matches
-// before a CRLF too and no value ends in its CR. Only CRs go, so the lines
-// are those of the file. A search for records returns one for each match
+// FromData matches data with every line end read as LF (LineFeeds), so $
+// matches before a CRLF or a lone CR too and no value ends in a CR. Only
+// CRs go, so the lines are those of the file. A search for records returns one for each match
 // (Records). A match without the context e.around asks for gives no value,
 // and the context's searches run under the deadline the matching did.
 func (e Search) FromData(data []byte) ([]check.Value, error) {
-	data = lineFeeds(data)
+	data = LineFeeds(data)
 	if e.fields != nil {
 		return e.records(data)
 	}
@@ -266,14 +266,6 @@ func (e Search) FromData(data []byte) ([]check.Value, error) {
 		})
 	}
 	return out, nil
-}
-
-// lineFeeds is data with every CRLF read as LF.
-func lineFeeds(data []byte) []byte {
-	if crlf := []byte("\r\n"); bytes.Contains(data, crlf) {
-		return bytes.ReplaceAll(data, crlf, []byte("\n"))
-	}
-	return data
 }
 
 // Match is where a match starts and ends, and where group 1 starts and

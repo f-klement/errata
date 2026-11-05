@@ -1,7 +1,6 @@
 package core
 
 import (
-	"bytes"
 	"fmt"
 
 	"github.com/f-klement/errata/internal/extract/core/lexer"
@@ -48,6 +47,6 @@ func CheckSpan(file string, data []byte, s Span) error {
 		return nil
 	}
 	what := map[SpanKind]string{SpanComment: "comment", SpanString: "string", SpanName: "quoted name"}[s.Kind]
-	return fmt.Errorf("%s: line %d: a %s opens here and runs to the end of the file, so the lexer lost its place and cannot tell comments from code after it; a construct it does not understand, such as a heredoc or a regular expression, holds a quote or a comment's opener (README, Code comments)",
-		file, bytes.Count(data[:s.Start], newline)+1, what)
+	return fmt.Errorf("%s: line %d: a %s opens here and runs to the end of the file, so the lexer lost its place and cannot tell comments from code after it; a construct it does not understand, such as a heredoc or a regular expression, holds a quote or a comment's opener (docs/reference.md#comment)",
+		file, LineOf(data, s.Start), what)
 }

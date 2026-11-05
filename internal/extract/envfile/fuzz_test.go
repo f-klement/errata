@@ -21,6 +21,8 @@ func FuzzEnvfile(f *testing.F) {
 	f.Add("export A=1\nB=\"${A} \\t\\0101\"\n# c\nC='x\ny' D=${Z:-d}\n", "B")
 	f.Add("A=\nB=${A:-{}}${A+y}$$\n\u212a: \"\\$A\"\nE\nlast", "")
 	f.Add("\ufeffA=${B:?m}\r\nx.y-z[0]=\"a\n}${A:-x}\n}\"", "x.y-z[0]")
+	f.Add("A=x\ry\nB=1\n", "B") // a lone CR in a value, written back, ends a line
+	f.Add("0\r0=\nB=\n", "B")   // and one in a key (FuzzEnvfile, round 4)
 	f.Fuzz(func(t *testing.T, data, name string) {
 		x, err := Build(Spec{File: "f", Name: name})
 		if err != nil {
@@ -43,8 +45,9 @@ func FuzzEnvfile(f *testing.F) {
 		_ = readEnv([]byte(data), func(en *core.Entry) error {
 			if !en.Computed && len(en.Key) > 0 && isKey(string(en.Key)) {
 				keys, values, lines = append(keys, string(en.Key)), append(values, string(en.Value)), append(lines, line)
-				written.WriteString(string(en.Key) + "=" + quoted(string(en.Value)) + "\n")
-				line += 1 + strings.Count(string(en.Value), "\n")
+				entry := string(en.Key) + "=" + quoted(string(en.Value))
+				written.WriteString(entry + "\n")
+				line += core.LastLine([]byte(entry)) // the entry's line ends, a lone CR's in the key or the value too, and the LF after it
 			}
 			return nil
 		})

@@ -185,8 +185,8 @@ func guardedParser(tables bool) parser.Parser {
 
 // Doc is a Markdown file parsed. Every node's offsets index Src.
 type Doc struct {
-	// Src is the file with every CRLF read as LF, so its lines are the
-	// file's, with its front matter, if any, written over with spaces.
+	// Src is the file with every line end read as LF, a CRLF and a lone CR
+	// alike (core.LineFeeds), so its lines are the file's, with its front matter, if any, written over with spaces.
 	Src  []byte
 	Root ast.Node
 	// Front is the front matter's text between its fences, from offset
@@ -227,10 +227,7 @@ func ParseTables(file string, data []byte, limit int64, timeLimit time.Duration)
 
 // parse is Parse with the parser md.
 func parse(md parser.Parser, file string, data []byte, limit int64, timeLimit time.Duration) (doc *Doc, err error) {
-	if crlf := []byte("\r\n"); bytes.Contains(data, crlf) {
-		data = bytes.ReplaceAll(data, crlf, []byte("\n"))
-	}
-	data = core.DropBOM(data) // three bytes on the first line: the lines stay the file's
+	data = core.DropBOM(core.LineFeeds(data)) // three bytes on the first line: the lines stay the file's
 	lines := int64(bytes.Count(data, newline))
 	doc = &Doc{Src: data, maxPieces: int(limit / markdownBytesPerPiece), maxTokens: htmlparse.MaxTokens(limit)}
 	if at, end, ok := frontMatter(data); ok {

@@ -10,6 +10,10 @@ import (
 	"github.com/f-klement/errata/internal/extract/extracttest"
 )
 
+// lineEnds are the line ends a search reads as LF, written apart from
+// lineend so the oracle does not move with the code under test.
+var lineEnds = regexp.MustCompile("\r\n|\r")
+
 // The regex extractor finds exactly the matches FindAllSubmatchIndex finds,
 // though it runs each search itself through a clocked reader, but for the
 // empty match at the end of a text that ends with a newline, which is on no
@@ -59,12 +63,13 @@ func FuzzRegex(f *testing.F) {
 	f.Add(`ab\B(\w*)`, "ab ab\nabab abc\nab")
 	f.Add(`x(?:\A|y)(\d)`, "xy x xy1\nxy2")
 	f.Add(`(?-m)\Ax(\d)`, "x x x\nx1")
+	f.Add(`^(.*)$`, "a\rb\r\nc\r") // a lone CR ends a line as a CRLF and a LF do
 	f.Fuzz(func(t *testing.T, pattern, data string) {
 		r, err := CompileSearchAt("regex", sourceOf("f"), pattern)
 		if err != nil {
 			return
 		}
-		lf := strings.ReplaceAll(data, "\r\n", "\n")
+		lf := lineEnds.ReplaceAllString(data, "\n")
 		got, err := r.Matches([]byte(lf))
 		want := r.re.FindAllSubmatchIndex([]byte(lf), MaxValues+1)
 		if n := len(want); n > 0 && want[n-1][0] == len(lf) && strings.HasSuffix(lf, "\n") {

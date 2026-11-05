@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+spec:
+  replicas: 3
+  template:
+    spec:
+      containers:
+        - name: web
+          image: registry.example.com/larder/web:1.4.0
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+spec:
+  replicas: 1
+  template:
+    spec:
+      containers:
+        - name: worker
+          image: registry.example.com/larder/api:1.4.0
+          env:
+            - name: REFRESH_SECONDS
+              value: "900"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: zones
+data:
+  zones.toml: |
+    zones = ["eu-west-1a", "eu-west-1b", "eu-west-1c"]
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: logging
+data:
+  logging.json: '{"level": "info"}'
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: web
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+spec:
+  rules:
+    - host: larder.example.com

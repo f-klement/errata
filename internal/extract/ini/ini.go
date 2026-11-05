@@ -177,8 +177,8 @@ func Build(i Spec) (check.Extractor, error) {
 
 // eachTextLine calls f with every line of data and its number, until f
 // returns an error, as Python reads a file in text mode, where \r\n,
-// a lone \r and \n each end a line. The number is still the line counted at
-// \n, as every extractor counts lines, so the lines a lone \r ends share one.
+// a lone \r and \n each end a line, the line ends every extractor numbers
+// lines by.
 func eachTextLine(data []byte, m *core.Meter, f func(n int, line []byte) error) error {
 	n := 1
 	for {
@@ -195,13 +195,10 @@ func eachTextLine(data []byte, m *core.Meter, f func(n int, line []byte) error) 
 		if err := f(n, data[:i]); err != nil {
 			return err
 		}
-		switch {
-		case data[i] == '\n':
-			n++
-		case i+1 < len(data) && data[i+1] == '\n':
-			n++
+		if data[i] == '\r' && i+1 < len(data) && data[i+1] == '\n' {
 			i++
 		}
+		n++
 		data = data[i+1:]
 	}
 }
@@ -210,7 +207,7 @@ func eachTextLine(data []byte, m *core.Meter, f func(n int, line []byte) error) 
 // as ansible splits an inventory: at \n, \r\n, \r, \v, \f, \x1c, \x1d,
 // \x1e, NEL, LS and PS. A byte that is not UTF-8 is a character of its own
 // and ends no line, as Python's surrogateescape reads it. The number is the
-// line counted at \n.
+// line as every extractor numbers it, at \n, \r\n and \r alone.
 func eachPyLine(data []byte, m *core.Meter, f func(n int, line []byte) error) error {
 	n, start := 1, 0
 	for i := 0; i < len(data); {
@@ -237,7 +234,7 @@ func eachPyLine(data []byte, m *core.Meter, f func(n int, line []byte) error) er
 			if err := f(n, data[start:i]); err != nil {
 				return err
 			}
-			if data[i+w-1] == '\n' {
+			if c == '\n' || c == '\r' {
 				n++
 			}
 			start = i + w
@@ -264,7 +261,7 @@ func notUTF8(data []byte, tool string) error {
 		}
 		i += w
 	}
-	return core.LineError(bytes.Count(data[:i], newline)+1, "the file is not UTF-8, which %s refuses", tool)
+	return core.LineError(core.LineOf(data, i), "the file is not UTF-8, which %s refuses", tool)
 }
 
 // pySpace is white space as Python's str.strip and \s read it, which the

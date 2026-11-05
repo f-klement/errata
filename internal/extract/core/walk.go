@@ -30,7 +30,7 @@ type WalkLimits struct {
 // where a file costs 3, so Dirs is the bound on time: a million directories
 // took 82 s, and 199000 with a small pin in each take 26 to 30 s. Names
 // holds a million directory names of 16 bytes waiting at once, in one
-// directory or along the path walked. The README's Limits section gives the
+// directory or along the path walked. docs/reference.md#limits gives the
 // time and memory a walk at each limit takes.
 var DefaultWalk = WalkLimits{Entries: 1_000_000, Dirs: 200_000, Depth: 64, Names: 16 << 20}
 

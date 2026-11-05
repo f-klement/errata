@@ -238,13 +238,13 @@ func TestNestFollowsTheBrowser(t *testing.T) {
 // it. The planted break: CDATA allowed everywhere.
 func TestCDATAInForeignContent(t *testing.T) {
 	for src, want := range map[string]string{
-		"<svg><![CDATA[a > b]]></svg>":    "a > b",
-		"<math><![CDATA[x]]>":             "x",
-		"<![CDATA[a > b]]>c":              " b]]>c", // a bogus comment, to the first >
-		"<svg><p><![CDATA[a]]>b":          "b",
-		"<svg></svg><![CDATA[a]]>b":       "b",
-		"<svg><![CDATA[open":              "open",
-		"<svg><svg/><![CDATA[a]]></svg>b": "ab",
+		"<svg><text><![CDATA[a > b]]></text></svg>":    "a > b", // in a text element, which draws its text
+		"<math><![CDATA[x]]>":                          "x",
+		"<![CDATA[a > b]]>c":                           " b]]>c", // a bogus comment, to the first >
+		"<svg><p><![CDATA[a]]>b":                       "b",
+		"<svg></svg><![CDATA[a]]>b":                    "b",
+		"<svg><text><![CDATA[open":                     "open",
+		"<svg><text><svg/><![CDATA[a]]></text></svg>b": "ab",
 	} {
 		var got []string
 		for s := NewScanner([]byte(src), 100); s.Next(); {

@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><title>Larder</title></head>
+<body>
+<h1>Larder <!-- errata: release-version-agrees -->1.4.0<!-- /errata --></h1>
+<h2>Install</h2>
+<h3>Requirements</h3>
+<p>Node 20.11 or later builds the web client.</p>
+<pre><code class="language-bash">docker run -p 8080:8080 larder:1.4.0</code></pre>
+<h2>Ports</h2>
+<table>
+<tr><th>Service</th><th>Port</th></tr>
+<tr><td>api</td><td>8080</td></tr>
+<tr><td>admin</td><td>9090</td></tr>
+</table>
+<h2>Restore</h2>
+<pre><code class="language-bash">larder restore --from /var/backups/larder</code></pre>
+</body>
+</html>

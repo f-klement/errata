@@ -172,7 +172,7 @@ func TestAWholeValueKeptBySkipNotLiteralKeepsItsShownForm(t *testing.T) {
 }
 
 // Under semver the blame goes by position alone, however many places hold
-// each value, as the README says: 18 in one file and 20.1.0 in two after
+// each value, as docs/reference.md#sarif says: 18 in one file and 20.1.0 in two after
 // it blame 20.1.0, where the text rule blames 18, the minority.
 func TestSemverBlamesByPositionAndTextByMajority(t *testing.T) {
 	extractors := func() []check.NamedExtractor {

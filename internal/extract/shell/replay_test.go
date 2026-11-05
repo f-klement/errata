@@ -11,7 +11,7 @@ import (
 // size bytes: the most statements, words, quotes, defaults and here-documents
 // a file can hold, and nesting just under the guard's limit, again and again.
 // None is quadratic, so each is bounded by extracttest.OtherBound. make test
-// reads them at 16 KiB and make slow at 1 MiB; the README's shell section
+// reads them at 16 KiB and make slow at 1 MiB; docs/reference.md#shell
 // gives the figures at 32 MiB.
 func shellReplays(size int) []extracttest.Replay[Spec] {
 	fill := func(unit string) string { return strings.Repeat(unit, size/len(unit)) }

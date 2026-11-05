@@ -1,13 +1,14 @@
 package marker
 
 import (
-	"bytes"
 	"math"
 	"strings"
 	"testing"
 	"time"
 
 	"pgregory.net/rapid"
+
+	"github.com/f-klement/errata/internal/extract/core"
 )
 
 // fillers are lines a generated file holds around its marker, by the file
@@ -84,6 +85,7 @@ func FuzzScan(f *testing.F) {
 		"", "<!-- errata: a -->1<!-- /errata -->\n", "// <!-- errata: a -->1\n// 2<!-- /errata -->\n",
 		"<!-- errata: a -->\n8080\n<!-- /errata -->\n", "x <!-- errata: a -->1\n\n2<!-- /errata -->",
 		"/* <!-- errata: a -->\n * 1 <!-- /errata --> */", "<p><!-- errata: a -->1<!-- /errata --></p>",
+		"a\r\r<!-- errata: a -->1<!-- /errata -->\r", "// a\r\r// <!-- errata: a -->1<!-- /errata -->\r", // lone CRs end lines
 	} {
 		for i := range files {
 			f.Add(uint8(i), s)
@@ -98,7 +100,7 @@ func FuzzScan(f *testing.F) {
 			}
 			return
 		}
-		lines := bytes.Count(bytes.ReplaceAll([]byte(src), []byte("\r\n"), []byte("\n")), []byte("\n")) + 1
+		lines := core.LastLine([]byte(src))
 		for _, m := range found {
 			v := m.Value
 			if v.At.Line < m.Open.Line || v.At.Line > lines || m.Open.Line < 1 || strings.ContainsAny(v.Text, "\n\r\t") {
@@ -123,11 +125,13 @@ func scanTime(file string, data []byte, reps int) time.Duration {
 }
 
 // A scan is linear in its file: n opening <!-- that are no marker's, then
-// sixteen blanks for each, scan four times as long at 4n, in a file no
+// sixteen blanks for each, scan eight times as long at 8n, in a file no
 // reader reads and in a block comment. A pass that reads the blanks again
-// for each <!-- takes sixteen times as long. Planted break: markerish
-// trimming the blanks at the end of the rest, as it did, which took 2.17 s
-// for 16384 of them on the builder node.
+// for each <!-- takes sixty-four times as long. The limit, 20, sits far from
+// both, since a run under coverage on a shared node read 8.4 for 4n once
+// (pipeline 3029471786), and each size is timed for at least 20 ms. Planted
+// break: markerish trimming the blanks at the end of the rest, as it did,
+// which took 2.17 s for 16384 of them on the builder node.
 func TestScanIsLinear(t *testing.T) {
 	shape := func(file string, n int) []byte {
 		body := strings.Repeat("errata <!--", n) + strings.Repeat(" ", 16*n)
@@ -139,12 +143,12 @@ func TestScanIsLinear(t *testing.T) {
 	for _, file := range []string{"a.txt", "a.go"} {
 		const n = 2000
 		reps := 1
-		for scanTime(file, shape(file, n), reps) < 2*time.Millisecond && reps < 1<<16 {
+		for scanTime(file, shape(file, n), reps) < 20*time.Millisecond && reps < 1<<16 {
 			reps *= 2
 		}
-		small, large := scanTime(file, shape(file, n), reps), scanTime(file, shape(file, 4*n), reps)
-		if ratio := float64(large) / float64(small); ratio > 8 {
-			t.Errorf("%s: %d and %d openers took %v and %v, %.1f times; a linear scan takes about 4", file, n, 4*n, small, large, ratio)
+		small, large := scanTime(file, shape(file, n), reps), scanTime(file, shape(file, 8*n), reps)
+		if ratio := float64(large) / float64(small); ratio > 20 {
+			t.Errorf("%s: %d and %d openers took %v and %v, %.1f times; a linear scan takes about 8", file, n, 8*n, small, large, ratio)
 		}
 	}
 }

@@ -4,7 +4,6 @@
 package comment
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"sort"
@@ -109,9 +108,10 @@ func (e commentExtractor) FromShared(data []byte, _ *core.Spent) ([]check.Value,
 }
 
 // FromData returns the values in data, the bytes of the file, as Extract
-// does once it has read them. CRLF line endings read as LF.
+// does once it has read them. Every line end reads as LF, a CRLF and a
+// lone CR alike (core.LineFeeds).
 func (e commentExtractor) FromData(data []byte) ([]check.Value, error) {
-	data = bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n"))
+	data = core.LineFeeds(data)
 	t, err := comments(e.search.File, e.lang, data)
 	if err != nil {
 		return nil, err

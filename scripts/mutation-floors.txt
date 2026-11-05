@@ -121,6 +121,9 @@ internal/extract/core/gitindex     85        85      5      from internal/extrac
 # readers share.
 internal/extract/core/htmlparse    85        85      5
 internal/extract/core/lexer        85        85      5
+# lineend: new for the lone CR rule, where a line ends, split from core so
+# extracttest counts lines by it.
+internal/extract/core/lineend      85        85      5
 # markup: new in v0.2.5 (#30), what the markup readers share.
 internal/extract/core/markup       85        85      5
 internal/extract/core/mdparse      85        85      5      from internal/extract/text

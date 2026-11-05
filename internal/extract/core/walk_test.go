@@ -198,17 +198,17 @@ func TestWalkRefusesAMissingRoot(t *testing.T) {
 	extracttest.WantError(t, err, "open the repository root: no such file or directory")
 }
 
-// The README's table of the directories a walk passes over is SkippedDirs,
-// row for row, so the list has one home and the README cannot drift from
+// The reference's table of the directories a walk passes over is SkippedDirs,
+// row for row, so the list has one home and the reference cannot drift from
 // it. The planted break: a directory added to SkippedDirs alone.
-func TestSkippedDirsAreTheREADMEs(t *testing.T) {
-	data, err := os.ReadFile("../../../README.md")
+func TestSkippedDirsAreTheReferences(t *testing.T) {
+	data, err := os.ReadFile("../../../docs/reference.md")
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, table, ok := strings.Cut(string(data), "| Directory | Why |\n|---|---|\n")
 	if !ok {
-		t.Fatal("the README has no table of skipped directories")
+		t.Fatal("the reference has no table of skipped directories")
 	}
 	table, _, _ = strings.Cut(table, "\n\n")
 	rows := map[string]string{}
@@ -217,11 +217,11 @@ func TestSkippedDirsAreTheREADMEs(t *testing.T) {
 		rows[name] = strings.TrimSuffix(why, " |")
 	}
 	if len(rows) != len(SkippedDirs) {
-		t.Errorf("the README lists %d directories, SkippedDirs %d", len(rows), len(SkippedDirs))
+		t.Errorf("the reference lists %d directories, SkippedDirs %d", len(rows), len(SkippedDirs))
 	}
 	for name, why := range SkippedDirs {
 		if rows[name] != why {
-			t.Errorf("%s: the README says %q, SkippedDirs %q", name, rows[name], why)
+			t.Errorf("%s: the reference says %q, SkippedDirs %q", name, rows[name], why)
 		}
 	}
 }
@@ -357,18 +357,18 @@ func TestWalkHoldsNamesNotPaths(t *testing.T) {
 	}
 }
 
-// DefaultWalk holds the values the README's Limits rows give, so a limit
+// DefaultWalk holds the values the reference's Limits rows give, so a limit
 // raised or removed in one place and not the other fails here. The planted
 // break: DefaultWalk unbounded, every limit 1 << 40.
-func TestDefaultWalkIsTheREADMEs(t *testing.T) {
-	data, err := os.ReadFile("../../../README.md")
+func TestDefaultWalkIsTheReferences(t *testing.T) {
+	data, err := os.ReadFile("../../../docs/reference.md")
 	if err != nil {
 		t.Fatal(err)
 	}
 	row := func(name string) int {
 		_, rest, ok := strings.Cut(string(data), "\n| "+name+" | ")
 		if !ok {
-			t.Fatalf("the README has no Limits row %q", name)
+			t.Fatalf("the reference has no Limits row %q", name)
 		}
 		cell, _, _ := strings.Cut(rest, " |")
 		number, unit, _ := strings.Cut(cell, " ")
@@ -383,6 +383,6 @@ func TestDefaultWalkIsTheREADMEs(t *testing.T) {
 	}
 	readme := WalkLimits{Entries: row("walk entries"), Dirs: row("walk directories"), Depth: row("walk depth"), Names: row("walk names")}
 	if DefaultWalk != readme {
-		t.Errorf("DefaultWalk is %+v, the README's Limits rows say %+v", DefaultWalk, readme)
+		t.Errorf("DefaultWalk is %+v, the reference's Limits rows say %+v", DefaultWalk, readme)
 	}
 }

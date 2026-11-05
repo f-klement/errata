@@ -1,7 +1,7 @@
-# The README's two examples of a config that does not load, run with the
-# command the README shows. errata.yaml's check readme-load-errors-are-run
-# holds the README's commands and outputs equal to the exec lines and the
-# .txt files here. Run without -c, errata names the config by its absolute
+# The two examples in docs/reference.md of a config that does not load, run
+# with the command the reference shows. errata.yaml's check
+# reference-load-errors-are-run holds the reference's commands and outputs
+# equal to the exec lines and the .txt files here. Run without -c, errata names the config by its absolute
 # path, which no example shows.
 cp staleness.yaml errata.yaml
 ! exec errata check -c errata.yaml

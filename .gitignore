@@ -4,6 +4,8 @@
 /target
 node_modules/
 .env
+# the example config reads its own .env, a fixture with no secret in it (examples/README.md)
+!/examples/.env
 coverage.out
 coverage.product.out
 /public

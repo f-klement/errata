@@ -220,7 +220,7 @@ func parseNoted(data []byte, expanded int, note func(n *core.Node, tag string, p
 		bools:    bools,
 		expanded: expanded,
 		note:     note,
-		last:     bytes.Count(data, []byte("\n")) + 1,
+		last:     core.LastLine(data),
 		blocks:   newBlocks(data),
 		anchors:  map[*yaml.Node]converted{},
 		merges:   map[*core.Node]mergeable{},
