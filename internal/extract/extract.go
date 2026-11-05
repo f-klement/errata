@@ -1,9 +1,9 @@
 // Package extract builds the extractors a rule names in errata.yaml. Each one
 // reads one file and returns every value it finds there, with its location.
 // Each extractor kind, the key an extract: entry names, is a reader in a
-// package of its own below this one (yaml, json, toml, regex, text, comment,
+// package of its own below this one (yaml, json, toml, regex, text, comment, literal,
 // markdown, asciidoc, rst, html, marker, xml, ini, properties, toolversion,
-// packageversion, envfile, gitlabci, shell, githubactions, jenkins, and
+// packageversion, dependency, envfile, gitlabci, shell, githubactions, jenkins, and
 // filestat for exists and size), and the readers share
 // internal/extract/core; no reader imports another. The env
 // kind asks those that declare themselves env readers for one variable
@@ -30,6 +30,7 @@ import (
 	"github.com/f-klement/errata/internal/extract/asciidoc"
 	"github.com/f-klement/errata/internal/extract/comment"
 	"github.com/f-klement/errata/internal/extract/core"
+	"github.com/f-klement/errata/internal/extract/dependency"
 	"github.com/f-klement/errata/internal/extract/env"
 	"github.com/f-klement/errata/internal/extract/envfile"
 	"github.com/f-klement/errata/internal/extract/filestat"
@@ -39,6 +40,7 @@ import (
 	"github.com/f-klement/errata/internal/extract/ini"
 	"github.com/f-klement/errata/internal/extract/jenkins"
 	ejson "github.com/f-klement/errata/internal/extract/json"
+	"github.com/f-klement/errata/internal/extract/literal"
 	"github.com/f-klement/errata/internal/extract/markdown"
 	"github.com/f-klement/errata/internal/extract/marker"
 	"github.com/f-klement/errata/internal/extract/packageversion"
@@ -63,6 +65,7 @@ var kinds = registry(
 	register(regex.Kind, regex.Build),
 	register(text.Kind, text.Build),
 	register(comment.Kind, comment.Build),
+	register(literal.Kind, literal.Build),
 	register(markdown.Kind, markdown.Build),
 	register(asciidoc.Kind, asciidoc.Build),
 	register(rst.Kind, rst.Build),
@@ -75,6 +78,8 @@ var kinds = registry(
 	// the json and toml readers' parsers, since a reader imports no other.
 	register(toolversion.Kind, with(toolversion.Build, parsers)),
 	register(packageversion.Kind, with(packageversion.Build, parsers)),
+	// dependency reads its JSON, TOML and YAML files with the same parsers.
+	register(dependency.Kind, with(dependency.Build, parsers)),
 	register(envfile.Kind, envfile.Build),
 	// gitlab-ci and github-actions read their YAML with the yaml reader's
 	// parser, gitlab-ci's reading a !!bool scalar as Psych does.
@@ -139,6 +144,11 @@ var parsers = core.Parsers{
 	Noted:            yaml.ParseNoted,
 	NotedYAML11Bools: yaml.ParseNotedBools(gitlabci.PsychBool),
 }
+
+// Parsers is the table of parsers the facade gives the readers, which a
+// test of another package builds a reader with, so that it reads documents
+// in strings as production does.
+func Parsers() core.Parsers { return parsers }
 
 // with is build given w, the parsers or readers it takes beside its spec.
 func with[S, W any](build func(S, W) (check.Extractor, error), w W) func(S) (check.Extractor, error) {

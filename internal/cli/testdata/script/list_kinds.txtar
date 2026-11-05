@@ -1,7 +1,7 @@
 # errata list prints each kind of check as errata check loads it, with the
 # defaults the loader fills in written out: a program check's timeout of 30s,
 # an extractor's max_bytes of 33554432, and an ini extractor's dialect and a
-# comment extractor's language, which the file's name chooses. It reads none of the files the checks name, so
+# comment or literal extractor's language, which the file's name chooses. It reads none of the files the checks name, so
 # none is here, and it exits 0.
 exec errata list -c program.yaml -f json
 cmp stdout program.json
@@ -210,7 +210,9 @@ checks:
       port:     {properties: {file: app.properties, key: server.port}}
       cfg:      {toml: {file: cfg.toml, path: 'server.port'}}
       pkg:      {package_version: {}}
-    assert: int(replicas[0]) <= int(nodes[0]) && size(prose) + size(note) + size(pom) + size(port) + size(cfg) + size(pkg) + size(marker) + size(hosts) > 0
+      dep:      {dependency: {name: lodash, files: [package.json, "**/package-lock.json"], only: resolved}}
+      setting:  {literal: {file: settings.py, path: DEBUG}}
+    assert: int(replicas[0]) <= int(nodes[0]) && size(prose) + size(note) + size(pom) + size(port) + size(cfg) + size(pkg) + size(dep) + size(marker) + size(hosts) + size(setting) > 0
 -- assert.json --
 {
   "version": 1,
@@ -231,6 +233,17 @@ checks:
             "file": "cfg.toml",
             "max_bytes": 33554432,
             "path": "server.port"
+          }
+        },
+        "dep": {
+          "dependency": {
+            "name": "lodash",
+            "files": [
+              "package.json",
+              "**/package-lock.json"
+            ],
+            "only": "resolved",
+            "max_bytes": 33554432
           }
         },
         "hosts": {
@@ -303,10 +316,18 @@ checks:
             "max_bytes": 33554432,
             "path": "spec.replicas"
           }
+        },
+        "setting": {
+          "literal": {
+            "file": "settings.py",
+            "max_bytes": 33554432,
+            "path": "DEBUG",
+            "language": "python"
+          }
         }
       },
       "relation": {
-        "assert": "int(replicas[0]) <= int(nodes[0]) && size(prose) + size(note) + size(pom) + size(port) + size(cfg) + size(pkg) + size(marker) + size(hosts) > 0"
+        "assert": "int(replicas[0]) <= int(nodes[0]) && size(prose) + size(note) + size(pom) + size(port) + size(cfg) + size(pkg) + size(dep) + size(marker) + size(hosts) + size(setting) > 0"
       },
       "normalize": [],
       "allow_empty": [],

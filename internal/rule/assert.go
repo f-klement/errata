@@ -90,7 +90,7 @@ func tooIntricate(budget int) error {
 var baseEnv = sync.OnceValues(func() (*cel.Env, error) {
 	opts := []cel.EnvOption{stdlib(), cel.ParserRecursionLimit(MaxDepth), cel.ParserExpressionSizeLimit(MaxLength)}
 	opts = append(opts, helpers()...)
-	strs, err := stringsExtension()
+	strs, err := stringsExtension(stringFunctions)
 	if err != nil {
 		return nil, err
 	}
@@ -207,6 +207,13 @@ func compileWith(expr string, extractors []check.NamedExtractor, lim limits, ext
 		return nil, errors.Join(errs...)
 	}
 	vars = append(vars, byFileMacro(names))
+	// The string functions' guards take their bounds from this rule's cost
+	// limit, which a test may lower, and not from CostLimit.
+	strs, err := stringsUnder(lim.cost, stringFunctions)
+	if err != nil {
+		return nil, fmt.Errorf("assert: the CEL environment: %w", err)
+	}
+	vars = append(vars, strs...)
 	env, err := base.Extend(append(vars, extra...)...)
 	if err != nil {
 		return nil, fmt.Errorf("assert: the CEL environment: %w", err)
@@ -263,9 +270,15 @@ func compileWith(expr string, extractors []check.NamedExtractor, lim limits, ext
 	if err := renovateAllThroughLog(noted); err != nil {
 		return nil, fmt.Errorf("assert: %w", err)
 	}
+	if noted, err = stringsThroughLog(env, noted); err != nil {
+		return nil, fmt.Errorf("assert: %w", err)
+	}
+	if err := stringsAllThroughLog(noted); err != nil {
+		return nil, fmt.Errorf("assert: %w", err)
+	}
 	program, err := env.Program(noted,
 		cel.CostLimit(lim.cost),
-		cel.CostTrackerOptions(append(append(append(setCosts(), semverCosts()...), renovateCost()...), noteCost)...),
+		cel.CostTrackerOptions(append(append(append(append(setCosts(), semverCosts()...), renovateCost()...), stringCosts()...), noteCost)...),
 		cel.InterruptCheckFrequency(interruptEvery),
 	)
 	if err != nil {
@@ -883,9 +896,14 @@ type outcome struct {
 // Eval evaluates the compiled expression under the cost limit and the
 // timeout. CEL looks at the context every interruptEvery comprehension steps,
 // and Eval waits a grace after the timeout for that look. Every helper reads
-// an argument of at most MaxArgument bytes. split, join and replace are
-// linear in what they read, and each builds at most MaxBuilt bytes. So a step
-// is short and the look comes soon. renovate_match is the longest call:
+// an argument of at most MaxArgument bytes. The strings extension's
+// functions are linear in what they read, and a search compares at most 10
+// pairs of code points for each unit of the cost limit. charAt, substring,
+// indexOf and lastIndexOf copy what they read into code points, 4 bytes
+// each, so at most 40 MB under CostLimit, and every result is at most
+// MaxBuilt bytes. A refused call costs what its arguments would, so the cost
+// limit bounds refusals as it bounds calls. So a step is short and the look
+// comes soon. renovate_match is the longest call:
 // the slowest compile measured took 91 ms on the 4 core node, and a match
 // at most 17.6 ms on the build node. So a step of many of them is not. CEL
 // checks the cost limit after each call, and the cost charges a glob's

@@ -3,14 +3,12 @@ package toolversion
 import (
 	"bytes"
 	"errors"
-	"fmt"
 	"slices"
 	"strings"
 	"unicode"
 
-	"golang.org/x/mod/modfile"
-
 	"github.com/f-klement/errata/internal/extract/core"
+	"github.com/f-klement/errata/internal/extract/core/gomod"
 )
 
 // fileKind is one row of the table: a file name, the tools a file of that
@@ -335,76 +333,20 @@ func readRustToolchain(x *extractor, f file, data []byte, add func(string, int) 
 // python- is left out, so it agrees with .go-version; toolchain default
 // stays default. A go.mod the go command refuses, such as one with an
 // unknown directive, is refused here too.
-func readGoMod(_ *extractor, f file, data []byte, add func(string, int) error) (err error) {
-	if n, limit := goModNodes(data), f.Limit/goModBytesPerNode; int64(n) > limit {
-		return named{fmt.Errorf("%s: the file can hold up to %d lines and tokens, over the limit of %d, one for every %d bytes of max_bytes; set max_bytes: higher to read a file this dense",
-			f.File, n, limit, goModBytesPerNode)}
-	}
-	// modfile recovers its parser's panics but not those of the step that
-	// turns the syntax into directives; no input found makes one panic, and
-	// a panic there would end the run instead of making one rule unknown.
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("golang.org/x/mod/modfile stopped on the file: %v", r)
-		}
-	}()
-	mod, err := parseGoMod(f.File, data, nil)
+func readGoMod(_ *extractor, f file, data []byte, add func(string, int) error) error {
+	mod, err := gomod.Parse(f.Source, data)
 	if err != nil {
-		// modfile's message starts with the file and the line.
-		return named{core.ClipError(err)}
+		return named{err}
 	}
 	if mod.Toolchain != nil {
 		name := mod.Toolchain.Name
 		if name != "default" {
 			name = strings.TrimPrefix(name, "go")
 		}
-		return add(name, mod.Toolchain.Syntax.Start.Line)
+		return add(name, gomod.Line(data, mod.Toolchain.Syntax.Start))
 	}
 	if mod.Go != nil {
-		return add(mod.Go.Version, mod.Go.Syntax.Start.Line)
+		return add(mod.Go.Version, gomod.Line(data, mod.Go.Syntax.Start))
 	}
 	return nil
-}
-
-// parseGoMod is modfile.Parse; a test replaces it to witness the recover.
-var parseGoMod = modfile.Parse
-
-// goModBytesPerNode is how many bytes of max_bytes allow one line or token of
-// a go.mod. modfile builds the syntax of the whole file before errata sees a
-// directive, and a line or token costs 150 to 440 bytes there: 32 MiB of
-// lines of one short token took 2.1 GB and 4.1 s, of empty comments 1.6 GB,
-// and of commas on one line 1.9 GB. A go.mod of requirements holds a line or
-// token for every 7 bytes, so at the default the limit reads one of about
-// 3.5 MB, some 80000 requirements. The densest files measured at the limit,
-// 32 MiB of unknown directives of 129 bytes or of lines ending in a comment,
-// take about 0.5 to 0.75 s and up to about 320 MB, since modfile keeps an
-// error for each line.
-const goModBytesPerNode = 64
-
-// goModPunct are the bytes modfile's lexer makes a token of whatever is
-// around them: a line end, ( ) [ ] { } and the comma, and the quote and the
-// backquote that start a string.
-const goModPunct = "\n()[]{},\"`"
-
-// goModNodes is an upper bound on the lines and tokens modfile builds from
-// data: one for each byte of goModPunct, and one for each other byte that is
-// not blank and follows a blank, a byte of goModPunct or the start of the
-// file, where an identifier starts. A string counts at least once, by its
-// quote, and an identifier right after a ) or a closing quote counts too.
-func goModNodes(data []byte) int {
-	n, start := 1, true
-	for _, b := range data {
-		switch {
-		case strings.IndexByte(goModPunct, b) >= 0:
-			n, start = n+1, true
-		case b == ' ' || b == '\t' || b == '\r':
-			start = true
-		default:
-			if start {
-				n++
-			}
-			start = false
-		}
-	}
-	return n
 }

@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/f-klement/errata/internal/extract/core/gomod"
 	"github.com/f-klement/errata/internal/extract/extracttest"
 )
 
@@ -34,7 +35,7 @@ func toolVersionReplays(size int) []extracttest.Replay[Spec] {
 	// count refuses the file before modfile builds a token of each.
 	commas := extracttest.Replay[Spec]{Name: "go.mod of commas", Spec: at("go", "d/go.mod"),
 		Body: func() string { return "module m\ngo 1.22\nx " + fill(",") + "\n" }, Refused: "d/go.mod:3: unknown directive: x"}
-	if size > (32<<20)/goModBytesPerNode {
+	if size > (32<<20)/gomod.BytesPerNode {
 		commas.Refused = "d/go.mod: the file can hold up to"
 	}
 	return []extracttest.Replay[Spec]{

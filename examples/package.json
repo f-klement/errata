@@ -3,5 +3,6 @@
   "version": "1.4.0",
   "license": "MIT",
   "engines": {"node": ">=20.11"},
+  "dependencies": {"zod": "^3.22.0"},
   "scripts": {"test": "vitest run"}
 }

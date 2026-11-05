@@ -37,6 +37,10 @@ var planted = map[string]string{
 	"hcl":        "a = \"// port 1\"\n# port 2\n",
 	"sql":        "select '-- port 1';\n-- port 2\n",
 	"lua":        "s = [[-- port 1]]\n-- port 2\n",
+	"php":        "<?php $s = <<<EOT\n// port 1\nEOT;\n# port 2\n",
+	"groovy":     "def s = $/// port 1/$\n// port 2\n",
+	"scala":      "val s = \"\"\"// port 1\"\"\"\n// port 2\n",
+	"elixir":     "s = ~s(# port 1)\n# port 2\n",
 	"html":       "<a title=\"<!-- port 1 -->\">x</a>\n<!-- port 2 -->\n",
 	"xml":        "<a><![CDATA[<!-- port 1 -->]]></a>\n<!-- port 2 -->\n",
 }
@@ -48,7 +52,7 @@ var fileOf = map[string]string{
 	"typescript": "a.ts", "rust": "a.rs", "swift": "a.swift", "csharp": "a.cs", "css": "a.css",
 	"python": "a.py", "shell": "a.sh", "ruby": "a.rb", "perl": "a.pl", "yaml": "a.yaml", "toml": "a.toml",
 	"dockerfile": "Dockerfile", "makefile": "Makefile", "hcl": "a.tf", "sql": "a.sql", "lua": "a.lua",
-	"html": "a.html", "xml": "a.xml",
+	"html": "a.html", "xml": "a.xml", "php": "a.php", "groovy": "build.gradle", "scala": "build.sbt", "elixir": "mix.exs",
 }
 
 // family plants a comment marker inside a string literal in a file of every
@@ -186,13 +190,14 @@ func TestPlaceAndResolveWriteTheLanguage(t *testing.T) {
 
 // A file in which a span runs off the end is refused, and its rule unknown:
 // the lexer lost its place at the line the span opens on, and code after it
-// would read as comment. Here a JavaScript regular expression holds /*,
-// which opens a block comment that swallows the code after it, and a quote
+// would read as comment. Here JSX text, which the lexer reads as code,
+// holds /*, which opens a block comment that swallows the code after it,
+// and a quote
 // in a shell heredoc opens a string that hides the comment after it.
 // Planted break: comments not calling core.CheckSpan.
 func TestASpanThatRunsOffIsRefused(t *testing.T) {
 	root := extracttest.Repo(t, map[string]string{
-		"a.js": "const x = 1;\ns = s.replace(/\\/*$/, '');\nconst port = 80;\n",
+		"a.js": "const x = 1;\nconst a = <p>/* x</p>;\nconst port = 80;\n",
 		"b.sh": "cat <<EOF\nUsage: don't run\nEOF\n# port 8\n",
 	})
 	for file, want := range map[string]string{
@@ -201,5 +206,63 @@ func TestASpanThatRunsOffIsRefused(t *testing.T) {
 	} {
 		_, err := extracttest.Run(t, Build, spec(file, `port = (\d+)|port (\d+)`), root)
 		extracttest.WantError(t, err, want)
+	}
+}
+
+// A PHP template's HTML around its code is text, not code: a URL or an
+// apostrophe in it opens no comment and no string, and a comment ends at
+// ?>. Planted break: the php row without Begin.
+func TestPHPTemplateTextIsNotCode(t *testing.T) {
+	root := extracttest.Repo(t, map[string]string{
+		"page.php": "<p>Don't miss it: http://example.com/port 9</p>\n<?php // port 1 ?>\n<p>it's here // port 8</p>\n<?= $x # port 2 ?>\n",
+	})
+	got := extracttest.Texts(extracttest.MustRun(t, Build, spec("page.php", `port (\d+)`), root))
+	if got != "1@2 2@4" {
+		t.Errorf("got %s, want 1@2 2@4", got)
+	}
+}
+
+// Delta review 1's cases through the comment kind: an f-string's format
+// spec holds no comment, a division on a line of its own leaves the comment
+// after it, Ruby's data after __END__ is no comment, and a PHP template's
+// <?xml is text.
+func TestDelta1Comments(t *testing.T) {
+	root := extracttest.Repo(t, map[string]string{
+		"a.py":  "print(f\"{n:#06x} {x:'^10}\")  # port 1\n",
+		"a.js":  "const total = a\n  / b // port 2\n",
+		"a.rb":  "x = 1 # port 3\n__END__\n# port 9\n",
+		"a.php": "<?xml version=\"1.0\"?><!-- port 8 -->\n<?php // port 4\n",
+	})
+	for file, want := range map[string]string{"a.py": "1@1", "a.js": "2@2", "a.rb": "3@1", "a.php": "4@2"} {
+		if got := extracttest.Texts(extracttest.MustRun(t, Build, spec(file, `port (\d+)`), root)); got != want {
+			t.Errorf("%s: %s, want %s", file, got, want)
+		}
+	}
+}
+
+// Delta review 2's cases through the comment kind: the two pygments lines
+// hold no comment and leave the comments after them, and so do Ruby's
+// percent literals and a regular expression over lines.
+func TestDelta2Comments(t *testing.T) {
+	root := extracttest.Repo(t, map[string]string{
+		"a.py": "    (rf'(\\{{[{_dash}])(![^}}]*)(\\}}?)',\n    (rf'(\\{{%)(-?\\s*)(filter)(\\s+)({_ident_inner})',  # port 1\n",
+		"a.rb": "x = %r{^/([a-z]):/}i # port 2\ny = \"#{n ? %[-#{n}] : ''}\" # port 3\nre = /\n  a # port 9\n/x # port 4\n",
+	})
+	for file, want := range map[string]string{"a.py": "1@2", "a.rb": "2@1 3@2 4@5"} {
+		if got := extracttest.Texts(extracttest.MustRun(t, Build, spec(file, `port (\d+)`), root)); got != want {
+			t.Errorf("%s: %s, want %s", file, got, want)
+		}
+	}
+}
+
+// Delta review 4's rows through the comment kind: a list of operator
+// symbols and a string key written as a symbol hold no comment, and the
+// comments after them are read.
+func TestDelta4Comments(t *testing.T) {
+	root := extracttest.Repo(t, map[string]string{
+		"a.rb": "X = [:+, :-, :*] # port 1\nY = {\"a\":[1, 2]} # port 2\nZ = [:/, :%] # port 3\n",
+	})
+	if got := extracttest.Texts(extracttest.MustRun(t, Build, spec("a.rb", `port (\d+)`), root)); got != "1@1 2@2 3@3" {
+		t.Errorf("got %s, want 1@1 2@2 3@3", got)
 	}
 }

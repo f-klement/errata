@@ -299,6 +299,7 @@ var describes = []string{
 	`{"regex": {"file": "a", "pattern": "(?P<n>x)", "as": "record"}}`,
 	`{"text": {"file": "a.md", "pattern": "(x)"}}`,
 	`{"comment": {"file": "a.go", "pattern": "(x)"}}`,
+	`{"literal": {"file": "settings.py", "path": "DEBUG"}}`,
 	`{"markdown": {"file": "a.md", "target": "table", "section": "Ports", "column": "Port", "key": "Host", "row": "web", "pattern": "(\\d+)"}}`,
 	`{"asciidoc": {"file": "a.adoc", "target": "code", "section": "Install", "language": "sh", "pattern": "(\\S+)"}}`,
 	`{"rst": {"file": "a.rst", "target": "code", "section": "Install", "language": "sh", "pattern": "(\\S+)"}}`,
@@ -314,6 +315,7 @@ var describes = []string{
 	`{"properties": {"file": "a.properties.j2", "key": "k"}}`,
 	`{"tool_version": {"tool": "node"}}`,
 	`{"package_version": {}}`,
+	`{"dependency": {"name": "x", "files": ["go.mod"]}}`,
 	`{"envfile": {"file": ".env", "name": "A"}}`,
 	`{"gitlab-ci": {"file": ".gitlab-ci.yml", "job": "j", "key": "image"}}`,
 	`{"shell": {"file": "a.sh", "name": "A"}}`,
@@ -332,9 +334,11 @@ var describes = []string{
 var mayNotLiteral = map[string]bool{
 	`{"tool_version": {"tool": "node"}}`:                                    true,
 	`{"package_version": {}}`:                                               true,
+	`{"dependency": {"name": "x", "files": ["go.mod"]}}`:                    true,
 	`{"gitlab-ci": {"file": ".gitlab-ci.yml", "job": "j", "key": "image"}}`: true,
 	`{"github-actions": {"file": "ci.yml", "job": "j", "key": "runs-on"}}`:  true,
 	`{"env": {"name": "A", "files": [".env"]}}`:                             true,
+	`{"literal": {"file": "settings.py", "path": "DEBUG"}}`:                 true,
 }
 
 // builtNotLiteral is whether x, built from raw, may return a not literal
@@ -452,7 +456,7 @@ func TestDescribeCarriesMaxBytes(t *testing.T) {
 // regex that searches for another extractor's values, which reads once
 // those values are known. Planted break: text's FromShared removed.
 func TestEveryOneFileReaderIsAFileReader(t *testing.T) {
-	ownFiles := map[string]bool{"tool_version": true, "package_version": true, "env": true, "exists": true, "size": true, "gitlab-ci": true, "marker": true}
+	ownFiles := map[string]bool{"tool_version": true, "package_version": true, "dependency": true, "env": true, "exists": true, "size": true, "gitlab-ci": true, "marker": true}
 	seen := map[string]bool{}
 	// describes holds json only as a file set.
 	for _, raw := range append(slices.Clone(describes), `{"json": {"file": "a.json", "path": "a"}}`) {

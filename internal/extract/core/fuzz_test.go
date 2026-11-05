@@ -6,9 +6,11 @@ import (
 	"errors"
 	"io"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/pelletier/go-toml/v2"
@@ -83,6 +85,9 @@ b: {k: {n: 1}, l: x, m: {n: 1.0}}
 // value of one key. A number errata reads must be the one the decoder reads,
 // up to the double the decoder rounds it to: zero exactly when the decoder's
 // is zero, whatever the exponent. An infinity or a NaN equals no literal.
+// A scalar's Form is a date or time where go-toml or yaml.v3 decodes a
+// date or a time, binary where yaml.v3 tags it !!binary, and text for every
+// other string, JSON's included.
 func FuzzNumber(f *testing.F) {
 	for _, s := range []string{
 		"0", "-0", "8080", "0e1000000000000000", "-0.0E-99999999999999999999", "1e400", "1e-400",
@@ -90,6 +95,8 @@ func FuzzNumber(f *testing.F) {
 		"18446744073709551615", "0xFFFFFFFFFFFFFFFF", "12345678901234567890123", "True", "NULL", "~",
 		"'8080'", `"8080"`, "!!str 1", "!!float 1", "!!int '0x10'", ".inf", "-.Inf", ".nan", "inf", "-nan",
 		"1979-05-27", "1979-05-27T07:32:00Z", "07:32:00", "true", "null", "x",
+		"1979-05-27T07:32:00", "1979-05-27 07:32:00.5", "2001-12-14t21:59:43.10-05:00", "'1979-05-27'",
+		"!!timestamp 2001-12-14", "!!str 2001-12-14", "!!binary aGk=", "!binary aGk=", "&a 2001-12-14",
 	} {
 		f.Add(s)
 	}
@@ -102,12 +109,24 @@ func FuzzNumber(f *testing.F) {
 				t.Fatalf("encoding/json reads %s, errata refuses it: %v", data, err)
 			}
 			core.CheckTyped(t, "json", root.Field["v"], j["v"])
+			checkForm(t, "json", root.Field["v"], core.FormText)
 		}
 		var y map[string]any
 		data = "v: " + text + "\n"
 		if yaml.Unmarshal([]byte(data), &y) == nil {
 			if docs, err := yamlreader.Parse([]byte(data)); err == nil && len(docs) == 1 && docs[0].Field["v"] != nil {
 				core.CheckTyped(t, "yaml", docs[0].Field["v"], y["v"])
+				// yaml.v3 decodes a timestamp as a time.Time, and binary
+				// data as the string it decodes to, so only the tag tells it.
+				want := core.FormText
+				var doc yaml.Node
+				if _, ok := y["v"].(time.Time); ok {
+					want = core.FormDateTime
+				} else if yaml.Unmarshal([]byte(data), &doc) == nil && len(doc.Content) == 1 && len(doc.Content[0].Content) == 2 &&
+					doc.Content[0].Content[1].ShortTag() == "!!binary" {
+					want = core.FormBinary
+				}
+				checkForm(t, "yaml", docs[0].Field["v"], want)
 			}
 		}
 		var m map[string]any
@@ -115,9 +134,27 @@ func FuzzNumber(f *testing.F) {
 		if toml.Unmarshal([]byte(data), &m) == nil {
 			if root, err := tomlreader.Parse([]byte(data)); err == nil && root.Field["v"] != nil {
 				core.CheckTyped(t, "toml", root.Field["v"], m["v"])
+				want := core.FormText
+				switch m["v"].(type) {
+				case toml.LocalDate, toml.LocalTime, toml.LocalDateTime, time.Time:
+					want = core.FormDateTime
+				}
+				checkForm(t, "toml", root.Field["v"], want)
 			}
 		}
 	})
+}
+
+// checkForm fails t when n, a string scalar of format, is not of Form want.
+// A node of another type is always FormText.
+func checkForm(t *testing.T, format string, n *core.Node, want core.Form) {
+	t.Helper()
+	if n.Shape != core.Scalar || n.Type != core.TypeString {
+		want = core.FormText
+	}
+	if n.Form != want {
+		t.Fatalf("%s %q: errata gives it form %d, the decoder's reading is form %d", format, n.Text, n.Form, want)
+	}
 }
 
 // FuzzExtract runs an extractor end to end after the read: the parse, the
@@ -130,36 +167,54 @@ func FuzzNumber(f *testing.F) {
 // formats.
 func FuzzExtract(f *testing.F) {
 	embedFormats := [3]string{"yaml", "json", "toml"}
-	f.Add(uint8(0), []byte(extracttest.Manifests), "spec.replicas", "Deployment", "", uint8(0), "", uint8(0), "", uint8(0))
-	f.Add(uint8(0), []byte("a: &x {b: [1, 2]}\nc:\n  <<: *x\n  d: *x\n"), "c[*][-1]", "", "", uint8(0), "", uint8(0), "", uint8(0))
-	f.Add(uint8(0), []byte("kind: K\nmetadata: {name: n}\nv: [x]\n"), "$.v[*]", "K", "n", uint8(0), "", uint8(0), "", uint8(0))
-	f.Add(uint8(1), []byte(`{"a": [1, {"b": "x"}], "c": null}`), "a[*].b", "", "", uint8(0), "", uint8(0), "", uint8(0))
-	f.Add(uint8(2), []byte(extracttest.RunnerConfig), "runners[*].kubernetes['node_selector'][*]", "", "", uint8(0), "", uint8(0), "", uint8(0))
-	f.Add(uint8(0), []byte(extracttest.Manifests), "metadata[?@ == 'web']", "Deployment", "", uint8(0), "", uint8(0), "", uint8(0))
-	f.Add(uint8(1), []byte(`{"a": [{"n": 1e3, "s": "x"}, {"n": "1000"}]}`), "a[?@.n == 1000].s", "", "", uint8(0), "", uint8(0), "", uint8(0))
-	f.Add(uint8(2), []byte("[[d]]\nn = 0x10\ns = 'x'\n[[d]]\nn = '16'\n"), "d[?@.n == 16 && @.s == 'x'].s", "", "", uint8(0), "", uint8(0), "", uint8(0))
-	f.Add(uint8(0), []byte("a: [{n: 1, s: x}, {n: 2}, {n: 1.0, s: y}, [1], 1]\nb: {k: {n: 1}, l: {n: 0e9}}\n"), "$[*][?@.n == 1].s", "", "", uint8(0), "", uint8(0), "", uint8(0))
-	f.Add(uint8(1), []byte(`{"a": [{"n": 0e1000000000000000}, {"n": 0}, {"n": 1e3}]}`), "a[?@.n == 0]", "", "", uint8(0), "", uint8(0), "", uint8(0))
-	f.Add(uint8(0), []byte("r:\n  - {d: [docker], m: 1d}\n  - {d: [helm], m: 2d}\n  - {d: [docker]}\n"), "r[?@.m && @.d[?@ == 'docker']].m", "", "", uint8(0), "", uint8(0), "", uint8(0))
-	f.Add(uint8(1), []byte(`{"e": [{"ports": [{"port": 6443}], "to": ["x"]}, {"ports": [{"port": 80}], "to": ["y"]}]}`), "e[?@.ports[?@.port == 6443]].to[*]", "", "", uint8(0), "", uint8(0), "", uint8(0))
-	f.Add(uint8(2), []byte("[[r]]\nnames = ['alpine/k8s']\nallowed = '<1.38'\n[[r]]\nnames = ['x']\n"), "r[?@.names[?@ == 'alpine/k8s'] && !@.enabled].allowed", "", "", uint8(0), "", uint8(0), "", uint8(0))
-	f.Add(uint8(0), []byte("c: |\n  a: |\n    [t]\n    v = 3\n"), "c", "", "", uint8(0), "a", uint8(2), "t.v", uint8(2))
-	f.Add(uint8(0), []byte("s: &s 'x = 1'\nl: [*s, *s]\n"), "l[*]", "", "", uint8(2), "x", uint8(0), "", uint8(1))
-	f.Add(uint8(0), []byte("a: 0\rb: 1\rs: |\n  y = 2"), "s", "", "", uint8(2), "y", uint8(0), "", uint8(1))
-	f.Add(uint8(0), []byte("a: 0\ns: &a\n  |\n  x = 1\nt: *a\n"), "t", "", "", uint8(2), "x", uint8(0), "", uint8(1))
-	f.Add(uint8(1), []byte(`{"cfg": "a: |\n  x = 1\n", "e": ""}`), "cfg", "", "", uint8(0), "a", uint8(2), "x", uint8(2))
-	f.Add(uint8(2), []byte("cfg = '''\n{\"a\": [\"b: 1\"]}\n'''\n"), "cfg", "", "", uint8(1), "a[*]", uint8(0), "b", uint8(2))
-	f.Add(uint8(0), []byte("a: 0\ns: &a\n  |\n  x: 0\n  y: 2\nt: [*a]\n"), "s", "", "", uint8(0), "y", uint8(0), "", uint8(1))
-	f.Add(uint8(0), []byte("a: 0\ns: &a\n  |\n  x: 0\n  y: 2\nt: [*a]\n"), "t[*]", "", "", uint8(0), "y", uint8(0), "", uint8(1))
-	f.Add(uint8(0), []byte("a: 0\nc: !!str\n\n  |\n  x: 0\n  a: |\n    b: 1\n    v: [3, 4]\n"), "c", "", "", uint8(0), "a", uint8(0), "v[*]", uint8(2))
+	f.Add(uint8(0), []byte(extracttest.Manifests), "spec.replicas", "Deployment", "", uint8(0), "", uint8(0), "", uint8(0), uint8(3), false, []byte(nil), uint16(0))
+	f.Add(uint8(0), []byte("a: &x {b: [1, 2]}\nc:\n  <<: *x\n  d: *x\n"), "c[*][-1]", "", "", uint8(0), "", uint8(0), "", uint8(0), uint8(3), false, []byte(nil), uint16(0))
+	f.Add(uint8(0), []byte("kind: K\nmetadata: {name: n}\nv: [x]\n"), "$.v[*]", "K", "n", uint8(0), "", uint8(0), "", uint8(0), uint8(3), false, []byte(nil), uint16(0))
+	f.Add(uint8(1), []byte(`{"a": [1, {"b": "x"}], "c": null}`), "a[*].b", "", "", uint8(0), "", uint8(0), "", uint8(0), uint8(3), false, []byte(nil), uint16(0))
+	f.Add(uint8(2), []byte(extracttest.RunnerConfig), "runners[*].kubernetes['node_selector'][*]", "", "", uint8(0), "", uint8(0), "", uint8(0), uint8(3), false, []byte(nil), uint16(0))
+	f.Add(uint8(0), []byte(extracttest.Manifests), "metadata[?@ == 'web']", "Deployment", "", uint8(0), "", uint8(0), "", uint8(0), uint8(3), false, []byte(nil), uint16(0))
+	f.Add(uint8(1), []byte(`{"a": [{"n": 1e3, "s": "x"}, {"n": "1000"}]}`), "a[?@.n == 1000].s", "", "", uint8(0), "", uint8(0), "", uint8(0), uint8(3), false, []byte(nil), uint16(0))
+	f.Add(uint8(2), []byte("[[d]]\nn = 0x10\ns = 'x'\n[[d]]\nn = '16'\n"), "d[?@.n == 16 && @.s == 'x'].s", "", "", uint8(0), "", uint8(0), "", uint8(0), uint8(3), false, []byte(nil), uint16(0))
+	f.Add(uint8(0), []byte("a: [{n: 1, s: x}, {n: 2}, {n: 1.0, s: y}, [1], 1]\nb: {k: {n: 1}, l: {n: 0e9}}\n"), "$[*][?@.n == 1].s", "", "", uint8(0), "", uint8(0), "", uint8(0), uint8(3), false, []byte(nil), uint16(0))
+	f.Add(uint8(1), []byte(`{"a": [{"n": 0e1000000000000000}, {"n": 0}, {"n": 1e3}]}`), "a[?@.n == 0]", "", "", uint8(0), "", uint8(0), "", uint8(0), uint8(3), false, []byte(nil), uint16(0))
+	f.Add(uint8(0), []byte("r:\n  - {d: [docker], m: 1d}\n  - {d: [helm], m: 2d}\n  - {d: [docker]}\n"), "r[?@.m && @.d[?@ == 'docker']].m", "", "", uint8(0), "", uint8(0), "", uint8(0), uint8(3), false, []byte(nil), uint16(0))
+	f.Add(uint8(1), []byte(`{"e": [{"ports": [{"port": 6443}], "to": ["x"]}, {"ports": [{"port": 80}], "to": ["y"]}]}`), "e[?@.ports[?@.port == 6443]].to[*]", "", "", uint8(0), "", uint8(0), "", uint8(0), uint8(3), false, []byte(nil), uint16(0))
+	f.Add(uint8(2), []byte("[[r]]\nnames = ['alpine/k8s']\nallowed = '<1.38'\n[[r]]\nnames = ['x']\n"), "r[?@.names[?@ == 'alpine/k8s'] && !@.enabled].allowed", "", "", uint8(0), "", uint8(0), "", uint8(0), uint8(3), false, []byte(nil), uint16(0))
+	f.Add(uint8(0), []byte("c: |\n  a: |\n    [t]\n    v = 3\n"), "c", "", "", uint8(0), "a", uint8(2), "t.v", uint8(2), uint8(3), false, []byte(nil), uint16(0))
+	f.Add(uint8(0), []byte("s: &s 'x = 1'\nl: [*s, *s]\n"), "l[*]", "", "", uint8(2), "x", uint8(0), "", uint8(1), uint8(3), false, []byte(nil), uint16(0))
+	f.Add(uint8(0), []byte("a: 0\rb: 1\rs: |\n  y = 2"), "s", "", "", uint8(2), "y", uint8(0), "", uint8(1), uint8(3), false, []byte(nil), uint16(0))
+	f.Add(uint8(0), []byte("a: 0\ns: &a\n  |\n  x = 1\nt: *a\n"), "t", "", "", uint8(2), "x", uint8(0), "", uint8(1), uint8(3), false, []byte(nil), uint16(0))
+	f.Add(uint8(1), []byte(`{"cfg": "a: |\n  x = 1\n", "e": ""}`), "cfg", "", "", uint8(0), "a", uint8(2), "x", uint8(2), uint8(3), false, []byte(nil), uint16(0))
+	f.Add(uint8(2), []byte("cfg = '''\n{\"a\": [\"b: 1\"]}\n'''\n"), "cfg", "", "", uint8(1), "a[*]", uint8(0), "b", uint8(2), uint8(3), false, []byte(nil), uint16(0))
+	f.Add(uint8(0), []byte("a: 0\ns: &a\n  |\n  x: 0\n  y: 2\nt: [*a]\n"), "s", "", "", uint8(0), "y", uint8(0), "", uint8(1), uint8(3), false, []byte(nil), uint16(0))
+	f.Add(uint8(0), []byte("a: 0\ns: &a\n  |\n  x: 0\n  y: 2\nt: [*a]\n"), "t[*]", "", "", uint8(0), "y", uint8(0), "", uint8(1), uint8(3), false, []byte(nil), uint16(0))
+	f.Add(uint8(0), []byte("a: 0\nc: !!str\n\n  |\n  x: 0\n  a: |\n    b: 1\n    v: [3, 4]\n"), "c", "", "", uint8(0), "a", uint8(0), "v[*]", uint8(2), uint8(3), false, []byte(nil), uint16(0))
 	// The line under the | holds the value, and the | line a comment of
 	// the same text, which a test for the text alone would accept.
-	f.Add(uint8(0), []byte("s: &a\n  | # 2\n  y: 2\n"), "s", "", "", uint8(0), "y", uint8(0), "", uint8(1))
+	f.Add(uint8(0), []byte("s: &a\n  | # 2\n  y: 2\n"), "s", "", "", uint8(0), "y", uint8(0), "", uint8(1), uint8(3), false, []byte(nil), uint16(0))
 	// A TOML document in a block whose | stands below its anchor, read
 	// through an alias; and a file of CR LF lines.
-	f.Add(uint8(0), []byte("a: 0\ns: &a\n  |\n  x = 1\n  y = 2\nt: *a\n"), "t", "", "", uint8(2), "y", uint8(0), "", uint8(1))
-	f.Add(uint8(0), []byte("a: 0\r\ns: |\r\n  x: 0\r\n  y: 2\r\n"), "s", "", "", uint8(0), "y", uint8(0), "", uint8(1))
-	f.Fuzz(func(t *testing.T, format uint8, data []byte, path, kind, name string, f1 uint8, p1 string, f2 uint8, p2 string, steps uint8) {
+	f.Add(uint8(0), []byte("a: 0\ns: &a\n  |\n  x = 1\n  y = 2\nt: *a\n"), "t", "", "", uint8(2), "y", uint8(0), "", uint8(1), uint8(3), false, []byte(nil), uint16(0))
+	f.Add(uint8(0), []byte("a: 0\r\ns: |\r\n  x: 0\r\n  y: 2\r\n"), "s", "", "", uint8(0), "y", uint8(0), "", uint8(1), uint8(3), false, []byte(nil), uint16(0))
+	// Sets of two files with embedded steps, which share the budgets of the
+	// documents in strings, the aliases and the filters (#190): the strings
+	// of f and g together past a small max_bytes, aliases in g after f's,
+	// a JSON set of YAML strings, a TOML set whose date a step refuses
+	// (#184), and a second file that is empty.
+	f.Add(uint8(0), []byte("s: &s 'x = 1'\nl: [*s, *s]\n"), "l[*]", "", "", uint8(2), "x", uint8(0), "", uint8(1), uint8(3), true, []byte("l: ['x = 2', \"x = 3\"]\n"), uint16(80))
+	f.Add(uint8(0), []byte("c: |\n  a: &a [1, 2]\n  b: [*a, *a]\n"), "c", "", "", uint8(0), "b[*][*]", uint8(0), "", uint8(1), uint8(3), true, []byte("x: 0\nc: |\n  b: [[3]]\n"), uint16(0))
+	f.Add(uint8(1), []byte(`{"s": "a: [1, 2]"}`), "s", "", "", uint8(0), "a[*]", uint8(0), "", uint8(1), uint8(3), true, []byte(`{"s": "a: [3]"}`), uint16(40))
+	f.Add(uint8(2), []byte("s = 'x: 1'\n"), "s", "", "", uint8(0), "x", uint8(0), "", uint8(1), uint8(3), true, []byte("s = 1979-05-27\n"), uint16(0))
+	f.Add(uint8(0), []byte("s: 'x = 1'\n"), "s", "", "", uint8(2), "x", uint8(0), "", uint8(1), uint8(3), true, []byte(""), uint16(0))
+	f.Add(uint8(0), []byte("s: 2024-01-01\nb: !!binary aGk=\n"), "$[*]", "", "", uint8(0), "$", uint8(0), "", uint8(1), uint8(3), false, []byte(nil), uint16(0))
+	// A date a merge key brings in, and one in the document a string holds,
+	// which the second step would read.
+	f.Add(uint8(0), []byte("m: &m {d: 2024-01-01}\nx: {<<: *m}\n"), "x.d", "", "", uint8(0), "$", uint8(0), "", uint8(1), uint8(3), false, []byte(nil), uint16(0))
+	f.Add(uint8(1), []byte(`{"s": "a: 2024-01-01"}`), "s", "", "", uint8(0), "a", uint8(0), "$", uint8(2), uint8(3), false, []byte(nil), uint16(0))
+	// A step whose parser the table leaves out, which Build refuses (#185).
+	f.Add(uint8(0), []byte("s: 'x = 1'\n"), "s", "", "", uint8(2), "x", uint8(0), "", uint8(1), uint8(2), false, []byte(nil), uint16(0))
+	f.Add(uint8(1), []byte(`{"s": "{}"}`), "s", "", "", uint8(1), "$", uint8(0), "", uint8(1), uint8(1), true, []byte(`{"s": "[]"}`), uint16(0))
+	f.Fuzz(func(t *testing.T, format uint8, data []byte, path, kind, name string, f1 uint8, p1 string, f2 uint8, p2 string, steps, drop uint8, set bool, second []byte, maxBytes uint16) {
 		var embedded []core.Embedded
 		if steps%3 > 0 {
 			embedded = append(embedded, core.Embedded{Format: embedFormats[f1%3], Path: p1})
@@ -167,18 +222,45 @@ func FuzzExtract(f *testing.F) {
 		if steps%3 > 1 {
 			embedded = append(embedded, core.Embedded{Format: embedFormats[f2%3], Path: p2})
 		}
-		var s extract.Spec
-		ys := yamlreader.Spec{File: "f", Path: path, Kind: kind, Name: name, Embedded: embedded}
-		switch format % 3 {
-		case 0:
-			s = extract.Of(yamlreader.Kind, ys)
-		case 1:
-			s = extract.Of(jsonreader.Kind, jsonreader.Spec{File: "f", Path: path, Embedded: embedded})
-		default:
-			s = extract.Of(tomlreader.Kind, tomlreader.Spec{File: "f", Path: path, Embedded: embedded})
+		var limit int64
+		if set {
+			limit = int64(maxBytes)
 		}
+		// spec is the spec of file, or of the set files, and the build of
+		// its reader with a parsers table of the caller's.
+		spec := func(file string, files []string) (extract.Spec, func(core.Parsers) error) {
+			w := core.Where{File: file, Files: files, MaxBytes: limit}
+			switch format % 3 {
+			case 0:
+				ys := yamlreader.Spec{Where: w, Path: path, Kind: kind, Name: name, Embedded: embedded}
+				return extract.Of(yamlreader.Kind, ys), func(p core.Parsers) error { _, err := yamlreader.Build(ys, p); return err }
+			case 1:
+				js := jsonreader.Spec{Where: w, Path: path, Embedded: embedded}
+				return extract.Of(jsonreader.Kind, js), func(p core.Parsers) error { _, err := jsonreader.Build(js, p); return err }
+			default:
+				ts := tomlreader.Spec{Where: w, Path: path, Embedded: embedded}
+				return extract.Of(tomlreader.Kind, ts), func(p core.Parsers) error { _, err := tomlreader.Build(ts, p); return err }
+			}
+		}
+		file, files := "f", []string(nil)
+		if set {
+			file, files = "", []string{"f", "g"}
+		}
+		s, build := spec(file, files)
 		e, err := extract.Build(s)
+		if drop%4 < 3 {
+			checkNoParser(t, build, embedded, embedFormats[drop%4], err)
+		}
 		if err != nil {
+			return
+		}
+		if set {
+			checkSet(t, e, map[string][]byte{"f": data, "g": second}, func(file string) extract.Spec { s, _ := spec(file, nil); return s },
+				func(d []byte) {
+					if kind == "" && name == "" {
+						checkReadsText(t, format%3, path, embedded, d)
+					}
+				})
 			return
 		}
 		if p, roots := extractorRoots(format%3, path, data); roots != nil {
@@ -201,10 +283,154 @@ func FuzzExtract(f *testing.F) {
 				t.Fatalf("value %q at %s:%d of %d lines", v.Text, v.At.File, v.At.Line, count)
 			}
 		}
+		if kind == "" && name == "" {
+			checkReadsText(t, format%3, path, embedded, data)
+		}
 		if format%3 == 0 {
-			checkOwnLines(t, data, ys, got)
+			checkOwnLines(t, data, yamlreader.Spec{Where: core.Where{File: "f"}, Path: path, Kind: kind, Name: name, Embedded: embedded}, got)
 		}
 	})
+}
+
+// fullParsers is the parsers table the facade gives the readers, for the
+// documents in strings.
+var fullParsers = extract.Parsers()
+
+// checkNoParser checks build, a reader's build of the spec that the facade
+// built with err, against a parsers table that leaves out format's parser
+// (#185). It never panics. It refuses a spec whose steps read format with a
+// message that names it, where nothing before that step is refused, and
+// builds every spec the facade builds whose steps do not read format.
+func checkNoParser(t *testing.T, build func(core.Parsers) error, embedded []core.Embedded, format string, err error) {
+	t.Helper()
+	p := fullParsers
+	switch format {
+	case "yaml":
+		p.YAML = nil
+	case "json":
+		p.JSON = nil
+	default:
+		p.TOML = nil
+	}
+	got := build(p)
+	if err != nil {
+		if got == nil {
+			t.Fatalf("the facade refuses the spec (%v), its reader without a %s parser builds it", err, format)
+		}
+		return
+	}
+	reads := slices.ContainsFunc(embedded, func(e core.Embedded) bool { return e.Format == format })
+	if !reads && got != nil {
+		t.Fatalf("no step reads %s, and the reader without its parser refuses the spec: %v", format, got)
+	}
+	if reads && (got == nil || !strings.Contains(got.Error(), "format "+format+" has no parser")) {
+		t.Fatalf("a step reads %s, and the reader without its parser gives %v", format, got)
+	}
+}
+
+// checkReadsText fails t when an embedded step read a document in a date,
+// a time or binary data in data, the one document of a file in format,
+// which the extractor read without an error (#184): a node the path
+// selects, or, with two steps, a node the first step's path selects in the
+// documents those strings hold, which the second step reads. A file of
+// several documents is left out, since the extractor reads the ones its
+// kind or name select, and so is a path past a bound.
+func checkReadsText(t *testing.T, format uint8, path string, embedded []core.Embedded, data []byte) {
+	t.Helper()
+	if len(embedded) == 0 {
+		return
+	}
+	p, roots := extractorRoots(format, path, data)
+	if len(roots) != 1 {
+		return
+	}
+	nodes, err := core.Select(p, roots)
+	if err != nil {
+		return
+	}
+	checkText(t, nodes)
+	if len(embedded) < 2 {
+		return
+	}
+	first, err := core.ParsePath(embedded[0].Path)
+	if err != nil {
+		return
+	}
+	for _, n := range nodes {
+		docs, _, err := parseDocument(embedded[0].Format, n.Text)
+		if err != nil {
+			return
+		}
+		inner, err := core.Select(first, docs)
+		if err != nil {
+			return
+		}
+		checkText(t, inner)
+	}
+}
+
+// checkText fails t when a node of nodes is a string of a date, a time or
+// binary data, which a step read as a document.
+func checkText(t *testing.T, nodes []*core.Node) {
+	t.Helper()
+	for _, n := range nodes {
+		if n.Shape == core.Scalar && n.Type == core.TypeString && n.Form != core.FormText {
+			t.Fatalf("a step read %q at line %d, of form %d, as a document", n.Text, n.Line, n.Form)
+		}
+	}
+}
+
+// checkSet checks e, the extractor of a set of the files in datas in the
+// order of their names, read from a repository of them (#190). The set
+// shares its budgets over every file and the documents in their strings,
+// so it may refuse what each file alone reads, but what it returns is what
+// each file alone returns: values or an error, never both; at most
+// maxValues; each at a line of its own file, the files in order; and, for
+// each file that alone, built by one, reads without an error, the values
+// that file alone gives. each runs on every file's data once the set reads.
+func checkSet(t *testing.T, e check.Extractor, datas map[string][]byte, one func(file string) extract.Spec, each func([]byte)) {
+	t.Helper()
+	tree := map[string]string{}
+	for f, d := range datas {
+		tree[f] = string(d)
+	}
+	got, err := e.Extract(t.Context(), extracttest.Repo(t, tree))
+	if err != nil {
+		if got != nil {
+			t.Fatalf("values %v with error %v", got, err)
+		}
+		return
+	}
+	if len(got) > core.MaxValues {
+		t.Fatalf("%d values, over the limit", len(got))
+	}
+	byFile := map[string][]check.Value{}
+	last := ""
+	for _, v := range got {
+		d, ok := datas[v.At.File]
+		if !ok || v.At.File < last {
+			t.Fatalf("value %q of file %q, after one of %q", v.Text, v.At.File, last)
+		}
+		last = v.At.File
+		if count := len(core.LineIndex(d)); v.At.Line < 1 || v.At.Line > count {
+			t.Fatalf("value %q at %s:%d of %d lines", v.Text, v.At.File, v.At.Line, count)
+		}
+		byFile[v.At.File] = append(byFile[v.At.File], v)
+	}
+	for f, d := range datas {
+		each(d)
+		alone, err := extract.Build(one(f))
+		if err != nil {
+			t.Fatalf("the set builds, %s alone does not: %v", f, err)
+		}
+		vals, err := alone.(fromData).FromData(d)
+		if err != nil {
+			continue
+		}
+		if a, b := extracttest.Texts(vals), extracttest.Texts(byFile[f]); a != b {
+			t.Fatalf("%s alone gives %q, in the set %q", f, a, b)
+		}
+	}
 }
 
 // checkOwnLines checks that got, the values of the yaml spec s on data,
@@ -215,9 +441,9 @@ func FuzzExtract(f *testing.F) {
 // so the file's line is spaces followed by the line of the document the
 // value was read at, at any depth. It checks a file whose lines break at \n,
 // CR LF among them, and leaves out a file with a lone CR, a NEL, an LS or a
-// PS: yaml.v3 breaks a line at each, errata counts none, and the reading
-// clamps a line they push past the file's end to its last line. It leaves
-// out a UTF-16 file too, in which errata looks for no |.
+// PS: yaml.v3 breaks a line at each, errata at a lone CR alone, and the
+// reading clamps a line they push past the file's end to its last line. It
+// leaves out a UTF-16 file too, in which errata looks for no |.
 //
 // It reads the chain again a step at a time, each document parsed alone.
 // Whether a string is a literal block comes from yaml.v3, not from errata's

@@ -824,6 +824,15 @@ func (l literal) equals(n *Node) bool {
 	}
 }
 
+// notLiteralError is a filter's refusal to compare a value the file only
+// computes: its text is not the value, so neither == nor its absence may be
+// read from it.
+type notLiteralError struct{ n *Node }
+
+func (e notLiteralError) Error() string {
+	return fmt.Sprintf("a filter compares %s at line %d, a value the file only computes, which a filter does not compare as text; select the value itself, or filter on another key", Quote(e.n.Text), e.n.Line)
+}
+
 // meter counts the work of a path's filters, in the bytes MaxFilterBytes
 // bounds.
 type meter int64
@@ -851,6 +860,9 @@ func (m *meter) holds(sel selector, n *Node) (bool, error) {
 			if cur = step.child(cur); cur == nil {
 				break
 			}
+		}
+		if cur != nil && cur.NotLiteral {
+			return false, notLiteralError{cur}
 		}
 		if !c.lit.equals(cur) {
 			return false, nil

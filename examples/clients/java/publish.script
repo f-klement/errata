@@ -1,0 +1,3 @@
+// Publishes the Java SDK under the service's release.
+version = '1.4.0'
+group = 'dev.larder'

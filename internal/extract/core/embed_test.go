@@ -1,6 +1,7 @@
 package core_test
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -246,25 +247,96 @@ func TestEmbeddedRefusesStepsItCannotRead(t *testing.T) {
 	}
 }
 
+// A reader built without the parser of a step's format refuses the step at
+// load, with a message, where it once called nil on the first string. Each
+// reader is built with every table that lacks one parser, so a test of one
+// format's nil check alone does not pass for the others. The planted
+// breaks: unset returning false, and each case of it testing another
+// parser.
+func TestEmbeddedRefusesAStepWithNoParser(t *testing.T) {
+	all := fullParsers
+	builds := map[string]func(core.Embedded, core.Parsers) error{
+		"yaml": func(e core.Embedded, p core.Parsers) error {
+			_, err := yaml.Build(yaml.Spec{File: "f", Path: "a", Embedded: []core.Embedded{e}}, p)
+			return err
+		},
+		"json": func(e core.Embedded, p core.Parsers) error {
+			_, err := json.Build(json.Spec{File: "f", Path: "a", Embedded: []core.Embedded{e}}, p)
+			return err
+		},
+		"toml": func(e core.Embedded, p core.Parsers) error {
+			_, err := toml.Build(toml.Spec{File: "f", Path: "a", Embedded: []core.Embedded{e}}, p)
+			return err
+		},
+	}
+	for reader, build := range builds {
+		for _, format := range []string{"yaml", "json", "toml"} {
+			step := core.Embedded{Format: format, Path: "x"}
+			if err := build(step, all); err != nil {
+				t.Fatalf("%s reader, %s step, every parser set: %v", reader, format, err)
+			}
+			missing := all
+			switch format {
+			case "yaml":
+				missing.YAML = nil
+			case "json":
+				missing.JSON = nil
+			default:
+				missing.TOML = nil
+			}
+			extracttest.WantError(t, build(step, missing), reader+": embedded[0]: format "+format+" has no parser in this build of the reader")
+			extracttest.WantError(t, build(step, core.Parsers{}), reader+": embedded[0]: format "+format+" has no parser")
+		}
+	}
+}
+
 // A value a step reads that is not a string, a string that does not parse
 // in the step's format, a YAML string of two documents and a step's path
 // that selects a container make the extractor fail, each message naming
-// every path of the chain and the file's line of the string. The planted
-// breaks: the string test removed, which parsed 8080 as TOML; each describe
-// case wrong; and the document count test removed, which read two.
+// every path of the chain and the file's line of the string. A YAML
+// timestamp, a !!binary and a TOML date or time are strings to a filter but
+// hold no document, so they fail as a number does (#184): in the file, in
+// a document a string holds, through an alias of a key's or a value's
+// anchor, through a merge key, and in a TOML array or inline table. A
+// quoted date is a string of text and is read, and so are the date and
+// time forms yaml.v3 does not resolve as timestamps. The planted breaks: the
+// string test removed, which parsed 8080 as TOML; the form test removed,
+// which read 2024-01-01 as YAML; each describe case wrong; each case of
+// yamlForm and tomlForms dropped, and yamlForm left off the key's anchor;
+// and the document count test removed, which read two.
 func TestEmbeddedRefusesWhatItCannotRead(t *testing.T) {
-	root := extracttest.Repo(t, map[string]string{"f.yaml": "n: 8080\n" +
-		"b: true\n" +
-		"z: null\n" +
-		"m: {a: 1}\n" +
-		"s: [1]\n" +
-		"bad: \"a = = 1\"\n" +
-		"two: \"a: 1\\n---\\nb: 2\\n\"\n" +
-		"str: !!str 1\n" +
-		"inner: \"a: {b: 1}\"\n" +
-		"deep: |\n" +
-		"  a: |\n" +
-		"    x = = 1\n"})
+	root := extracttest.Repo(t, map[string]string{"f.toml": "ld = 1979-05-27\n" +
+		"lt = 07:32:00\n" +
+		"ldt = 1979-05-27T07:32:00\n" +
+		"dt = 1979-05-27T07:32:00Z\n" +
+		"arr = [1, 1979-05-27]\n" +
+		"t = {d = 07:32:00}\n",
+		"f.yaml": "n: 8080\n" +
+			"b: true\n" +
+			"z: null\n" +
+			"m: {a: 1}\n" +
+			"s: [1]\n" +
+			"bad: \"a = = 1\"\n" +
+			"two: \"a: 1\\n---\\nb: 2\\n\"\n" +
+			"str: !!str 1\n" +
+			"inner: \"a: {b: 1}\"\n" +
+			"deep: |\n" +
+			"  a: |\n" +
+			"    x = = 1\n" +
+			"ts: 2024-01-01\n" +
+			"stamp: 2001-12-14t21:59:43.10-05:00\n" +
+			"bin: !!binary aGk=\n" +
+			"&k 2024-01-02: v\n" +
+			"keyed: *k\n" +
+			"held: \"a: 2024-01-01\"\n" +
+			"quoted: '2024-01-01'\n" +
+			"a: &d 2024-01-03\n" +
+			"dated: *d\n" +
+			"base: &m {d: 2024-01-04}\n" +
+			"x: {<<: *m}\n" +
+			"spaced: 2001-12-14 21:59:43.10\n" +
+			"nozone: 2024-01-01T10:00:00\n" +
+			"spacezone: 2001-12-14 21:59:43.10Z\n"})
 	for _, c := range []struct {
 		path string
 		e    []core.Embedded
@@ -279,6 +351,14 @@ func TestEmbeddedRefusesWhatItCannotRead(t *testing.T) {
 		{"two", steps("yaml", "a"), "the yaml document in the string at line 7: holds 2 documents; an embedded YAML document is read whole, so it holds one"},
 		{"inner", steps("yaml", "a"), `f.yaml: path "inner" then yaml path "a" selects a mapping at line 9, not a scalar`},
 		{"deep", steps("yaml", "a", "toml", "x"), `f.yaml: path "deep" then yaml path "a" then toml path "x": the toml document in the string at line 11: toml: line 1:`},
+		{"ts", steps("yaml", "$"), `f.yaml: path "ts" then yaml path "$": the value at line 13 is a date or time, not a string that holds a yaml document`},
+		{"stamp", steps("json", "$"), "the value at line 14 is a date or time, not a string"},
+		{"bin", steps("yaml", "$"), "the value at line 15 is binary data, a !!binary, not a string that holds a yaml document"},
+		{"keyed", steps("yaml", "$"), "the value at line 16 is a date or time, not a string"},
+		{"dated", steps("yaml", "$"), `f.yaml: path "dated" then yaml path "$": the value at line 20 is a date or time, not a string`},
+		{"x.d", steps("yaml", "$"), `f.yaml: path "x.d" then yaml path "$": the value at line 22 is a date or time, not a string`},
+		{"spaced", steps("yaml", "$"), "the value at line 24 is a date or time, not a string"},
+		{"held", steps("yaml", "a", "yaml", "$"), `f.yaml: path "held" then yaml path "a" then yaml path "$": the value at line 18 is a date or time, not a string`},
 	} {
 		_, err := run(t, extract.Of(yaml.Kind, yaml.Spec{File: "f.yaml", Path: c.path, Embedded: c.e}), root)
 		extracttest.WantError(t, err, c.want)
@@ -287,6 +367,27 @@ func TestEmbeddedRefusesWhatItCannotRead(t *testing.T) {
 	got := mustRun(t, extract.Of(yaml.Kind, yaml.Spec{File: "f.yaml", Path: "str", Embedded: steps("json", "$")}), root)
 	if extracttest.Texts(got) != "1@8" {
 		t.Fatalf("got %q, want 1@8", extracttest.Texts(got))
+	}
+	got = mustRun(t, extract.Of(yaml.Kind, yaml.Spec{File: "f.yaml", Path: "quoted", Embedded: steps("yaml", "$")}), root)
+	if extracttest.Texts(got) != "2024-01-01@19" {
+		t.Fatalf("got %q, want 2024-01-01@19", extracttest.Texts(got))
+	}
+	// yaml.v3 resolves no timestamp for a T form with no zone, or a space
+	// form with one, so each is a string of text, as the reference says.
+	for path, want := range map[string]string{"nozone": "2024-01-01T10:00:00@25", "spacezone": "2001-12-14 21:59:43.10Z@26"} {
+		got := mustRun(t, extract.Of(yaml.Kind, yaml.Spec{File: "f.yaml", Path: path, Embedded: steps("yaml", "$")}), root)
+		if extracttest.Texts(got) != want {
+			t.Fatalf("%s: got %q, want %q", path, extracttest.Texts(got), want)
+		}
+	}
+	for i, key := range []string{"ld", "lt", "ldt", "dt"} {
+		_, err := run(t, extract.Of(toml.Kind, toml.Spec{File: "f.toml", Path: key, Embedded: steps("yaml", "$")}), root)
+		extracttest.WantError(t, err, fmt.Sprintf(`f.toml: path %q then yaml path "$": the value at line %d is a date or time, not a string that holds a yaml document`, key, i+1))
+	}
+	// A date in an array and in an inline table.
+	for path, line := range map[string]int{"arr[1]": 5, "t.d": 6} {
+		_, err := run(t, extract.Of(toml.Kind, toml.Spec{File: "f.toml", Path: path, Embedded: steps("json", "$")}), root)
+		extracttest.WantError(t, err, fmt.Sprintf("the value at line %d is a date or time, not a string that holds a json document", line))
 	}
 }
 

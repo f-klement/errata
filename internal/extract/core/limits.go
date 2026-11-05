@@ -186,8 +186,12 @@ func newFormat(bytesPerNode int64, starts, beforeSpace string) *Format {
 // 7 s in JSON.
 var (
 	JSONFormat = newFormat(8, ",:[{", "")
-	TOMLFormat = newFormat(3, "\n=,[{.", "")
-	YAMLFormat = func() *Format {
+	// LiteralFormat is the literal reader's: a value starts a statement, or
+	// follows an assignment, a separator or an opening bracket, as a TOML
+	// value does, so it allows the nodes TOML does.
+	LiteralFormat = newFormat(3, "\n=,:[{(;", "")
+	TOMLFormat    = newFormat(3, "\n=,[{.", "")
+	YAMLFormat    = func() *Format {
 		f := newFormat(7, "\n\r,:[{", "-?")
 		f.yaml = true
 		return f

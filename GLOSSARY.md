@@ -136,8 +136,15 @@ line end as one LF, and a kind that reads a format with a grammar of its own, su
 file, a key in an INI, properties or env file, a regular expression capture, a sentence of Markdown
 prose, a Markdown, AsciiDoc, reStructuredText or HTML comment, section, code block or table
 cell, the value a marker tags, the versions of a tool in the files that pin it, the version a
-package gives itself in each of its manifests, one variable in every file a rule lists, whether a
+package gives itself in each of its manifests, one package's range or resolved version in every
+manifest and lockfile a rule lists, one variable in every file a rule lists, whether a
 file is there and its size in bytes, an image digest, a field on a live object.
+
+**Literal data.** The values a program's source writes as they are, with no code run to make
+them: strings, numbers, booleans, null, lists, mappings, and calls whose arguments are all literal.
+The `literal` extractor reads the literal data a file written in a programming language assigns
+at its top, through one grammar for every language and one row of the lexer table for each
+(ADR 0002). Anything else in a value's place is not literal.
 
 **Marker.** A claim a document or a code comment tags inline with the id of the rule that checks
 it: `<!-- errata: api-port -->8080<!-- /errata -->`. The text between the two HTML comments is
@@ -200,7 +207,15 @@ not a pin.
 **Range.** A statement of the versions a tool accepts, such as `>=20` or `^20.1` under `engines`
 in package.json, or `~> 3.2` in a Gemfile. An agree rule with `compare: semver` reads each value
 as a version or a range: every version among the values must satisfy every range, and ranges
-with no version beside them agree when one release satisfies them all.
+with no version beside them agree when one release satisfies them all. A manifest's statement of
+the versions of a package it depends on, such as `"zod": "^3.22.0"` in package.json, is a range
+too, and the `dependency` extractor marks it as one.
+
+**Resolved version.** The version of a package that a lockfile records the package manager
+installed, such as `3.22.4` for zod in package-lock.json, or that a go.mod requires, since Go keeps
+no lockfile and its build selects the version the main module's go.mod requires; as against the
+range a manifest asks for. The `dependency` extractor marks each value as a range or a resolved version, and its `only`
+key keeps one of them.
 
 **Precision.** How many numbers a version states. A version of one or two numbers, such as `20` or
 `20.11`, stands for every release that starts with them, so under `compare: semver` it agrees with
@@ -213,13 +228,15 @@ rule never compares it. A rule that lists the extractor in `skip_not_literal` le
 out; any other rule with one is unknown. The `ini` extractor marks them, `properties` in a
 template file, `tool_version` a version such as `lts/*` or `system`, which a version manager
 resolves, `package_version` a version the build computes, such as `dynamic = ["version"]` in
-pyproject.toml, `envfile` a value whose `${OTHER}` names a key the file does not set before it,
+pyproject.toml, `dependency` a range or a version the file takes from elsewhere, such as
+`workspace:*` in package.json, `envfile` a value whose `${OTHER}` names a key the file does not set before it,
 `gitlab-ci` a variable that names another, such as `$CI_COMMIT_SHA`, or a number GitLab's YAML
 loader retypes, such as `3.10`, `shell` a value the shell computes and errata does not
 resolve, such as `$(git describe)` or `"$HOME/bin"`, `github-actions` a `${{ }}` expression
 other than a matrix variable, or a number YAML retypes, `jenkins` a value Groovy computes,
-such as `credentials('id')` or `"${BUILD_NUMBER}"`, and `env` any of these that the reader of its
-file marks.
+such as `credentials('id')` or `"${BUILD_NUMBER}"`, `literal` a value a program computes, such
+as `os.environ["PORT"]`, or a name the file changes after it assigns it, and `env` any of these
+that the reader of its file marks.
 
 **Condition.** What must hold for a value to be the one a reader names, for a reader that returns
 one value for each case a file chooses between: a GitLab CI rule's `if $CI_COMMIT_TAG`, a

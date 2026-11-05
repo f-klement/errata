@@ -93,7 +93,10 @@ func spanList(t *testing.T, name, src string) []string {
 	}
 	var out []string
 	for s := range l.Spans([]byte(src)) {
-		item := [...]string{Comment: "comment", String: "string", Name: "name"}[s.Kind] + " " + src[s.BodyStart:s.BodyEnd]
+		if s.Kind == Text && s.BodyStart == s.BodyEnd {
+			continue // the <? a PHP file starts with
+		}
+		item := [...]string{Comment: "comment", String: "string", Name: "name", Text: "text"}[s.Kind] + " " + src[s.BodyStart:s.BodyEnd]
 		if s.RunsOff(len(src)) {
 			item += " (runs off)"
 		}
@@ -112,22 +115,15 @@ func TestKnownLimits(t *testing.T) {
 	}{
 		// A quote of the string's own kind inside interpolated code ends the
 		// string there, and what follows can read as a comment.
-		{"javascript", "const s = `${f(`// x`)}`", []string{"string ${f(", "comment  x`)}`"}},
-		{"swift", "let s = \"\\(d[\"// k\"])\"", []string{"string \\(d[", "comment  k\"])\""}},
 		{"csharp", "var s = $\"{d[\"// k\"]}\";", []string{"string {d[", "comment  k\"]}\";"}},
-		{"python", "s = f\"{d[\"# k\"]}\"", []string{"string {d[", "comment  k\"]}\""}},
-		{"kotlin", "val s = \"${m[\"// k\"]}\"", []string{"string ${m[", "comment  k\"]}\""}},
-		{"ruby", "s = \"#{h[\"#\"]}\" # c", []string{"string #{h[", "comment \"]}\" # c"}},
 		{"hcl", "s = \"${x[\"#\"]}\" # c", []string{"string ${x[", "comment \"]}\" # c"}},
 		// A heredoc's text is code: a # in it is a comment, and a quote in it
 		// opens a string that runs on, here off the end of the file.
 		{"shell", "cat <<EOF\n# in heredoc\nEOF\n", []string{"comment  in heredoc"}},
 		{"shell", "cat <<EOF\nUsage: don't run\nEOF\n# real\n", []string{"string t run\nEOF\n# real\n (runs off)"}},
-		// A regular expression's quote opens a string that a later quote
-		// closes: strings and comments change places between them.
-		{"ruby", "x =~ /\"/ # one\ny = \"# not\"\n# real\n", []string{"string / # one\ny = ", "comment  not\"", "comment  real"}},
-		{"javascript", "x = /\\/\\//; // c\n", []string{"comment ; // c"}},
-		{"javascript", "s = s.replace(/\\/*$/, '');\nconst port = 80;\n", []string{"comment $/, '');\nconst port = 80;\n (runs off)"}},
+		// A regular expression after a value's end, such as a closing
+		// parenthesis, reads as a division, so its quote opens a string.
+		{"javascript", "if (x) /'/.test(s) // c\nx = 1 // d\n", []string{"string /.test(s) // c", "comment  d"}},
 		// Perl's $" and $' are variables, read as a quote.
 		{"perl", "local $\" = ', ';\n# real\n", []string{"string  = ', ';\n# real\n (runs off)"}},
 		// JSX text is code.
@@ -138,6 +134,9 @@ func TestKnownLimits(t *testing.T) {
 		{"sql", "select 'it\\'s -- no' from t; -- c\n", []string{"string it\\", "comment  no' from t; -- c"}},
 		{"sql", "select 1 # c\n", nil},
 		{"sql", "/* a /* b */ c */ x\n", []string{"comment  a /* b "}},
+		// Elixir's ?" and PHP's #[ are not read.
+		{"elixir", "c = ?\" # one\n", []string{"string  # one\n (runs off)"}},
+		{"php", "<?php #[Attr('x')] $a = 1;\n", []string{"comment [Attr('x')] $a = 1;"}},
 		// A line comment continued with a backslash ends at its line.
 		{"c", "// a \\\nb // c\n", []string{"comment  a \\", "comment  c"}},
 		// A quote after a blank inside a YAML plain scalar opens a string.
@@ -148,7 +147,6 @@ func TestKnownLimits(t *testing.T) {
 		{"html", "<script>var s = \"<!-- x -->\"; // y\n</script>\n", []string{"comment  x "}},
 		// More code in strings and constructs the lexer reads as code.
 		{"shell", "echo \"$(date # x)\" # c\n", []string{"string $(date # x)", "comment  c"}},
-		{"ruby", "s = %q{a # b} # c\n", []string{"comment  b} # c"}},
 		{"ruby", "c = ?\" # one\n# two\n", []string{"string  # one\n# two\n (runs off)"}},
 		{"perl", "my @a = qw(a #b);\n", []string{"comment b);"}},
 		{"perl", "print $'; # c\n", []string{"string ; # c\n (runs off)"}},
@@ -239,7 +237,9 @@ func TestFor(t *testing.T) {
 // extension not lower case or with no dot, an extension two rows list, a
 // form with no opener or no kind, an opener that ends in a carriage return,
 // and a fenced form with no FenceMax or one past its bound (fenceBound),
-// whose walk would be quadratic on a run of its fence byte. Spans takes the
+// whose walk would be quadratic on a run of its fence byte, a string form
+// with no closer that is no heredoc or block scalar, which would end at its
+// line as a comment does, and a tag with no TagMax. Spans takes the
 // CR before a line comment's line feed off its body without checking that
 // the body is not empty, so an opener ending in a CR would give a body that
 // ends before it starts; this check is the guard (comment delta review 4).
@@ -271,6 +271,12 @@ func problems(rows []Language) []string {
 			if f.Fence != "" && (f.FenceMax <= 0 || f.FenceMax > fenceBound(f)) {
 				out = append(out, l.Name+": fence "+f.Open+f.Fence+" with no FenceMax up to its bound")
 			}
+			if f.Kind == String && f.Close == "" && !f.Heredoc && !f.Indented {
+				out = append(out, l.Name+": string "+f.Open+f.Inner+" with no closer")
+			}
+			if f.Tag != "" && f.TagMax <= 0 {
+				out = append(out, l.Name+": tag after "+f.Open+" with no TagMax")
+			}
 		}
 	}
 	return out
@@ -299,7 +305,8 @@ func TestTheTableIsWellFormed(t *testing.T) {
 // Each problem is found in a row that has it. Planted breaks, each in
 // problems: the duplicate extension not checked; the lower case not
 // checked; the form's kind not checked; the fence's FenceMax not checked;
-// the opener's carriage return not checked.
+// the opener's carriage return not checked; the string's closer not
+// checked; the TagMax not checked.
 func TestProblemsAreFound(t *testing.T) {
 	ok := Form{Kind: Comment, Open: "#"}
 	rows := []Language{
@@ -310,6 +317,7 @@ func TestProblemsAreFound(t *testing.T) {
 		{Name: "e", Family: "f", Files: []string{"E2"}, Forms: []Form{{Kind: String, Open: "$", Fence: "a", FenceMax: maxTag + 1, Inner: "$", Close: "$", Outer: "$"}}},
 		{Name: "f", Family: "f", Files: []string{"F"}, Forms: []Form{{Kind: String, Open: "#", Fence: "#", FenceMax: maxTag, Inner: `"`, Close: `"`, Outer: "#"}}},
 		{Name: "g", Family: "f", Files: []string{"G"}, Forms: []Form{{Kind: Comment, Open: "--\r"}}},
+		{Name: "h", Family: "f", Files: []string{"H"}, Forms: []Form{{Kind: String, Open: "~", Inner: ", "}, {Kind: String, Open: "~", Tag: "s", Inner: "(", Close: ")"}}},
 		{Name: "", Family: "f", Files: []string{"E"}, Forms: []Form{ok}},
 	}
 	want := []string{
@@ -320,6 +328,8 @@ func TestProblemsAreFound(t *testing.T) {
 		`e: fence $a with no FenceMax up to its bound`,
 		`f: fence ## with no FenceMax up to its bound`,
 		`g: opener "--\r" ends in a carriage return`,
+		"h: string ~,  with no closer",
+		"h: tag after ~ with no TagMax",
 		"row : a name of its own, a family, a file name and forms",
 	}
 	if got := problems(rows); !slices.Equal(got, want) {

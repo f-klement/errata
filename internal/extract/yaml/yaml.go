@@ -332,7 +332,7 @@ func (w *yamlWalker) convert(y *yaml.Node, depth int, merged bool) (*core.Node, 
 	default:
 		// A scalar keeps the text the file wrote: 1.0 stays 1.0, and a null
 		// is null, ~ or the empty string, as written.
-		c, err = converted{&core.Node{Type: yamlType(y), Block: w.blocks.lineOf(y), Text: y.Value, Line: w.line(y)}, 1}, w.checkValueTag(y)
+		c, err = converted{&core.Node{Type: yamlType(y), Form: yamlForm(y), Block: w.blocks.lineOf(y), Text: y.Value, Line: w.line(y)}, 1}, w.checkValueTag(y)
 	}
 	if err != nil {
 		return nil, 0, err
@@ -643,7 +643,7 @@ func (w *yamlWalker) key(k *yaml.Node) (string, error) {
 		return "", fmt.Errorf("line %d: a key is a mapping or a sequence; errata reads only scalar keys", k.Line)
 	}
 	if k.Anchor != "" {
-		w.anchors[k] = converted{&core.Node{Type: yamlType(k), Text: k.Value, Line: w.line(k)}, 1}
+		w.anchors[k] = converted{&core.Node{Type: yamlType(k), Form: yamlForm(k), Text: k.Value, Line: w.line(k)}, 1}
 	}
 	if err := checkTag(named); err != nil {
 		return "", err
@@ -663,6 +663,20 @@ func yamlType(y *yaml.Node) core.ScalarType {
 		return core.TypeNull
 	default:
 		return core.TypeString
+	}
+}
+
+// yamlForm is the Form of a scalar yamlType makes a string, from the tag
+// yaml.v3 resolves for it: a plain 2024-01-01 is !!timestamp, and binary
+// data is tagged !!binary.
+func yamlForm(y *yaml.Node) core.Form {
+	switch y.ShortTag() {
+	case "!!timestamp":
+		return core.FormDateTime
+	case "!!binary":
+		return core.FormBinary
+	default:
+		return core.FormText
 	}
 }
 

@@ -199,6 +199,7 @@ flowchart TB
         regex["internal/extract/regex"]
         text["internal/extract/text"]
         comment["internal/extract/comment"]
+        literal["internal/extract/literal"]
         markdown["internal/extract/markdown"]
         asciidoc["internal/extract/asciidoc"]
         rst["internal/extract/rst"]
@@ -209,6 +210,7 @@ flowchart TB
         properties["internal/extract/properties"]
         toolversion["internal/extract/toolversion"]
         packageversion["internal/extract/packageversion"]
+        dependency["internal/extract/dependency"]
         envfile["internal/extract/envfile"]
         gitlabci["internal/extract/gitlabci"]
         shell["internal/extract/shell"]
@@ -227,6 +229,7 @@ flowchart TB
         markup["internal/extract/core/markup"]
         mdparse["internal/extract/core/mdparse"]
         htmlparse["internal/extract/core/htmlparse"]
+        gomod["internal/extract/core/gomod"]
     end
     subgraph testonly ["imported only by test files"]
         coretest["internal/extract/coretest"]
@@ -260,13 +263,17 @@ flowchart TB
     mdparse --> core
     mdparse --> htmlparse
     htmlparse --> core
+    gomod --> core
+    toolversion --> gomod
+    dependency --> gomod
     coretest --> core
     extracttest --> check
     extracttest --> lineend
 ```
 
-The comment kind's lexer table sits in `core/lexer`, and `core` imports it, so a reader reaches it
-through `core`. The parses and the selectors that several markup readers share sit in a box of their
+The lexer table sits in `core/lexer`, and `core` imports it, so a reader reaches it through `core`.
+The comment, marker and literal readers read the same rows: the literal reader takes a row's
+string forms and its `Syntax`, and keeps no table of its own. The parses and the selectors that several markup readers share sit in a box of their
 own, since they import `core`, while `core` imports the packages of the other box. `config` imports
 `marker`, the one reader it names, for the built-in check `errata-unbound-markers`: it walks the
 files the rules' marker extractors walk, together, and reports each marker no rule reads.
@@ -286,7 +293,7 @@ reader imports `core` and no other reader, and `core` imports no reader.
 | `internal/semver` | versions and ranges as npm, Cargo, PEP 440, Go modules and RubyGems write them: their order, precision, satisfaction and overlap, for agree's `compare: semver` and the assert helpers alike | files, rules, CEL |
 | `internal/minimatch` | a port of minimatch, the glob matcher Renovate reads a file pattern with, its quirks included, under bounds on brace expansion, nodes, regex source and steps; `rule`'s Renovate helpers match with it | files, rules, CEL |
 | `internal/extract` | the kinds of extractor a rule names: the list of kinds, each a reader's `core.Kind` with its `Build`, and the `Spec` a rule's entry decodes into, which finds its kind by key and dispatches `Build`, `Place`, `Resolved` and `Describe` to it | how any kind reads a file; rules, config, output |
-| `internal/extract/core` | what every reader shares: the source held inside the repository and to its size cap, the walk of the repository and the directories it passes over, the limits on nodes, values, depth and bytes, the tree and the path grammar with its filters, the line index, quoting, the clocked regex search, the entry extractor and work meter of the INI, properties and env file readers, and the files git's index tracks, read without git | any one format |
+| `internal/extract/core` | what every reader shares: the source held inside the repository and to its size cap, the walk of the repository and the directories it passes over, the limits on nodes, values, depth and bytes, the tree and the path grammar with its filters, the line index, quoting, the clocked regex search, the entry extractor and work meter of the INI, properties and env file readers, the files git's index tracks, read without git, and the parse of a manifest under its node limit, which package_version and dependency share | any one format |
 | `internal/extract/core/gitindex` | git's index, the list of files a clone holds (ADR [0008](adr/0008-an-extractor-reads-a-file-set-from-git-and-cel-groups-by-file.md)), reachable only through `Index`'s methods, whose every list leaves out the fixtures of witnesses | any reader |
 | `internal/extract/core/clip` | cutting file text or a path for a message, kept apart so `gitindex`, which `core` imports, quotes as `core` does | everything else |
 | `internal/extract/core/lineend` | the one rule of where a line ends, at a LF, a CRLF or a lone CR, by which every reader numbers its lines and folds its text; `core` hands it on as `LineCursor`, `LineIndex`, `LineOf`, `LastLine`, `LineStart`, `NextLine` and `LineFeeds`, and it is kept apart so `extracttest`, which `core`'s own tests import, counts lines by it too | everything else |
@@ -294,7 +301,8 @@ reader imports `core` and no other reader, and `core` imports no reader.
 | `internal/extract/regex` | the regex extractor, which is core's search over the file | the other readers |
 | `internal/extract/text` | Markdown prose, searched with core's search | the other readers |
 | `internal/extract/comment` | the comments of a source file, found with the lexer table and searched with core's search | the other readers |
-| `internal/extract/core/lexer` | the lexer table, one row per language with its comment delimiters and string literal forms, and the walk that finds a file's comments and strings in one pass | any one reader |
+| `internal/extract/literal` | the literal data of a file written in a programming language: the statements at its top parsed into core's tree with one grammar, spelt by the lexer table's row, and whatever the file computes marked not literal (ADR [0002](adr/0002-errata-reads-configuration-and-never-runs-it.md)) | the other readers; every language's evaluation |
+| `internal/extract/core/lexer` | the lexer table, one row per language with its comment delimiters, its string literal forms and heredocs and how each decodes, and for the literal reader its syntax of literal data; and the walk that finds a file's comments and strings in one pass | any one reader |
 | `internal/extract/markdown` | a Markdown file's comments, sections under a heading path, fenced code blocks and table cells | the other readers |
 | `internal/extract/rst` | a reStructuredText file's comments, sections under a heading path, literal and code blocks and table cells, from a parse of its own | the other readers |
 | `internal/extract/core/markup` | what every reader of a document markup shares: the fields a rule writes to pick a comment, section, code block or table cell, their checks, the heading path and the headings it names, and the values a target's pieces give | any one markup |
@@ -302,14 +310,16 @@ reader imports `core` and no other reader, and `core` imports no reader.
 | `internal/extract/asciidoc` | an AsciiDoc file's comments, sections under a heading path, listing, literal and source blocks and table cells, from a parse of its own | the other readers |
 | `internal/extract/marker` | the values the markers in the files git tracks tag for one rule, and the markers no rule reads | the other readers |
 | `internal/extract/core/htmlparse` | the HTML parse the html, text and markdown readers share: golang.org/x/net/html's tokenizer with each token's offsets from its raw bytes, under a token limit, leaving out what a browser does not show | any one reader |
+| `internal/extract/core/gomod` | the go.mod and go.work parse the tool_version and dependency readers share: golang.org/x/mod/modfile, the go command's parser, under a limit on the lines and tokens a file can hold, with a panic in modfile turned into a refusal | any one reader |
 | `internal/extract/core/mdparse` | the Markdown parse the text and markdown readers share: goldmark's CommonMark, with GitHub's tables on request, under a guard on its time, nodes and continuations, and the prose that maps text built from the file back to its lines | any one reader |
 | `internal/extract/xml` | XML, with an XPath 1.0 subset of its own | the other readers |
 | `internal/extract/ini`, `internal/extract/properties` | one reader each of entries for core's entry extractor: INI in the plain, git, ansible, tox and php dialects, and Java properties | each other |
 | `internal/extract/envfile` | dotenv files as docker compose reads them, a reader of entries for core's entry extractor, with compose's substitutions resolved from the keys set before | the other readers |
 | `internal/extract/shell` | the assignments and defaults of a variable in a shell script, parsed with mvdan.cc/sh/v3 under a guard on the depth of its stack, and the values the shell computes marked not literal | the other readers |
 | `internal/extract/jenkins` | the value of an environment variable that a stage of a declarative Jenkinsfile sees, read with a lexer of Groovy's comments and string forms that keeps no statement, and the values Groovy computes marked not literal | the other readers; Groovy's evaluation |
-| `internal/extract/toolversion` | the files that pin a tool's version, read by their names: its own line reader, golang.org/x/mod/modfile for go.mod, and the JSON and TOML parsers the facade hands it for the manifests and rust-toolchain.toml | the other readers, whose parsers it gets from the facade |
+| `internal/extract/toolversion` | the files that pin a tool's version, read by their names: its own line reader, core/gomod's go.mod parse (golang.org/x/mod/modfile), and the JSON and TOML parsers the facade hands it for the manifests and rust-toolchain.toml | the other readers, whose parsers it gets from the facade |
 | `internal/extract/packageversion` | the version a package gives itself in each of its manifests (package.json, pyproject.toml, Cargo.toml, a VERSION file), read by the file's name, with the versions the build computes marked not literal | the other readers, whose parsers it gets from the facade |
+| `internal/extract/dependency` | one package's version in every manifest and lockfile a rule lists (Go, npm, pnpm, Yarn, Python, Cargo, Bundler, Composer), each file read by the reader its base name chooses, each value marked a range or a resolved version in its origin, and a range rewritten as its tool reads it; a go.mod's module path, go.mod and go.work read through core/gomod's parse; the Gemfile read through core's lexer table | the other readers, whose parsers it gets from the facade, and any registry or package manager |
 | `internal/extract/gitlabci` | the value one job of a GitLab CI file sees: local includes, extends, `!reference`, defaults and the variable precedence, read with the YAML parser the facade hands it | the other readers, whose parser it gets from the facade; the network |
 | `internal/extract/githubactions` | the value one step or job of a GitHub Actions workflow sees: env: precedence, the matrix's jobs, and the values only GitHub evaluates marked or unknown, read with the YAML parser the facade hands it | the other readers, whose parser it gets from the facade; the network |
 | `internal/extract/env` | one variable across the files a rule lists: the reader each file's name or shebang chooses, a glob over git's tracked files, and each value's origin, its reader and its job, step or stage | the readers, which the facade hands it as functions |
@@ -433,6 +443,7 @@ flowchart LR
         k_regex["regex"]
         k_text["text"]
         k_comment["comment"]
+        k_literal["literal"]
         k_markdown["markdown"]
         k_asciidoc["asciidoc"]
         k_rst["rst"]
@@ -443,6 +454,7 @@ flowchart LR
         k_properties["properties"]
         k_tool["tool_version"]
         k_package["package_version"]
+        k_dependency["dependency"]
         k_envfile["envfile"]
         k_gitlab["gitlab-ci"]
         k_shell["shell"]
@@ -468,7 +480,7 @@ variable across several files, each with the reader its name or shebang chooses:
 A reader that needs another format's parser, such as `tool_version` reading a `package.json`, gets
 it from the facade in `core.Parsers` for the same reason. Wherever two kinds must share more than a
 parser, the shared code goes below `core`, as `core/gitindex`, `core/clip`, `core/markup`,
-`core/mdparse` and `core/htmlparse` do, never in a reader.
+`core/mdparse`, `core/htmlparse` and `core/gomod` do, never in a reader.
 
 `core` holds these, in the order a read meets them:
 
@@ -480,6 +492,8 @@ parser, the shared code goes below `core`, as `core/gitindex`, `core/clip`, `cor
 - the clocked regex search that the `regex` and `text` kinds run;
 - the entry extractor and its work meter, which `ini`, `properties` and `envfile` read through;
 - the line index, which gives each value its line;
+- the parse of a JSON or TOML manifest under its node limit (`Source.ParseManifest`), which
+  `package_version` and `dependency` read through;
 - the limits on nodes, values, depth and bytes that every reader counts against.
 
 ## The rule layer and CEL

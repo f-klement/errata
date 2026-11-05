@@ -120,6 +120,9 @@ internal/extract/core/gitindex     85        85      5      from internal/extrac
 # htmlparse: new in v0.2.5 (#86), the HTML parse the html, text and markdown
 # readers share.
 internal/extract/core/htmlparse    85        85      5
+# gomod: new in v0.3.0 (#45), the go.mod parse tool_version and dependency
+# share, moved out of core.
+internal/extract/core/gomod        85        85      5
 internal/extract/core/lexer        85        85      5
 # lineend: new for the lone CR rule, where a line ends, split from core so
 # extracttest counts lines by it.
@@ -127,6 +130,8 @@ internal/extract/core/lineend      85        85      5
 # markup: new in v0.2.5 (#30), what the markup readers share.
 internal/extract/core/markup       85        85      5
 internal/extract/core/mdparse      85        85      5      from internal/extract/text
+# dependency: new in v0.3.0 (#45), held to the floor every reader has.
+internal/extract/dependency        85        85      5
 # env: 100%, efficacy 100%, on 2026-10-25.
 internal/extract/env               85        85      5
 # envfile: 100% on a dry run.
@@ -157,6 +162,8 @@ internal/extract/ini               85        85      10
 internal/extract/jenkins           85        85      5
 # json: 100%, efficacy 100%, on 2026-10-22.
 internal/extract/json              85        85      5
+# literal: new in v0.3.0 (#84), held to the floor every reader has.
+internal/extract/literal           85        85      5
 # markdown: new in v0.2.5 (#30), held to the floor every reader has.
 internal/extract/markdown          85        85      5
 # marker: new in v0.2.5 (#32), held to the floor every reader has.

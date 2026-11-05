@@ -15,3 +15,9 @@ var CheckFilterSelectsLess = checkFilterSelectsLess
 var CheckQuerySplits = checkQuerySplits
 var CheckTyped = checkTyped
 var ParsePath = parsePath
+
+// Select is what p selects in roots, against a filter budget of its own.
+func Select(p Path, roots []*Node) ([]*Node, error) {
+	var m meter
+	return p.eval(&m, roots)
+}

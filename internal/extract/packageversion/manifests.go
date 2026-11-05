@@ -2,7 +2,7 @@ package packageversion
 
 import (
 	"bytes"
-	"fmt"
+	"errors"
 	"slices"
 	"unicode"
 
@@ -43,37 +43,19 @@ const (
 	workspaceText = "version.workspace = true"
 )
 
-// parse reads data with parse, after the node limit of its format. skipBOM says
-// whether the file's tool skips a byte order mark at its start, as npm and
-// Cargo do; Python's tomllib refuses one, so pyproject.toml keeps it, and
-// the parser refuses the file.
+// parse reads data with parse, after the node limit of its format
+// (core.Source.ParseManifest). skipBOM says whether the file's tool skips
+// a byte order mark at its start, as npm and Cargo do; Python's tomllib
+// refuses one, so pyproject.toml keeps it, and the parser refuses the file.
 func parse(
 	f file, data []byte, format *core.Format,
 	parse func([]byte) (*core.Node, error), skipBOM bool,
 ) (*core.Node, error) {
-	if parse == nil {
-		return nil, fmt.Errorf("errata was built without the reader for %s", f.kind.name)
-	}
-	if skipBOM {
-		// The mark is on line 1 and holds no line end, so no line moves.
-		data = core.DropBOM(data)
-	}
-	if err := f.CheckNodes(data, format); err != nil {
+	tree, err := f.ParseManifest(data, f.kind.name, format, parse, skipBOM)
+	if errors.Is(err, core.ErrTooDense) {
 		return nil, named{err}
 	}
-	return parse(data)
-}
-
-// member is the node at keys below n, nil when a key is absent or a node on
-// the way is not a mapping.
-func member(n *core.Node, keys ...string) *core.Node {
-	for _, k := range keys {
-		if n == nil || n.Shape != core.Mapping {
-			return nil
-		}
-		n = n.Field[k]
-	}
-	return n
+	return tree, err
 }
 
 // version adds n as a version, refusing one that is not a string, which
@@ -110,7 +92,7 @@ func readPackageJSON(x *extractor, f file, data []byte, add func(string, int, bo
 	if err != nil {
 		return err
 	}
-	if v := member(tree, "version"); v != nil {
+	if v := tree.Member("version"); v != nil {
 		return version(v, "version", add)
 	}
 	return nil
@@ -130,9 +112,9 @@ func readPyproject(x *extractor, f file, data []byte, add func(string, int, bool
 	if err != nil {
 		return err
 	}
-	set := member(tree, "project", "version")
-	dynamic := dynamicVersion(member(tree, "project", "dynamic"))
-	poetry := member(tree, "tool", "poetry", "version")
+	set := tree.Member("project", "version")
+	dynamic := dynamicVersion(tree.Member("project", "dynamic"))
+	poetry := tree.Member("tool", "poetry", "version")
 	switch {
 	case set != nil && dynamic != nil:
 		return core.LineError(dynamic.Line, "dynamic lists version and project.version sets it at line %d, which PEP 621 forbids", set.Line)
@@ -151,7 +133,7 @@ func readPyproject(x *extractor, f file, data []byte, add func(string, int, bool
 // poetryVersion adds tool.poetry.version, not literal when
 // poetry-dynamic-versioning replaces it.
 func poetryVersion(tree, poetry *core.Node, add func(string, int, bool) error) error {
-	if isTrue(member(tree, "tool", "poetry-dynamic-versioning", "enable")) {
+	if isTrue(tree.Member("tool", "poetry-dynamic-versioning", "enable")) {
 		literal := add
 		add = func(text string, line int, _ bool) error { return literal(text, line, true) }
 	}
@@ -181,7 +163,7 @@ func dynamicVersion(dynamic *core.Node) *core.Node {
 // poetryBackend reports whether build-system.build-backend is poetry-core's,
 // the backend that fills a dynamic version from tool.poetry.version.
 func poetryBackend(tree *core.Node) bool {
-	b := member(tree, "build-system", "build-backend")
+	b := tree.Member("build-system", "build-backend")
 	return b != nil && b.Shape == core.Scalar && b.Text == "poetry.core.masonry.api"
 }
 
@@ -199,8 +181,8 @@ func readCargo(x *extractor, f file, data []byte, add func(string, int, bool) er
 	if err != nil {
 		return err
 	}
-	own := member(tree, "package", "version")
-	shared := member(tree, "workspace", "package", "version")
+	own := tree.Member("package", "version")
+	shared := tree.Member("workspace", "package", "version")
 	type found struct {
 		n          *core.Node
 		what       string
@@ -208,11 +190,11 @@ func readCargo(x *extractor, f file, data []byte, add func(string, int, bool) er
 	}
 	var all []found
 	if own != nil && own.Shape == core.Mapping {
-		inherit := member(own, "workspace")
+		inherit := own.Member("workspace")
 		if !isTrue(inherit) {
 			return core.LineError(own.Line, "package.version is a table other than { workspace = true }, which Cargo refuses")
 		}
-		if root := member(tree, "workspace"); shared == nil && root != nil && root.Shape == core.Mapping {
+		if root := tree.Member("workspace"); shared == nil && root != nil && root.Shape == core.Mapping {
 			return core.LineError(inherit.Line, "package.version inherits the workspace's version, and this file is the workspace's root but sets no workspace.package.version, which Cargo refuses")
 		}
 		if shared == nil {

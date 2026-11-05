@@ -5,8 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	"golang.org/x/mod/modfile"
-
 	"github.com/f-klement/errata/internal/extract/core"
 )
 
@@ -29,7 +27,7 @@ func FuzzToolVersion(f *testing.F) {
 		}
 		f.Add(uint8(i), body, "node")
 	}
-	// go.mod seeds with every token modfile's lexer makes, for the count.
+	// go.mod seeds with every token modfile's lexer makes.
 	goMod := kindIndex("go.mod")
 	for _, body := range []string{
 		"module m\nretract [v1.0.0, v1.1.0]\n",
@@ -40,9 +38,6 @@ func FuzzToolVersion(f *testing.F) {
 		f.Add(goMod, body, "go")
 	}
 	f.Fuzz(func(t *testing.T, kind uint8, data, tool string) {
-		// The count runs before modfile parses, so it holds on every
-		// input modfile parses, whatever the reader makes of it.
-		checkGoModNodes(t, []byte(data))
 		k := kinds[int(kind)%len(kinds)]
 		if k.tools != nil {
 			tool = k.tools[0]
@@ -70,33 +65,6 @@ func FuzzToolVersion(f *testing.F) {
 			}
 		}
 	})
-}
-
-// checkGoModNodes fails unless goModNodes is at least the lines and tokens
-// modfile builds from data, for a file it parses.
-func checkGoModNodes(t *testing.T, data []byte) {
-	t.Helper()
-	mod, err := modfile.ParseLax("go.mod", data, nil)
-	if err != nil {
-		return
-	}
-	built := 0
-	for _, stmt := range mod.Syntax.Stmt {
-		switch s := stmt.(type) {
-		case *modfile.Line:
-			built += 1 + len(s.Token)
-		case *modfile.LineBlock:
-			built += 2 + len(s.Token)
-			for _, l := range s.Line {
-				built += 1 + len(l.Token)
-			}
-		case *modfile.CommentBlock:
-			built++
-		}
-	}
-	if n := goModNodes(data); n < built {
-		t.Fatalf("goModNodes counts %d, modfile built %d\n%q", n, built, data)
-	}
 }
 
 // kindIndex is the index of the row for name in kinds.

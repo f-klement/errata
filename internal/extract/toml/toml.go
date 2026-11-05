@@ -284,7 +284,7 @@ func (b *tomlBuilder) value(v *unstable.Node, keyLine, depth int) (*core.Node, e
 		if err := checkScalar(v.Kind, v.Data); err != nil {
 			return nil, fmt.Errorf("line %d: %s is not a valid %s: %w", b.line(v), core.Clip(string(v.Data)), scalarNames[v.Kind], err)
 		}
-		return &core.Node{Type: tomlTypes[v.Kind], Text: string(v.Data), Line: b.line(v)}, nil
+		return &core.Node{Type: tomlTypes[v.Kind], Form: tomlForms[v.Kind], Text: string(v.Data), Line: b.line(v)}, nil
 	}
 }
 
@@ -294,6 +294,15 @@ var tomlTypes = map[unstable.Kind]core.ScalarType{
 	unstable.Integer: core.TypeNumber,
 	unstable.Float:   core.TypeNumber,
 	unstable.Bool:    core.TypeBool,
+}
+
+// tomlForms is the Form of a TOML scalar a filter compares as a string: a
+// date or a time; a string is text.
+var tomlForms = map[unstable.Kind]core.Form{
+	unstable.LocalDate:     core.FormDateTime,
+	unstable.LocalTime:     core.FormDateTime,
+	unstable.LocalDateTime: core.FormDateTime,
+	unstable.DateTime:      core.FormDateTime,
 }
 
 var scalarNames = map[unstable.Kind]string{

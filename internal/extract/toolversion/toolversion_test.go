@@ -9,8 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	"golang.org/x/mod/modfile"
-
 	"github.com/f-klement/errata/internal/check"
 	"github.com/f-klement/errata/internal/extract/core"
 	"github.com/f-klement/errata/internal/extract/extracttest"
@@ -91,6 +89,9 @@ func TestToolVersionReadsEachFile(t *testing.T) {
 		{"go.mod", "go", "module m\ngo 1.21rc1\n", "1.21rc1@go.mod:2"},
 		{"go.mod", "go", "module m\ngo 1.27.2\ntoolchain go1.27.3-custom\n", "1.27.3-custom@go.mod:3"},
 		{"go.mod", "go", "module m\n", ""},
+		// modfile reads a lone CR as a blank; the line is errata's.
+		{"go.mod", "go", "module m\n\rgo 1.22\n\rtoolchain go1.22.3\n", "1.22.3@go.mod:5"},
+		{"go.mod", "go", "module m\n\rgo 1.22\n", "1.22@go.mod:3"},
 		{".terraform-version", "terraform", "latest:^1.5\n", "latest:^1.5!@.terraform-version:1"},
 		{".terraform-version", "terraform", "1.7.4\n", "1.7.4@.terraform-version:1"},
 		{".java-version", "java", "17.0\n", "17.0@.java-version:1"},
@@ -458,19 +459,6 @@ func TestToolVersionGoModNodeLimit(t *testing.T) {
 	if got != "go.mod: the file can hold up to 7 lines and tokens, over the limit of 6, one for every 64 bytes of max_bytes; set max_bytes: higher to read a file this dense" {
 		t.Errorf("over the limit: %q", got)
 	}
-	for _, c := range []struct {
-		body string
-		want int
-	}{
-		{"", 1}, {"a", 2}, {" a  b\t\r\n", 4}, {"a(b)\n(", 7}, {"\u00a0x", 2},
-		// Each byte modfile makes a token of, with no blank around it, and
-		// a token right after one.
-		{"x ,,,", 5}, {"[]{}", 5}, {`"a""b"`, 7}, {"`a`b", 5}, {"retract [v1.0.0, v1.1.0]", 7},
-	} {
-		if got := goModNodes([]byte(c.body)); got != c.want {
-			t.Errorf("%q: %d nodes, want %d", c.body, got, c.want)
-		}
-	}
 }
 
 // A go.mod and a .go-version that pin one Go give one text, so a rule over
@@ -490,17 +478,6 @@ func TestToolVersionGoModAgreesWithGoVersion(t *testing.T) {
 		if v.Text != "1.22.3" {
 			t.Errorf("%s:%d gives %q, not 1.22.3", v.At.File, v.At.Line, v.Text)
 		}
-	}
-}
-
-// A panic in modfile makes the rule unknown with the file named, not the
-// run end. No input found makes it panic, so the parser is replaced.
-func TestToolVersionGoModPanicIsARefusal(t *testing.T) {
-	defer func(p func(string, []byte, modfile.VersionFixer) (*modfile.File, error)) { parseGoMod = p }(parseGoMod)
-	parseGoMod = func(string, []byte, modfile.VersionFixer) (*modfile.File, error) { panic("index out of range") }
-	got := refusal(t, map[string]string{"go.mod": "module m\n"}, Spec{Tool: "go"})
-	if got != "go.mod: golang.org/x/mod/modfile stopped on the file: index out of range" {
-		t.Errorf("got %q", got)
 	}
 }
 

@@ -358,8 +358,11 @@ func TestLanguage(t *testing.T) {
 // script of many </s, a tag of many attributes and many references, twice
 // the file allocates at most three times as much for every target, where a
 // quadratic pass allocates four. The planted break: the text copied whole
-// for each piece added to it.
+// for each piece added to it. It counts bytes, not time, but reads every
+// shape for every spec four times: 87 of the package's 98 s under -race
+// and coverage on builder, so it runs in make slow.
 func TestReadIsLinear(t *testing.T) {
+	slowOnly(t)
 	shapes := map[string]func(n int) string{
 		"nested tables": func(n int) string { return strings.Repeat("<table><tr><td>Port<tr><td>x", n/40) },
 		"row of cells": func(n int) string {

@@ -62,8 +62,14 @@ func CheckEmbedded(kind string, steps []Embedded, p Parsers) (Embedding, error) 
 
 // step is the step that reads format, with its node limit and its parser.
 // An embedded YAML string is read whole, so it holds one document: picking
-// one of several would compare the wrong one, as for a file (yaml.Spec).
+// one of several would compare the wrong one, as for a file (yaml.Spec). A
+// format whose parser p leaves unset is refused here, at load, since a
+// reader built without the parsers table would otherwise call nil on the
+// first string it reads.
 func (p Parsers) step(at, format string) (embedStep, error) {
+	if p.unset(format) {
+		return embedStep{}, fmt.Errorf("%s: format %s has no parser in this build of the reader; build it with the parsers table", at, format)
+	}
 	if format == "yaml" {
 		return embedStep{format: format, f: YAMLFormat, parse: func(data []byte, expanded int) ([]*Node, int, error) {
 			docs, expanded, err := p.YAML(data, expanded)
@@ -89,6 +95,19 @@ func (p Parsers) step(at, format string) (embedStep, error) {
 		return embedStep{}, fmt.Errorf("%s: format is required; write yaml, json or toml", at)
 	}
 	return embedStep{}, fmt.Errorf("%s: format %s is not one errata reads; write yaml, json or toml", at, Quote(format))
+}
+
+// unset is whether format is one errata reads and p has no parser for it.
+func (p Parsers) unset(format string) bool {
+	switch format {
+	case "yaml":
+		return p.YAML == nil
+	case "json":
+		return p.JSON == nil
+	case "toml":
+		return p.TOML == nil
+	}
+	return false
 }
 
 // one is a parser of one document, as a step calls it. JSON and TOML have
@@ -175,8 +194,9 @@ func (r *reading) line(m lineMap, k int) int {
 // set read before it spent: the reading starts the nodes YAML aliases and
 // merge keys add and the filters' work at it, and leaves it at what they
 // reach, so the documents in strings and the files of a set share them.
-// A node a step reads that is not a string, a string that does not parse
-// in the step's format, and a document past a bound are errors, each
+// A node a step reads that is not a string of text (a number, a bool,
+// null, a container, a date or time, binary data), a string that does not
+// parse in the step's format, and a document past a bound are errors, each
 // naming every path of the reading. A value is at the line of the file it
 // stands at when every string on its way is a YAML literal block scalar,
 // and at the line where the outermost string that is not starts otherwise.
@@ -231,7 +251,7 @@ func (r *reading) step(st embedStep, nodes []*Node, at []lineMap) ([]*Node, []li
 	var nextAt []lineMap
 	for i, n := range nodes {
 		line := r.line(at[i], n.Line)
-		if n.Shape != Scalar || n.Type != TypeString {
+		if n.Shape != Scalar || n.Type != TypeString || n.Form != FormText {
 			return nil, nil, fmt.Errorf("%s: %s: the value at line %d is %s, not a string that holds a %s document", r.File, r.chain, line, describe(n), st.format)
 		}
 		docs, err := r.parse(st, n.Text, line)
@@ -284,5 +304,16 @@ func describe(n *Node) string {
 	if n.Type == TypeBool {
 		return "a bool"
 	}
-	return "null"
+	if n.Type == TypeNull {
+		return "null"
+	}
+	switch n.Form {
+	case FormDateTime:
+		return "a date or time"
+	case FormBinary:
+		return "binary data, a !!binary"
+	case FormText:
+		// A string of text holds a document, so step never asks.
+	}
+	return fmt.Sprintf("a string of form %d", n.Form)
 }

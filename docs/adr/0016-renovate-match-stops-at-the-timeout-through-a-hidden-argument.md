@@ -108,7 +108,10 @@ call, since its binding never runs.
 ## Consequences
 
 The hidden log is the one value each evaluation hands its helpers: the context, and the pattern
-cache of ADR 0014. A helper that has to stop at the timeout takes the same rewrite.
+cache of ADR 0014. A helper that has to stop at the timeout takes the same rewrite. The strings
+extension's functions take it too: each call is rewritten as a hidden call that takes the log, so a
+guard that refuses a call notes the refusal there, and the rule names it when the cost limit then
+stops the evaluation.
 `internal/minimatch` gains `CompileContext` and `(*Glob).MatchSteps`, which take the context;
 `Match` is the two under a context that is never done. ADR 0014's statement of the overrun points
 here.

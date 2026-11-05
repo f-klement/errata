@@ -29,7 +29,9 @@ region:
   one of several. An empty YAML string holds none, so its step selects nothing, which
   `allow_empty` decides.
 - A value a step reads that is not a string (a number, a bool, null, a mapping or a sequence), and
-  a string that does not parse, make the rule unknown (ADR 0001). The message names the file,
+  a string that does not parse, make the rule unknown (ADR 0001). A YAML timestamp, a `!!binary`
+  and a TOML date or time are strings to a filter, but the file types them apart, so a step
+  refuses them as it refuses a number (since v0.3.0). The message names the file,
   every path of the chain and the line of the string: `values.yaml: path "runners.config" then
   toml path "runners[*].cache.s3.BucketName": the toml document in the string at line 4: toml:
   line 3: ...`.

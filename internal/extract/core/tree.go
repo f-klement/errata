@@ -32,7 +32,7 @@ func (s Shape) String() string {
 // ScalarType is what a scalar is, as its file's format types it, which a
 // filter compares by. A YAML timestamp, a !!binary, a scalar of a tag
 // errata does not know and a TOML date or time are strings of the text the
-// file wrote.
+// file wrote; Form tells a date, a time and binary data apart.
 type ScalarType uint8
 
 // The types of a scalar.
@@ -43,11 +43,33 @@ const (
 	TypeNull
 )
 
+// Form is what a string scalar's text is, where the file's format types
+// it apart from text: a YAML timestamp or a TOML date or time, or a YAML
+// !!binary. A filter compares each as the string the file wrote, while an
+// embedded step reads a document only in a string of FormText, as it
+// reads none in a number.
+type Form uint8
+
+// The forms of a string scalar.
+const (
+	FormText Form = iota
+	FormDateTime
+	FormBinary
+)
+
 // Node is one value of a parsed YAML, JSON or TOML file. All three formats
 // are read into this tree, so one path evaluator serves them.
 type Node struct {
 	Shape Shape
 	Type  ScalarType
+	// Form is a string scalar's Form; FormText for any other node. It
+	// sits in a byte the alignment of Block leaves free.
+	Form Form
+	// NotLiteral marks a scalar the file only computes, such as a call or
+	// an expression in a file the literal reader reads: its Text is what
+	// the file wrote, and the value it makes is check.Value.NotLiteral. A
+	// filter refuses to compare it. It sits in the byte after Form.
+	NotLiteral bool
 	// Block is the line of the | of a YAML literal block scalar whose lines
 	// are the file's lines from the line after it on, so line k of a
 	// document the string holds is line Block+k of the file; 0 for any
@@ -62,8 +84,8 @@ type Node struct {
 	// below its key they differ. The yaml reader sets it on every value of
 	// a mapping, and an alias keeps its anchor's, as it keeps its Line. It
 	// is 0 for a document, an item, a key, and every node of a JSON or TOML
-	// file, whose readers leave it unset. Shape, Type, Block and KeyLine fit
-	// in the 16 bytes before Text, so the node stays 128 bytes.
+	// file, whose readers leave it unset. Shape, Type, Form, Block and KeyLine
+	// fit in the 16 bytes before Text, so the node stays 128 bytes.
 	KeyLine int32
 	Text    string // the scalar's string form
 	Line    int    // where the value starts, counted from 1
@@ -182,7 +204,7 @@ func (r *reading) values(nodes []*Node, at []lineMap) ([]check.Value, error) {
 	}
 	out := make([]check.Value, 0, len(nodes))
 	for i, n := range nodes {
-		out = append(out, check.Value{Text: n.Text, At: check.Location{File: r.File, Line: r.line(at[i], n.Line)}})
+		out = append(out, check.Value{Text: n.Text, At: check.Location{File: r.File, Line: r.line(at[i], n.Line)}, NotLiteral: n.NotLiteral})
 	}
 	return out, nil
 }
