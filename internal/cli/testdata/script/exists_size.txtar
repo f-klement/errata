@@ -21,6 +21,17 @@ stdout '^UNKNOWN old-config-stays-removed \(repo\)$'
 stdout 'said: extractor "old": stat legacy/old.conf: is a directory$'
 rm legacy/old.conf
 
+# A file that should be there and is not: in SARIF the result is at the
+# check, since code scanning has no line of a file that is not there to show.
+mv app.conf app.conf.gone
+! exec errata check --format sarif
+! stdout '"uri": ".*app\.conf"'
+stdout '= \\"false\\" at \./legacy/\.\./app\.conf\\nThe value is at \./legacy/\.\./app\.conf, where no file is, so this result is at the check\."$'
+stdin stdout
+exec tr -d ' \n'
+stdout '"ruleId":"config-is-there","ruleIndex":2,"level":"error","message":\{"text":"(\\.|[^"\\])*"\},"locations":\[\{"physicalLocation":\{"artifactLocation":\{"uri":"errata.yaml","uriBaseId":"%SRCROOT%"\},"region":\{"startLine":15\}\}\}\]'
+mv app.conf.gone app.conf
+
 # The notes grow past their ceiling: an erratum naming the size.
 cp long.md docs/NOTES.md
 ! exec errata check

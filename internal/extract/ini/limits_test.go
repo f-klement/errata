@@ -1,15 +1,19 @@
 package ini
 
 import (
+	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/f-klement/errata/internal/check"
 	"github.com/f-klement/errata/internal/extract/core"
+	"github.com/f-klement/errata/internal/extract/extracttest"
 )
 
-// A file name chooses the dialect, and dialect: overrides it. The planted
-// breaks are names close to each rule's that it must not take.
+// A file name chooses the dialect, and dialect: overrides it; a template's
+// name without its suffix chooses it. The planted breaks are names close
+// to each rule's that it must not take, and the suffix left on.
 func TestDialectForFileNames(t *testing.T) {
 	for file, want := range map[string]string{
 		".gitconfig": "git", "home/.gitconfig": "git", ".gitmodules": "git", "etc/gitconfig": "git", "work.gitconfig": "git",
@@ -17,10 +21,16 @@ func TestDialectForFileNames(t *testing.T) {
 		"hosts": "ansible", "hosts.ini": "ansible", "deploy/inventory": "ansible", "inventory.ini": "ansible",
 		"inventories/prod/web": "ansible", "inventory/group.ini": "ansible",
 		"tox.ini": "tox", "a/tox.ini": "tox", "php.ini": "php", "etc/php/8.3/cli/php.ini": "php", "etc/php/8.3/fpm/conf.d/10-opcache.ini": "php",
-		"setup.cfg": "plain", "tox.ini.bak": "plain", "php.ini-development": "php", "php.ini.dist": "php", "etc/php.ini-production": "php", "my-php.ini": "plain", "php.ini.j2": "plain", "php.ini.tftpl": "plain", "php.ini.tpl": "plain", "etc/php.ini-production.jinja2": "plain", "etc/conf.d/x.ini": "plain", "config": "plain", "gitconfig.bak": "plain",
+		"setup.cfg": "plain", "tox.ini.bak": "plain", "php.ini-development": "php", "php.ini.dist": "php", "etc/php.ini-production": "php", "my-php.ini": "plain", "php.ini.j2": "php", "php.ini.tftpl": "php", "php.ini.tpl": "php", "etc/php.ini-production.jinja2": "php",
+		// #120: a template is read as the file it renders.
+		"hosts.j2": "ansible", ".gitconfig.tmpl": "git", "tox.ini.erb": "tox", "etc/php/8.3/fpm/conf.d/10-opcache.ini.j2": "php",
+		"setup.cfg.j2": "plain", ".j2": "plain", "x/.tpl": "plain", "hosts.j2.bak": "plain", "etc/conf.d/x.ini": "plain", "config": "plain", "gitconfig.bak": "plain",
 		"git/config.ini": "plain", "hosts.txt": "plain", "inventory2/x": "plain", ".gitignore": "plain",
 	} {
-		if got := dialectFor(file).name; got != want {
+		if d, _ := chooseDialect("", file); d.name != want {
+			t.Errorf("%s: %s, want %s", file, d.name, want)
+		}
+		if got := dialectFor(core.Untemplated(file)).name; got != want {
 			t.Errorf("%s: %s, want %s", file, got, want)
 		}
 	}
@@ -107,6 +117,29 @@ func TestPlace(t *testing.T) {
 	} {
 		if got := Place(in); !reflect.DeepEqual(got, want) {
 			t.Errorf("%+v: %+v, want %+v", in, got, want)
+		}
+	}
+}
+
+// An inventory of hosts with ports that are not ASCII reads within the
+// work budget: the review's 96 KiB of wéb000123.exämple.org:22 lines, which
+// the address patterns, 256 units a byte, refused, and plainHostname reads
+// at one. Each host's port is taken off, so each is marked. Planted break:
+// portTaken through addressOf for every host that is not ASCII.
+func TestNonASCIIHostsWithPortsReadWithinTheBudget(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("[web]\n")
+	n := 0
+	for ; b.Len() < 96<<10; n++ {
+		fmt.Fprintf(&b, "wéb%06d.exämple.org:22\n", n)
+	}
+	values := mustRun(t, Spec{File: "inventory/hosts", Section: "web"}, extracttest.Repo(t, map[string]string{"inventory/hosts": b.String()}))
+	if len(values) != n {
+		t.Fatalf("%d values, want %d", len(values), n)
+	}
+	for _, v := range values {
+		if !v.NotLiteral {
+			t.Fatalf("%s: literal, want marked: ansible takes its port off", v.Text)
 		}
 	}
 }

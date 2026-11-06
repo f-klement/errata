@@ -117,27 +117,68 @@ func cmpIdents(a, b []ident) int {
 }
 
 // Version is one version, as any of the five ecosystems writes it.
+//
+// Its flags and syn come last, so they pack into two words: a range keeps
+// several versions for each interval.
 type Version struct {
 	epoch   num   // PEP 440's N!, 0 when not written
 	release []num // the numbers before any suffix, as many as written
 	pre     []ident
 	post    num
-	hasPost bool
 	dev     num
+	build   string // SemVer build metadata or a PEP 440 local version; never compared
+	hasPost bool
 	hasDev  bool
 	// floor marks a bound below every version of its release, pre-releases
 	// and dev releases included. A range's upper bound such as npm's
 	// <2.0.0-0 is one; no value parses as one.
 	floor bool
-	build string // SemVer build metadata or a PEP 440 local version; never compared
+	// lang marks a Go language version, such as 1.21: a floor, below
+	// 1.21rc1 and 1.21.0, written as its numbers.
+	lang bool
+	// exact marks a version that stands for itself whatever its numbers,
+	// as every Go version does: v1.2 is v1.2.0, never every 1.2 release.
+	exact bool
+	// ceil marks a bound above every post release of its epoch, numbers
+	// and pre-release, where PEP 440's >V starts. No value parses as one.
+	ceil bool
+	// localTop marks a PEP 440 bound above every local version of its
+	// public version, where ==V and <=V end. No value parses as one.
+	localTop bool
+	// glued marks a pre-release written against the numbers, as Go's
+	// toolchains write 1.22rc1.
+	glued bool
+	// module marks a Go module's version, written after v, so it reads
+	// back as one: v1.21 is v1.21.0, where the toolchain's 1.21 is the
+	// language version.
+	module bool
+	// syn is the syntax v was read in. It decides how v is written, how
+	// RubyGems' pre-releases order, and whether PEP 440's local versions
+	// tell two versions apart in AgreeAt.
+	syn synCode
 }
+
+// synCode is a Syntax in one byte, as a Version keeps it.
+type synCode uint8
+
+const (
+	codeAny synCode = iota
+	codeNPM
+	codeCargo
+	codePEP440
+	codeGo
+	codeRubyGems
+)
 
 // Partial reports whether v names its release at less than full precision:
 // one or two numbers and no suffix, such as 20 or 20.11. It stands for every
 // release that starts with those numbers. Any other version stands for
 // itself.
+//
+// Under PEP 440 a version with a local version, such as 3.11+cpu, names one
+// build and stands for itself.
 func (v Version) Partial() bool {
-	return !v.floor && len(v.release) < 3 && !v.suffixed()
+	return !v.floor && !v.exact && len(v.release) < 3 && !v.suffixed() && (v.syn != codePEP440 || v.build == "")
 }
 
 // suffixed reports whether v has a pre-release, a post release or a dev
@@ -154,7 +195,16 @@ func (v Version) prerelease() bool { return v.pre != nil || v.hasDev }
 // build after +. It reads back as a version equal to v. A floor is written -0 after
 // its numbers, as npm writes the bound below every pre-release.
 func (v Version) String() string {
+	if v.syn == codePEP440 {
+		return v.pep440String()
+	}
+	if v.syn == codeRubyGems {
+		return v.rubyString()
+	}
 	var b strings.Builder
+	if v.module {
+		b.WriteByte('v')
+	}
 	if v.epoch != "0" && v.epoch != "" {
 		b.WriteString(string(v.epoch) + "!")
 	}
@@ -164,10 +214,14 @@ func (v Version) String() string {
 		}
 		b.WriteString(string(n))
 	}
-	if v.floor {
+	if v.floor && !v.lang {
 		b.WriteString("-0")
 	}
-	if v.pre != nil {
+	if v.glued {
+		for _, id := range v.pre {
+			b.WriteString(id.text)
+		}
+	} else if v.pre != nil {
 		// A pre-release beside a post or dev release came from the PEP 440
 		// form, and is written in it, so the string reads back the same.
 		sep := byte('-')
@@ -211,10 +265,66 @@ func Compare(a, b Version) int {
 	if c := cmpPre(a, b); c != 0 {
 		return c
 	}
+	switch {
+	case a.ceil && b.ceil:
+		return 0
+	case a.ceil:
+		return 1
+	case b.ceil:
+		return -1
+	}
 	if c := cmpOptional(a.hasPost, a.post, b.hasPost, b.post, -1); c != 0 {
 		return c
 	}
-	return cmpOptional(a.hasDev, a.dev, b.hasDev, b.dev, 1)
+	if c := cmpOptional(a.hasDev, a.dev, b.hasDev, b.dev, 1); c != 0 {
+		return c
+	}
+	if a.syn != codePEP440 && b.syn != codePEP440 {
+		return 0
+	}
+	return cmpLocal(a, b)
+}
+
+// cmpLocal orders two PEP 440 versions of one public version by their
+// local versions, as the specification orders them: none first, then part
+// by part, a number above text, numbers by value and text by its bytes
+// (the local version is kept in lower case), a local version that another
+// starts with below it, and localTop above every one.
+func cmpLocal(a, b Version) int {
+	switch {
+	case a.localTop && b.localTop:
+		return 0
+	case a.localTop:
+		return 1
+	case b.localTop:
+		return -1
+	case a.build == b.build:
+		return 0
+	case a.build == "":
+		return -1
+	case b.build == "":
+		return 1
+	}
+	x, y := strings.Split(a.build, "."), strings.Split(b.build, ".")
+	for i := 0; i < len(x) && i < len(y); i++ {
+		nx, isX := parseNum(x[i])
+		ny, isY := parseNum(y[i])
+		switch {
+		case isX && isY:
+			if c := cmpNum(nx, ny); c != 0 {
+				return c
+			}
+		case isX:
+			return 1
+		case isY:
+			return -1
+		default:
+			if c := strings.Compare(x[i], y[i]); c != 0 {
+				return c
+			}
+		}
+	}
+	return cmpInt(len(x), len(y))
 }
 
 // cmpRelease orders the epochs, then the numbers, a missing number as 0.
@@ -265,6 +375,9 @@ func cmpPre(a, b Version) int {
 	if ra != 0 {
 		return 0
 	}
+	if a.syn == codeRubyGems || b.syn == codeRubyGems {
+		return cmpRubyIdents(a.pre, b.pre)
+	}
 	return cmpIdents(a.pre, b.pre)
 }
 
@@ -285,7 +398,8 @@ func cmpOptional(hasA bool, a num, hasB bool, b num, absent int) int {
 // AgreeAt reports whether a and b agree at the precision each states. A
 // partial version agrees with any version whose leading numbers are its own:
 // 20 with 20.11.1 and with v20.11, but not with 18.19.0. Two versions that
-// are not partial agree when they are equal by Compare.
+// are not partial agree when they are equal by Compare, which under PEP 440
+// orders 1.0+abc after 1.0.
 func AgreeAt(a, b Version) bool {
 	if !a.Partial() && !b.Partial() {
 		return Compare(a, b) == 0
@@ -323,13 +437,12 @@ var errTooLong = fmt.Errorf("it is longer than %d bytes, the longest value errat
 //   - build metadata or a PEP 440 local version after +, such as
 //     +incompatible, which is kept and never compared.
 func ParseVersion(s string) (Version, error) {
-	if len(s) > MaxLength {
-		return Version{}, errTooLong
-	}
-	rest := strings.TrimSpace(s)
-	if rest == "" {
-		return Version{}, errors.New("it is empty")
-	}
+	return Any.ParseVersion(s)
+}
+
+// parseAny is ParseVersion of a value already trimmed, not empty and within
+// MaxLength.
+func parseAny(rest string) (Version, error) {
 	switch {
 	case strings.HasPrefix(rest, "go") && len(rest) > 2 && isDigit(rest[2]):
 		rest = rest[2:]
@@ -539,12 +652,18 @@ func bump(v Version, i int) Version {
 		release[k] = component(v, k)
 	}
 	release[i] = release[i].inc()
-	return Version{epoch: v.epoch, release: release}
+	return Version{epoch: v.epoch, release: release, syn: v.syn}
 }
 
 // releaseOf is v's epoch and numbers, without a suffix or a build.
 func releaseOf(v Version) Version {
-	return Version{epoch: v.epoch, release: v.release}
+	return Version{epoch: v.epoch, release: v.release, syn: v.syn}
+}
+
+// ceilOf is the bound above every post release of v's epoch, numbers and
+// pre-release (PEP 440's >V).
+func ceilOf(v Version) Version {
+	return Version{epoch: v.epoch, release: v.release, pre: v.pre, syn: v.syn, ceil: true}
 }
 
 // atFloor is v as a floor: below every version of its release.

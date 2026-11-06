@@ -5,7 +5,8 @@
 // in manifests.go says, and every version comes back as the file wrote it,
 // with the file and the line. A version the build computes, such as
 // dynamic = ["version"] in pyproject.toml or version.workspace = true in a
-// Cargo.toml that does not hold the workspace's version, is not literal.
+// Cargo.toml that does not hold the workspace's version, is not literal, and
+// its text is the line that says so, as the file wrote it.
 // With tag:, the name of each git tag on HEAD that starts with tag's
 // prefix is a version too, the prefix cut off.
 package packageversion
@@ -255,7 +256,13 @@ func (x extractor) FromData(f file, data []byte) ([]check.Value, error) {
 		out = append(out, check.Value{Text: text, At: check.Location{File: f.File, Line: line}, NotLiteral: notLiteral})
 		return nil
 	}
-	if err := f.kind.read(&x, f, data, add); err != nil {
+	// A computed version's text is the file's own line, which no version
+	// check applies to: TOML puts a tab between a key and its value as
+	// readily as a space.
+	computed := func(line int) {
+		out = append(out, check.Value{Text: core.LineText(data, line), At: check.Location{File: f.File, Line: line}, NotLiteral: true})
+	}
+	if err := f.kind.read(&x, f, data, add, computed); err != nil {
 		var n named
 		if errors.As(err, &n) {
 			return nil, n.error

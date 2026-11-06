@@ -111,6 +111,21 @@ func TestParseCompare(t *testing.T) {
 	}
 }
 
+// syntax: loads onto a compare: semver rule as written, and a rule that sets
+// none has none. The planted break: the loader dropping Syntax.
+func TestParseSyntax(t *testing.T) {
+	head := "checks:\n- id: r\n  reason: r\n  scope: repo\n  extract: {v: {json: {file: f.json, path: a}}, w: {json: {file: g.json, path: a}}}\n  agree: [v, w]\n  compare: semver\n"
+	for yaml, want := range map[string]string{head + "  syntax: pep440\n": "pep440", head: ""} {
+		cfg, err := parseRaw([]byte(yaml))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := cfg.Checks[0].Rule().Syntax; got != want {
+			t.Errorf("syntax %q, want %q, from:\n%s", got, want, yaml)
+		}
+	}
+}
+
 // An assert is compiled at load, so a rule that loads can run it.
 func TestParseAssertRule(t *testing.T) {
 	cfg, err := parseRaw([]byte("checks:\n- id: a\n  reason: r\n  scope: repo\n  extract: {v: {json: {file: f.json, path: a}}, w: {json: {file: g.json, path: a}}}\n  assert: v[0] == w[0]\n"))
@@ -281,7 +296,7 @@ func TestParseRejectsRules(t *testing.T) {
 			head + ex + "  agree: [v]\n  timeout: 0s\n", "timeout applies to a program check and a generated check: a rule's extractors take no timeout",
 		},
 		"extractor with no kind": {
-			head + "  extract: {v: {}}\n  agree: [v]\n", `extractor "v": an extractor sets exactly one of yaml, json, toml, regex`,
+			head + "  extract: {v: {}}\n  agree: [v]\n", `extractor "v": an extractor sets exactly one of yaml, json, jsonc, json5, toml, regex`,
 		},
 		"extractor with two kinds": {
 			head + "  extract: {v: {json: {file: f, path: a}, toml: {file: f, path: a}}}\n  agree: [v]\n", `extractor "v": an extractor sets exactly one`,
@@ -458,6 +473,24 @@ func TestParseRejectsRules(t *testing.T) {
 		},
 		"compare on assert": {
 			head + ex + "  assert: size(v) > 0\n  compare: semver\n", `compare "semver" applies to agree; assert compares in its expression`,
+		},
+		"syntax unknown": {
+			head + ex + "  agree: [v]\n  compare: semver\n  syntax: maven\n", `syntax "maven" must be one of npm, cargo, pep440, go, rubygems`,
+		},
+		"syntax in another case": {
+			head + ex + "  agree: [v]\n  compare: semver\n  syntax: PEP440\n", `syntax "PEP440" must be one of npm, cargo, pep440, go, rubygems`,
+		},
+		"syntax blank": {
+			head + ex + "  agree: [v]\n  compare: semver\n  syntax: ''\n", "syntax is blank: write npm, cargo, pep440, go, rubygems, or remove the key for the reading of all five",
+		},
+		"syntax on compare text": {
+			head + ex + "  agree: [v]\n  syntax: cargo\n", `syntax "cargo" applies to compare: semver, and this rule compares text`,
+		},
+		"syntax on assert": {
+			head + ex + "  assert: size(v) > 0\n  syntax: cargo\n", `syntax "cargo" applies to agree with compare: semver; an assert names the syntax as the third argument of semver_satisfies`,
+		},
+		"syntax on a program check": {
+			head + "  run: [x]\n  syntax: go\n", "keys of two kinds of check: run makes a program check, and syntax makes a rule",
 		},
 		"compare on a program check": {
 			head + "  run: [x]\n  compare: text\n", "keys of two kinds of check: run makes a program check, and compare makes a rule",

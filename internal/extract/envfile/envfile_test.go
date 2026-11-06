@@ -239,6 +239,27 @@ func TestEnvfileTemplate(t *testing.T) {
 	}
 }
 
+// #119: in a template, a key set inside one of the engine's blocks may not
+// be in the rendered file, so its value is not literal, and so is every
+// substitution of it, B=${A} outside the block too; one row for each
+// engine, beside a literal value. compose refuses a bare tag line, so the
+// tags sit in comment lines, as the engine still renders them. The planted
+// break is readFile without the block test.
+func TestEnvfileTemplateBlock(t *testing.T) {
+	for _, c := range []struct{ file, body, want string }{
+		{".env.j2", "# {% if prod %}\nA=1\n# {% endif %}\nB=${A}\nC=2\n", "1!@2 ${A}!@4 2@5"},
+		{"app.env.tmpl", "# {{ if .x }}\nA=1\n# {{ end }}\nC=2\n", "1!@2 2@4"},
+		{"app.env.erb", "# <% if @x %>\nA=1\n# <% end %>\nC=2\n", "1!@2 2@4"},
+		{"app.env.tftpl", "# %{ if x }\nA=1\n# %{ endif }\nC=2\n", "1!@2 2@4"},
+		{".env", "# {% if prod %}\nA=1\n# {% endif %}\nB=${A}\n", "1@2 1@4"},
+	} {
+		root := extracttest.Repo(t, map[string]string{c.file: c.body})
+		if got := texts(extracttest.MustRun(t, Build, Spec{File: c.file}, root)); got != c.want {
+			t.Errorf("%s %q: got %q, want %q", c.file, c.body, got, c.want)
+		}
+	}
+}
+
 // A substitution nested past core.MaxDepth is refused, at its line. Each
 // level reads its word again, so a comment gives the file the work budget
 // that nesting costs.

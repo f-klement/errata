@@ -34,6 +34,7 @@ func FuzzLexer(f *testing.F) {
 	f.Add(row("scala"), "val a = \"${\"\nval b = s\"${ \"}\" }\" // c")
 	f.Add(row("python"), "    (rf'(\\{{[{_dash}])(![^}}]*)(\\}}?)', # c\n")
 	f.Add(row("ruby"), "x = %r{^/([a-z]):/}i + %w(a (b)) # c\nre = /\n a # x\n/x\ny = \"#{n ? %[-#{n}] : ''}\"\n")
+	f.Add(row("lua"), "--[[\n")
 	f.Fuzz(func(t *testing.T, row uint8, src string) {
 		ls := Languages()
 		l := ls[int(row)%len(ls)]
@@ -47,10 +48,13 @@ func FuzzLexer(f *testing.F) {
 			}
 			// The text before a row's Begin opens with no form.
 			opens := s.Kind == Text && s.Start == 0 && l.Begin != ""
-			for _, f := range l.Forms {
+			for i, f := range l.Forms {
 				if f.Kind == s.Kind && bytes.HasPrefix(data[s.Start:], []byte(f.Open)) {
 					opens = true
-					if f.Kind == Comment && f.Close == "" && !f.ToEnd && bytes.IndexByte(data[s.Start:s.End], '\n') >= 0 {
+					// Only the form that opened the span says whether it is a
+					// line comment: Lua's -- is a prefix of its --[[, whose
+					// unclosed body runs to the end, line feeds and all.
+					if i == s.Form && f.Kind == Comment && f.Close == "" && !f.ToEnd && bytes.IndexByte(data[s.Start:s.End], '\n') >= 0 {
 						t.Fatalf("%s: line comment %+v holds a line feed", l.Name, s)
 					}
 				}

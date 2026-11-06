@@ -23,6 +23,7 @@ import (
 //	semver(s)                 the version s, which <, <=, >, >=, == and != compare
 //	string(semver(s))         the version as internal/semver writes it
 //	semver_satisfies(v, r)    whether the version v satisfies the range r
+//	semver_satisfies(v, r, s) the same, read in the syntax s, such as 'cargo'
 //
 // semver(s) compares at full precision, a missing number as 0, so
 // semver('20') == semver('20.0.0'); agree's precision rule is for agree.
@@ -91,7 +92,9 @@ func semverHelpers() []cel.EnvOption {
 				}))),
 		cel.Function("semver_satisfies",
 			cel.Overload("errata_semver_satisfies_string_string", []*cel.Type{cel.StringType, cel.StringType}, cel.BoolType,
-				cel.BinaryBinding(satisfies))),
+				cel.BinaryBinding(func(v, r ref.Val) ref.Val { return satisfies(v, r, semver.Any) })),
+			cel.Overload("errata_semver_satisfies_string_string_string", []*cel.Type{cel.StringType, cel.StringType, cel.StringType}, cel.BoolType,
+				cel.FunctionBinding(satisfiesIn))),
 	}
 	// CEL binds each order operator once for every type with the
 	// Comparer trait, so these overloads declare the types and the
@@ -122,13 +125,29 @@ func semverCosts() []cost.TrackerOption {
 	return []cost.TrackerOption{
 		cost.OverloadTracker("errata_semver_string", charge),
 		cost.OverloadTracker("errata_semver_satisfies_string_string", charge),
+		cost.OverloadTracker("errata_semver_satisfies_string_string_string", charge),
 	}
 }
 
-// satisfies is semver_satisfies: the version v against the range r, as
-// agree's compare: semver tests them. A value that is not a version or not
-// a range is an error naming it, as is one over the helpers' length limit.
-func satisfies(v, r ref.Val) ref.Val {
+// satisfiesIn is semver_satisfies(v, r, s): satisfies in the syntax s
+// names, which must be one of semver.Syntaxes.
+func satisfiesIn(args ...ref.Val) ref.Val {
+	name, ok := args[2].(types.String)
+	if !ok {
+		return types.MaybeNoSuchOverloadErr(args[2])
+	}
+	syntax, err := semver.ParseSyntax(string(name))
+	if err != nil {
+		return types.NewErr("semver_satisfies: %v", err)
+	}
+	return satisfies(args[0], args[1], syntax)
+}
+
+// satisfies is semver_satisfies: the version v against the range r, read
+// in syntax, as agree's compare: semver with that syntax: tests them. A
+// value that is not a version or not a range is an error naming it, as is
+// one over the helpers' length limit.
+func satisfies(v, r ref.Val, syntax semver.Syntax) ref.Val {
 	vs, ok := v.(types.String)
 	if !ok {
 		return types.MaybeNoSuchOverloadErr(v)
@@ -142,11 +161,11 @@ func satisfies(v, r ref.Val) ref.Val {
 			return types.NewErr("semver_satisfies: an argument is %d bytes; a helper reads at most %d", len(s), MaxArgument)
 		}
 	}
-	version, err := semver.ParseVersion(string(vs))
+	version, err := syntax.ParseVersion(string(vs))
 	if err != nil {
 		return types.NewErr("semver_satisfies: %q is not a version: %v", string(vs), err)
 	}
-	rng, err := semver.ParseRange(string(rs))
+	rng, err := syntax.ParseRange(string(rs))
 	if err != nil {
 		return types.NewErr("semver_satisfies: %q is not a range: %v", string(rs), err)
 	}

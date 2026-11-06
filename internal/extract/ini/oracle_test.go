@@ -257,8 +257,12 @@ func ansibleInputs() []string {
 	})
 }
 
-// ansibleVar is a variable as errata reads it, for the comparison.
-type ansibleVar = []byte
+// ansibleVar is a variable as errata reads it, for the comparison: its text
+// and whether errata marks it not literal.
+type ansibleVar struct {
+	text     []byte
+	computed bool
+}
 
 // ansibleRead is what errata's entries say ansible reads, folded as ansible
 // folds them: a group's hosts and children once each in the order first
@@ -269,11 +273,11 @@ func ansibleRead(data []byte) (got struct {
 }, err error) {
 	got.hosts, got.children = map[string][]string{}, map[string][]string{}
 	got.groupVars, got.hostVars = map[string]map[string]ansibleVar{}, map[string]map[string]ansibleVar{}
-	set := func(m map[string]map[string]ansibleVar, name, key string, value []byte) {
+	set := func(m map[string]map[string]ansibleVar, name, key string, e *core.Entry) {
 		if m[name] == nil {
 			m[name] = map[string]ansibleVar{}
 		}
-		m[name][key] = slices.Clone(value)
+		m[name][key] = ansibleVar{slices.Clone(e.Value), e.Computed}
 	}
 	add := func(m map[string][]string, name, item string) {
 		if !slices.Contains(m[name], item) {
@@ -284,7 +288,7 @@ func ansibleRead(data []byte) (got struct {
 		group, tag, _ := strings.Cut(string(e.Section), ":")
 		switch {
 		case tag == "vars":
-			set(got.groupVars, group, string(e.Key), e.Value)
+			set(got.groupVars, group, string(e.Key), e)
 		case tag == "children":
 			add(got.children, group, string(e.Value))
 		case e.Kind == core.EntryName:
@@ -292,7 +296,7 @@ func ansibleRead(data []byte) (got struct {
 				add(got.hosts, group, string(e.Host))
 			}
 		default:
-			set(got.hostVars, string(e.Host), string(e.Key), e.Value)
+			set(got.hostVars, string(e.Host), string(e.Key), e)
 		}
 		return nil
 	})
@@ -382,7 +386,7 @@ func ansibleDiff(hosts, children map[string][]string, groupVars, hostVars map[st
 				}
 				same, compared := sameAnsibleValue(g, raw)
 				if !same {
-					return n, fmt.Sprintf("%s %s: %s is %q, ansible %s", m.name, name, k, g, raw)
+					return n, fmt.Sprintf("%s %s: %s is %q (not literal %v), ansible %s", m.name, name, k, g.text, g.computed, raw)
 				}
 				if compared {
 					n++
@@ -405,8 +409,10 @@ func ansibleDiff(hosts, children map[string][]string, groupVars, hostVars map[st
 
 // sameAnsibleValue compares errata's text with ansible's value: a str byte
 // for byte, an int by its value as Python reads errata's text, True, False
-// and None as the text. It reports whether it compared.
-func sameAnsibleValue(got []byte, raw json.RawMessage) (same, compared bool) {
+// and None as the text, and any other value errata returns literal, such as
+// [1, 2], as its repr. It reports whether it compared.
+func sameAnsibleValue(g ansibleVar, raw json.RawMessage) (same, compared bool) {
+	got := g.text
 	var hexText string
 	if json.Unmarshal(raw, &hexText) == nil {
 		want, _ := hex.DecodeString(hexText)
@@ -427,7 +433,10 @@ func sameAnsibleValue(got []byte, raw json.RawMessage) (same, compared bool) {
 		g, ok := new(big.Int).SetString(text, 0)
 		return ok && g.Cmp(w) == 0, true
 	}
-	return true, false // a float, a list or another value errata keeps as written
+	if !g.computed {
+		return string(got) == v.Repr, true // a literal float or container is its repr
+	}
+	return true, false // a value errata marks: its text is not ansible's value
 }
 
 // The tox reader reads every file of the corpus as tox read it.

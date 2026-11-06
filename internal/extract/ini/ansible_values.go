@@ -52,6 +52,14 @@ func pyValue(v []byte) (value []byte, computed bool, err error) {
 	}
 	end := p.i
 	p.blanks()
+	if p.i < len(u) && u[p.i] == ',' {
+		// Literals joined by commas are a tuple, which ansible holds as a
+		// list: str of it is never the text.
+		if end, ok = p.tuple(); !ok {
+			return v, false, nil
+		}
+		return u[:end], true, nil // the tuple, without a comment after it
+	}
 	switch {
 	case p.i < len(u) && u[p.i] != '#':
 		return v, false, nil // more than one literal is a syntax error
@@ -63,6 +71,28 @@ func pyValue(v []byte) (value []byte, computed bool, err error) {
 		return u[:end], pyComputed(u[:end]), nil // the literal without its comment
 	}
 	return v, pyComputed(u[:end]), nil
+}
+
+// tuple reads the rest of a tuple whose first literal ends at the comma at
+// p.i: more literals, each after a comma, and a comma at the end or not,
+// through the end of the value or a # comment. It returns where the last
+// literal or comma ends, and false for text literal_eval refuses.
+func (p *pyLit) tuple() (int, bool) {
+	end := p.i
+	for p.i < len(p.s) && p.s[p.i] == ',' {
+		p.i++
+		end = p.i
+		p.blanks()
+		if p.i == len(p.s) || p.s[p.i] == '#' {
+			return end, true
+		}
+		if _, ok := p.literal(); !ok {
+			return 0, false
+		}
+		end = p.i
+		p.blanks()
+	}
+	return end, p.i == len(p.s) || p.s[p.i] == '#'
 }
 
 // mayBeComputed reports whether a literal that starts with c can be one
@@ -643,12 +673,67 @@ const addressWork = 256
 // hasPort reports whether host ends in : and digits, the only hosts
 // parse_address can take a port off. On any other it returns the host as it
 // is, so errata runs its patterns only for these.
-func hasPort(host []byte) bool {
-	i := len(host)
-	for i > 0 && isDigit(host[i-1]) {
-		i--
+func hasPort(host []byte) bool { return portStart(host) >= 0 }
+
+// digitsStart is where the digits at the end of a start: Python's \d in a
+// str pattern, any decimal digit of Unicode (Nd), such as ٢, which int()
+// converts too.
+func digitsStart(a []byte) int {
+	i := len(a)
+	for i > 0 {
+		r, w := utf8.DecodeLastRune(a[:i])
+		if !unicode.IsDigit(r) {
+			break
+		}
+		i -= w
 	}
-	return i < len(host) && i > 0 && host[i-1] == ':'
+	return i
+}
+
+// portTaken reports whether parse_address takes a port off host: host ends
+// in : and digits, and what is left without them (withoutPort) is an
+// address or a host name. Otherwise ansible keeps the whole host as its
+// name, as it keeps fe80::1, whose : is part of the address, and we$b:22,
+// whose we$b is no host name.
+func portTaken(host []byte, m *core.Meter) (bool, error) {
+	if !hasPort(host) {
+		return false, nil
+	}
+	a := withoutPort(host)
+	if len(a) == len(host) {
+		return false, nil
+	}
+	plain, _ := plainHostname(a)
+	return plain, m.Charge(len(a))
+}
+
+// plainHostname is isAddress for a with no [, ] or :, decided by hand in
+// one pass, and ok false for any other a. Such an a is no IPv6 address,
+// which holds a :, and an IPv4 address is a host name too, so isAddress is
+// the hostname pattern: labels split at dots, each a letter or a number
+// (\p{L}, \p{N}), or two or more of those, _ and -, starting with no - and
+// ending in a letter or a number. A byte that is not UTF-8 is none of
+// these, as the pattern reads it as U+FFFD. Every host with a port that
+// portTaken asks about is such an a, since one with a [ is marked for its
+// range first, so the patterns' 256 units a byte are never spent there.
+func plainHostname(a []byte) (address, ok bool) {
+	if bytes.ContainsAny(a, "[]:") {
+		return false, false
+	}
+	alnum := func(r rune) bool { return unicode.IsLetter(r) || unicode.IsNumber(r) }
+	for label := range bytes.SplitSeq(a, []byte(".")) {
+		first, _ := utf8.DecodeRune(label)
+		last, _ := utf8.DecodeLastRune(label)
+		if len(label) == 0 || !alnum(last) || first == '-' {
+			return false, true
+		}
+		for _, r := range string(label) {
+			if !alnum(r) && r != '_' && r != '-' {
+				return false, true
+			}
+		}
+	}
+	return true, true
 }
 
 // pyMaxDigits is the most digits Python's int() converts
@@ -905,11 +990,7 @@ func withoutPort(host []byte) []byte {
 
 // portStart is where the : of a trailing :digits starts in a, or -1.
 func portStart(a []byte) int {
-	i := len(a)
-	for i > 0 && isDigit(a[i-1]) {
-		i--
-	}
-	if i < len(a) && i > 0 && a[i-1] == ':' {
+	if i := digitsStart(a); i < len(a) && i > 0 && a[i-1] == ':' {
 		return i - 1
 	}
 	return -1

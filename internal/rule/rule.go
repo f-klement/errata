@@ -542,7 +542,7 @@ func agree(ctx context.Context, root string, r check.Rule) (check.Verdict, strin
 
 	groups := group(all, r)
 	if r.Comparison() == check.CompareSemver {
-		verdict, message, note, blamed := agreeSemver(groups)
+		verdict, message, note, blamed := agreeSemver(groups, semver.Syntax(r.Syntax))
 		return verdict, message, note, groups.blame(blamed), extracted
 	}
 	if len(groups) == 1 {
@@ -682,12 +682,14 @@ type semverReader interface {
 	Parse(s string) (semver.Value, error)
 }
 
-// newSemverReader gives agreeSemver its reader. A test replaces it with one
-// that refuses within a few values, since semver's own bound is a million
-// intervals, too slow to reach once per mutant.
-var newSemverReader = func() semverReader { return new(semver.Reader) }
+// newSemverReader gives agreeSemver its reader, which reads in the rule's
+// syntax. A test replaces it with one that refuses within a few values,
+// since semver's own bound is a million intervals, too slow to reach once
+// per mutant.
+var newSemverReader = func(syn semver.Syntax) semverReader { return &semver.Reader{Syntax: syn} }
 
-// agreeSemver is agree with compare: semver over the distinct values. Each
+// agreeSemver is agree with compare: semver over the distinct values, read
+// in the syntax syn (check.Rule.Syntax). Each
 // must read as a version or a range, or the rule is unknown, naming each
 // one that does not; a value is never compared as text. A semver.Reader
 // reads them, and refuses the value that takes their ranges past
@@ -698,7 +700,7 @@ var newSemverReader = func() semverReader { return new(semver.Reader) }
 // rule blames: of the two semver.Agree found not to agree, the later, which
 // disagrees with a value before it; for ranges alone, the first range at
 // which the ranges before it stop overlapping; -1 for any other verdict.
-func agreeSemver(groups []distinct) (verdict check.Verdict, message, note string, blamed int) {
+func agreeSemver(groups []distinct, syn semver.Syntax) (verdict check.Verdict, message, note string, blamed int) {
 	texts := make([]string, len(groups))
 	for i, g := range groups {
 		texts[i] = g.text
@@ -707,7 +709,7 @@ func agreeSemver(groups []distinct) (verdict check.Verdict, message, note string
 	values := make([]semver.Value, len(groups))
 	var (
 		unread []string
-		reader = newSemverReader()
+		reader = newSemverReader(syn)
 		bound  *semver.BoundError
 	)
 	for i, g := range groups {

@@ -1,0 +1,9 @@
+// The status kiosk's screens. The kiosk reads this file as JSON5, though
+// its name says JSON.
+{
+  screens: [
+    {name: 'api', port: 8080, refresh: .5},
+    {name: 'admin', port: 9090, refresh: 1,},
+  ],
+  health: 'port: 9090',
+}

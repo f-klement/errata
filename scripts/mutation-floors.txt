@@ -167,6 +167,8 @@ internal/extract/ini               85        85      10
 internal/extract/jenkins           85        85      5
 # json: 100%, efficacy 100%, on 2026-10-22.
 internal/extract/json              85        85      5
+# jsonc: new in v0.4.0 (#67), held to the floor every reader has.
+internal/extract/jsonc             85        85      5
 # literal: new in v0.3.0 (#84), held to the floor every reader has.
 internal/extract/literal           85        85      5
 # markdown: new in v0.2.5 (#30), held to the floor every reader has.

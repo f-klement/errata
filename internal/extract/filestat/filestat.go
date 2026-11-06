@@ -47,8 +47,9 @@ func describe(key string) func(Spec) check.Description {
 // BuildExists checks s and returns the exists extractor. Its one value is
 // "true" when a regular file is at the name once its symlinks are followed,
 // and "false" when nothing is there or a link there dangles inside the
-// repository. A directory, anything else that is there, a link that leads
-// out, and a name errata cannot look up are errors.
+// repository, at a location marked Missing. A directory, anything else that
+// is there, a link that leads out, and a name errata cannot look up are
+// errors.
 func BuildExists(s Spec) (check.Extractor, error) {
 	src, err := checkSpec("exists", s)
 	if err != nil {
@@ -105,8 +106,10 @@ func (e exists) Extract(ctx context.Context, root string) ([]check.Value, error)
 	return e.value("true"), nil
 }
 
+// value is the one value text, at the file. A false one marks the
+// location Missing, since no file is there.
 func (e exists) value(text string) []check.Value {
-	return []check.Value{{Text: text, At: check.Location{File: e.src.File}}}
+	return []check.Value{{Text: text, At: check.Location{File: e.src.File, Missing: text == "false"}}}
 }
 
 type size struct{ src core.Source }

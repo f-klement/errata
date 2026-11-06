@@ -12,10 +12,18 @@ type Value struct {
 // such as 1.2.3 or 20 is a version; one with an operator, a wildcard, a
 // comma or || is a range. The error says why s is neither.
 func Parse(s string) (Value, error) {
-	if v, err := ParseVersion(s); err == nil {
+	return Any.Parse(s)
+}
+
+// Parse reads s as a version of the syntax, and failing that as a range of
+// it. So under Cargo a bare 1.35 is a partial version, as rust-version
+// writes one, and a requirement reaches a rule with its operator, as the
+// dependency extractor writes ^1.35.
+func (syn Syntax) Parse(s string) (Value, error) {
+	if v, err := syn.ParseVersion(s); err == nil {
 		return Value{version: &v}, nil
 	}
-	r, err := ParseRange(s)
+	r, err := syn.ParseRange(s)
 	if err != nil {
 		return Value{}, fmt.Errorf("it is neither a version nor a range: %w", err)
 	}
@@ -52,6 +60,8 @@ var maxIntervals = MaxIntervals
 // MaxIntervals, before any value after it is parsed, so the parse, the
 // sweep in Overlap and the tests in Satisfies all stay within the bound.
 type Reader struct {
+	// Syntax is the syntax the Reader reads every value in.
+	Syntax            Syntax
 	values, intervals int
 }
 
@@ -70,7 +80,7 @@ func (e *BoundError) Error() string {
 // returns a *BoundError.
 func (r *Reader) Parse(s string) (Value, error) {
 	r.values++
-	v, err := Parse(s)
+	v, err := r.Syntax.Parse(s)
 	if err != nil || v.rng == nil {
 		return v, err
 	}

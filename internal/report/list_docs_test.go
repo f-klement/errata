@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/f-klement/errata/internal/check"
 	"github.com/f-klement/errata/internal/config"
 )
 
@@ -107,7 +108,10 @@ func keyPaths(v map[string]any, prefix string, into map[string]bool) {
 // and the table without its row for generated.max_bytes.
 func TestListJSONKeysAreDocumented(t *testing.T) {
 	var buf bytes.Buffer
-	if err := (ListJSON{}).WriteList(&buf, listChecks(), nil); err != nil {
+	// The agree rule compares as semver, so relation.syntax is written.
+	checks := listChecks()
+	checks[1].Rule().Compare = check.CompareSemver
+	if err := (ListJSON{}).WriteList(&buf, checks, nil); err != nil {
 		t.Fatal(err)
 	}
 	var doc map[string]any

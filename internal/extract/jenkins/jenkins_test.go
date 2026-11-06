@@ -520,6 +520,36 @@ func TestJenkinsTemplate(t *testing.T) {
 	}
 }
 
+// #119: in a template, a value inside one of the engine's blocks may not be
+// in the rendered Jenkinsfile, so it is not literal; one row for each
+// engine, beside a literal value, and one through Every. The planted
+// breaks are TemplateRead left out of Build, and of Every.
+func TestJenkinsTemplateBlock(t *testing.T) {
+	env := "pipeline {\n  environment {\n    %s\n    X = '80'\n    %s\n    Y = 'y'\n  }\n}\n"
+	for _, c := range []struct{ file, open, close string }{
+		{"Jenkinsfile.j2", "{% if prod %}", "{% endif %}"},
+		{"Jenkinsfile.tmpl", "// {{ if .x }}", "// {{ end }}"},
+		{"Jenkinsfile.erb", "// <% if @x %>", "// <% end %>"},
+		{"Jenkinsfile.tftpl", "// %{ if x }", "// %{ endif }"},
+	} {
+		body := fmt.Sprintf(env, c.open, c.close)
+		if g := got(t, body, Spec{File: c.file, Variable: "X"}); g != "80@4!" {
+			t.Errorf("%s: got %s", c.file, g)
+		}
+		if g := got(t, body, Spec{File: c.file, Variable: "Y"}); g != "y@6" {
+			t.Errorf("%s, outside the block: got %s", c.file, g)
+		}
+	}
+	x, err := Every("Jenkinsfile.j2", "X", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	values, err := x.Extract(t.Context(), extracttest.Repo(t, map[string]string{"Jenkinsfile.j2": fmt.Sprintf(env, "{% if prod %}", "{% endif %}")}))
+	if err != nil || len(values) == 0 || !values[0].NotLiteral {
+		t.Errorf("Every: %v, %v; want the value in the block not literal", values, err)
+	}
+}
+
 // A file that ends with a block or a bracket still open is refused, as
 // Groovy refuses it, and so is a } that closes a block with a ( or [ still
 // open in it, and a ) or ] that closes nothing. The planted break of the

@@ -23,20 +23,22 @@ import (
 //
 // What PHP then computes is returned as written and marked not literal: the
 // words true, on, yes, false, off, no, none and null, which PHP reads as 1
-// and the empty string; a constant such as E_ALL (isConstantName: UTC is a
-// word PHP returns as written); ${VAR} and ${VAR:-x}; and an expression of
+// and the empty string; a constant PHP defines before it reads php.ini, such
+// as E_ALL (isStartupConstant: UTC and an extension's M_PI are words PHP
+// returns as written); ${VAR} and ${VAR:-x}; and an expression of
 // | & ^ ~ ! and parentheses, which is returned as the whole value as
 // written. A key with no = is ignored, as PHP ignores it. A file with a NUL
 // byte is refused, since PHP stops reading at one. The dialect is chosen
 // for php.ini and the names PHP ships it under (php.ini-production,
-// php.ini-development, php.ini.dist), but not a template of one such as
-// php.ini.j2, and for a .ini file under a directory named php.
+// php.ini-development, php.ini.dist), and for a .ini file under a
+// directory named php; a template such as php.ini.j2 is chosen by the name
+// without its suffix (chooseDialect), as every dialect is.
 var phpDialect = &iniDialect{
 	name:       "php",
 	notLiteral: computedEntry,
 	files: func(file string) bool {
 		dirs, base := core.FileParts(file)
-		return strings.HasPrefix(base, "php.ini") && !core.IsTemplate(base) || (strings.HasSuffix(base, ".ini") && hasDir(dirs, "php"))
+		return strings.HasPrefix(base, "php.ini") || (strings.HasSuffix(base, ".ini") && hasDir(dirs, "php"))
 	},
 	query: func(i Spec) (core.Query, error) {
 		if err := onlyDialect(i, false, false); err != nil {
@@ -47,7 +49,27 @@ var phpDialect = &iniDialect{
 		}
 		return core.Query{Section: []byte(i.Section), Key: []byte(i.Key), HasKey: true}, nil
 	},
-	read: readPHP,
+	read:    readPHP,
+	readFor: phpReadFor,
+}
+
+// phpReadFor is the reader of file in the php dialect, by when PHP reads
+// it. PHP reads php.ini and the .ini files of its scan directory at
+// startup, before any extension defines its constants (isStartupConstant),
+// and errata reads every .ini so, wherever a repository keeps it, such as
+// docker/opcache.ini. PHP reads a .user.ini for each request, and an FPM
+// pool file after the extensions start, when every constant is defined;
+// so errata marks every name of a constant's shape (isConstantName) in a
+// .user.ini and in any file whose name does not end in .ini, such as
+// www.conf.
+func phpReadFor(file string) core.ReadFunc {
+	_, base := core.FileParts(core.Untemplated(file))
+	if strings.HasPrefix(base, "php.ini") || base != ".user.ini" && strings.HasSuffix(base, ".ini") {
+		return readPHP
+	}
+	return func(data []byte, m *core.Meter, visit func(*core.Entry) error) error {
+		return readPHPWith(data, m, isConstantName, visit)
+	}
 }
 
 // phpTokens and phpOperators are the bytes of TOKENS and OPERATORS, and the
@@ -764,10 +786,11 @@ type phpParser struct {
 	itemEnd  int  // where the last token of the value ends
 	depth    int  // how deeply ~, ! and ( nest in the value
 	m        *core.Meter
-	err      error  // the meter's, once it is spent
-	discard  bool   // inside a fallback: read the list, keep no text
-	name     []byte // a section's name as it is read
-	scratch  []byte // an offset's or a fallback's text, which errata drops
+	err      error             // the meter's, once it is spent
+	discard  bool              // inside a fallback: read the list, keep no text
+	name     []byte            // a section's name as it is read
+	scratch  []byte            // an offset's or a fallback's text, which errata drops
+	defined  func([]byte) bool // the constants PHP has defined when it reads the file
 }
 
 var (
@@ -790,7 +813,14 @@ func (p *phpParser) read() phpTok {
 // took records that the value holds the token just read.
 func (p *phpParser) took() { p.itemEnd = p.l.end }
 
+// readPHP reads data as PHP reads php.ini, at startup.
 func readPHP(data []byte, m *core.Meter, visit func(*core.Entry) error) error {
+	return readPHPWith(data, m, isStartupConstant, visit)
+}
+
+// readPHPWith reads data, replacing the constants defined reports PHP has
+// defined when it reads the file.
+func readPHPWith(data []byte, m *core.Meter, defined func([]byte) bool, visit func(*core.Entry) error) error {
 	if i := bytes.IndexByte(data, 0); i >= 0 {
 		return core.LineError(core.LineOf(data, i), "a NUL byte, at which PHP stops reading the file")
 	}
@@ -800,7 +830,7 @@ func readPHP(data []byte, m *core.Meter, visit func(*core.Entry) error) error {
 	if bytes.HasPrefix(data, []byte(core.BOM)) {
 		l.pos = len(core.BOM)
 	}
-	p := &phpParser{l: l, lines: core.NewLineCursor(data), m: m}
+	p := &phpParser{l: l, lines: core.NewLineCursor(data), m: m, defined: defined}
 	var e core.Entry
 	for {
 		tok := p.read()
@@ -953,7 +983,7 @@ func (p *phpParser) list(out []byte, section bool) ([]byte, error) {
 	for {
 		switch p.read() {
 		case phpConstant:
-			if !section && isConstantName(p.l.text) {
+			if !section && p.defined(p.l.text) {
 				p.computed = true
 			}
 			if !p.discard {
@@ -1043,20 +1073,11 @@ func (p *phpParser) ref() error {
 	}
 }
 
-// isConstantName reports whether b is named as the constants PHP replaces
-// in php.ini are: a capital letter or _, then capital letters, digits and
-// _ up to a _, and after it letters of either case too, such as E_ALL,
-// PHP_EOL and STREAM_CRYPTO_METHOD_TLSv1_2_CLIENT; and the nine standard
-// names with no _ (phpBareConstants). PHP replaces such a word with its
-// value, and returns any other word, such as UTC or Neutral, as written.
-// Of the constants of PHP 8.4.23 with 40 extensions, it leaves these
-// literal: pcntl's SIG* and W* and sockets' SOMAXCONN, which extensions
-// only some builds load define, and STDIN, STDOUT and STDERR, which only
-// the CLI defines; each is also a word a value may hold as text.
+// isConstantName reports whether b is named as PHP's constants are: a
+// capital letter or _, then capital letters, digits and _ up to a _, and
+// after it letters of either case too, such as E_ALL, PHP_EOL and
+// STREAM_CRYPTO_METHOD_TLSv1_2_CLIENT.
 func isConstantName(b []byte) bool {
-	if phpBareConstants[string(b)] {
-		return true
-	}
 	if len(b) == 0 || b[0] != '_' && (b[0] < 'A' || b[0] > 'Z') {
 		return false
 	}
@@ -1074,9 +1095,32 @@ func isConstantName(b []byte) bool {
 	return under
 }
 
-// phpBareConstants are the constants of PHP's standard extension whose
-// names hold no _ (nl_langinfo's).
-var phpBareConstants = map[string]bool{
-	"CODESET": true, "ERA": true, "RADIXCHAR": true, "THOUSEP": true, "YESEXPR": true,
-	"NOEXPR": true, "YESSTR": true, "NOSTR": true, "CRNCYSTR": true,
+// isStartupConstant reports whether b names a constant PHP has defined when
+// it reads php.ini, and so replaces with its value. PHP reads php.ini in
+// php_module_startup, after the Zend engine registers its constants (E_*,
+// DEBUG_BACKTRACE_*, ZEND_THREAD_SAFE and ZEND_DEBUG_BUILD) and main.c its
+// own (PHP_*, PEAR_*, DEFAULT_INCLUDE_PATH, and UPLOAD_ERR_* for uploads),
+// and before any extension's MINIT. An extension's constant, such as M_PI,
+// CODESET, SIGTERM, SOMAXCONN or CURL_SSLVERSION_TLSv1_2, and the CLI's
+// STDIN, are not yet defined, and PHP keeps the word as written: php -c
+// gives get_cfg_var("a") = "CODESET" for a = CODESET. A name of one of
+// these prefixes that PHP does not define is marked too, which costs a rule
+// only an unknown.
+func isStartupConstant(b []byte) bool {
+	if !isConstantName(b) {
+		return false
+	}
+	if string(b) == "DEFAULT_INCLUDE_PATH" {
+		return true
+	}
+	for _, prefix := range phpStartupPrefixes {
+		if bytes.HasPrefix(b, []byte(prefix)) {
+			return true
+		}
+	}
+	return false
 }
+
+// phpStartupPrefixes start the names of the constants PHP 8.4 defines
+// before it reads php.ini (isStartupConstant).
+var phpStartupPrefixes = []string{"E_", "PHP_", "PEAR_", "ZEND_", "DEBUG_BACKTRACE_", "UPLOAD_ERR_"}

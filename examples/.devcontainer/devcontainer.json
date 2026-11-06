@@ -1,0 +1,11 @@
+// The container the team develops larder in, which VS Code reads as JSONC.
+{
+  "name": "larder",
+  "image": "mcr.microsoft.com/devcontainers/python:3.12",
+  // The API and the admin console, forwarded to the host.
+  "forwardPorts": [8080, 9090,],
+  "containerEnv": {
+    /* The API reads its settings from this JSON. */
+    "APP_CONFIG": "{\"port\": 8080}",
+  },
+}

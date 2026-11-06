@@ -195,6 +195,7 @@ flowchart TB
     subgraph readers ["the readers, one package per kind or pair of kinds"]
         yaml["internal/extract/yaml"]
         json["internal/extract/json"]
+        jsonc["internal/extract/jsonc"]
         toml["internal/extract/toml"]
         regex["internal/extract/regex"]
         text["internal/extract/text"]
@@ -306,6 +307,7 @@ reader imports `core` and no other reader, and `core` imports no reader.
 | `internal/extract/core/clip` | cutting file text or a path for a message, kept apart so `gitindex`, which `core` imports, quotes as `core` does | everything else |
 | `internal/extract/core/lineend` | the one rule of where a line ends, at a LF, a CRLF or a lone CR, by which every reader numbers its lines and folds its text; `core` hands it on as `LineCursor`, `LineIndex`, `LineOf`, `LastLine`, `LineStart`, `NextLine` and `LineFeeds`, and it is kept apart so `extracttest`, which `core`'s own tests import, counts lines by it too | everything else |
 | `internal/extract/yaml`, `internal/extract/json`, `internal/extract/toml` | one reader each that parses its format into core's tree, for core's path to select from | each other |
+| `internal/extract/jsonc` | the jsonc and json5 kinds: a parse of its own of JSONC and of JSON5 into core's tree, each kind reading every file in its own dialect | the other readers; which tool reads which file |
 | `internal/extract/regex` | the regex extractor, which is core's search over the file | the other readers |
 | `internal/extract/text` | Markdown prose, searched with core's search | the other readers |
 | `internal/extract/comment` | the comments of a source file, found with the lexer table and searched with core's search | the other readers |
@@ -320,7 +322,7 @@ reader imports `core` and no other reader, and `core` imports no reader.
 | `internal/extract/asciidoc` | an AsciiDoc file's comments, sections under a heading path, listing, literal and source blocks and table cells, from a parse of its own | the other readers |
 | `internal/extract/marker` | the values the markers in the files git tracks tag for one rule, and the markers no rule reads | the other readers |
 | `internal/extract/core/htmlparse` | the HTML parse the html, text and markdown readers share: golang.org/x/net/html's tokenizer with each token's offsets from its raw bytes, under a token limit, leaving out what a browser does not show | any one reader |
-| `internal/extract/core/gomod` | the go.mod and go.work parse the tool_version and dependency readers share: golang.org/x/mod/modfile, the go command's parser, under a limit on the lines and tokens a file can hold, with a panic in modfile turned into a refusal | any one reader |
+| `internal/extract/core/gomod` | the go.mod and go.work parse the tool_version and dependency readers share: golang.org/x/mod/modfile, the go command's parser, under a limit on the lines and tokens a file can hold, with each module version kept as the file writes it and a panic in modfile turned into a refusal | any one reader |
 | `internal/extract/core/mdparse` | the Markdown parse the text and markdown readers share: goldmark's CommonMark, with GitHub's tables on request, under a guard on its time, nodes and continuations, and the prose that maps text built from the file back to its lines | any one reader |
 | `internal/extract/xml` | XML, with an XPath 1.0 subset of its own | the other readers |
 | `internal/extract/ini`, `internal/extract/properties` | one reader each of entries for core's entry extractor: INI in the plain, git, ansible, tox and php dialects, and Java properties | each other |
@@ -450,6 +452,8 @@ flowchart LR
     subgraph kinds ["kinds in internal/extract/extract.go, one line each"]
         k_yaml["yaml"]
         k_json["json"]
+        k_jsonc["jsonc"]
+        k_json5["json5"]
         k_toml["toml"]
         k_regex["regex"]
         k_text["text"]

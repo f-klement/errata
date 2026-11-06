@@ -1,6 +1,9 @@
 package ini
 
 import (
+	"fmt"
+	"math/rand/v2"
+	"strings"
 	"testing"
 
 	"github.com/f-klement/errata/internal/extract/core"
@@ -281,5 +284,69 @@ func TestPythonLiteralsAsLiteralEvalTakesThem(t *testing.T) {
 	}
 	if _, _, err := pyValue([]byte(`'\N{DASH}'`)); err == nil {
 		t.Errorf(`'\N{DASH}': no error, want the refusal of a string errata cannot decode`)
+	}
+}
+
+// plainHostname decides as isAddress, ansible's patterns, on every host with
+// no [, ] or :, drawn from the characters a host name's labels hold, ASCII
+// and not (é, ß, the Arabic digit ٢, the superscript ², which is a number
+// and no digit), and a few they do not: $, a space, the mark U+0301, a byte
+// that is not UTF-8. The planted breaks are a label that may start with -,
+// one that may end in _, an empty label taken, and a letter outside ASCII
+// refused.
+func TestPlainHostnameIsTheHostnamePattern(t *testing.T) {
+	r := rand.New(rand.NewPCG(118, 1))
+	chars := []string{"a", "b", "9", "Z", "_", "-", ".", "$", " ", "\u00e9", "\u00df", "\u0662", "\u00b2", "\u0301", "\x80"}
+	for range 40000 {
+		var b strings.Builder
+		for range 1 + r.IntN(8) {
+			b.WriteString(chars[r.IntN(len(chars))])
+		}
+		got, ok := plainHostname([]byte(b.String()))
+		if !ok || got != isAddress(b.String()) {
+			t.Errorf("%q: %v, %v; the patterns %v", b.String(), got, ok, isAddress(b.String()))
+		}
+	}
+	for _, s := range []string{"a:b", "[a]", "a]"} {
+		if _, ok := plainHostname([]byte(s)); ok {
+			t.Errorf("%q: decided by hand, which only a host with no [, ] or : is", s)
+		}
+	}
+}
+
+// A port is Python's \d+, so Unicode's decimal digits too: ansible takes
+// :٢٢ off db1. The superscript ² is a number and no digit, so db1:² keeps
+// it. Planted break: digitsStart reading ASCII digits only.
+func TestAnsiblePortTakesUnicodeDigits(t *testing.T) {
+	for host, want := range map[string]bool{"db1:\u0662\u0662": true, "db1:22": true, "db1:\u00b2": false, "db1:": false, "22": false} {
+		if got := hasPort([]byte(host)); got != want {
+			t.Errorf("%q: port %v, want %v", host, got, want)
+		}
+	}
+}
+
+// reprReader takes Python's 200 levels of brackets and no more, whether
+// the levels nest or stand side by side, and refuses a container cut off
+// where an element or a key should be. The planted breaks are the depth
+// guard off by one, a level left counted on the way out, and the end of
+// the text read as an element.
+func TestReprReaderDepthAndEnds(t *testing.T) {
+	nest := func(n int, open, close string) string {
+		return strings.Repeat(open, n) + strings.Repeat(close, n)
+	}
+	side := "[" + strings.TrimSuffix(strings.Repeat("[[]], ", 300), ", ") + "]"
+	var dicts strings.Builder
+	dicts.WriteString("{'a': {'b': []}")
+	for i := range 300 {
+		fmt.Fprintf(&dicts, ", 'k%d': {}", i)
+	}
+	dicts.WriteString("}")
+	for text, want := range map[string]bool{
+		nest(200, "[", "]"): false, nest(201, "[", "]"): true, side: false, dicts.String(): false,
+		"[1, ": true, "{'a': 1, ": true, "{'a': ": true,
+	} {
+		if got := pyComputed([]byte(text)); got != want {
+			t.Errorf("%.40q: %v, want %v", text, got, want)
+		}
 	}
 }

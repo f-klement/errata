@@ -44,8 +44,9 @@ func listDocument(t *testing.T, checks []check.Check) map[string]any {
 	return doc
 }
 
-// A rule that compares as semver lists as semver, in JSON and in text, and
-// one that names no compare as text. The planted break: Rule.ListFields printing
+// A rule that compares as semver lists as semver, in JSON and in text, with
+// the syntax it reads in, and one that names no compare as text, with no
+// syntax. The planted break: Rule.ListFields printing
 // "text" for every agree rule, as before #89, fails the first check.
 func TestListCompare(t *testing.T) {
 	checks := listChecks()
@@ -58,9 +59,20 @@ func TestListCompare(t *testing.T) {
 	if err := (ListText{}).WriteList(&buf, checks, nil); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(buf.String(), "y, x (compare semver)") {
-		t.Errorf("the text listing does not say compare semver:\n%s", buf.String())
+	if !strings.Contains(buf.String(), "y, x (compare semver, syntax any)") || rel["syntax"] != "any" {
+		t.Errorf("the listing does not say compare semver with any syntax: %v\n%s", rel["syntax"], buf.String())
 	}
+	// The syntax a rule reads with (#133). The planted break: SyntaxShown
+	// printing any whatever the rule sets.
+	checks[1].Rule().Syntax = "pep440"
+	buf.Reset()
+	if err := (ListText{}).WriteList(&buf, checks, nil); err != nil {
+		t.Fatal(err)
+	}
+	if rel := listedCheck(t, checks, 1)["relation"].(map[string]any); rel["syntax"] != "pep440" || !strings.Contains(buf.String(), "y, x (compare semver, syntax pep440)") {
+		t.Errorf("a pep440 rule lists syntax %v:\n%s", rel["syntax"], buf.String())
+	}
+	checks[1].Rule().Syntax = ""
 	checks[1].Rule().Compare = ""
 	if rel := listedCheck(t, checks, 1)["relation"].(map[string]any); rel["compare"] != "text" {
 		t.Errorf("a rule with no compare lists compare %v, want text", rel["compare"])
@@ -248,9 +260,12 @@ var listedFields = map[reflect.Type]map[string]string{
 	},
 	reflect.TypeFor[check.Program]():   {"Run": "run"},
 	reflect.TypeFor[check.Generated](): {"File": "generated.file", "Run": "generated.run", "MaxBytes": "generated.max_bytes"},
-	reflect.TypeFor[check.Location]():  {"File": "at.file", "Line": "at.line", "Outside": "at.outside"},
+	reflect.TypeFor[check.Location](): {
+		"File": "at.file", "Line": "at.line", "Outside": "at.outside",
+		"Missing": "left out: only an exists value's location sets it, never a check's",
+	},
 	reflect.TypeFor[check.Rule](): {
-		"Extractors": "fields", "Agree": "relation.agree", "Compare": "relation.compare", "Assert": "relation.assert",
+		"Extractors": "fields", "Agree": "relation.agree", "Compare": "relation.compare", "Syntax": "relation.syntax", "Assert": "relation.assert",
 		"AllowEmpty": "allow_empty", "SkipNotLiteral": "skip_not_literal", "Normalize": "normalize",
 		"Compiled": "left out: compiled from Assert, which is printed",
 	},

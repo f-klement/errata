@@ -1,0 +1,7 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    /* Starts the API outside the debugger. */
+    {"label": "serve", "type": "shell", "command": "scripts/start.sh", "options": {"env": {"PORT": "8080"}}},
+  ],
+}

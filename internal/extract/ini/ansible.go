@@ -252,7 +252,15 @@ func hostLine(n int, line, section []byte, words *shellWords, e *core.Entry, m *
 		}
 		return nil
 	}
-	*e = core.Entry{Section: section, Host: host, Kind: core.EntryName, Value: host, Line: n}
+	// ansible reads a host with a range as the hosts it expands to, and one
+	// with a port it takes off as the host without it.
+	computed := bytes.IndexByte(host, '[') >= 0
+	if !computed {
+		if computed, err = portTaken(host, m); err != nil {
+			return err
+		}
+	}
+	*e = core.Entry{Section: section, Host: host, Kind: core.EntryName, Value: host, Line: n, Computed: computed}
 	if err := visit(e); err != nil {
 		return err
 	}

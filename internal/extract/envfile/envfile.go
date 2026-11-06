@@ -83,15 +83,15 @@ func Build(s Spec) (check.Extractor, error) {
 	}
 	// A value compose computes from a key the file does not set is not
 	// literal, and in a template file so is one whose text as written the
-	// engine renders, and every substitution of it.
-	rendered := core.TemplateNotLiteral(s.File, nil)
+	// engine renders, one inside a block of the engine's, and every
+	// substitution of either.
 	read := func(data []byte, m *core.Meter, visit func(*core.Entry) error) error {
-		return readFile(data, m, rendered, visit)
+		return readFile(data, m, s.File, visit)
 	}
 	x := core.EntryExtractor{Source: src, Read: read, NotLiteral: computed, Keyed: true}
 	if s.Name == "" {
 		x.Read = func(data []byte, m *core.Meter, visit func(*core.Entry) error) error {
-			return everyKey(data, m, rendered, visit)
+			return everyKey(data, m, s.File, visit)
 		}
 		return x, nil
 	}
@@ -107,8 +107,8 @@ func computed(e *core.Entry) bool { return e.Computed }
 
 // everyKey is readEnv with every entry of kind EntryName, which a query
 // with no key wants: a spec without a name selects every key's value.
-func everyKey(data []byte, m *core.Meter, rendered func(*core.Entry) bool, visit func(*core.Entry) error) error {
-	return readFile(data, m, rendered, func(e *core.Entry) error {
+func everyKey(data []byte, m *core.Meter, file string, visit func(*core.Entry) error) error {
+	return readFile(data, m, file, func(e *core.Entry) error {
 		e.Kind = core.EntryName
 		return visit(e)
 	})
@@ -171,14 +171,20 @@ var errStop = errors.New("stopped")
 // for the tests that hold the reader to compose. An extractor reads a file
 // through readFile, which charges its meter.
 func readEnv(data []byte, visit func(*core.Entry) error) error {
-	return readFile(data, nil, nil, visit)
+	return readFile(data, nil, "", visit)
 }
 
-// readFile is readEnv charged to m, for a template file whose engine renders
-// a value written as rendered reports, which may be nil: such a value is
-// returned as written and marked computed, so a substitution of its key is
-// computed too.
-func readFile(data []byte, m *core.Meter, rendered func(*core.Entry) bool, visit func(*core.Entry) error) error {
+// readFile is readEnv charged to m, for file. In a template, a value whose
+// text the engine renders, and one on a line inside a block of the
+// engine's, which the rendered file may not hold, is returned as written
+// and marked computed before its key is bound, so a substitution of its key
+// is computed too.
+func readFile(data []byte, m *core.Meter, file string, visit func(*core.Entry) error) error {
+	rendered := core.TemplateNotLiteral(file, nil)
+	blocks, err := core.TemplateBlocks(file, data, m)
+	if err != nil {
+		return err
+	}
 	r := envReader{data: data, m: m, lines: core.NewLineCursor(data), vars: map[string]binding{}}
 	r.pos = len(data) - len(core.DropBOM(data))
 	var e core.Entry
@@ -198,6 +204,13 @@ func readFile(data []byte, m *core.Meter, rendered func(*core.Entry) bool, visit
 		// escaped to the heap, 144 bytes a statement.
 		r.probe.Value = r.raw
 		if rendered != nil && !e.Computed && rendered(&r.probe) {
+			e.Value, e.Computed = r.raw, true
+		}
+		in, err := blocks.Holds(e.Line)
+		if err != nil {
+			return err
+		}
+		if in && !e.Computed {
 			e.Value, e.Computed = r.raw, true
 		}
 		if err := r.m.Charge(core.LineWork + r.pos - r.charged); err != nil {

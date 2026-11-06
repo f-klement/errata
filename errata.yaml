@@ -34,7 +34,7 @@ checks:
     scope: repo
     extract:
       reference: {markdown: {file: docs/reference.md, target: table, section: Extractors, column: Key}}
-      handbook: {markdown: {file: docs/handbook.md, target: table, section: The extractors by task, column: Kinds, pattern: '([a-z][a-z_-]*)'}}
+      handbook: {markdown: {file: docs/handbook.md, target: table, section: The extractors by task, column: Kinds, pattern: '([a-z][a-z0-9_-]*)'}}
     assert: same_set(reference, handbook)
 
   - id: go-toolchain-agrees

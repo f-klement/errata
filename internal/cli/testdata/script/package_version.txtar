@@ -12,11 +12,12 @@ stdout '^0 errata, 0 unknown. Coverage: ran 1, skipped 0.$'
 
 # A member of a Cargo workspace inherits the workspace's version, which a
 # Cargo.toml further up holds: not literal, so unknown until skip_not_literal
-# lists the extractor; a dynamic version in pyproject.toml is the same.
+# lists the extractor; a dynamic version in pyproject.toml is the same. Each
+# value's text is its line as the file wrote it.
 ! exec errata check -c member.yaml
 stdout '^UNKNOWN member-agrees \(repo\)$'
-stdout '"version.workspace = true" at crates/cli/Cargo.toml:3'
-stdout '"dynamic = \[\\"version\\"\]" at py/pyproject.toml:3'
+stdout '"version = { workspace = true }" at crates/cli/Cargo.toml:3'
+stdout '"dynamic = \[\\"version\\", \\"readme\\"\]" at py/pyproject.toml:3'
 exec errata check -c member-skipped.yaml
 stdout '^0 errata, 0 unknown. Coverage: ran 1, skipped 0.$'
 
@@ -70,11 +71,11 @@ version = "1.4.0"
 -- crates/cli/Cargo.toml --
 [package]
 name = "cli"
-version.workspace = true
+version = { workspace = true }
 -- py/pyproject.toml --
 [project]
 name = "py"
-dynamic = ["version"]
+dynamic = ["version", "readme"]
 -- drifted.yaml --
 checks:
   - id: version-agrees

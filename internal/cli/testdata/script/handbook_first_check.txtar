@@ -48,7 +48,7 @@ readme-names-the-node-version (repo) rule
   why: The README tells a new developer which Node to install, and .nvmrc pins the Node that nvm and CI install. A README that names another version sets up a machine that differs from CI.
   extract: pinned: tool_version tool node, max_bytes 33554432
            readme: markdown file README.md, max_bytes 33554432, target section, section Development, pattern `Install Node ([0-9.]+)`
-  agree: readme, pinned (compare semver)
+  agree: readme, pinned (compare semver, syntax any)
 
 1 check: 1 rule, 0 program checks.
 -- true.txt --

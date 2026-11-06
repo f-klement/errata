@@ -26,15 +26,15 @@ type ReadFunc func(data []byte, m *Meter, visit func(*Entry) error) error
 // whatever loop a later change adds, as long as the loop charges.
 //
 // WorkPerByte was chosen from measurement. The fixed costs below and in
-// the range walk make a unit 0.3 ns to 2.6 ns on the dense shapes of every
+// the range walk make a unit 0.3 ns to 3.5 ns on the dense shapes of every
 // reader measured at 32 MiB on a cluster node (TestReplayINIShapesAtFullSize's
-// and the reviews'). Real files charge 2 to 8 units a byte: pytest's tox.ini
+// and the reviews'), the template block scan dearest. Real files charge 2 to 8 units a byte: pytest's tox.ini
 // 7.19 selecting minversion, git's own config 5.78, php.ini-production
 // 4.16, flake8's setup.cfg 4.04, qemu's .gitmodules 3.96, an ansible
 // example inventory 3.83, spring-petclinic's application.properties 3.61,
 // chromium's .gitmodules 3.04, the JDK's java.security 2.52. The budget is
 // 128 a byte, 18 times the densest real file, and at 32 MiB about 4.3
-// billion units, 1.5 s to 11 s (the reviews' worst shape is refused at it in
+// billion units, 1.5 s to 15 s (the reviews' worst shape is refused at it in
 // 5.9 s): a file errata refuses is one no tool writes.
 // TestWorkMeterLeavesRoomForOrdinaryFiles holds the tests' files of each
 // dialect to a quarter of it.
@@ -144,6 +144,10 @@ type Entry struct {
 	// boolean word, constant, operator or ${} reference, and an ansible
 	// literal whose value Python writes otherwise, such as 0x10 or [1, 2].
 	Computed bool
+	// InBlock marks an entry of a template file that lies inside one of its
+	// engine's blocks, such as {% if %}, which the rendered file may not
+	// hold (TemplateRead).
+	InBlock bool
 	// Origin is the part of the file the value holds for, which the value
 	// carries as its check.Value.Origin: a Jenkinsfile's stage "deploy".
 	Origin string
@@ -355,10 +359,26 @@ func IsTemplate(base string) bool {
 	return false
 }
 
+// Untemplated is file without the template suffix its name ends in, the
+// name of the file the engine renders: php.ini for php.ini.j2. A reader
+// chooses how to read a template by that name, so php.ini.j2 is read as
+// PHP reads php.ini, with the template's marks on top. A file that is no
+// template is file.
+func Untemplated(file string) string {
+	for _, s := range templateSuffixes {
+		if strings.HasSuffix(file, s) && len(file) > len(s) && !strings.HasSuffix(file, "/"+s) {
+			return file[:len(file)-len(s)]
+		}
+	}
+	return file
+}
+
 // TemplateNotLiteral is, for a template file, the test of a value the
 // engine renders, or that test, the dialect's own, which may be nil,
 // marks: one that holds {{, {% or {# (hasJinja), <% in ERB, and ${ or %{
-// in Terraform's .tpl and .tftpl. For another file it is test.
+// in Terraform's .tpl and .tftpl, and one inside a block of the engine's,
+// which a reader built with TemplateRead or asking TemplateBlocks marks.
+// For another file it is test.
 func TemplateNotLiteral(file string, test func(*Entry) bool) func(*Entry) bool {
 	_, base := FileParts(file)
 	if !IsTemplate(base) {
@@ -368,7 +388,7 @@ func TemplateNotLiteral(file string, test func(*Entry) bool) func(*Entry) bool {
 	terraform := strings.HasSuffix(base, ".tpl") || strings.HasSuffix(base, ".tftpl")
 	return func(e *Entry) bool {
 		v := e.Value
-		return HasJinja(v) || erb && bytes.Contains(v, []byte("<%")) ||
+		return e.InBlock || HasJinja(v) || erb && bytes.Contains(v, []byte("<%")) ||
 			terraform && (bytes.Contains(v, []byte("${")) || bytes.Contains(v, []byte("%{"))) ||
 			test != nil && test(e)
 	}

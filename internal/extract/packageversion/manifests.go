@@ -10,10 +10,12 @@ import (
 )
 
 // fileKind is one row of the table: a file name and how its version is
-// read. add takes the version, its line, and whether it is not literal.
+// read. add takes the version, its line, and whether it is not literal;
+// computed takes the line of a version the build computes, which names no
+// version (core.LineText).
 type fileKind struct {
 	name string
-	read func(x *extractor, f file, data []byte, add func(text string, line int, notLiteral bool) error) error
+	read func(x *extractor, f file, data []byte, add func(text string, line int, notLiteral bool) error, computed func(line int)) error
 }
 
 // kinds is the table of every file the extractor reads, by name, in the
@@ -35,13 +37,6 @@ func kindOf(base string) *fileKind {
 	}
 	return nil
 }
-
-// The texts of a not literal version: what the file wrote in place of a
-// version, so a message names the line that makes the version computed.
-const (
-	dynamicText   = `dynamic = ["version"]`
-	workspaceText = "version.workspace = true"
-)
 
 // parse reads data with parse, after the node limit of its format
 // (core.Source.ParseManifest). skipBOM says whether the file's tool skips
@@ -90,7 +85,7 @@ func describe(n *core.Node) string {
 
 // readPackageJSON reads package.json's version, the one npm publishes. A
 // package.json without one, such as an application's, gives nothing.
-func readPackageJSON(x *extractor, f file, data []byte, add func(string, int, bool) error) error {
+func readPackageJSON(x *extractor, f file, data []byte, add func(string, int, bool) error, _ func(int)) error {
 	tree, err := parse(f, data, core.JSONFormat, x.parsers.JSON, true)
 	if err != nil {
 		return err
@@ -110,7 +105,7 @@ func readPackageJSON(x *extractor, f file, data []byte, add func(string, int, bo
 // that the poetry-dynamic-versioning plugin replaces at build time, which
 // tool.poetry-dynamic-versioning.enable = true turns on, is a placeholder,
 // and not literal.
-func readPyproject(x *extractor, f file, data []byte, add func(string, int, bool) error) error {
+func readPyproject(x *extractor, f file, data []byte, add func(string, int, bool) error, computed func(int)) error {
 	tree, err := parse(f, data, core.TOMLFormat, x.parsers.TOML, false)
 	if err != nil {
 		return err
@@ -126,7 +121,7 @@ func readPyproject(x *extractor, f file, data []byte, add func(string, int, bool
 	case dynamic != nil && poetry != nil && poetryBackend(tree):
 		return poetryVersion(tree, poetry, add)
 	case dynamic != nil:
-		return add(dynamicText, dynamic.Line, true)
+		computed(dynamic.Line)
 	case poetry != nil:
 		return poetryVersion(tree, poetry, add)
 	}
@@ -179,7 +174,7 @@ func poetryBackend(tree *core.Node) bool {
 // [workspace] table is its own workspace's root, so Cargo refuses one that
 // inherits a version it does not set, and so does errata. A package without
 // a version, which Cargo reads as 0.0.0, gives nothing.
-func readCargo(x *extractor, f file, data []byte, add func(string, int, bool) error) error {
+func readCargo(x *extractor, f file, data []byte, add func(string, int, bool) error, computed func(int)) error {
 	tree, err := parse(f, data, core.TOMLFormat, x.parsers.TOML, true)
 	if err != nil {
 		return err
@@ -212,11 +207,8 @@ func readCargo(x *extractor, f file, data []byte, add func(string, int, bool) er
 	slices.SortStableFunc(all, func(a, b found) int { return a.n.Line - b.n.Line })
 	for _, v := range all {
 		if v.notLiteral {
-			err = add(workspaceText, v.n.Line, true)
-		} else {
-			err = version(v.n, v.what, add)
-		}
-		if err != nil {
+			computed(v.n.Line)
+		} else if err := version(v.n, v.what, add); err != nil {
 			return err
 		}
 	}
@@ -228,7 +220,7 @@ func readCargo(x *extractor, f file, data []byte, add func(string, int, bool) er
 // line is passed over, and fields are split at white space, so a CRLF file
 // reads as an LF one. A file of blank lines and comments holds no version,
 // and is refused.
-func readVersionFile(_ *extractor, _ file, data []byte, add func(string, int, bool) error) error {
+func readVersionFile(_ *extractor, _ file, data []byte, add func(string, int, bool) error, _ func(int)) error {
 	data = core.DropBOM(data)
 	for left := data; len(left) != 0; { // != leaves no boundary that loops for ever
 		raw, after, _ := bytes.Cut(left, []byte("\n"))

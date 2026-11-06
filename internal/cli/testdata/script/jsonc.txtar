@@ -1,0 +1,96 @@
+# json reads strict JSON, so a tsconfig.json with comments and a trailing
+# comma does not parse: the rule is unknown, never true.
+! exec errata check -c strict.yaml
+stdout '^UNKNOWN target-agrees \(repo\)$'
+stdout 'tsconfig.json: invalid character ''/'' looking for beginning of value'
+
+# jsonc reads it past its comments, each value at its line, and json5 reads
+# renovate.json5.
+exec errata check -c lenient.yaml
+stdout '^0 errata, 0 unknown. Coverage: ran 2, skipped 0.$'
+
+# A value that disagrees names its line.
+! exec errata check -c disagree.yaml
+stdout '^FALSE node-agrees \(repo\)$'
+stdout '"18" at renovate.json5:4 \(renovate\)'
+
+# The kind is the dialect, whatever the file's name: jsonc refuses
+# renovate.json5's unquoted keys, so the rule is unknown, never true.
+! exec errata check -c asked-jsonc.yaml
+stdout '^UNKNOWN renovate-extends-the-preset \(repo\)$'
+stdout 'renovate.json5: line 2: a key cannot start with ''e'''
+
+# What the dialect refuses makes the rule unknown, at its line.
+! exec errata check -c refused.yaml
+stdout '^UNKNOWN refused \(repo\)$'
+stdout 'broken.jsonc: line 3: a key cannot start with ''t'''
+-- tsconfig.json --
+// The compiler's settings.
+{
+  "compilerOptions": {
+    /* the runtime's */
+    "target": "es2022",
+  },
+}
+-- renovate.json5 --
+{
+  extends: ['config:recommended'],
+  // the runtime renovate pins
+  constraints: {node: '18'},
+}
+-- broken.jsonc --
+{
+  // the key below is unquoted, which JSONC refuses
+  target: "es2022",
+}
+-- package.json --
+{"engines": {"node": "20"}, "target": "es2022"}
+-- strict.yaml --
+checks:
+  - id: target-agrees
+    reason: The build and the compiler target one runtime.
+    scope: repo
+    extract:
+      pkg: {json: {file: package.json, path: target}}
+      tsconfig: {json: {file: tsconfig.json, path: compilerOptions.target}}
+    agree: [pkg, tsconfig]
+-- lenient.yaml --
+checks:
+  - id: target-agrees
+    reason: The build and the compiler target one runtime.
+    scope: repo
+    extract:
+      pkg: {json: {file: package.json, path: target}}
+      tsconfig: {jsonc: {file: tsconfig.json, path: compilerOptions.target}}
+    agree: [pkg, tsconfig]
+  - id: renovate-extends-the-preset
+    reason: Renovate reads the shared preset.
+    scope: repo
+    extract:
+      preset: {json5: {file: renovate.json5, path: "extends[0]"}}
+    assert: preset[0] == 'config:recommended'
+-- disagree.yaml --
+checks:
+  - id: node-agrees
+    reason: Renovate pins the runtime the package needs.
+    scope: repo
+    extract:
+      pkg: {json: {file: package.json, path: engines.node}}
+      renovate: {json5: {file: renovate.json5, path: constraints.node}}
+    agree: [pkg, renovate]
+-- asked-jsonc.yaml --
+checks:
+  - id: renovate-extends-the-preset
+    reason: Renovate reads the shared preset.
+    scope: repo
+    extract:
+      preset: {jsonc: {file: renovate.json5, path: "extends[0]"}}
+    assert: preset[0] == 'config:recommended'
+-- refused.yaml --
+checks:
+  - id: refused
+    reason: The broken file is read.
+    scope: repo
+    extract:
+      target: {jsonc: {file: broken.jsonc, path: target}}
+    assert: size(target) > 0

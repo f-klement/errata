@@ -88,7 +88,8 @@ func Build(s Spec) (check.Extractor, error) {
 	}
 	r := reader{name: s.Name, language: s.Language, file: s.File, maxBytes: int(src.Limit), stmtLimit: int(src.Limit / 8)}
 	// A template's engine renders {{ }} and the like before any shell
-	// reads the file.
+	// reads the file, and may leave out what a block holds: the walk asks
+	// the template's blocks of each assignment (walker.inBlock).
 	return core.EntryExtractor{Source: src, Query: core.Query{Key: []byte(s.Name), HasKey: true}, Read: r.read, NotLiteral: core.TemplateNotLiteral(s.File, computed)}, nil
 }
 
@@ -140,6 +141,9 @@ func (r reader) read(data []byte, m *core.Meter, visit func(*core.Entry) error) 
 	}
 	g := newGuard(data, r.stmtLimit)
 	w := newWalker(r.name, lang, data, m, r.maxBytes)
+	if w.blocks, err = core.TemplateBlocks(r.file, data, m); err != nil {
+		return err
+	}
 	// The shebang's options apply whatever the language, and before the
 	// first statement.
 	w.opaque = !shebangKeeps(data)

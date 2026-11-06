@@ -292,6 +292,8 @@ var describes = []string{
 	`{"yaml": {"file": "a.yaml", "path": "a"}}`,
 	`{"yaml": {"file": "a.yaml", "path": "a[*]", "as": "map"}}`,
 	`{"json": {"files": ["*.json"], "path": "a"}}`,
+	`{"jsonc": {"file": "tsconfig.json", "path": "a"}}`,
+	`{"json5": {"file": "renovate.json5", "path": "a[*]", "as": "map"}}`,
 	`{"toml": {"file": "a.toml", "path": "a[*]", "as": "record", "fields": {"n": "n"}}}`,
 	`{"regex": {"file": "a", "pattern": "(x)"}}`,
 	`{"regex": {"file": "a", "pattern": "((?{b}))"}}`,

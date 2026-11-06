@@ -101,7 +101,7 @@ readme-names-the-node-version (repo) rule
   why: The README tells a new developer which Node to install, and .nvmrc pins the Node that nvm and CI install. A README that names another version sets up a machine that differs from CI.
   extract: pinned: tool_version tool node, max_bytes 33554432
            readme: markdown file README.md, max_bytes 33554432, target section, section Development, pattern `Install Node ([0-9.]+)`
-  agree: readme, pinned (compare semver)
+  agree: readme, pinned (compare semver, syntax any)
 
 1 check: 1 rule, 0 program checks.
 ```
@@ -177,7 +177,7 @@ its own in the reference.
 | a value in a sentence of a document, or of a code comment | [`text`](reference.md#text), [`comment`](reference.md#comment) |
 | a value in a document's structure: a section, a table cell, a code block, an HTML comment | [`markdown`](reference.md#markdown), [`asciidoc`](reference.md#asciidoc), [`rst`](reference.md#rst), [`html`](reference.md#html) |
 | a claim a document tags with the id of the rule that checks it | [`marker`](reference.md#marker) |
-| a value at a path in a structured file | [`yaml`](reference.md#yaml), [`json`](reference.md#json), [`toml`](reference.md#toml), [`xml`](reference.md#xml) |
+| a value at a path in a structured file | [`yaml`](reference.md#yaml), [`json`](reference.md#json), [`jsonc`](reference.md#jsonc-and-json5), [`json5`](reference.md#jsonc-and-json5), [`toml`](reference.md#toml), [`xml`](reference.md#xml) |
 | a value a file written in a programming language assigns, such as a Django setting | [`literal`](reference.md#literal) |
 | a constant or a name source code declares, such as a version constant in Go or `__version__` in Python | [`code`](reference.md#code) |
 | a key in a flat config file | [`ini`](reference.md#ini), [`properties`](reference.md#properties), [`envfile`](reference.md#envfile) |
@@ -202,8 +202,8 @@ A few choices come up often:
 - **The CI kinds before `regex` for a CI variable.** `gitlab-ci`, `github-actions` and `jenkins`
   give the value a job, a step or a stage sees, one for each case the file chooses between; a
   regex finds a line that may not be the one that applies.
-- **`files:` for every file of a kind.** `yaml`, `json`, `toml` and `regex` take a glob, so the
-  file added tomorrow is read too ([A set of files](reference.md#a-set-of-files)).
+- **`files:` for every file of a kind.** `yaml`, `json`, `jsonc`, `json5`, `toml` and `regex` take
+  a glob, so the file added tomorrow is read too ([A set of files](reference.md#a-set-of-files)).
 
 Then the relation. `agree` holds when every value is the same, as text or, with `compare: semver`,
 as a version ([`compare`](reference.md#compare)). Anything else is an `assert`: a

@@ -63,6 +63,7 @@ type checkEntry struct {
 	Extract    map[string]extract.Spec `json:"extract,omitempty"`
 	Agree      []string                `json:"agree,omitempty"`
 	Compare    string                  `json:"compare,omitempty"`
+	Syntax     string                  `json:"syntax,omitempty"`
 	Assert     string                  `json:"assert,omitempty"`
 	AllowEmpty []string                `json:"allow_empty,omitempty"`
 	Normalize  []string                `json:"normalize,omitempty"`
@@ -85,7 +86,7 @@ type generatedEntry struct {
 // ruleKeys are the keys only a rule has. A check that sets any of them is a
 // rule, whatever the value, so a program check that sets one is refused as
 // two kinds rather than loading with a key that does nothing.
-var ruleKeys = []string{"extract", "agree", "compare", "assert", "allow_empty", "normalize", "skip_not_literal"}
+var ruleKeys = []string{"extract", "agree", "compare", "syntax", "assert", "allow_empty", "normalize", "skip_not_literal"}
 
 // Load reads and validates the config at path. It reports every invalid check
 // at once, so a user fixes the file in one pass rather than one error a run.
@@ -626,6 +627,9 @@ func buildRuleKind(e checkEntry, keys map[string]json.RawMessage, _ defaults, ne
 	if _, ok := keys["compare"]; ok && e.Compare == "" {
 		errs = append(errs, errors.New("compare is blank: write text or semver, or remove the key for text"))
 	}
+	if _, ok := keys["syntax"]; ok && e.Syntax == "" {
+		errs = append(errs, fmt.Errorf("syntax is blank: write %s, or remove the key for the reading of all five", strings.Join(check.Syntaxes, ", ")))
+	}
 	if _, ok := keys["normalize"]; ok && len(e.Normalize) == 0 {
 		errs = append(errs, errors.New("normalize lists no option: name trim, lower or both, or remove the key"))
 	}
@@ -673,6 +677,7 @@ func buildRule(e checkEntry, newExtractor Builder) (*check.Rule, []error) {
 	r := &check.Rule{
 		Agree:          e.Agree,
 		Compare:        check.Compare(e.Compare),
+		Syntax:         e.Syntax,
 		Assert:         e.Assert,
 		AllowEmpty:     e.AllowEmpty,
 		SkipNotLiteral: e.SkipNotLiteral,

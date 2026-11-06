@@ -40,7 +40,7 @@ func filler(t *rapid.T, w *extracttest.LineWriter) {
 // A Cargo.toml's version comes back at its line, whatever tables, comments
 // and other keys named version are around it: a literal version as written,
 // an inherited one as the workspace's when the file holds that, and as not
-// literal when it does not.
+// literal, with its line as the file wrote it, when it does not.
 func TestPropertyCargoVersionSitsAtItsLine(t *testing.T) {
 	root := t.TempDir()
 	rapid.Check(t, func(t *rapid.T) {
@@ -63,7 +63,7 @@ func TestPropertyCargoVersionSitsAtItsLine(t *testing.T) {
 		default:
 			n := w.Add("version = { workspace = true }")
 			if !shared {
-				want = append(want, fmt.Sprintf("version.workspace = true!@%d", n))
+				want = append(want, fmt.Sprintf("version = { workspace = true }!@%d", n))
 			}
 		}
 		filler(t, &w)
@@ -78,7 +78,7 @@ func TestPropertyCargoVersionSitsAtItsLine(t *testing.T) {
 
 // A pyproject.toml's version comes back at its line in each form the build
 // reads it from: project.version, a dynamic version as not literal at its
-// entry, and tool.poetry.version under poetry-core or without PEP 621.
+// entry, quoting the entry's line, and tool.poetry.version under poetry-core or without PEP 621.
 func TestPropertyPyprojectVersionSitsAtItsLine(t *testing.T) {
 	root := t.TempDir()
 	rapid.Check(t, func(t *rapid.T) {
@@ -102,7 +102,7 @@ func TestPropertyPyprojectVersionSitsAtItsLine(t *testing.T) {
 			w.Add("dynamic = [")
 			n := w.Add("  \"version\",")
 			w.Add("]")
-			want = fmt.Sprintf(`dynamic = ["version"]!@%d`, n)
+			want = fmt.Sprintf(`"version",!@%d`, n)
 		}
 		filler(t, &w)
 		if form == "dynamic" || form == "poetry-core" || form == "poetry" {

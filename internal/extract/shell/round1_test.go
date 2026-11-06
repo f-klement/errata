@@ -78,6 +78,29 @@ func TestShellTemplate(t *testing.T) {
 	}
 }
 
+// #119: in a template, an assignment inside one of the engine's blocks may
+// not be in the rendered script, so it is not literal, and the variable is
+// unknown after it, so X=$Y outside the block is not literal either; one
+// row for each engine, beside a literal value outside the block. The
+// planted breaks are inBlock left out of assign, and of declWord.
+func TestShellTemplateBlock(t *testing.T) {
+	for _, c := range []struct{ file, body, want string }{
+		{"deploy.sh.j2", "#!/bin/sh\n{% if prod %}\nX=1\n{% endif %}\nX=2\n", "1!@3 2@5"},
+		{"deploy.sh.tmpl", "{{ if .x }}\nX=1\n{{ end }}\nX=2\n", "1!@2 2@4"},
+		{"deploy.sh.erb", "# <% if @x %>\nX=1\n# <% end %>\nX=2\n", "1!@2 2@4"},
+		{"deploy.sh.tftpl", "%{ if x }\nX=1\n%{ endif }\nX=2\n", "1!@2 2@4"},
+		{"b.sh.j2", "# {% if prod %}\nY=1\n# {% endif %}\nX=$Y\n", "$Y!@4"},
+		{"b.sh", "# {% if prod %}\nY=1\n# {% endif %}\nX=$Y\n", "1@4"},
+		{"c.sh.j2", "# {% if p %}\nexport X=1\n# {% endif %}\nexport X=2\n", "1!@2 2@4"},
+		// posix reads export as a command, whose words declWord reads.
+		{"d.sh.j2", "#!/bin/sh\n# {% if p %}\nexport X=1\n# {% endif %}\nexport X=2\n", "1!@3 2@5"},
+	} {
+		if got := values(t, Spec{File: c.file, Name: "X"}, c.body); got != c.want {
+			t.Errorf("%s %q: got %q, want %q", c.file, c.body, got, c.want)
+		}
+	}
+}
+
 // A quoted argument of a declaration assigns, as the shell splits it at its
 // = after removing the quotes; it is literal when all of it is. The planted
 // break: declWord without splitAssign, which read "X=1" as an option it

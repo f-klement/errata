@@ -24,7 +24,20 @@ stdout '^  note on engines-agree \(repo\): agree: only ranges were compared, sin
 exec errata list --format json -c holds.yaml
 stdout '"compare": "semver"'
 exec errata list -c holds.yaml
-stdout 'agree: nvmrc, dockerfile, engines \(compare semver\)'
+stdout 'agree: nvmrc, dockerfile, engines \(compare semver, syntax any\)'
+
+# syntax: cargo reads a requirement through dependency, which writes
+# tokio = "1.35" as ^1.35, which the lock's 1.40.0 satisfies. A bare value
+# is a version: rust-version 1.70 beside the toolchain channel 1.82 is an
+# erratum. errata list prints the syntax.
+exec errata check -c cargo.yaml
+stdout '^0 errata, 0 unknown. Coverage: ran 1, skipped 0.$'
+! exec errata check -c msrv.yaml
+stdout '^  said: agree: the versions "1.70" and "1.82" differ at the precision both state$'
+exec errata list -c cargo.yaml
+stdout 'agree: tokio \(compare semver, syntax cargo\)'
+exec errata list --format json -c cargo.yaml
+stdout '"syntax": "cargo"'
 
 -- holds.yaml --
 checks:
@@ -75,6 +88,44 @@ checks:
       lib: {json: {file: lib/package.json, path: engines.node}}
     agree: [app, lib]
     compare: semver
+-- cargo.yaml --
+checks:
+  - id: tokio-locked
+    reason: The lock resolves a tokio the manifest accepts.
+    scope: repo
+    extract:
+      tokio: {dependency: {name: tokio, files: [Cargo.toml, Cargo.lock]}}
+    agree: [tokio]
+    compare: semver
+    syntax: cargo
+-- msrv.yaml --
+checks:
+  - id: msrv-is-the-toolchain
+    reason: CI builds with the Rust the crate declares as its minimum.
+    scope: repo
+    extract:
+      msrv:      {regex: {file: Cargo.toml, pattern: 'rust-version = "(.+)"'}}
+      toolchain: {regex: {file: rust-toolchain.toml, pattern: 'channel = "(.+)"'}}
+    agree: [msrv, toolchain]
+    compare: semver
+    syntax: cargo
+-- Cargo.toml --
+[package]
+name = "app"
+version = "0.1.0"
+rust-version = "1.70"
+
+[dependencies]
+tokio = "1.35"
+-- rust-toolchain.toml --
+[toolchain]
+channel = "1.82"
+-- Cargo.lock --
+version = 3
+
+[[package]]
+name = "tokio"
+version = "1.40.0"
 -- .nvmrc --
 v20.11
 -- old.nvmrc --

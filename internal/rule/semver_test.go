@@ -34,6 +34,17 @@ func TestSemverInCEL(t *testing.T) {
 		{"semver_satisfies('20', '^20.1')", true},
 		{"semver_satisfies('2.0.0-beta.1', '>=1.0.0')", false},
 		{"v.all(x, semver_satisfies(x, '>=1.2, <2'))", true},
+		// The third argument reads in one ecosystem's syntax: Cargo's
+		// bare 1.2 is ^1.2, PEP 440's <=1.2 refuses 1.2.1, Go's 1.21 is
+		// below 1.21.4.
+		{"semver_satisfies(v[1], '1.2', 'cargo')", true},
+		{"semver_satisfies(v[1], '1.2')", false},
+		{"semver_satisfies('1.2.1', '<=1.2', 'pep440')", false},
+		{"semver_satisfies('1.2.1', '<=1.2')", true},
+		{"semver_satisfies('1.21', '>=1.21.4', 'go')", false},
+		{"semver_satisfies('1.21', '>=1.21.4')", true},
+		{"semver_satisfies('2.9.9', '~> 2.2', 'rubygems')", true},
+		{"semver_satisfies('2.9.9', '~> 2.2', 'npm')", false},
 	} {
 		// Every expression uses v, as Compile requires.
 		got, err := eval(t, "size(v) == 2 && ("+c.expr+")", "1.2", "1.10.0")
@@ -58,6 +69,11 @@ func TestSemverErrors(t *testing.T) {
 		{"semver_satisfies(v[1], '*')", "semver_satisfies: an argument is 1025 bytes"},
 		{"semver_satisfies('1', v[1])", "semver_satisfies: an argument is 1025 bytes"},
 		{"semver('1.0') == semver('1.0') && semver(v[0]) == semver('1')", `"lts/iron" is not a version`},
+		{"semver_satisfies('1.0.0', '>=1', 'maven')", `semver_satisfies: the syntax "maven" is none of npm, cargo, pep440, go, rubygems`},
+		{"semver_satisfies('1.0.0', '>=1', '')", `semver_satisfies: the syntax "" is none of`},
+		{"semver_satisfies('1.2.3-01', '>=1', 'cargo')", `semver_satisfies: "1.2.3-01" is not a version: the pre-release after - holds "01", a number with a leading zero`},
+		{"semver_satisfies('1.0.0', '>=1 <2', 'pep440')", `semver_satisfies: ">=1 <2" is not a range`},
+		{"semver_satisfies(v[1], '*', 'npm')", "semver_satisfies: an argument is 1025 bytes"},
 	} {
 		_, err := eval(t, "size(v) == 2 && ("+c.expr+")", "lts/iron", long)
 		if err == nil || !strings.Contains(err.Error(), c.want) {
@@ -68,6 +84,67 @@ func TestSemverErrors(t *testing.T) {
 		if _, err := compileNamed(expr, []string{"v"}, nil); err == nil || !strings.Contains(err.Error(), "no matching overload") {
 			t.Errorf("%s loads: %v", expr, err)
 		}
+	}
+}
+
+// check.Syntaxes, which the loader validates syntax: against, are
+// internal/semver's syntaxes, in its order.
+func TestSyntaxesMatch(t *testing.T) {
+	var want []string
+	for _, s := range semver.Syntaxes {
+		want = append(want, string(s))
+	}
+	if strings.Join(check.Syntaxes, " ") != strings.Join(want, " ") {
+		t.Errorf("check.Syntaxes is %v, semver.Syntaxes %v", check.Syntaxes, want)
+	}
+}
+
+// An agree rule with compare: semver reads its values in its syntax, so the
+// ticket's three false answers of the unset reading come out as each
+// ecosystem decides. The planted break: agreeSemver reading in Any.
+func TestAgreeSemverSyntax(t *testing.T) {
+	for _, c := range []struct {
+		syntax         string
+		a, b           string
+		unset, inSyntx check.Verdict
+	}{
+		// requires-python = ">3.11" beside 3.11.9.
+		{"pep440", ">3.11", "3.11.9", check.VerdictFalse, check.VerdictTrue},
+		// <=3.11 beside 3.11.4, which pip refuses.
+		{"pep440", "<=3.11", "3.11.4", check.VerdictTrue, check.VerdictFalse},
+		// A Cargo requirement's bare comparator is ^, so 1.2 admits 1.4.0.
+		{"cargo", "1.2, <1.5", "1.4.0", check.VerdictFalse, check.VerdictTrue},
+		// A bare value is a version, a partial staying partial (the owner,
+		// 2026-11-06): rust-version 1.70 beside a toolchain channel of 1.82
+		// does not agree, and tokio = "1.35.0" read by a regex is the
+		// version 1.35.0; dependency writes it as ^1.35.0.
+		{"cargo", "1.70", "1.82", check.VerdictFalse, check.VerdictFalse},
+		{"cargo", "1.70", "1.70.4", check.VerdictTrue, check.VerdictTrue},
+		{"cargo", "1.35.0", "1.40.0", check.VerdictFalse, check.VerdictFalse},
+		{"cargo", "^1.35.0", "1.40.0", check.VerdictTrue, check.VerdictTrue},
+		// go 1.21 is exactly 1.21.
+		{"go", "1.21", ">=1.21.4", check.VerdictTrue, check.VerdictFalse},
+		{"go", "1.21", "1.21.0", check.VerdictTrue, check.VerdictFalse},
+		{"rubygems", "> 1.2", "1.2.1", check.VerdictFalse, check.VerdictTrue},
+		{"npm", "~>1.2", "1.9.0", check.VerdictTrue, check.VerdictFalse},
+	} {
+		c0 := semverRule(named("a", fake{values: []check.Value{at(c.a, "a", 1)}}), named("b", fake{values: []check.Value{at(c.b, "b", 1)}}))
+		if res := Run(context.Background(), "/repo", c0); res.Verdict != c.unset {
+			t.Errorf("unset: %q and %q: %s %s, want %s", c.a, c.b, res.Verdict, res.Message, c.unset)
+		}
+		c0.Rule().Syntax = c.syntax
+		if res := Run(context.Background(), "/repo", c0); res.Verdict != c.inSyntx {
+			t.Errorf("%s: %q and %q: %s %s, want %s", c.syntax, c.a, c.b, res.Verdict, res.Message, c.inSyntx)
+		}
+	}
+	// The message names what each value was read as, in its syntax.
+	c0 := semverRule(named("a", fake{values: []check.Value{at("1.21", "go.mod", 3)}}), named("b", fake{values: []check.Value{at(">=1.21.4", "b", 1)}}))
+	c0.Rule().Syntax = "go"
+	want := `agree: the version "1.21" does not satisfy the range ">=1.21.4"
+  "1.21" (version 1.21) at go.mod:3 (a)
+  ">=1.21.4" (range >=1.21.4) at b:1 (b)`
+	if res := Run(context.Background(), "/repo", c0); res.Message != want {
+		t.Errorf("message:\n%s\nwant:\n%s", res.Message, want)
 	}
 }
 
@@ -146,8 +223,9 @@ func (r *refusesAfter) Parse(s string) (semver.Value, error) {
 // changed, which this test names.
 func TestAgreeSemverStopsAtTheBound(t *testing.T) {
 	reader := &refusesAfter{n: 1}
-	newSemverReader = func() semverReader { return reader }
-	t.Cleanup(func() { newSemverReader = func() semverReader { return new(semver.Reader) } })
+	saved := newSemverReader
+	newSemverReader = func(semver.Syntax) semverReader { return reader }
+	t.Cleanup(func() { newSemverReader = saved })
 	res := Run(context.Background(), "/repo", semverRule(
 		named("a", fake{values: []check.Value{at("^1", "a.txt", 1)}}),
 		named("b", fake{values: []check.Value{at("^2", "b.txt", 1), at(">=3", "b.txt", 2)}})))

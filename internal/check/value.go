@@ -19,6 +19,11 @@ type Location struct {
 	// it, which is no path from the root, so a report names the file and
 	// places nothing in the repository.
 	Outside bool
+	// Missing marks a path where no file is: the place of an exists value
+	// that is false. File names the path as the config wrote it, so a
+	// message can name it, but a report that places a result in a file,
+	// as SARIF does, does not place one there.
+	Missing bool
 }
 
 // Inside reports whether l is a path inside the repository, as every

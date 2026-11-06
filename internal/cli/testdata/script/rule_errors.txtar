@@ -32,7 +32,7 @@ stderr 'check "normalize": .*normalize "upper" must be one of trim, lower'
 stderr 'check "timeout": .*timeout applies to a program check and a generated check'
 
 ! exec errata check -c no-kind.yaml
-stderr 'check "no-kind": extractor "service": an extractor sets exactly one of yaml, json, toml, regex'
+stderr 'check "no-kind": extractor "service": an extractor sets exactly one of yaml, json, jsonc, json5, toml, regex'
 
 ! exec errata check -c extractor-typo.yaml
 stderr 'check "extractor-typo": decode: .*unknown field "pth"'

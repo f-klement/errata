@@ -118,3 +118,59 @@ func TestLineCountsALoneCR(t *testing.T) {
 		t.Errorf("toolchain at line %d, want 4", got)
 	}
 }
+
+// Each module version is the text the file writes, never the canonical
+// form modfile would write in its place, and Canonical tells the two
+// apart. Planted break: Parse and ParseWork with a nil fixer.
+func TestParseKeepsVersionsAsWritten(t *testing.T) {
+	src := core.Source{File: "go.mod", Limit: 1 << 20}
+	mod, err := Parse(src, []byte("module m\nrequire (\n\tx v1\n\ty v1.2\n\tz v1.2.3\n\tw v1.2.3+meta\n)\nreplace x v1 => q v2.0\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, r := range mod.Require {
+		got = append(got, r.Mod.Version)
+	}
+	got = append(got, mod.Replace[0].Old.Version, mod.Replace[0].New.Version)
+	if strings.Join(got, " ") != "v1 v1.2 v1.2.3 v1.2.3+meta v1 v2.0" {
+		t.Errorf("go.mod: %q", got)
+	}
+	work, err := ParseWork(core.Source{File: "go.work", Limit: 1 << 20}, []byte("go 1.22\nreplace x v1.2 => x v1\n"))
+	if err != nil || work.Replace[0].Old.Version != "v1.2" || work.Replace[0].New.Version != "v1" {
+		t.Errorf("go.work: %v %+v", err, work)
+	}
+	for v, want := range map[string]bool{"": true, "v1.2.3": true, "v0.0.0-20200101000000-abcdef123456": true, "v2.0.0+incompatible": true,
+		"v1": false, "v1.2": false, "v1.2.3+meta": false, "v0.0.0-20200101000000-abcdef123456+meta": false} {
+		if Canonical(v) != want {
+			t.Errorf("Canonical(%q) = %v, want %v", v, !want, want)
+		}
+	}
+}
+
+// A version that is no semantic version is refused with the message
+// modfile gives without a fixer, which names the file, the line, the
+// module and the version. Planted break: asWritten accepting every version.
+func TestParseRefusesWhatIsNoVersion(t *testing.T) {
+	for _, body := range []string{"module m\nrequire x 1.0\n", "module m\nreplace x master => y v1\n", "module m\nreplace x => y master\n"} {
+		_, want := modfile.Parse("go.mod", []byte(body), nil)
+		_, err := Parse(core.Source{File: "go.mod", Limit: 1 << 20}, []byte(body))
+		if want == nil || err == nil || err.Error() != want.Error() || !strings.Contains(err.Error(), "must be of the form v1.2.3") {
+			t.Errorf("%q: %v, want %v", body, err, want)
+		}
+	}
+}
+
+// With a fixer modfile reads a retract against the module directive, as
+// the go command reads its main module's go.mod, so a retract in a go.mod
+// that declares no module is refused, as the go command refuses it.
+// Planted break: Parse with a nil fixer.
+func TestParseRetractNeedsTheModule(t *testing.T) {
+	_, err := Parse(core.Source{File: "go.mod", Limit: 1 << 20}, []byte("go 1.22\nretract v1.0.0\n"))
+	if err == nil || err.Error() != "go.mod:2: no module directive found, so retract cannot be used" {
+		t.Errorf("got %v", err)
+	}
+	if _, err := Parse(core.Source{File: "go.mod", Limit: 1 << 20}, []byte("module m\nretract [v1, v1.2]\n")); err != nil {
+		t.Errorf("with the module: %v", err)
+	}
+}

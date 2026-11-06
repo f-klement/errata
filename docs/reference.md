@@ -32,6 +32,7 @@ new user needs it, with four checks worked through from the files to the fix, an
 - [Extractor kinds](#extractor-kinds)
   - [`yaml`](#yaml)
   - [`json`](#json)
+  - [`jsonc` and `json5`](#jsonc-and-json5)
   - [`toml`](#toml)
   - [`regex`](#regex)
   - [`text`](#text)
@@ -197,6 +198,7 @@ Every check has these keys:
 | `extract` | rule | the rule's extractors, each under a name of its own that is a CEL identifier (see [assert](#assert)) |
 | `agree` | rule: this or `assert` | the extractors whose values must all agree |
 | `compare` | no | agree only: how the values must agree, `text` (the default) or `semver` (see [`compare`](#compare)) |
+| `syntax` | no | `compare: semver` only: the ecosystem whose rules read the values, `npm`, `cargo`, `pep440`, `go` or `rubygems`; unset, errata reads all five (see [`compare`](#compare)) |
 | `assert` | rule: this or `agree` | a [CEL](https://cel.dev) expression over the extracted values that must be true |
 | `allow_empty` | no | rule only: the extractors that may find no value, such as `[client]` |
 | `skip_not_literal` | no | rule only: the extractors whose not literal values are left out, such as `[php]`; only an extractor that can return a not literal value may be listed (see [Values a file only computes](#values-a-file-only-computes)) |
@@ -443,8 +445,9 @@ with a pre-release, stands for itself. So `20`, `20.11.1` and `v20.11` agree, an
 agrees with `>=20` and with `^20.1`. A version of one or two numbers satisfies a range when some
 release it stands for does, so `20` satisfies `^20.1`. That reading suits a floating version, such
 as `node:20` or `.nvmrc` with `20`, which installs the newest release. It does not suit go.mod's
-`go 1.21`, which means 1.21.0 and still satisfies `>=1.21.4` here: write the third number where
-the lowest release is meant. When no value is a version, the ranges
+`go 1.21`, which is Go's language version 1.21 and still satisfies `>=1.21.4` here: set
+`syntax: go` (below), or write the third number where the lowest release is meant. When no value
+is a version, the ranges
 agree when one release satisfies them all, and the text output says under the coverage line that
 only ranges were compared:
 
@@ -477,19 +480,39 @@ The ranges of one rule may hold at most 1000000 intervals in all, each alternati
 piece a `!=` leaves and each release a comparator names a pre-release of counting as one. errata
 counts them as it reads the values, with a version among them or not, and the value that passes the
 bound makes the rule unknown, naming the bound, before any value after it is read. Real ranges hold
-one to a few. On a six core build machine, with 100000 distinct values of 1024 bytes each, the most
-one extractor returns:
+one to a few. On a build machine, in a pod of four cores, with 100000 distinct values of 1024 bytes
+each, the most one extractor returns:
 
 | Values | Time | Allocated |
 |---|---|---|
-| chains of `!=`, the most intervals for their length, refused at the bound after about 5000 | 0.9 s | 2.1 GB, most of it freed at once |
-| as many ranges of about 140 alternatives as the bound allows, compared with each other | 2.8 s | 0.6 GB |
-| ranges of about 140 comparators that fold into one interval, beside one version | 5.2 s | 3.2 GB, most of it freed at once |
-| ranges of about 90 comparators that each name a pre-release of another release, beside one version, refused at the bound after about 11000 | 1.0 s | 0.9 GB |
-| ranges of about 90 comparators that name pre-releases of one release, which errata keeps once, beside one version | 6.0 s | 3.4 GB, most of it freed at once |
+| chains of `!=`, the most intervals for their length, refused at the bound after about 5000 | 1.2 s | 2.1 GB, most of it freed at once |
+| as many ranges of about 140 alternatives as the bound allows, compared with each other | 2.9 s | 0.7 GB |
+| ranges of about 140 comparators that fold into one interval, beside one version | 6.0 s | 3.2 GB, most of it freed at once |
+| ranges of about 90 comparators that each name a pre-release of another release, beside one version, refused at the bound after about 11000 | 1.3 s | 1.0 GB |
+| ranges of about 90 comparators that name pre-releases of one release, which errata keeps once, beside one version | 6.6 s | 3.4 GB, most of it freed at once |
 
-The process peaked at 967 MiB across the five. `compare: text`, the default, compares the
-string form, as above.
+The bounds hold under every `syntax` (below). Each syntax's own shapes of the same 100000 values
+took no longer than the shapes above, on the same machine in the same run:
+
+| `syntax` | Values | Time | Allocated |
+|---|---|---|---|
+| `npm` | ranges of about 140 alternatives, refused at the bound | 1.2 s | 0.9 GB |
+| `npm` | ranges that fold into one interval, beside one version | 6.1 s | 3.3 GB |
+| `npm` | comparators that each name a pre-release of another release, refused at the bound | 1.3 s | 1.1 GB |
+| `cargo` | requirements that fold into one interval, beside one version | 6.1 s | 3.0 GB |
+| `cargo` | comparators that each name a pre-release of another release, refused at the bound | 1.2 s | 1.0 GB |
+| `pep440` | chains of `!=`, refused at the bound | 1.0 s | 1.7 GB |
+| `pep440` | specifiers that fold into one interval, beside one version | 4.8 s | 2.2 GB |
+| `pep440` | chains of `!=` with a local version, refused at the bound | 2.3 s, on another machine (below) | 1.9 GB |
+| `go` | ranges of about 120 alternatives, refused at the bound | 0.9 s | 0.8 GB |
+| `go` | ranges that fold into one interval, beside one version | 2.6 s | 1.4 GB |
+| `rubygems` | chains of `!=`, refused at the bound | 0.8 s | 1.6 GB |
+| `rubygems` | requirements that fold into one interval, beside one version | 3.4 s | 0.7 GB |
+
+The process peaked at 951 MiB across the seventeen. The row for local versions was measured again
+after local versions came to be ordered, on another machine, in a pod of three cores, where the
+unset chains of `!=` took 2.2 s and 2.1 GB in the same run and the process peaked at 923 MiB.
+`compare: text`, the default, compares the string form, as above.
 
 errata reads the version and range syntax of five ecosystems:
 
@@ -501,11 +524,13 @@ errata reads the version and range syntax of five ecosystems:
 | Go modules | `v1.2.3+incompatible`, `v0.0.0-20191109021931-daa7c04131f5`, `go1.22.1`, `go1.22rc1` | none: Go writes versions only |
 | RubyGems | `3.3.0.preview1`, `1.0.0.pre`, `7.1.0.beta.2`; a word other than the ones above, such as `2.0.0.racecar1`, is refused | `~> 3.2`, `~> 3.2.1`, `~> 3.2, >= 3.2.1` |
 
-Where the syntaxes differ, errata reads each form one way. errata plans a `syntax:` key that reads
-a rule's values exactly as one ecosystem does; until then:
+Where the syntaxes differ, a rule that sets no `syntax` reads each form one way, and a value from
+Python, Cargo or Go may then read otherwise than its tool reads it. `syntax` (below) reads it as
+the tool does. Without it:
 
 - A bare version in a range is that version at its precision, as in npm: `1.2` is every 1.2
-  release. Cargo reads a bare `1.2` as `^1.2`, so write the `^`.
+  release. Cargo reads a bare `1.2` in a requirement as `^1.2`, so read a Cargo requirement
+  through [`dependency`](#dependency), which writes the `^`.
 - `>1.2` and `<=1.2` compare at the precision written, as npm and Cargo do: `>1.2` starts at 1.3.0,
   and `<=1.2` admits 1.2.9. PEP 440 and RubyGems would admit 1.2.1 above `>1.2` and refuse it under
   `<=1.2`. `==1.2` and `!=1.2` are PEP 440's, and compare with 1.2.0.
@@ -528,6 +553,43 @@ a rule's values exactly as one ecosystem does; until then:
 - `>1.7.0` admits `1.7.0.post1`, which PEP 440 leaves out of `>V` unless V is itself a post
   release.
 - `===` compares text, so a value that holds it is neither a version nor a range.
+
+`syntax` reads every value of the rule as one ecosystem documents its versions and ranges, and a
+value written another way is neither, so the rule is unknown and names it. A bare value is a
+version, so a requirement reaches the rule with its operator: here `dependency` hands back
+Cargo.toml's `tokio = "1.35"` as `^1.35`, as Cargo reads it, which Cargo.lock's `1.40.0`
+satisfies. A regex would hand back `1.35`, the partial version:
+
+```yaml
+checks:
+  - id: tokio-locked
+    reason: The lock resolves a tokio the manifest accepts.
+    scope: repo
+    extract:
+      tokio: {dependency: {name: tokio, files: [Cargo.toml, Cargo.lock]}}
+    agree: [tokio]
+    compare: semver
+    syntax: cargo
+```
+
+| `syntax` | Versions | Ranges | Read otherwise than with no `syntax` |
+|---|---|---|---|
+| `npm` | node-semver's: up to three numbers with no leading zero, a `v` before them, a pre-release after `-` and build after `+` only after three | node-semver's: comparators separated by spaces, sets of them joined by `\|\|`, `<`, `<=`, `>`, `>=`, `=`, `^`, `~`, x-ranges and hyphen ranges; an empty range, or an empty set beside `\|\|`, is `*`, and a number after a wildcard is one, so `1.*.3` is `1.x` | `~>1.2` is node-semver's `~1.2`, below 1.3.0, where the unset reading takes RubyGems' 2.0; commas, `==`, `!=`, `~=` and the words of PEP 440 and RubyGems are refused |
+| `cargo` | up to three numbers with no leading zero, a pre-release and build after three: a bare value is a version, as `rust-version = "1.56"` is one in the Cargo book, and one or two numbers stay partial | the Cargo book's: comparators separated by commas, a bare comparator beside another read as `^`, `~`, `=`, `<`, `<=`, `>`, `>=`, a wildcard with no operator but `=`, and `*` as the only comparator | a comparator with no operator is `^`, so `1.2, <1.5` admits 1.4.0. `^1.2.3`, `~1.2` and `<2` stop below the pre-releases of the version after them, as the semver crate's `matches_caret`, `matches_tilde` and `matches_less` (src/eval.rs) hold the major, and the minor where written, so `2.0.0-alpha.1` satisfies neither `^1.2.3` nor `<2` beside `>=2.0.0-alpha.0`. `\|\|` and `v` are refused |
+| `pep440` | PEP 440's, in its normal form: `1.0RC1`, `1.0c1` and `1.0-rc.1` are `1.0rc1`, `1.0-1` is `1.0.post1`, `1.0+Ubuntu-1` is `1.0+ubuntu.1` | PEP 440's specifiers: clauses separated by commas, each with an operator: `~=`, `==`, `!=`, `<=`, `>=`, `<`, `>`, and `.*` after `==` and `!=` | `>1.2` admits 1.2.1 and `<=1.2` refuses it; `>V` admits no post release of V and `<V` no pre-release of V, unless V is one; a pre-release or dev release satisfies a range only when an operator other than `!=` names one, as packaging 25.0 decides and the specification's `<V.rc1` asks; `==1.0` and `<=1.0` admit `1.0+abc`, `==1.0+abc` admits only it, and local versions order as the specification orders them, so `==2.1.0+cpu` and `==2.1.0+cu118` do not overlap. A bound written `+*` after a version lies above all its local versions |
+| `go` | a module's, after `v`, where `v1.2` is `v1.2.0`; a toolchain's, with or without `go`, such as `1.21`, `1.21rc1` and `go1.21.0` | Go writes none: errata reads `<`, `<=`, `>`, `>=` and `=` before a version, separated by spaces or commas, sets of them joined by `\|\|` | every version stands for itself. `go 1.21` is the language version 1.21, below 1.21rc1 and 1.21.0, so it fails `>=1.21.4` and does not agree with `1.21.0`; before Go 1.21 the first release was 1.N, so `1.20` is 1.20.0. A pre-release satisfies a range as any version does |
+| `rubygems` | Gem::Version's: a number, then any letters and digits after dots, a `-` read as `.pre.`, `1.0` equal to `1.0.0` | Gem::Requirement's: requirements separated by commas, a bare version read as `=` | `~> 3.2` stops below 4.0 and `~> 3.2.6` below 3.3; `>1.2` admits 1.2.1; `= 7.1` is 7.1 alone; a pre-release, a version with a letter, satisfies only beside a requirement that names one; any word is a pre-release, compared by its bytes, so `2.0.0.racecar1` is a version and `1.0.RC1` differs from `1.0.rc1` |
+
+Under every syntax but `go`, a version of one or two numbers stays partial, as above: under
+`pep440`, `3.11` stands for every 3.11 release, so it satisfies `>3.11`, as 3.11.1 does, and
+agrees with `3.11.4`. Under `cargo`, `rust-version = "1.70"` does not agree with a toolchain
+channel of `1.82`, and `tokio = "1.35.0"` read by a regex is the version 1.35.0; read the
+requirement through `dependency`, which hands it back as `^1.35.0`. The message names what each
+value was read as, in the syntax: `(version 1.21)`, `(range >=1.21.4)`. Under `pep440` a bound
+written `.post*` after a version lies above every post release of it, where `>1.7` starts:
+`(range >1.7.post*)`.
+`semver_satisfies(v, r, s)` reads in the syntax `s` (see [`assert`](#assert)), and `errata list`
+names a rule's syntax, `any` for one that sets none.
 
 `assert` reads versions with the same code, through `semver()` and `semver_satisfies()` (see
 below), so the two never read one value two ways. Each call costs 1 and the bytes it reads toward
@@ -574,6 +636,7 @@ or a timestamp does not load (see [Mappings whole](#mappings-whole)).
 | `subset(a, b)` | true when every member of `a` is in `b` |
 | `semver(s)` | the version `s`, which `<`, `<=`, `>`, `>=`, `==` and `!=` compare with another `semver()`, a missing number as 0, so `semver('20') == semver('20.0.0')`; `string()` writes it |
 | `semver_satisfies(v, r)` | true when the version `v` satisfies the range `r`, as `compare: semver` decides (see [`compare`](#compare)) |
+| `semver_satisfies(v, r, s)` | the same, reading `v` and `r` in the syntax `s`, one of `'npm'`, `'cargo'`, `'pep440'`, `'go'` and `'rubygems'`, as `compare: semver` with that `syntax` does; any other `s` is an error |
 | `by_file(x)` | the values of the extractor `x` grouped by the file each came from, as a map from file to list (see [A set of files](#a-set-of-files)) |
 | `renovate_match(s, p)` | true when Renovate matches the string `s` with the pattern `p`, as it reads one entry of `managerFilePatterns` or `matchPackageNames` (see [Renovate's patterns](#renovates-patterns)) |
 | `s.split(sep)`, `s.split(sep, n)` | the parts of `s` between each `sep`, as a list; with `n`, at most `n` parts, the last holding the rest, and none for `n` of 0 |
@@ -742,8 +805,8 @@ the cases checked against Renovate's own code.
 ## Extractors
 
 An extractor reads one file of the repository and returns a list of values, each with the file and
-the line where it starts, or the file alone for `exists` and `size`; `yaml`, `json`, `toml` and
-`regex` read every file `files:` names instead of one (see [A set of files](#a-set-of-files)),
+the line where it starts, or the file alone for `exists` and `size`; `yaml`, `json`, `jsonc`,
+`json5`, `toml` and `regex` read every file `files:` names instead of one (see [A set of files](#a-set-of-files)),
 `tool_version` reads every file that pins one tool, `package_version` each manifest of the package,
 `dependency` one package in every manifest and lockfile a rule lists, `env` one variable in every file a rule lists, and `marker` the markers that name its rule in every
 file git tracks (see [`marker`](#marker)); `exists` and `size` look at one file and read
@@ -756,6 +819,8 @@ extract:
     yaml: {file: deploy/web.yaml, path: spec.replicas, kind: Deployment, name: web}
   engine:
     json: {file: package.json, path: engines.node}
+  ts_target:
+    jsonc: {file: tsconfig.json, path: compilerOptions.target}
   cpu_limit:
     toml: {file: runner/config.toml, path: "runners[0].kubernetes.cpu_limit"}
   base_image:
@@ -811,6 +876,8 @@ extract:
 |---|---|---|
 | [`yaml`](#yaml) | `file` or `files`, `path`, `kind` or `name` for a file of several documents, `embedded` to read a document in a string, and `as: map`, or `as: record` with `fields` | every scalar the path selects, with `as: map` each mapping whole (see [Mappings whole](#mappings-whole)), or with `as: record` a record of the fields for each node (see [Records](#records)) |
 | [`json`](#json) | `file` or `files`, `path`, `embedded`, and `as: map`, or `as: record` with `fields` | every scalar the path selects, each mapping whole, or a record for each node |
+| [`jsonc`](#jsonc-and-json5) | the fields of `json` | what `json` returns, from a JSONC file: JSON with comments and trailing commas |
+| [`json5`](#jsonc-and-json5) | the fields of `json` | what `json` returns, from a JSON5 file |
 | [`toml`](#toml) | `file` or `files`, `path`, `embedded`, and `as: map`, or `as: record` with `fields` | every scalar the path selects, each mapping whole, or a record for each node |
 | [`regex`](#regex) | `file` or `files`, `pattern`, `as: record`, `values_as` for a pattern that references another extractor's values, and `context` to keep a match by the lines around it | capture group 1 of every match (see [Values of another extractor](#values-of-another-extractor) and [The context of a match](#the-context-of-a-match)), or with `as: record` a record of the named groups of each match |
 | [`text`](#text) | `file`, `pattern`, and `code` to read code blocks too | capture group 1 of every match in the prose of a Markdown file |
@@ -862,7 +929,7 @@ it.
 
 ### A set of files
 
-`yaml`, `json`, `toml` and `regex` take `files:` in place of `file:`, a list of files and globs, and
+`yaml`, `json`, `jsonc`, `json5`, `toml` and `regex` take `files:` in place of `file:`, a list of files and globs, and
 read each file as `file:` would, so one rule holds every file of a kind to a claim, the file added
 tomorrow included. Setting both does not load. This rule says that every Argo CD Application that
 ignores a Secret's data syncs with `RespectIgnoreDifferences=true`, without which a sync rewrites
@@ -989,7 +1056,7 @@ there, as at the top
 
 ### Paths
 
-`yaml`, `json`, `toml` and `literal` share one path grammar: part of
+`yaml`, `json`, `jsonc`, `json5`, `toml` and `literal` share one path grammar: part of
 [RFC 9535](https://www.rfc-editor.org/rfc/rfc9535) JSONPath, with two extensions: the leading `$` is
 optional, and a key after a dot may hold `-`.
 
@@ -1143,11 +1210,12 @@ Some files hold a value that only running them produces: `$(git describe)` in a 
 for such a file marks the value as not literal. Its text is what the file wrote, not the value the
 file means, so a rule never compares it. Each extractor's documentation says whether it can return
 a not literal value. Of errata's kinds only `ini` can, for the files and sections that
-[`ini`](#ini) lists, `properties` for a template file, `tool_version` for a version
+[`ini`](#ini) lists, `properties` for a placeholder Spring Boot or Log4j fills in and for a
+template file ([`properties`](#properties)), `tool_version` for a version
 that names none, such as `lts/*` or `system` ([`tool_version`](#tool_version)), `package_version`
 for a version the build computes, such as `dynamic = ["version"]` in pyproject.toml
 ([`package_version`](#package_version)), `dependency` for a range or a version the file takes
-from elsewhere, such as `workspace:*` or Cargo's `{ workspace = true }` ([`dependency`](#dependency)),
+from elsewhere, such as `workspace:*` or Cargo's `{ workspace = true }`, or a Go version such as `v1` the go command resolves ([`dependency`](#dependency)),
 `envfile` for a substitution of a key the file does not
 set before it, a name alone that compose takes from the environment, and in a template file
 ([`envfile`](#envfile)), `gitlab-ci` for a value GitLab computes, such as `$CI_COMMIT_SHA` or a
@@ -1221,7 +1289,8 @@ counts only the values left.
 key would load and leave nothing out, so it does not load. That holds for every kind but `ini`,
 `properties`, `tool_version`, `package_version`, `dependency`, `envfile`, `gitlab-ci`, `shell`,
 `github-actions`, `jenkins`, `literal` and `code`, for an `ini` extractor whose file errata models no transform for, such as
-`pytest.ini`, and for a `properties` file that is not a template. The message names the kind, and
+`pytest.ini`, and for a `properties` file that is neither a template nor one of Spring Boot's or
+Log4j's. The message names the kind, and
 for `ini` the dialect and the file:
 
 ```console
@@ -1250,7 +1319,7 @@ rule unknown with a message that says which.
 
 A config is often carried in a string of another file: Gatus's `config.yaml` in a ConfigMap, a
 GitLab runner's `config.toml` in a Helm value, a JSON list in an env var's `value`. `embedded` on a
-`yaml`, `json` or `toml` extractor reads such a document. It is a list of steps, and each step
+`yaml`, `json`, `jsonc`, `json5` or `toml` extractor reads such a document. It is a list of steps, and each step
 names the `format` the string is parsed in, `yaml`, `json` or `toml`, and a `path` read in that
 document, in the grammar and with the filters above:
 
@@ -1313,7 +1382,7 @@ list and how lines are reported.
 A path selects scalars, so a list of objects reaches assert as one flat list for each field, and
 which value belonged to which object is lost. Renovate's `packageRules` need the objects whole:
 Renovate applies them in order, and a later rule's `automerge` overrides an earlier one's. With
-`as: map`, a `yaml`, `json` or `toml` extractor hands assert each mapping its path selects, in
+`as: map`, a `yaml`, `json`, `jsonc`, `json5` or `toml` extractor hands assert each mapping its path selects, in
 file order. This rule says that no rule after Renovate's never-automerge rule turns automerge back
 on for the charts it names:
 
@@ -1410,7 +1479,7 @@ string and how a record of several paths uses the same maps.
 Two fields of one element are often a pair: a Gatus endpoint's `name` and `group` make the key an
 app pushes to, and a regex match's name and source groups belong together. Read as two flat
 lists, the pairing is lost. A record keeps it: one mapping for each element, whose keys are the
-fields the rule names. A `yaml`, `json` or `toml` extractor with `as: record` reads each path in
+fields the rule names. A `yaml`, `json`, `jsonc`, `json5` or `toml` extractor with `as: record` reads each path in
 `fields` from every node its path selects, after any `embedded` step:
 
 ```yaml
@@ -1492,7 +1561,7 @@ says how records meet the rules for flat values.
 Each kind below is the key an extractor sets under its name in `extract:`. The [table of
 kinds](#extractors) gives the fields each takes and what it returns; its section here gives the
 rules it reads its file by. The fields and values that `yaml`,
-`json` and `toml` share are in [Extractors](#extractors) above, as are `file`, `files` and
+`json`, `jsonc`, `json5` and `toml` share are in [Extractors](#extractors) above, as are `file`, `files` and
 `max_bytes`, which most kinds take; [Limits](#limits) bounds every kind.
 
 ### `yaml`
@@ -1508,6 +1577,62 @@ kinds](#extractors). [Paths](#paths) and [Filters](#filters) give the path's gra
 `json` reads a JSON file as [`yaml`](#yaml) reads a YAML file, by the same sections, but for
 [Several YAML documents](#several-yaml-documents): a JSON file holds one document. Its fields are
 in the [table of kinds](#extractors).
+
+`json` reads strict JSON, as RFC 8259 writes it. A file with a comment or a comma after the last
+member, as `tsconfig.json` and VS Code's settings often hold, does not parse, so a rule that reads
+it with `json` is unknown, never true. Read such a file with [`jsonc` or `json5`](#jsonc-and-json5).
+
+### `jsonc` and `json5`
+
+`jsonc` and `json5` read a JSON file written in a dialect that strict JSON refuses, as
+[`json`](#json) reads a JSON file: one document, the same [path](#paths), `embedded`, `as` and
+`fields`, and each value at the line it starts on. The kind names the dialect, and every file the
+extractor reads is read in it, whatever its name:
+
+- `jsonc` reads JSONC: JSON with `//` and `/* */` comments and a comma after the last member of an
+  object or the last item of an array. A string, a number, every other value and the white space
+  between them are JSON's, and a byte order mark may open the file.
+- `json5` reads JSON5, the dialect of the [JSON5 specification](https://spec.json5.org/) 1.0.0:
+  JSONC, and a key written as an ECMAScript identifier, a string in single quotes with
+  ECMAScript's escapes and a backslash that continues it on the next line, and a number with a
+  sign, a point that leads or ends it, in hexadecimal, `Infinity` and `NaN`. White space includes
+  Unicode's space characters.
+
+JSON5 reads every JSONC file into the same values, so a `files:` set that holds files of both
+dialects is read with `json5`. `jsonc` refuses what only JSON5 allows, such as an unquoted key in
+`renovate.json5`, so a rule that asks for JSONC is unknown on such a file, never true.
+
+```yaml
+extract:
+  target:
+    jsonc: {file: tsconfig.json, path: compilerOptions.target}
+  presets:
+    json5: {file: renovate.json5, path: "extends[*]"}
+```
+
+Which kind reads a tool's file is what the tool says it reads, in its documentation or, where that
+is silent, in the code that parses the file:
+
+| File | Kind | Source |
+|---|---|---|
+| any `*.jsonc` | `jsonc` | the name |
+| any `*.json5` | `json5` | the [JSON5 specification](https://spec.json5.org/) |
+| `tsconfig.json`, `tsconfig.*.json`, `jsconfig.json` | `jsonc` | TypeScript's parser, [`parseConfigFileTextToJson`](https://github.com/microsoft/TypeScript/blob/v5.9.3/src/compiler/commandLineParser.ts#L2243), which reads both files with comments and trailing commas; its documentation does not say |
+| `.vscode/settings.json`, `launch.json`, `tasks.json` and the other `.json` files of `.vscode`, `*.code-workspace` | `jsonc` | [VS Code](https://code.visualstudio.com/docs/languages/json#_json-with-comments), and for a workspace file [VS Code's multi-root workspaces](https://code.visualstudio.com/docs/editing/workspaces/multi-root-workspaces) |
+| `devcontainer.json`, `.devcontainer.json` | `jsonc` | [Dev Containers](https://containers.dev/implementors/spec/) |
+| `renovate.json`, `.github/renovate.json`, `.gitlab/renovate.json`, `.renovaterc`, `.renovaterc.json` | `jsonc` | [Renovate](https://docs.renovatebot.com/configuration-options/) |
+| `renovate.json5`, `.renovaterc.json5` | `json5` | [Renovate](https://docs.renovatebot.com/configuration-options/) |
+| `.babelrc`, `.babelrc.json`, `babel.config.json` | `json5` | [Babel](https://babeljs.io/docs/config-files) |
+| `deno.jsonc` | `jsonc` | [Deno](https://docs.deno.com/runtime/fundamentals/configuration/); `deno.json` is strict JSON, read with `json` |
+| `.eslintrc.json` | not covered whole | [ESLint](https://eslint.org/docs/latest/use/configure/configuration-files-deprecated) takes comments but no trailing comma. `json` reads one with no comment; `jsonc` reads one with comments, and also a trailing comma ESLint refuses, so a rule can hold on a config ESLint does not load |
+
+A number keeps the text the file wrote, as in `json`: `0x1F` stays `0x1F` and `+1` stays `+1`. A
+key the file repeats, however JSON5 quotes or escapes it, does not parse, since readers disagree
+on which of the two counts. JSONC takes JSON's white space only, so a no-break space or a form
+feed between values does not parse in `jsonc`, though VS Code reads it. A file that does not parse
+in its dialect makes the rule unknown, and the message names the line, such as
+`tsconfig.json: line 3: a key cannot start with 't'`, or for a string the file ends inside, the
+line the string opens on.
 
 ### `toml`
 
@@ -2736,8 +2861,15 @@ file's name chooses:
 | `git` | `.gitconfig`, `.gitmodules`, `gitconfig`, a name ending in `.gitconfig`, `config` in a directory named `.git` or `git` | git's own parser (git 2.47) |
 | `ansible` | `hosts`, `hosts.ini`, `inventory`, `inventory.ini`, any file under a directory named `inventory` or `inventories` | ansible-core's ini inventory plugin (2.21) |
 | `tox` | `tox.ini` | tox 4 |
-| `php` | `php.ini` and a name that starts with `php.ini`, such as `php.ini-production`, `php.ini-development` and `php.ini.dist`, but not a template of one such as `php.ini.j2` or `php.ini.tpl`; and a name ending in `.ini` under a directory named `php` | PHP 8.4, in the mode PHP reads php.ini in |
+| `php` | `php.ini` and a name that starts with `php.ini`, such as `php.ini-production`, `php.ini-development` and `php.ini.dist`; and a name ending in `.ini` under a directory named `php` | PHP 8.4, in the mode PHP reads php.ini in |
 | `plain` | every other file: `setup.cfg`, `pytest.ini`, `mypy.ini`, `.flake8` | Python's configparser |
+
+A template file, named with one of the template suffixes listed below, is read as the file it
+renders: its name without the suffix chooses the dialect and the values the tool computes, so
+`php.ini.j2` is read as php.ini, `hosts.j2` as an inventory and `setup.cfg.j2` as setup.cfg, and
+the template's own marks hold on top. `tox.ini.j2` is read as tox reads tox.ini, which refuses a
+key set twice in a section, so a template that sets `deps` once in each branch of an `if`, with
+its tags in comment lines, is refused.
 
 ```yaml
 extract:
@@ -2766,8 +2898,8 @@ A value that the file's tool changes is returned as written and marked not liter
 that tool's transform: the value is not literal exactly when the transform's output differs from
 the text errata returns. These are the values errata marks:
 
-- In php.ini: a boolean word such as `On` or `none`, a constant such as `E_ALL` (a word named as
-  PHP's constants are; `UTC` is text), a `${}` reference and an expression.
+- In php.ini: a boolean word such as `On` or `none`, a constant PHP defines before it reads php.ini,
+  such as `E_ALL`, a `${}` reference and an expression.
 - In tox.ini: a value with a factor condition (`py311: mock`) or a substitution (`{posargs}`,
   `{env:X}`, `[]`). In setup.cfg's `[tox:tox]`, `[testenv]` and `[testenv:name]`, which errata
   reads as plain configparser does, also a value with a comment or a joined line, which tox drops
@@ -2775,17 +2907,63 @@ the text errata returns. These are the values errata marks:
 - In setup.cfg: a value with a `%`, and one that starts with an `attr:` or `file:` directive.
 - In mypy.ini, .mypy.ini and the `[mypy]` and `[mypy-*]` sections of setup.cfg: a path option,
   such as `mypy_path`, `files` or `cache_dir`, with an entry that starts with `~` or a `$`
-  variable anywhere, and a `files` entry with a glob (`*`, `?` or `[`).
-- In .coveragerc and the `[coverage:*]` sections of setup.cfg and tox.ini: a `$$`, a `$name` or a
-  `${`.
-- In an ansible inventory: a host with a range or a port (`web[01:20]`, `db1:2222`), a number
-  Python writes otherwise (such as `0x10` or `1+2j`), a container such as `[80, 443]`, and a
+  variable anywhere, and a `files` entry with a glob (`*`, `?` or `[`). mypy's expandvars keeps a
+  variable the environment does not set, so `python_executable = $PY` is `$PY` to a mypy run
+  without `PY`; errata marks it all the same, since it cannot know the environment mypy runs in.
+- In .coveragerc and the `[coverage:*]` sections of setup.cfg and tox.ini: a `$$`, a `$name`, and a
+  `${name}`, `${name?}` or `${name-default}`, the forms coverage.py substitutes; `${ name }` and a `${`
+  with no `}` are text, as coverage leaves them.
+- In an ansible inventory: a host with a range (`web[01:20]`) or with a port ansible takes off
+  (`db1:2222`, or a port of any decimal digits Python's `\d` reads, such as `٢٢`), which it does only when what is left is an address or a host name, so `fe80::1`
+  and `we$b:22` are hosts ansible keeps whole and errata returns literal; a number
+  Python writes otherwise (such as `0x10` or `1+2j`), a list or a dict Python writes otherwise (`[80,443]`), a tuple, a set, and a
   Jinja2 template (`{{`, `{%` or `{#`).
 - In a template file of any dialect, and a properties template, named with `.j2`, `.jinja`,
   `.jinja2`, `.tmpl`, `.tpl`, `.tftpl` or `.erb` at the end: a value holding `{{`, `{%` or `{#`,
-  `<%` in ERB, and `${` or `%{` in Terraform's `.tpl` and `.tftpl`.
+  `<%` in ERB, and `${` or `%{` in Terraform's `.tpl` and `.tftpl`; and every value on a line
+  inside one of the engine's blocks, since the rendered file may hold it once, many times or not at
+  all. After `{% if x %}`, `a=1` and `{% endif %}`, `a` is not literal.
 
-git, properties and other plain files, such as pytest.ini and .flake8, return only literal values,
+errata finds a template's blocks by their tags, without reading the expressions in them: Jinja's
+`{% %}` in `.j2`, `.jinja`, `.jinja2`, `.tmpl` and `.tpl`, Go's `{{ if }}`, `{{ range }}`,
+`{{ with }}`, `{{ define }}` and `{{ block }}` to `{{ end }}` in `.tmpl` and `.tpl`, as Helm and
+chezmoi write them, ERB's `<% %>` in `.erb`, and Terraform's `%{ if }` and `%{ for }` in `.tpl`
+and `.tftpl`. A block runs from the line of the tag that opens it to the line of the tag that
+closes it. A Jinja tag opens a block unless it is an `end` tag, `else`, `elif`, or one that holds
+no body, such as `include`, `import` or `set x = 1`, so an extension's own tag opens one too; an
+ERB tag opens one when its Ruby starts with `if`, `unless`, `while`, `until`, `case`, `for` or
+`begin`, or ends in `do` or `{`, and `end` or `}` closes it. Where errata cannot tell, it marks:
+a block or a tag left open, a closing tag that no block opened, and `{% extends %}` mark every
+line, since the engine refuses such a template or renders only the blocks it overrides. In a
+`.tmpl` or `.tpl`, which errata reads as both Jinja and Go, a tag whose text holds the other's
+tag, such as a Jinja comment `{# ... #}` around `{{ if .x }}`, marks its own lines. A tag in a
+comment line of the file still renders, so it counts. errata finds the blocks in two passes over
+the file and keeps only the block open at the line it reads, so a template costs no more memory
+than another file.
+Most INI dialects refuse a line that holds only a Jinja, Go or Terraform tag, so such a rule is
+unknown with the line named; a properties file, php.ini's ERB and a tag in a comment line read on.
+
+These values depend on the key's type or on which tool reads the file, which errata does not
+know, so errata returns them as written and literal; a rule over one compares the text the file
+holds:
+
+- In php.ini: a size such as `128M`. PHP's parser returns the text, and `ini_get` gives it back;
+  only the directive that reads it, such as `memory_limit`, converts it to a number.
+- In a plain file: a key that only `[DEFAULT]` sets. configparser gives every section the keys of
+  `[DEFAULT]`, but errata reads `[DEFAULT]` as a section like any other, so such a key is found
+  with `section: DEFAULT` and not under another section.
+- In mypy's files: `$MYPY_CONFIG_FILE_DIR` in an option that is not a path option, which mypy reads
+  as written.
+- In git: a typed value, such as `10k`, `yes` or `~/x`, which `git config --get` prints as written
+  and only `--type` or the command that reads it converts; an `include`, which errata does not
+  follow; and a URL that a `url.<base>.insteadOf` rewrites, since the rule may sit in another
+  config file.
+- In an ansible inventory, listing a group's hosts: a host with a range or a port is one value, its
+  text as written, marked. ansible reads a range as the hosts it expands to, which errata never
+  builds (see the ansible paragraph below), and a port as the host without it; the listing keeps
+  the line's one value rather than turn one line into many.
+
+git and other plain files, such as pytest.ini and .flake8, return only literal values,
 so `skip_not_literal` cannot list them. Neither can any other file errata models no transform for,
 unless it is a template.
 
@@ -2818,7 +2996,16 @@ assembled as PHP's parser assembles it: `"double quoted"` strings with `\"`, `\\
 so `a "b c" d` is `ab cd`. A line PHP refuses, such as one with `=` in its value or a boolean word
 as its key, makes the rule unknown. What PHP then computes is returned as written and marked not
 literal: `On`, `Off` and the other boolean words, a constant such as `E_ALL`, `${VAR}`, and an
-expression of `|`, `&`, `^`, `~`, `!` and parentheses. `key[] = v` is the key `key`. A key with no
+expression of `|`, `&`, `^`, `~`, `!` and parentheses. PHP reads php.ini at startup, before any
+extension defines its constants, so it replaces only the constants of the engine and of PHP itself:
+the names that start with `E_`, `PHP_`, `PEAR_`, `ZEND_`, `DEBUG_BACKTRACE_` or `UPLOAD_ERR_`, and
+`DEFAULT_INCLUDE_PATH`. An extension's constant, such as `M_PI`, `CODESET`, `SIGTERM` or
+`SOMAXCONN`, is text, as is any other word, such as `UTC`. That holds for php.ini and the `.ini`
+files PHP scans at startup, and errata reads every `.ini` file so, wherever the repository keeps
+it, such as `docker/opcache.ini`. PHP reads a `.user.ini` for each request, and an FPM pool file
+after the extensions start, when their constants are defined; so for a `.user.ini`, and for a file
+whose name does not end in `.ini` that a spec reads with `dialect: php`, such as a pool file
+`www.conf`, errata marks every name written as a constant is. `key[] = v` is the key `key`. A key with no
 `=` is ignored, as PHP ignores it, and a file with a NUL byte is refused.
 
 **git.** `[section]` and `[section "subsection"]`; the deprecated `[section.subsection]` is the
@@ -2862,9 +3049,13 @@ range that holds no host, such as `h[3:1]`, reads no host and none of its line's
 ansible reads none, but its variables must still be `key=value`.
 
 ansible evaluates each value as a Python literal. errata keeps the text of a literal that is not
-a string: `8080`, `True` and `[1, 2]` are the text written. A number Python writes otherwise,
-such as `0x10`, and a container, such as `[1, 2]`, are marked not literal, since ansible uses the
-value and not the text. A `#` comment after a literal goes, as
+a string: `8080`, `True` and `[1, 2]` are the text written. A literal whose value Python writes
+otherwise is marked not literal, since ansible uses the value and not the text: a number such as
+`0x10`, a list or a dict written otherwise than Python's `repr` writes it, such as `[1,2]`,
+`["a"]` or `{'a': 1, 'a': 2}`, a tuple, in parentheses or as literals joined by commas
+(`x = 1, 2`), which ansible holds as a list, and a set, whose order is
+Python's. `[1, 2]` and `{'a': [True, None]}` are literal. errata is sure of a container only when
+each string in it is printable ASCII and each key a string, and marks any other. A `#` comment after a literal goes, as
 Python drops it, so `x = 8080 # http` is `8080` and `x = [1, 2] # c` is `[1, 2]`. A string
 literal is the text Python makes of it: `'x\ty'` has a tab, `'a' 'b'` is `ab`, `b'\x41'` is `A`,
 and `r'a\tb'` keeps its backslash. A string errata cannot decode exactly, one with `\N{...}` or a
@@ -2885,8 +3076,15 @@ as Java's decoder makes it. A surrogate pair written as two escapes is its one c
 surrogate alone is U+FFFD. Lines are numbered at `\n`, `\r\n` and a lone `\r`, as the
 [XML values](#xml-values) says every kind numbers them. Spring's `application-<profile>.properties`
 files are plain files: name the one to read, errata does not merge profiles. errata reads the
-value Java reads, so every value is literal, but in a template file, as [`ini`](#ini)
-says.
+value Java reads, which is literal, with two exceptions. Spring Boot and Log4j fill in `${name}`
+from their own properties and the environment, so in `application.properties`,
+`bootstrap.properties`, their `-profile` files such as `application-prod.properties`,
+`log4j2.properties`, `log4j2-test.properties` and `log4j.properties`, a value with `${` is marked not
+literal: `server.port=${PORT:8080}` is not the text to Spring. And in a template file, as
+[`ini`](#ini) says, read as the file it renders, so `application.properties.j2` is marked as
+both. A placeholder that Maven's resource filtering fills in, `${project.version}` or
+`@project.version@` in any file, is returned as written: the pom, not the file, turns filtering
+on, and errata reads only the file.
 
 ### `tool_version`
 
@@ -3042,8 +3240,8 @@ a file the table does not name does not load. The files one extractor reads hold
 | File | Read as |
 |---|---|
 | `package.json` | `version`, the version npm publishes; a package.json without one, such as an application's, gives nothing. A byte order mark at its start is skipped, as npm skips it |
-| `pyproject.toml` | `project.version` (PEP 621). When `project.dynamic` lists `version`, the build backend computes it, and the value is `dynamic = ["version"]`, not literal, at that entry's line; under Poetry's backend, `build-backend = "poetry.core.masonry.api"`, poetry-core fills it from `tool.poetry.version`, which is then the value. A file with neither is Poetry's form before PEP 621 and gives `tool.poetry.version`. With `enable = true` under `[tool.poetry-dynamic-versioning]`, that plugin replaces `tool.poetry.version` from a git tag at build time, so the version the file writes, often `0.0.0`, is a placeholder and not literal. A byte order mark is refused, as Python's tomllib refuses it |
-| `Cargo.toml` | `package.version`, and `workspace.package.version`, the version a workspace's members inherit. `version.workspace = true`, or `version = { workspace = true }`, inherits it: from the same file's `workspace.package.version` when it holds one, which is then the one value, and otherwise from a Cargo.toml further up, which errata does not look for, so the value is `version.workspace = true`, not literal. A file with a `[workspace]` table is its own workspace's root, so one that inherits a version it does not set is refused, as Cargo refuses it. A byte order mark at its start is skipped, as Cargo skips it |
+| `pyproject.toml` | `project.version` (PEP 621). When `project.dynamic` lists `version`, the build backend computes it, and the value is not literal, at that entry's line; under Poetry's backend, `build-backend = "poetry.core.masonry.api"`, poetry-core fills it from `tool.poetry.version`, which is then the value. A file with neither is Poetry's form before PEP 621 and gives `tool.poetry.version`. With `enable = true` under `[tool.poetry-dynamic-versioning]`, that plugin replaces `tool.poetry.version` from a git tag at build time, so the version the file writes, often `0.0.0`, is a placeholder and not literal. A byte order mark is refused, as Python's tomllib refuses it |
+| `Cargo.toml` | `package.version`, and `workspace.package.version`, the version a workspace's members inherit. `version.workspace = true`, or `version = { workspace = true }`, inherits it: from the same file's `workspace.package.version` when it holds one, which is then the one value, and otherwise from a Cargo.toml further up, which errata does not look for, so the value is not literal, at the line of `workspace = true`. A file with a `[workspace]` table is its own workspace's root, so one that inherits a version it does not set is refused, as Cargo refuses it. A byte order mark at its start is skipped, as Cargo skips it |
 | `VERSION` | the first field of the first line that holds one, as `tool_version` reads the file: a `#` starts a comment, and a blank line is passed over |
 
 A version must be a string: a TOML `version = 1.0`, a JSON `"version": 1` or a table is refused,
@@ -3055,6 +3253,15 @@ version that is empty or holds a control character, a direction control, a line 
 separator or a byte that is not UTF-8 makes the rule unknown, as does a JSON or TOML file that does
 not parse, past the node limit of its format (see [Limits](#limits)), and a `VERSION` file of only
 blank lines and comments.
+
+The text of a not literal version the build computes is the line that says so, as the file wrote
+it, with the spaces and tabs around it taken off: `dynamic = ["version", "readme"]`, or
+`version = { workspace = true }`, a comment after it on the line included. In a `dynamic` list
+written over several lines, it is the line of the `"version"` entry, such as `"version",`. That
+line is no version, so the check above does not apply to it: TOML puts a tab between a key and
+its value as readily as a space. The reports escape what a terminal or a viewer would act on in
+it. A placeholder that `poetry-dynamic-versioning` replaces is the version the file writes, and
+the check applies.
 
 The version a lockfile records for the package itself, and every version of a package it depends
 on, are [`dependency`](#dependency)'s to read.
@@ -3191,16 +3398,16 @@ files only, and takes no `only`.
 
 | File | Reader | Read as |
 |---|---|---|
-| `go.mod` | go.mod | each `require` of the package (resolved), and each `replace` of it, with the version it is replaced by; a replace by a directory, or by another module such as a fork, whose version is not the package's, is not literal, and a replace of one version, `replace x v1.1.0 => ...`, gives nothing when the file requires no such version, since it then does nothing. Go keeps no lockfile: since Go 1.17 a module's go.mod requires every module its build needs at the version the build selects, so both are resolved. Parsed with golang.org/x/mod/modfile, as the go command parses it |
-| `go.work` | go.work | each `replace` of the package, which overrides it in every module of the workspace; a go.work requires nothing, so a replace of one version counts whichever version the modules require |
+| `go.mod` | go.mod | each `require` of the package (resolved), and each `replace` of it, with the version it is replaced by; a replace by a directory, or by another module such as a fork, whose version is not the package's, is not literal, and a replace of one version, `replace x v1.1.0 => ...`, gives nothing when the file requires no such version, since it then does nothing. A version written in a form that is not canonical, such as `v1`, `v1.2` or `v1.2.3+meta`, is a query the go command resolves through the module proxy and writes back, `v1` to the latest v1 release: errata gives it as written and not literal, and a replace whose own or required version is such a query may apply, so it is not literal either. Go keeps no lockfile: since Go 1.17 a module's go.mod requires every module its build needs at the version the build selects, so both are resolved. Parsed with golang.org/x/mod/modfile, as the go command parses it |
+| `go.work` | go.work | each `replace` of the package, which overrides it in every module of the workspace; a go.work requires nothing, so a replace of one version counts whichever version the modules require. A version written in a form that is not canonical, such as `v1`, which the go command reads as `v1.0.0`, is given as written and not literal |
 | `package.json` | package.json | the range `dependencies`, `devDependencies`, `peerDependencies` and `optionalDependencies` give it. A protocol, such as `workspace:*`, `file:`, `npm:` or `git+https:`, a GitHub shorthand such as `user/repo`, and a dist-tag such as `latest` are not literal, and so is an empty range, which npm reads as any version and errata writes as `""`. An alias, `"zod-old": "npm:zod@^3.20.0"`, installs zod under another key and gives `^3.20.0` for zod. The package's own `version` is `package_version`'s |
 | `package-lock.json`, `npm-shrinkwrap.json` | package-lock.json | from lockfile version 2 on, the version of each copy `packages` installs, such as `node_modules/zod` or `node_modules/a/node_modules/zod`, and of the package's own entry, `""`, or a workspace's, which name it by `name`; in version 1, each entry of the nested `dependencies`. The `name` and `version` at the top are the package's own too. An alias's entry names the package it installs, by its `name` from version 2 on and by a version `npm:zod@3.20.2` in version 1. A version that is a URL, as a package from git records, is not literal |
 | `pnpm-lock.yaml` | pnpm-lock.yaml | each key of `packages` that names the package: `/zod/3.22.4` in lockfile version 5, `/zod@3.22.4` in 6 and `zod@3.22.4` from 9 on, without the peers a key ends in. A key from a path, git or a tarball, such as `foo@file:../foo`, names no version and is not literal |
 | `yarn.lock` | yarn.lock | the `version` of each entry whose descriptors name the package, in Yarn 1's own format and in the YAML of Yarn 2 and later. A workspace's, a link's or a portal's entry, `name@workspace:.`, `name@link:../foo` or `name@portal:../foo`, records `0.0.0-use.local`, no version, and is passed over. An alias, `zod-old@npm:zod@^3`, names zod |
 | `pyproject.toml` | pyproject.toml | the specifiers of each PEP 508 requirement of `project.dependencies`, `project.optional-dependencies`, `dependency-groups`, `build-system.requires`, `tool.uv.dev-dependencies` and each group of `tool.pdm.dev-dependencies`, such as `>=2.31,<3`, without the extras and the marker; a requirement from a URL, `name @ https://...`, is not literal. Poetry's `tool.poetry.dependencies`, `tool.poetry.dev-dependencies` and each group's `dependencies`: a string, or the `version` of a table, read as Poetry reads it (above). A requirement without a specifier, or a table without a version, from git or a path, gives nothing |
-| `requirements*.txt`, `requirements*.in`, `constraints.txt`, and each `.txt` and `.in` file in a directory named `requirements`, such as `requirements/base.txt` | requirements | the specifiers of each line's PEP 508 requirement, at the line it starts on. In a `.txt` file, a requirement that pins one version, `requests==2.31.0`, is that version, `2.31.0`, resolved: pip installs exactly it, and pip-compile writes its output as such pins. In a `.in` file, pip-tools' input, a pin is what a person asks for, which pip-compile then resolves, so it stays a range. A pin with a wildcard, `==2.31.*`, stays a range. A `#` at the start or after a blank starts a comment, a `\` at the end joins the next line, a line that starts with `-`, such as `-r` or `-e`, names no version, and the options after a requirement, such as `--hash=` after a space or a tab, are not part of its range. A `${VAR}`, which pip takes from the environment, is not literal |
+| `requirements*.txt`, `requirements*.in`, `constraints.txt`, and each `.txt` and `.in` file in a directory named `requirements`, such as `requirements/base.txt` | requirements | the specifiers of each line's PEP 508 requirement, at the line they start on. In a `.txt` file, a requirement that pins one version, `requests==2.31.0`, is that version, `2.31.0`, resolved: pip installs exactly it, and pip-compile writes its output as such pins. In a `.in` file, pip-tools' input, a pin is what a person asks for, which pip-compile then resolves, so it stays a range. A pin with a wildcard, `==2.31.*`, stays a range. A `\` at the end of a line that is not a comment joins the next line to it with nothing between, as pip joins them, and so does one on the last line; a `#` at the start or after a blank then starts a comment, which takes in any line a `\` joined after it; a line that starts with `-`, such as `-r` or `-e`, names no version, and the options after a requirement, such as `--hash=` after a space or a tab, are not part of its range. A `${VAR}`, which pip takes from the environment, is not literal |
 | `poetry.lock`, `uv.lock` | poetry.lock, uv.lock | the `version` of each `[[package]]` named for the package; uv lists the project itself too |
-| `Cargo.toml` | Cargo.toml | the range each of `[dependencies]`, `[dev-dependencies]` and `[build-dependencies]` gives it, each under `[target.<cfg>]` too, and `[workspace.dependencies]`: a string or a table's `version`, read as Cargo reads it (above), the key or a renamed dependency's `package =` naming it. `[patch]` is not read: it replaces a package's source, most often with git or a path, which names no version. `{ workspace = true }` inherits the workspace's and is not literal, unless the same file's `[workspace.dependencies]` gives the package, which is then the value |
+| `Cargo.toml` | Cargo.toml | the range each of `[dependencies]`, `[dev-dependencies]` and `[build-dependencies]` gives it, each under `[target.<cfg>]` too, and `[workspace.dependencies]`: a string or a table's `version`, read as Cargo reads it (above), the key or a renamed dependency's `package =` naming it. `[patch]` is not read: it replaces a package's source, most often with git or a path, which names no version. `{ workspace = true }` inherits the workspace's and is not literal, with the line of its `workspace = true` as the file wrote it as the text, such as `serde = { workspace = true }`, unless the same file's `[workspace.dependencies]` gives the package, which is then the value |
 | `Cargo.lock` | Cargo.lock | the `version` of each `[[package]]` named for it, the workspace's own packages included |
 | `Gemfile` | Gemfile | each requirement of a `gem` statement for the package: `gem "rails", "~> 7.1", ">= 7.1.2"` gives two values, each read as RubyGems reads it (above). A Gemfile is Ruby, so errata reads it with its lexer (see [`comment`](#comment)) and runs nothing: a string with `#{}` and a requirement that is no string, such as a constant, are not literal, the options after the requirements, such as `require: false`, give nothing, and a gem a method or a loop declares, or one whose name or requirements are written as `%q(...)`, is not read |
 | `Gemfile.lock` | Gemfile.lock | the version of each gem in the `specs:` of a `GEM`, `PATH`, `GIT` or `PLUGIN SOURCE` section, without the platform after a `-`, as in `nokogiri (1.16.2-x86_64-linux)`. The ranges of a gem's own dependencies, indented below it, and the `DEPENDENCIES` section, which copies the Gemfile, are not read |
@@ -3210,7 +3417,10 @@ files only, and takes no `only`.
 The JSON, TOML and YAML files hold to the node limits of their formats, and go.mod and go.work to
 theirs (see [Limits](#limits)). A file that does not parse, or that writes a range or a version as
 anything but a string, which its tool refuses too, makes the rule unknown, and so does a value that
-is empty or holds a control character. A TOML date or time, such as `x = 1979-05-27` in a Cargo.toml
+is empty or holds a control character. The text of a Cargo dependency that inherits the
+workspace's range is its line, and that line takes no such check, since TOML puts a tab between a
+key and its value as readily as a space; the reports escape what a terminal or a viewer would act
+on in it. A TOML date or time, such as `x = 1979-05-27` in a Cargo.toml
 or `version = 1979-05-27` in a lockfile, is no string. A byte order mark is skipped where the file's
 tool skips one: in npm's and Cargo's files, the line files and the Gemfile. Python's TOML files and
 Composer's JSON refuse one, as their tools do.
@@ -3257,7 +3467,11 @@ of `A` after it. That is cautious: compose keeps an earlier `A=1` when the envir
 set `A`, but errata cannot tell whether it does. In a template file, named with a suffix such as
 `.j2` or `.tpl` ([`ini`](#ini) lists them), a value whose text as written the engine
 renders is not literal, and so is every substitution of its key, since the engine may render it
-to anything: `A={{ port }}` in `.env.j2`, and `B=${A}` after it.
+to anything: `A={{ port }}` in `.env.j2`, and `B=${A}` after it. So is a key set on a line inside
+one of the engine's blocks, which the rendered file may not hold, as [`ini`](#ini) says, and every
+substitution of it: after `# {% if prod %}`, `A=1` and `# {% endif %}`, both `A` and a `B=${A}`
+below are not literal. compose refuses a line that is only a tag, so in an env file only a tag in
+a comment line reads on.
 
 Each value carries the key it is set under, and the text and SARIF reports print it beside the
 location: `"8080" at .env:2 key "API_PORT" (env)`.
@@ -3524,7 +3738,9 @@ literal:
   arithmetic, or in the pattern or replacement of `${Y#p}`, `${Y%p}` or `${Y/p/r}`, and in mksh a
   single quote in a double-quoted default;
 - in a template file, named with `.j2`, `.jinja`, `.jinja2`, `.tmpl`, `.tpl`, `.tftpl` or `.erb`,
-  a value that holds what the engine renders, as [`ini`](#ini) says.
+  a value that holds what the engine renders, as [`ini`](#ini) says, and an assignment on a line
+  inside one of the engine's blocks, which the rendered script may not hold; the variable is then
+  unknown, so `X=$Y` is not literal after `Y=1` in a block.
 
 A quoted argument of a declaration assigns too, since the shell splits it at its `=` once the
 quotes are removed: `export "X=1"` gives `1`, and `export "X=$PATH:/x"` comes back as written,
@@ -3720,7 +3936,8 @@ lex makes the rule unknown: a string or a comment that is not closed, a `'...'` 
 over a line end, a `}` that closes no block, a `)` or `]` that closes no bracket, a `{`, `(` or
 `[` still open at the end of the file,
 and a `}` that closes a block in which a `(` or `[` is still open. In a template file, such as `Jenkinsfile.j2`, a
-value with `{{ }}` is not literal.
+value with `{{ }}` is not literal, and so is a value on a line inside one of the engine's blocks, as
+[`ini`](#ini) says.
 
 The lexer does not understand Groovy beyond what a declarative pipeline states literally. Of a
 scripted pipeline it reads only the literal `env.X =` and `def X =` assignments. It does not read:
@@ -3924,11 +4141,14 @@ Compare the value as a number with `int()`:
 ```
 
 Each value is at the file as `file` wrote it, at no line, so a message names the file alone, and
-a SARIF result has no region. A `file` with `*`, `?` or `[` does not load. A `files:` entry with
-one is a glob, and `exists` would look for a file of that very name, find none, and say `false`,
-so a rule that files stay removed would hold whatever the glob matched. `exists` and `size` take
-no `files:`. A file whose name
-holds one of these characters, such as `app/[slug]/page.tsx`, cannot be named yet.
+a SARIF result has no region. A SARIF result that blames an `exists` value of `false` is at the
+check in the config, since code scanning cannot show a file that is not there; its message names
+the path, and so does a related location that holds such a value, which places nothing.
+
+A `file` with `*`, `?` or `[` does not load. A `files:` entry with one is a glob, and `exists`
+would look for a file of that very name, find none, and say `false`, so a rule that files stay
+removed would hold whatever the glob matched. `exists` and `size` take no `files:`. A file whose
+name holds one of these characters, such as `app/[slug]/page.tsx`, cannot be named yet.
 
 ## Limits
 
@@ -3983,7 +4203,7 @@ core machine.
 | link reference definitions | 10000000, the definitions at the start of a paragraph times its lines | goldmark copies the paragraph's lines once for each definition it takes out: 3162 definitions, at the limit, take 0.08 s. The most in a row in a real file is 343. Put blank lines between the definitions |
 | a line of an HTML block | 1 MiB | goldmark scans such a line in calls errata cannot stop: a tag of 32 MiB took 0.59 s, and 0.02 s at the limit. The limit dates from goldmark v1, whose regular expressions took 11 s over the same line. The longest in a real file is 1801 bytes |
 | prose | twice the size of the file | the regex time limit, which scales with the file, then holds for the prose too |
-| ini and properties work | 128 units for each byte of the file and of the spec's names, and 1048576 more | each read makes one pass over the file and keeps only the values it selects, so it needs no node limit. Every loop that reads a line, compares a name or matches an ansible host against a range charges the budget; a unit is 0.3 to 2.6 ns on the dense shapes measured, so a read that spends the whole budget at 32 MiB (about 4.3 billion units) takes 1.5 s to 11 s. Real files spend 2 to 8 units a byte. The slowest shape that reads at 32 MiB takes 3.8 s (tox, a key of each letter in each of a million sections). The worst shape found, lines of ten 17 digit ranges against a spec host of 1024 bytes, is refused at the budget in 5.9 s, where it would have run for about 350 s; a range bound of 4 million digits is refused in 0.1 s, and php fallbacks nested 131000 deep in under 0.01 s |
+| ini and properties work | 128 units for each byte of the file and of the spec's names, and 1048576 more | each read makes one pass over the file and keeps only the values it selects, so it needs no node limit. A template's read makes two more, for its blocks, which keep a few words whatever the file holds: 32 MiB of the densest ERB blocks, `<%{%><%}%>` on each line, allocates 1072 bytes against 600 for the same bytes in a plain properties file, and reads in 3.4 s against 0.55 s on a worker of 2 cores, anon at most 110 MiB: the slowest shape that reads at 32 MiB. Every loop that reads a line, compares a name or matches an ansible host against a range charges the budget; a unit is 0.3 to 3.5 ns on the dense shapes measured, the ERB scan dearest, so a read that spends the whole budget at 32 MiB (about 4.3 billion units) takes 1.5 s to 15 s. Real files spend 2 to 8 units a byte. On the same worker tox, a key of each letter in each of a million sections, reads in 3.1 s. The worst shape found, lines of ten 17 digit ranges against a spec host of 1024 bytes, is refused at the budget in 5.9 s, where it would have run for about 350 s; a range bound of 4 million digits is refused in 0.1 s, and php fallbacks nested 131000 deep in under 0.01 s |
 | envfile work | the budget of an ini or properties read | each statement costs a line's work, each pass of a substitution its bytes, and each byte it copies from a key 32 units, so a read copies at most a 32nd of its budget, 134 MB at 32 MiB, and a chain of keys that each repeat the one before is refused before its values fill memory. That bounds the bytes copied; the memory is about three times that, since a value grows by appends and the reader keeps a copy of each key's value: 32 MiB of `${A}` for a value of 4 KiB is refused in 0.45 s after 733 MB allocated, anon 395 MiB above its base on a 2 core worker. A word inside a word is read again at each level, so nesting costs the square of its depth and is refused for work long before 1000 levels, the depth limit. Real files spend 1.9 to 5.6 units a byte (20 files: compose-go's fixtures and five projects' `.env.example`). At 32 MiB on a worker node the slowest shape that reads takes 1.6 s on a 4 core worker and 3.1 s on a 2 core one (a key on each line). The most memory measured is 6.7 million distinct keys of four letters: the reader keeps every key's value for the substitutions after it, so it reads in 3.1 s after 801 MB allocated, anon 517 MiB above its base, on the 2 core worker, and the same as a template file such as `.env.j2`. Words nested 2.8 million deep are refused in 2.3 s |
 | shell nesting | 20000 calls of the parser's stack, and syntax 20000 levels deep | mvdan.cc/sh recurses on nesting, and a stack overflow ends the process: 1 MiB of `"$("` passed Go's 1 GB limit. The parser reads through a check that counts its stack every 16 KiB, so it stops within 16 KiB of the limit; about 340 levels of parentheses in `(( ))` or 1800 of `$( )` reach it. A pipeline, a list or a sum is one level deeper for each command or term, and errata walks it by recursion: 32 MiB of `+1` passed Go's limit there. See [`shell`](#shell) for the times and memory |
 | a shell statement | an eighth of `max_bytes`, 4 MiB at the default | the parser holds one statement's syntax whole while it reads it, up to 200 bytes of memory for each byte: 4 MiB of `a\|a\|a` took 0.87 GB and 8 MiB 1.7 GB, so 32 MiB would take about 6.6 GB; the limit refuses it with 0.88 GB, and eight groups of `a;a;a` at the limit read with 1.43 GB. Counted to the 1 KiB the parser reads at a time. The largest statement of eight real scripts measured is 149802 bytes |
@@ -3997,10 +4217,10 @@ core machine.
 | walk depth | 64 directories | the deepest tree measured nests 17. A chain 64 deep with 15000 files in each directory takes 3.9 s and 3 MB |
 | git tags on HEAD | 64 MiB of `packed-refs` and 1000000 refs in it; 1000000 entries below `.git/refs/tags`; a ref name of 4096 bytes; 5 symbolic refs; 16 tag objects a tag leads through; 1000 packs; of a packed object, 4095 deltas and 64 KiB of each object of the chain; 32 MiB of rebuilt objects kept; 256 MiB of work in all | `package_version`'s `tag` reads the refs whole, as git's index is read, and an annotated tag's object only where `packed-refs` does not peel it. A loose object is inflated to its first 256 bytes, from at most 64 KiB of the file, enough for its header and a tag's object line. A pack is searched through its index where it lies, some 20 reads for millions of objects; an object it stores as a delta is rebuilt from its chain of bases, each object at most 64 KiB inflated, since git deltas a tag only against other tags, which are a few hundred bytes or a few thousand signed. Each object rebuilt is kept, so the chains of the tags a fetch packs, which share their bases, are read once. git's `gc --auto` repacks at 50 packs. One budget of work holds the whole read, shared by every tag: each byte a zlib stream takes or gives, each byte a delta writes, 1 KiB for each object or delta read, and 4 KiB for each search of an index, some 20 reads; an object peeled once is remembered, so tags that name it again cost nothing. Each `package_version` extractor with `tag` has its own budget, so the config, never the repository, sets how many reads there are. 20001 annotated tags off HEAD, each a loose ref with its object a delta in a pack, as a fetch writes them, do 66 MB of it in 0.91 s on the builder node; packed-refs with ^ lines do none. The shapes a sender may choose are refused at the budget: a 64 KiB tag under a chain of 4095 deltas that each copy it whole, named by 1000 tags, in 47 ms, and 64 such chains of a 200 byte tag, 262144 objects to read, in 0.78 s, the slowest shape measured; each figure on builder (4 cores, 4 GiB), anon at most 115 MiB |
 | git index | 64 MiB, whatever `max_bytes` is, and 1000000 entries; a path of 4096 bytes, and 64 MiB of paths in all | a glob in `files` reads `.git/index` whole and keeps the path of each entry: an entry is about 70 bytes and its path, so 64 MiB holds some 600000 files, and the entries limit is the walk's. A version 4 index writes each path as what it keeps of the one before and a suffix, so 65 bytes of the index can make a path of 4096 and 64 MiB of them gigabytes of paths: a path is held to 4096 bytes, the longest a file may be named, and the paths together to 64 MiB, which an index of plain paths cannot pass. An index read with the wrong object format is refused, since each entry's path must be the length its flags give |
-| `files` of `env`, `yaml`, `json`, `toml` and `regex` | 64 entries in `files`; 256 MiB of paths matched, each glob's weight times the bytes of the tracked paths it is matched against; 10000 files read | each glob is matched against the tracked files below its literal directory, `deploy/` for `deploy/*.env`, which a binary search finds in git's index, sorted by path; a glob whose first segment holds a wildcard, such as `*/*.env` or `**/*.yaml`, is matched against every tracked file, and so is every glob over an index out of git's order, which git itself refuses to read, and the refusal says so. A match costs time in proportion to the path, about 33 ns a byte on a 3 core worker node. A glob without `**` weighs 1, and one with `**` weighs its other segments, since the match retries what follows the last `**` at each later segment of a path: `infra/**/*.yaml` weighs 2. The weight is then multiplied by one for each 8 bytes of the glob's longest segment that holds a `*`, since a match tries what follows a `*` at each byte where it could end: `**/*` and 251 more bytes, over segments of 255 bytes, took 655 ns a byte of path at a weight of 1, and takes 28 ns a weighed byte on a 2 core worker node at its weight of 32. Each byte of a character class, its brackets included, counts as 3 bytes of the segment, since a match reads a class again at each byte it tests: twenty classes of 13 bytes after a `*` took 72 ns a weighed byte with each byte counted once, and take 21 ns with 3 cores at their weight of 98. An index may hold 64 MiB of paths, over which 64 globs took 167 s. The bytes to match are each glob's weight times the bytes of the paths it is matched against, known once the index is read, so a spec over the bound is refused before any glob is matched. The bound fits about 22 MB of paths for a dozen globs with a wildcard first, some 450000 files of 50 bytes or 320000 of 70, and 4 such globs over a million files of 60 bytes. A very large monorepo with many such globs is refused, which makes the rule unknown: list fewer globs, or start each with its directory. A file costs an open, a stat and a read of its first bytes before its reader runs, however small it is, so a glob over a million empty files would run for minutes; 10000 empty files take 0.9 s on the build node, with the 4 cores its runner pod gets, and allocate 12 KB each |
+| `files` of `env`, `yaml`, `json`, `jsonc`, `json5`, `toml` and `regex` | 64 entries in `files`; 256 MiB of paths matched, each glob's weight times the bytes of the tracked paths it is matched against; 10000 files read | each glob is matched against the tracked files below its literal directory, `deploy/` for `deploy/*.env`, which a binary search finds in git's index, sorted by path; a glob whose first segment holds a wildcard, such as `*/*.env` or `**/*.yaml`, is matched against every tracked file, and so is every glob over an index out of git's order, which git itself refuses to read, and the refusal says so. A match costs time in proportion to the path, about 33 ns a byte on a 3 core worker node. A glob without `**` weighs 1, and one with `**` weighs its other segments, since the match retries what follows the last `**` at each later segment of a path: `infra/**/*.yaml` weighs 2. The weight is then multiplied by one for each 8 bytes of the glob's longest segment that holds a `*`, since a match tries what follows a `*` at each byte where it could end: `**/*` and 251 more bytes, over segments of 255 bytes, took 655 ns a byte of path at a weight of 1, and takes 28 ns a weighed byte on a 2 core worker node at its weight of 32. Each byte of a character class, its brackets included, counts as 3 bytes of the segment, since a match reads a class again at each byte it tests: twenty classes of 13 bytes after a `*` took 72 ns a weighed byte with each byte counted once, and take 21 ns with 3 cores at their weight of 98. An index may hold 64 MiB of paths, over which 64 globs took 167 s. The bytes to match are each glob's weight times the bytes of the paths it is matched against, known once the index is read, so a spec over the bound is refused before any glob is matched. The bound fits about 22 MB of paths for a dozen globs with a wildcard first, some 450000 files of 50 bytes or 320000 of 70, and 4 such globs over a million files of 60 bytes. A very large monorepo with many such globs is refused, which makes the rule unknown: list fewer globs, or start each with its directory. A file costs an open, a stat and a read of its first bytes before its reader runs, however small it is, so a glob over a million empty files would run for minutes; 10000 empty files take 0.9 s on the build node, with the 4 cores its runner pod gets, and allocate 12 KB each |
 | the values of `env`, of `dependency`, or of `files` | 100000 and `max_bytes` in all | a CI file repeats a value for each job that inherits it, so the values of every file, job and step together hold to the limits of one extractor's. A Jenkinsfile is read again for each stage that sets the variable, all within the extractor's one work budget, so a file of hundreds of such stages is refused at it: 400 of them are refused in 1 s |
 | `package_version` files | 64 in `files` | a manifest gives at most two values, so 64 files stay under the limit on values by construction; a package has a manifest or two of each kind, and a rule over more packages names several extractors |
-| files one extractor reads | `max_bytes` in all | a walk may find many files, and symlinks or copies may repeat one, so the files of one extractor are read up to its `max_bytes` together, as one file is; in `tool_version` and the `files:` of yaml, json, toml and regex, links that end at one file read it once, and `env` and `package_version` read each name they list. 100 links to a 32 MiB file take 0.4 to 0.7 s, where reading each link took 31 to 64 s in all before |
+| files one extractor reads | `max_bytes` in all | a walk may find many files, and symlinks or copies may repeat one, so the files of one extractor are read up to its `max_bytes` together, as one file is; in `tool_version` and the `files:` of yaml, json, jsonc, json5, toml and regex, links that end at one file read it once, and `env` and `package_version` read each name they list. 100 links to a 32 MiB file take 0.4 to 0.7 s, where reading each link took 31 to 64 s in all before |
 | a walk for markers | 100000 files, 2 GiB read, 100000 markers | the `marker` extractor opens every file its `files` name, and `errata-unbound-markers` every file any of them names. Measured on the builder node, each figure in proportion to the walk: 20000 small files, a tenth of them Markdown and a tenth Go holding a marker each, took 0.66 s and 144 MiB allocated, so 100000 take about 3.3 s; 256 MiB of files without the bytes `errata` took 0.34 s, so 2 GiB about 2.7 s; 128 MiB of Markdown that holds them, each file parsed, took 3.0 s, so 2 GiB about 48 s. A run reads and parses each file once, whichever walks take it in, so the cost of n rules that read markers over one tree is one walk and n listings of git's index, not n + 1 walks. Every file counts its size against the bytes read, a file over `max_bytes` too, which the walk reads in pieces of 1 MiB for the bytes `errata`. A Markdown file it parses holds to the Markdown limits above, and the markers of one walk to the cap on values |
 | file name | 4096 bytes | the longest path Linux opens. A longer `file:` in an extractor is a load error, since every message about a file names it whole |
 | quoted text | 64 bytes | errata's message that quotes a key, an anchor or a number from a file, or a path, a pattern, a file or a selector from `errata.yaml`, cuts it there and writes `...`, since a message goes into the CI log and the JUnit report. A parser's message, such as yaml.v3's for an unknown anchor, which quotes the anchor's name, is cut at 256 bytes. A rule's message quotes a value of at most 256 bytes whole. Of a longer one it quotes 256 bytes, from 32 bytes before the first byte where it differs from the other values of the message, marked as in `(from byte 266 of 299)`, so two long values that differ only at the end still print differently |
@@ -4281,6 +4501,7 @@ required:
 | `relation` | rule: what its values must satisfy, with exactly one of `agree` and `assert` |
 | `relation.agree` | the names, in the order `agree` lists them |
 | `relation.compare` | beside `agree`: how its values are compared, `text` (the string form of each value after `normalize`) or `semver` (as versions and ranges) |
+| `relation.syntax` | beside `compare: semver`: the syntax its values are read in, as `syntax` names it, or `any` for a rule that sets none (see [`compare`](#compare)) |
 | `relation.assert` | the expression as written |
 | `normalize`, `allow_empty`, `skip_not_literal` | rule: as the config lists them |
 | `witness` | every check: the fixtures it names, in order; an empty list when it names none (see [`witness`](#witness)) |
@@ -4379,7 +4600,8 @@ at which the ranges before it stop overlapping, in the same order: over `>=20`, 
 the alert is on `>=23`. An assert rule has no majority, so it blames the first
 value it extracted. A program check reports no values, so its result points at the line where the
 check starts in the config file, and so does a rule whose extractors found nothing; the message is
-what the program printed.
+what the program printed. A rule that blames an `exists` value of `false` points at its check
+too, since no file is at the value's path, and its message names that path.
 
 Every path is relative to the repository root, with `uriBaseId` `%SRCROOT%`, so code scanning
 places it in the checkout. A value whose path is absolute, names a host or climbs out with `..` gets

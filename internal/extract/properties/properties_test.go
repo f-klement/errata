@@ -173,17 +173,48 @@ func TestPropertiesMarksWhatATemplateComputes(t *testing.T) {
 		{"a jinja comment", "app.properties.j2", "a=x {# c #}\n", "x {# c #}!@1"},
 		{"a template", "app.properties.j2", "a={{ x }}\nb=1\n", "{{ x }}!@1"},
 		{"a file that is no template", "a.properties", "a={{ x }}\n", "{{ x }}@1"},
+		// #120: Spring Boot and Log4j fill in ${name}; Java and another
+		// file keep it.
+		{"spring", "src/main/resources/application.properties", "a=${PORT:8080}\na=8080\na=$x\n", "${PORT:8080}!@1 8080@2 $x@3"},
+		{"a spring profile", "application-prod.properties", "a=${DB_URL}\n", "${DB_URL}!@1"},
+		{"spring bootstrap", "bootstrap.properties", "a=${x}\n", "${x}!@1"},
+		{"log4j2", "log4j2.properties", "a=${sys:LOG_DIR}/app.log\n", "${sys:LOG_DIR}/app.log!@1"},
+		{"log4j2 test", "log4j2-test.properties", "a=$${x}\n", "$${x}!@1"},
+		{"log4j", "log4j.properties", "a=${catalina.base}/logs\n", "${catalina.base}/logs!@1"},
+		{"a spring template", "application.properties.j2", "a=${x}\nb=1\n", "${x}!@1"},
+		{"another file", "app.properties", "a=${x}\n", "${x}@1"},
+		{"a name close to spring's", "applications.properties", "a=${x}\n", "${x}@1"},
+		{"log4j with a suffix", "log4j-x.properties", "a=${x}\n", "${x}@1"},
+		{"no properties suffix", "application.props", "a=${x}\n", "${x}@1"},
 	} {
 		if got := notLiterals(t, c.file, c.body, Spec{File: c.file, Key: "a"}); got != c.want {
 			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
 		}
 	}
-	for file, want := range map[string]bool{"app.properties.tmpl": true, "a.properties": false} {
+	for file, want := range map[string]bool{"app.properties.tmpl": true, "a.properties": false, "application.properties": true, "log4j2.properties": true} {
 		if _, err := Build(Spec{File: file, Key: "a"}); err != nil {
 			t.Fatal(err)
 		}
 		if got := Describe(Spec{File: file, Key: "a"}).NotLiteral; got != want {
 			t.Errorf("%s: may return not literal %v, want %v", file, got, want)
+		}
+	}
+}
+
+// #119: in a template, a value inside one of the engine's blocks may not be
+// in the rendered file, so it is not literal, beside one outside the block;
+// one row for each engine. The planted break is TemplateRead left out of
+// Build.
+func TestPropertiesMarksAValueInsideATemplateBlock(t *testing.T) {
+	for _, c := range []struct{ name, file, body, want string }{
+		{"jinja", "app.properties.j2", "{% if x %}\na=1\n{% endif %}\na=2\n", "1!@2 2@4"},
+		{"erb", "app.properties.erb", "<% if @x %>\na=1\n<% end %>\na=2\n", "1!@2 2@4"},
+		{"go", "app.properties.tmpl", "{{ if .x }}\na=1\n{{ end }}\na=2\n", "1!@2 2@4"},
+		{"terraform", "app.properties.tftpl", "%{ for x in y }\na=1\n%{ endfor }\na=2\n", "1!@2 2@4"},
+		{"no template", "app.properties", "{% if x %}\na=1\n", "1@2"},
+	} {
+		if got := notLiterals(t, c.file, c.body, Spec{File: c.file, Key: "a"}); got != c.want {
+			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
 		}
 	}
 }

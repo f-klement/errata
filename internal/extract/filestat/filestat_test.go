@@ -30,8 +30,10 @@ func repo(t *testing.T) string {
 // One value, at the file as the spec wrote it and at no line: true for a
 // regular file, named outright, through a link or with a .. resolved by
 // name; false for no file, a link that dangles inside the repository and a
-// name below a file. Planted breaks: the fs.ErrNotExist test dropped, which
-// made a missing file unknown; the two texts swapped.
+// name below a file, at a location marked Missing, so SARIF places no
+// result at a file that is not there. Planted breaks: the fs.ErrNotExist
+// test dropped, which made a missing file unknown; the two texts swapped;
+// Missing set on every value, and on none.
 func TestExists(t *testing.T) {
 	root := repo(t)
 	for file, want := range map[string]string{
@@ -47,8 +49,9 @@ func TestExists(t *testing.T) {
 		"f/x":            "false",
 	} {
 		got := extracttest.MustRun(t, BuildExists, Spec{File: file}, root)
-		if len(got) != 1 || got[0].Text != want || got[0].At != (check.Location{File: file}) {
-			t.Errorf("%s: %+v, want one value %s at %s and no line", file, got, want, file)
+		at := check.Location{File: file, Missing: want == "false"}
+		if len(got) != 1 || got[0].Text != want || got[0].At != at {
+			t.Errorf("%s: %+v, want one value %s at %+v and no line", file, got, want, at)
 		}
 	}
 }

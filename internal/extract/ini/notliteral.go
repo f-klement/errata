@@ -25,14 +25,15 @@ func computedEntry(string) func(*core.Entry) bool {
 
 // ansibleNotLiteral is what ansible computes: a variable whose literal
 // Python writes otherwise (pyValue), or a Jinja2 template, which ansible
-// renders when it uses the variable, and a host with a range or a port,
-// which ansible reads as the hosts the range expands to, without the port
-// (web[01:03] is web01 to web03, db1:2222 is db1). A group a children
+// renders when it uses the variable, and a host with a range or a port
+// parse_address takes off (portTaken), which ansible reads as the hosts the
+// range expands to, without the port (web[01:03] is web01 to web03,
+// db1:2222 is db1); readAnsible marks such a host. A group a children
 // section names is returned as written.
 func ansibleNotLiteral(string) func(*core.Entry) bool {
 	return func(e *core.Entry) bool {
 		if e.Kind == core.EntryName {
-			return e.Host != nil && (bytes.IndexByte(e.Value, '[') >= 0 || hasPort(e.Value))
+			return e.Host != nil && e.Computed
 		}
 		return e.Computed || core.HasJinja(e.Value)
 	}
@@ -260,22 +261,51 @@ func hasPosixVar(v []byte) bool {
 }
 
 // coverageChanges reports whether coverage.py's substitute_variables
-// changes v: it replaces $$, a $ and a word, and ${...}, with -default or
-// not (the pattern \$(\$|\w|\{)). A $ before anything else, as in raise
-// NotImplementedError$ or $ 5, stays as written.
+// changes v: it replaces each match of
+//
+//	\$(?:(?P<dollar>\$)|(?P<word1>\w+)|\{(?P<word2>\w+)(?:(?P<strict>\?)|-(?P<defval>[^}]*))?})
+//
+// that is $$, a $ and a word, and ${word}, ${word?} or ${word-default}. A $
+// before anything else, as in raise NotImplementedError$ or $ 5, and a ${
+// the pattern does not close, as ${ x } or ${x, stay as written.
 func coverageChanges(v []byte) bool {
 	for i := range v {
 		if v[i] != '$' || i+1 == len(v) {
 			continue
 		}
-		// Python's \w is str.isalnum and _: a letter, or a number of any
-		// kind, ² too.
-		if r, _ := utf8.DecodeRune(v[i+1:]); r == '$' || r == '{' || r == '_' || unicode.IsLetter(r) || unicode.IsNumber(r) {
+		if r, _ := utf8.DecodeRune(v[i+1:]); r == '$' || pyWordRune(r) {
+			return true
+		}
+		if v[i+1] == '{' && coverageBraces(v[i+2:]) {
 			return true
 		}
 	}
 	return false
 }
+
+// coverageBraces reports whether v, the text after a ${, matches the rest
+// of coverage's braced form: a word, then }, ?} or - and a }.
+func coverageBraces(v []byte) bool {
+	n := bytes.IndexFunc(v, func(r rune) bool { return !pyWordRune(r) })
+	if n < 0 {
+		return false // a word and no }
+	}
+	switch rest := v[n:]; {
+	case n == 0:
+		return false
+	case rest[0] == '}':
+		return true
+	case rest[0] == '?':
+		return len(rest) > 1 && rest[1] == '}'
+	case rest[0] == '-':
+		return bytes.IndexByte(rest, '}') >= 0
+	}
+	return false
+}
+
+// pyWordRune is a character of Python's \w in a str pattern: _, a letter,
+// or a number of any kind, ² too.
+func pyWordRune(r rune) bool { return r == '_' || unicode.IsLetter(r) || unicode.IsNumber(r) }
 
 // mypySection is a section mypy reads: [mypy], and [mypy-pattern] for
 // modules.
@@ -295,7 +325,9 @@ func toxSection(s []byte) bool {
 // pyComputed reports whether ansible's value for lit, a Python literal
 // other than a string, written alone, differs from its text as Python
 // writes it (str of the value): a number written otherwise (0x10, 1_000,
-// +5, 1.50, 1e3, 2.0j, and 1+2j, which is (1+2j)), or a container. True,
+// +5, 1.50, 1e3, 2.0j, and 1+2j, which is (1+2j)), a list or a dict
+// written otherwise than repr writes it (reprReader), a tuple, which
+// ansible holds as a list, and a set. True,
 // False, None, a decimal integer, a float and an imaginary number written
 // as Python writes them are literal, and so is ..., which ansible turns
 // back into the text "...", as it turns a complex number into its str.
@@ -304,9 +336,12 @@ func pyComputed(lit []byte) bool {
 	switch {
 	case t == "True" || t == "False" || t == "None" || t == "...":
 		return false
-	case t == "" || strings.ContainsAny(t[:1], "[({") || strings.HasPrefix(t, "set"):
+	case t == "" || strings.HasPrefix(t, "set"):
 		return true
-	case t[0] == '+':
+	case strings.ContainsAny(t[:1], "[{"):
+		r := &reprReader{s: t}
+		return !r.value() || r.i != len(t)
+	case t[0] == '(' || t[0] == '+':
 		return true
 	}
 	neg := t[0] == '-'
@@ -369,4 +404,146 @@ func pyFloatRepr(f float64) string {
 		s += ".0"
 	}
 	return s
+}
+
+// reprReader reads a container literal as repr writes the list or dict it
+// is, and refuses any other text: [1, 2] and {'a': [True, None]} are
+// written as repr writes them, and [1,2], ["a"], {1: 2} and [...] are not.
+// ansible holds a tuple as a list, so (1,) is [1] to it and every tuple is
+// refused (TestAnsibleAgreesWithAnsible's corpus holds one). A refusal marks the value not literal,
+// so the reader takes only what it can be sure of: a string element is
+// '...' of printable ASCII with no \ or ', or "..." of the same with a '
+// in it and no ", as repr quotes it; a dict's keys are such strings, each
+// once, since a key written twice, or 1 beside True, is one key to Python;
+// a number is one pyComputed leaves literal. A set is refused, since its
+// order is the hashes'.
+type reprReader struct {
+	s     string
+	i     int
+	depth int
+}
+
+// value reads one element at r.i.
+func (r *reprReader) value() bool {
+	if r.i >= len(r.s) {
+		return false
+	}
+	switch c := r.s[r.i]; {
+	case c == '[':
+		return r.items(']')
+	case c == '{':
+		return r.dict()
+	case c == '\'' || c == '"':
+		_, ok := r.str()
+		return ok
+	case c == '-' || isDigit(c):
+		j := r.i
+		if c == '-' {
+			j++
+		}
+		n := pyNumberLen([]byte(r.s[j:]))
+		if n == 0 || pyComputed([]byte(r.s[r.i:j+n])) {
+			return false
+		}
+		r.i = j + n
+		return true
+	}
+	for _, w := range []string{"True", "False", "None"} {
+		if strings.HasPrefix(r.s[r.i:], w) {
+			r.i += len(w)
+			return true
+		}
+	}
+	return false
+}
+
+// enter counts a level of nesting, and refuses one deeper than Python's
+// tokenizer takes.
+func (r *reprReader) enter() bool {
+	r.depth++
+	r.i++
+	return r.depth <= pyMaxLevel
+}
+
+// items reads a list from its bracket: elements joined by ", ".
+func (r *reprReader) items(close byte) bool {
+	if !r.enter() {
+		return false
+	}
+	defer func() { r.depth-- }()
+	if strings.HasPrefix(r.s[r.i:], string(close)) {
+		r.i++
+		return true
+	}
+	for {
+		if !r.value() {
+			return false
+		}
+		switch rest := r.s[r.i:]; {
+		case strings.HasPrefix(rest, string(close)):
+			r.i++
+			return true
+		case strings.HasPrefix(rest, ", "):
+			r.i += 2
+		default:
+			return false
+		}
+	}
+}
+
+// dict reads a dict from its brace: key: value pairs joined by ", ", each
+// key a string written once.
+func (r *reprReader) dict() bool {
+	if !r.enter() {
+		return false
+	}
+	defer func() { r.depth-- }()
+	if strings.HasPrefix(r.s[r.i:], "}") {
+		r.i++
+		return true
+	}
+	keys := map[string]bool{}
+	for {
+		key, ok := r.str()
+		if !ok || keys[key] || !strings.HasPrefix(r.s[r.i:], ": ") {
+			return false
+		}
+		keys[key] = true
+		r.i += 2
+		if !r.value() {
+			return false
+		}
+		switch rest := r.s[r.i:]; {
+		case strings.HasPrefix(rest, "}"):
+			r.i++
+			return true
+		case strings.HasPrefix(rest, ", "):
+			r.i += 2
+		default:
+			return false
+		}
+	}
+}
+
+// str reads a string as repr quotes it, and returns its text.
+func (r *reprReader) str() (string, bool) {
+	if r.i >= len(r.s) || r.s[r.i] != '\'' && r.s[r.i] != '"' {
+		return "", false
+	}
+	q := r.s[r.i]
+	end := strings.IndexByte(r.s[r.i+1:], q)
+	if end < 0 {
+		return "", false
+	}
+	text := r.s[r.i+1 : r.i+1+end]
+	for _, c := range []byte(text) {
+		if c < ' ' || c > '~' || c == '\\' {
+			return "", false
+		}
+	}
+	if q == '"' && strings.IndexByte(text, '\'') < 0 {
+		return "", false
+	}
+	r.i += end + 2
+	return text, true
 }

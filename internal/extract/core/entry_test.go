@@ -175,6 +175,20 @@ func TestTemplateNotLiteral(t *testing.T) {
 	}
 }
 
+// Untemplated takes one template suffix off a name, and leaves a name that
+// is only a suffix, and any other name, as it is. The planted breaks are
+// the guard against an empty name dropped, and a second suffix taken.
+func TestUntemplated(t *testing.T) {
+	for file, want := range map[string]string{
+		"php.ini.j2": "php.ini", "etc/php.ini.jinja2": "etc/php.ini", "a.ini.erb": "a.ini", "a.tftpl": "a",
+		"x.j2.tpl": "x.j2", "a.ini": "a.ini", ".j2": ".j2", "dir/.tpl": "dir/.tpl", "a.j2.bak": "a.j2.bak",
+	} {
+		if got := Untemplated(file); got != want {
+			t.Errorf("%s: %s, want %s", file, got, want)
+		}
+	}
+}
+
 // Query.Wants is the reference the fuzz targets hold the matcher to: an
 // entry of its section, of a host its host matches, and of its key, or a
 // name where it has no key. The planted breaks are each condition dropped.

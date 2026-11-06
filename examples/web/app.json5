@@ -1,0 +1,12 @@
+// The web client's settings, which it reads with the json5 package when it starts.
+{
+  api: {
+    url: 'http://localhost:8080',
+    config: '{"port": 8080}',
+  },
+  // The consoles the client links to.
+  consoles: [
+    {name: 'api', port: 8080},
+    {name: 'admin', port: 9090,},
+  ],
+}

@@ -105,11 +105,28 @@ type walker struct {
 	// prevEnd is the offset where the statement walked last ends, before
 	// any here-document body of its own.
 	prevEnd int
+	// blocks are a template's blocks, nil for a script that is no
+	// template's, and lines the cursor that finds an assignment's line.
+	blocks *core.Blocks
+	lines  *core.LineCursor
 }
 
 func newWalker(name string, lang syntax.LangVariant, data []byte, m *core.Meter, limit int) *walker {
 	return &walker{name: name, lang: lang, data: data, m: m, limit: limit, declArgs: map[*syntax.Assign]bool{},
-		vars: map[string]varState{}, readonly: map[string]bool{}}
+		vars: map[string]varState{}, readonly: map[string]bool{}, lines: core.NewLineCursor(data)}
+}
+
+// inBlock reports whether off lies on a line inside one of a template's
+// blocks, which the rendered script may not hold: an assignment there is
+// not literal, and the variable is unknown after it, so a reference to it
+// is not literal either. A charge past the budget ends the walk.
+func (w *walker) inBlock(off int) bool {
+	if w.blocks == nil || w.err != nil {
+		return false
+	}
+	in, err := w.blocks.Holds(w.lines.At(off))
+	w.err = err
+	return in
 }
 
 // walk visits every node of one statement, after the here-documents of the
@@ -364,7 +381,7 @@ func (w *walker) assign(a *syntax.Assign) {
 		}
 		return
 	}
-	notLiteral := a.Append || a.Index != nil || w.declArgs[a]
+	notLiteral := a.Append || a.Index != nil || w.declArgs[a] || w.inBlock(offset(a.Pos()))
 	var text string
 	var from, to int
 	ok := true
@@ -560,7 +577,7 @@ func (w *walker) declWord(s *declState, word *syntax.Word) {
 	name, value, from, literal, ok := w.splitAssign(word)
 	if ok {
 		text := value
-		notLiteral := !literal || s.changes || s.unreadable
+		notLiteral := !literal || s.changes || s.unreadable || w.inBlock(offset(word.Pos()))
 		if notLiteral {
 			text = w.source(from, offset(word.End()))
 		}

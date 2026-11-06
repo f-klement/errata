@@ -72,7 +72,11 @@ func TestINIMarksWhatTheToolComputes(t *testing.T) {
 		{"setup.cfg tox join", "setup.cfg", "[testenv]\ncommands = pytest \\\n  -q\n", ini("setup.cfg", "testenv", "commands"), "pytest \\\n-q!@2"},
 		{"tox.ini comment and join", "tox.ini", "[testenv]\ndeps = pytest # pin\ncommands = pytest \\\n  -q\n", ini("tox.ini", "testenv", "commands"), "pytest -q@3"},
 		{"php.ini template", "php.ini.j2", "[PHP]\nmemory_limit = {{ php_memory_limit }}\nerror_reporting = E_ALL\n", ini("php.ini.j2", "PHP", "memory_limit"), "{{ php_memory_limit }}!@2"},
-		{"a template's text", "php.ini.j2", "[PHP]\nerror_reporting = E_ALL\n", ini("php.ini.j2", "PHP", "error_reporting"), "E_ALL@2"},
+		// #120: a php.ini template is read as php.ini, so PHP's marks hold
+		// beside the engine's.
+		{"a php.ini template's constant", "php.ini.j2", "[PHP]\nerror_reporting = E_ALL\nx = UTC\n", ini("php.ini.j2", "PHP", "error_reporting"), "E_ALL!@2"},
+		{"a php.ini template's text", "php.ini.j2", "[PHP]\nx = UTC\n", ini("php.ini.j2", "PHP", "x"), "UTC@2"},
+		{"a setup.cfg template", "setup.cfg.j2", "[a]\nurl = %(base)s\n", ini("setup.cfg.j2", "a", "url"), "%(base)s!@2"},
 		{"an ini template", "app.ini.tmpl", "[a]\nb = {% if x %}1{% endif %}\nc = d\n", ini("app.ini.tmpl", "a", "b"), "{% if x %}1{% endif %}!@2"},
 		{"an erb template", "app.ini.erb", "[a]\nb = <%= @b %>\n", ini("app.ini.erb", "a", "b"), "<%= @b %>!@2"},
 		{"<% outside erb", "app.ini.j2", "[a]\nb = <%= @b %>\n", ini("app.ini.j2", "a", "b"), "<%= @b %>@2"},
@@ -84,9 +88,26 @@ func TestINIMarksWhatTheToolComputes(t *testing.T) {
 		{"mypy files globs", "mypy.ini", "[mypy]\nfiles = src/*.py, tests\nfiles = a[0].py\nfiles = a?.py\nfiles = src, tests\nfiles = a:~b\n", ini("mypy.ini", "mypy", "files"), "src/*.py, tests!@2 a[0].py!@3 a?.py!@4 src, tests@5 a:~b@6"},
 		{"mypy_path splits at :", "mypy.ini", "[mypy]\nmypy_path = a:~b\nmypy_path = a*b\n", ini("mypy.ini", "mypy", "mypy_path"), "a:~b!@2 a*b@3"},
 		{"coverage unicode number", ".coveragerc", "[run]\nx = $\u00b2x\nx = $\u00e9\nx = $-\n", ini(".coveragerc", "run", "x"), "$\u00b2x!@2 $\u00e9!@3 $-@4"},
-		{"php lower case after _", "php.ini", "a = STREAM_CRYPTO_METHOD_TLSv1_2_CLIENT\na = CODESET\na = SIGTERM\na = Ab_c\n", ini("php.ini", "", "a"), "STREAM_CRYPTO_METHOD_TLSv1_2_CLIENT!@1 CODESET!@2 SIGTERM@3 Ab_c@4"},
+		{"php lower case after _", "php.ini", "a = PHP_FLOAT_EPSILON_x\na = Ab_c\n", ini("php.ini", "", "a"), "PHP_FLOAT_EPSILON_x!@1 Ab_c@2"},
+		// #118: PHP reads php.ini before any extension defines its
+		// constants, and keeps such a word as written (php -c, PHP 8.4).
+		{"php extension constants", "php.ini", "a = CODESET\na = M_PI\na = SIGTERM\na = SOMAXCONN\na = CURL_SSLVERSION_TLSv1_2\na = STREAM_CRYPTO_METHOD_TLSv1_2_CLIENT\n", ini("php.ini", "", "a"), "CODESET@1 M_PI@2 SIGTERM@3 SOMAXCONN@4 CURL_SSLVERSION_TLSv1_2@5 STREAM_CRYPTO_METHOD_TLSv1_2_CLIENT@6"},
+		// PHP reads a .user.ini for each request, and any file but php.ini
+		// and its scan directory's later than startup, when an extension's
+		// constant is defined.
+		{"php .user.ini", "php/.user.ini", "[PHP]\na = M_PI\na = UTC\n", ini("php/.user.ini", "PHP", "a"), "M_PI!@2 UTC@3"},
+		{"php conf.d", "etc/php/8.3/fpm/conf.d/x.ini", "a = M_PI\n", ini("etc/php/8.3/fpm/conf.d/x.ini", "", "a"), "M_PI@1"},
+		// PHP reads a conf.d file at startup wherever the repository keeps
+		// it; only the name, not a php directory, says so.
+		{"php .ini outside a php directory", "docker/opcache.ini", "a = M_PI\n", Spec{File: "docker/opcache.ini", Dialect: "php", Key: "a"}, "M_PI@1"},
+		{"php named pool file", "www.conf", "a = M_PI\n", Spec{File: "www.conf", Dialect: "php", Key: "a"}, "M_PI!@1"},
+		{"php.ini template", "php.ini.j2", "a = M_PI\n", ini("php.ini.j2", "", "a"), "M_PI@1"},
+		{"php startup constants", "php.ini", "a = E_STRICT\na = PHP_INT_MAX\na = DEFAULT_INCLUDE_PATH\na = PEAR_INSTALL_DIR\na = ZEND_THREAD_SAFE\na = UPLOAD_ERR_OK\na = DEBUG_BACKTRACE_IGNORE_ARGS\na = M_PI | 1\n", ini("php.ini", "", "a"), "E_STRICT!@1 PHP_INT_MAX!@2 DEFAULT_INCLUDE_PATH!@3 PEAR_INSTALL_DIR!@4 ZEND_THREAD_SAFE!@5 UPLOAD_ERR_OK!@6 DEBUG_BACKTRACE_IGNORE_ARGS!@7 M_PI | 1!@8"},
 		{"setup.cfg $ elsewhere", "setup.cfg", "[metadata]\nmypy_path = $x\n", ini("setup.cfg", "metadata", "mypy_path"), "$x@2"},
 		{".coveragerc", ".coveragerc", "[run]\ndata_file = ${COVERAGE_FILE-.coverage}\nbranch = True\n", ini(".coveragerc", "run", "data_file"), "${COVERAGE_FILE-.coverage}!@2"},
+		// #118: coverage's pattern needs ${word}, ${word?} or ${word-x}.
+		{"coverage braces", ".coveragerc", "[run]\nb = ${ x }\nb = ${x}\nb = ${x\nb = ${x?}\nb = ${x?y}\nb = ${x-a b}\nb = ${}\nb = ${x-\nb = ${\u00e9}\n", ini(".coveragerc", "run", "b"),
+			"${ x }@2 ${x}!@3 ${x@4 ${x?}!@5 ${x?y}@6 ${x-a b}!@7 ${}@8 ${x-@9 ${\u00e9}!@10"},
 		{".coveragerc literal", ".coveragerc", "[run]\nbranch = True\n", ini(".coveragerc", "run", "branch"), "True@2"},
 		{"setup.cfg coverage", "setup.cfg", "[coverage:run]\nomit = $HOME/x\n", ini("setup.cfg", "coverage:run", "omit"), "$HOME/x!@2"},
 		{"tox.ini coverage", "tox.ini", "[coverage:run]\nomit = $HOME/x\n[testenv]\nomit = $HOME/x\n", ini("tox.ini", "coverage:run", "omit"), "$HOME/x!@2"},
@@ -100,10 +121,17 @@ func TestINIMarksWhatTheToolComputes(t *testing.T) {
 		// Jinja2 template; a decimal number, True and a string are literal.
 		{"ansible numbers", "hosts", "[g:vars]\na=0x10\na=22\na=1_000\na=-5\na=+5\na=-0\n", Spec{File: "hosts", Section: "g:vars", Key: "a"}, "0x10!@2 22@3 1_000!@4 -5@5 +5!@6 -0!@7"},
 		{"ansible floats", "hosts", "[g:vars]\na=1.5\na=1.50\na=1e3\na=1.0\na=1e-05\na=.5\n", Spec{File: "hosts", Section: "g:vars", Key: "a"}, "1.5@2 1.50!@3 1e3!@4 1.0@5 1e-05@6 .5!@7"},
-		{"ansible words and containers", "hosts", "[g:vars]\na=True\na=[80, 443]\na=None\na=...\na=set()\na=server\n", Spec{File: "hosts", Section: "g:vars", Key: "a"}, "True@2 [80, 443]!@3 None@4 ...@5 set()!@6 server@7"},
+		{"ansible words and containers", "hosts", "[g:vars]\na=True\na=[80,443]\na=None\na=...\na=set()\na=server\na=[80, 443]\n", Spec{File: "hosts", Section: "g:vars", Key: "a"}, "True@2 [80,443]!@3 None@4 ...@5 set()!@6 server@7 [80, 443]@8"},
 		{"ansible complex numbers", "hosts", "[g:vars]\na=1+2j\na=1j\na=-1j\na=2.0j\na=1.5j\na=1 - 2j\na=1j+2j\na=1+2\n", Spec{File: "hosts", Section: "g:vars", Key: "a"}, "1+2j!@2 1j@3 -1j!@4 2.0j!@5 1.5j@6 1 - 2j!@7 1j+2j@8 1+2@9"},
+		// Literals joined by commas are a tuple, which ansible holds as a list.
+		{"ansible tuples", "hosts", "[g:vars]\na=1, 2\na=1,\na='a', 'b' # c\na=1 , 2 ,\na=1,,2\na=1, x\n", Spec{File: "hosts", Section: "g:vars", Key: "a"}, "1, 2!@2 1,!@3 'a', 'b'!@4 1 , 2 ,!@5 1,,2@6 1, x@7"},
 		{"ansible strings", "hosts", "[g:vars]\na='0x10'\na=0x10 # c\na=007\n", Spec{File: "hosts", Section: "g:vars", Key: "a"}, "0x10@2 0x10!@3 007@4"},
 		{"ansible hosts", "hosts", "[web]\nweb[01:03].example.com\ndb1:2222\n[10.0.0.1]:22\nplain a=1\n", Spec{File: "hosts", Section: "web"}, "web[01:03].example.com!@2 db1:2222!@3 [10.0.0.1]:22!@4 plain@5"},
+		// #118: parse_address takes a port only off an address or a host
+		// name; ansible keeps fe80::1 and we$b:22 as written.
+		{"ansible unicode port", "hosts", "[web]\ndb1:\u0662\u0662\ndb2:\u00b2\n", Spec{File: "hosts", Section: "web"}, "db1:\u0662\u0662!@2 db2:\u00b2@3"},
+		{"ansible range first", "hosts", "[web]\n[1:3]x\nplain\n", Spec{File: "hosts", Section: "web"}, "[1:3]x!@2 plain@3"},
+		{"ansible ports kept", "hosts", "[web]\nfe80::1\nwe$b:22\nh_:22\ndb.example.com:22\n[::1]:22\n\u00e9t\u00e9:22\n", Spec{File: "hosts", Section: "web"}, "fe80::1@2 we$b:22@3 h_:22@4 db.example.com:22!@5 [::1]:22!@6 \u00e9t\u00e9:22!@7"},
 		{"ansible children", "hosts", "[g:children]\nweb\ndb\n", Spec{File: "hosts", Section: "g:children"}, "web@2 db@3"},
 	} {
 		if got := notLiterals(t, c.file, c.body, c.spec); got != c.want {
@@ -125,6 +153,33 @@ func TestINIMarksWhatTheToolComputes(t *testing.T) {
 		body := "[testenv]\ncommands = pytest {posargs}\n[x]\ncommands = pytest -q # c\n"
 		if got := notLiterals(t, "tox.ini", body, ini("tox.ini", section, "commands")); got != want {
 			t.Errorf("tox %s: got %q, want %q", section, got, want)
+		}
+	}
+}
+
+// #119: in a template, a value inside one of the engine's blocks may not be
+// in the rendered file, so it is not literal, beside one outside the block
+// that stays literal; one row for each engine. The planted break is
+// TemplateRead left out of Build.
+func TestINIMarksAValueInsideATemplateBlock(t *testing.T) {
+	for _, c := range []struct {
+		name, file, body string
+		key, want        string
+	}{
+		// A {, a %{ or a {% line is one no INI reader takes, so the read is
+		// refused there, but a tag in a comment line still renders.
+		{"jinja", "app.ini.j2", "[a]\n# {% if x %}\nb = 1\n# {% endif %}\nb = 2\n", "b", "1!@3 2@5"},
+		{"erb", "php.ini.erb", "<% if @x %>\na = 1\n<% end %>\na = 2\n", "a", "1!@2 2@4"},
+		{"go", "php.ini.tmpl", "; {{ if .x }}\na = 1\n; {{ end }}\na = 2\n", "a", "1!@2 2@4"},
+		{"terraform", "php.ini.tftpl", "; %{ if x }\na = 1\n; %{ endif }\na = 2\n", "a", "1!@2 2@4"},
+		{"no template", "app.ini", "[a]\n# {% if x %}\nb = 1\n", "b", "1@3"},
+	} {
+		section := ""
+		if c.key == "b" {
+			section = "a"
+		}
+		if got := notLiterals(t, c.file, c.body, ini(c.file, section, c.key)); got != c.want {
+			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
 		}
 	}
 }
@@ -195,13 +250,23 @@ func TestToxComputesAsToxDoes(t *testing.T) {
 // it is a container.
 func TestPyComputedAsPythonWritesIt(t *testing.T) {
 	for text, want := range map[string]bool{
-		"22": false, "0x10": true, "1_000": true, "True": false, "[80, 443]": true, "1.5": false, "0j": false, "1.5j": false, "1e16j": true, "1J": true, "1e3j": true, "0.0j": true, "1_0j": true,
+		"22": false, "0x10": true, "1_000": true, "True": false, "[80, 443]": false, "1.5": false, "0j": false, "1.5j": false, "1e16j": true, "1J": true, "1e3j": true, "0.0j": true, "1_0j": true,
 		"1.50": true, "1e3": true, "-0": true, "+5": true, "1.0": false, "...": false, "-0.0": false,
 		"0.0001": false, "0.00001": true, "1e16": true, "1e15": true, "1e999": true, "00": true,
 		"-5": false, "- 5": true, "1j": false, "-1j": true, "2.0j": true, ".5": true, "5.": true, "3.14159": false, "1e-7": true,
-		"123456789012345678.0": true, "set()": true, "(1,)": true, "{}": true, "None": false,
+		"123456789012345678.0": true, "set()": true, "(1,)": true, "{}": false, "None": false,
 		"0o17": true, "0b1": true, "-1.5": false, "2.5e-5": true, "100000000000000000000": false,
 		"1e-05": false, "1e+16": false, "1000000000000000.0": false, "1.2345678901234568e+17": false,
+		// #118: a list or a dict is literal when repr writes it as the text
+		// is; ansible holds a tuple as a list.
+		"[]": false, "()": true, "[1,2]": true, "[1, 2,]": true, "[1,  2]": true, "(1)": true, "(1, 2)": true,
+		"(1, 2,)": true, "(1,2)": true, "[[1, [2]], (3,)]": true, "[[1, [2]], [3]]": false, "['a', 'b']": false, `["a"]`: true,
+		`["it's"]`: false, `['it"s']`: false, `['a\'b']`: true, `['\n']`: true, "['\u00e9']": true,
+		"{'a': 1}": false, "{'a':1}": true, "{'a': 1, 'a': 2}": true, "{1: 2}": true, "{'a': 1,}": true,
+		"{1, 2}": true, "[True, False, None]": false, "[...]": true, "[0x10]": true, "[-1, -1.5, 1j]": false,
+		"[-0]": true, "[- 1]": true, "[1.50]": true, "[b'a']": true, "[Truex]": true, "[1] ": true,
+		"{'a': {'b': [1]}}": false, "{'a': 1, 'b': 2}": false, "[1, 2": true, "[-]": true, "[None, ]": true,
+		"['']": false, "{'': 1}": false, "['a b']": false, "['~']": false, `["'a"]`: false, "['\x7f']": true, "['\x1f']": true,
 	} {
 		if got := pyComputed([]byte(text)); got != want {
 			t.Errorf("%q: %v, want %v", text, got, want)

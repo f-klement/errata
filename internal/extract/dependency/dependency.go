@@ -243,11 +243,14 @@ type reading struct {
 
 // found is one value a reader found: its text and line, the part of the
 // file it stands in, such as devDependencies, "" for a file of one part,
-// its role, and whether the file only computes it.
+// its role, whether the file only computes it, and whether text is a line
+// of the file as written (core.LineText), which no version check applies
+// to, since TOML puts a tab between a key and its value as readily as a
+// space.
 type found struct {
-	text, section, role string
-	line                int
-	notLiteral          bool
+	text, section, role   string
+	line                  int
+	notLiteral, asWritten bool
 }
 
 // add keeps f unless only: names the other role. Its origin names the
@@ -256,8 +259,10 @@ func (rd *reading) add(f found) error {
 	if rd.x.only != "" && f.role != rd.x.only {
 		return nil
 	}
-	if err := core.CheckVersion(f.line, f.text); err != nil {
-		return err
+	if !f.asWritten {
+		if err := core.CheckVersion(f.line, f.text); err != nil {
+			return err
+		}
 	}
 	origin := rd.r.name
 	if f.section != "" {

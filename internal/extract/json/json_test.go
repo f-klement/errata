@@ -173,3 +173,18 @@ func TestJSONFiles(t *testing.T) {
 	_, err = run(t, Spec{Files: []string{"*.json"}, Path: "v"}, broken)
 	extracttest.WantError(t, err, "b.json: unexpected end of JSON input")
 }
+
+// json reads strict JSON only: a comment or a comma after the last member,
+// as tsconfig.json and VS Code's settings hold, does not parse, so its rule
+// is unknown and never true. The jsonc and json5 kinds read such a file.
+func TestJSONRefusesJSONC(t *testing.T) {
+	for body, want := range map[string]string{
+		"{\n  // the target\n  \"target\": \"es2022\"\n}": "tsconfig.json: invalid character '/' looking for beginning of value",
+		"{\"target\": \"es2022\" /* the runtime's */}":    "tsconfig.json: invalid character '/' after object key:value pair",
+		"{\"target\": \"es2022\",}":                       "tsconfig.json: invalid character ',' looking for beginning of value",
+	} {
+		root := extracttest.Repo(t, map[string]string{"tsconfig.json": body})
+		_, err := run(t, Spec{File: "tsconfig.json", Path: "target"}, root)
+		extracttest.WantError(t, err, want)
+	}
+}

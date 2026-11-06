@@ -23,6 +23,10 @@ type Rule struct {
 	// CompareSemver. The loader sets CompareText on an agree rule that names
 	// none, and "" reads as CompareText.
 	Compare Compare
+	// Syntax is the ecosystem whose rules compare: semver reads the values
+	// in, one of Syntaxes, or "" for the reading of all five, npm's rules
+	// winning where they differ.
+	Syntax string
 	// Assert is a CEL expression over the extracted values.
 	Assert string
 	// Compiled is Assert compiled and type checked at load. A rule that uses
@@ -148,6 +152,20 @@ const (
 // names them.
 var Compares = []Compare{CompareText, CompareSemver}
 
+// Syntaxes lists every value syntax: accepts, in the order the load error
+// names them: internal/semver's syntaxes, which a test in internal/rule
+// holds this list to.
+var Syntaxes = []string{"npm", "cargo", "pep440", "go", "rubygems"}
+
+// SyntaxShown is how errata list names the syntax a compare: semver rule
+// reads with: its syntax:, or any when it sets none.
+func (r Rule) SyntaxShown() string {
+	if r.Syntax == "" {
+		return "any"
+	}
+	return r.Syntax
+}
+
 // Comparison is how agree compares r's values: r.Compare, or CompareText
 // when it is not set.
 func (r Rule) Comparison() Compare {
@@ -218,6 +236,11 @@ func (r *Rule) ListFields(Check) Fields {
 	relation := Fields{}
 	if len(r.Agree) > 0 {
 		relation = Fields{{"agree", r.Agree}, {"compare", string(r.Comparison())}}
+		// A rule that compares text and names a syntax does not load; a
+		// listing of one built otherwise still shows what it holds.
+		if r.Comparison() == CompareSemver || r.Syntax != "" {
+			relation = append(relation, Field{"syntax", r.SyntaxShown()})
+		}
 	} else if r.Assert != "" {
 		relation = Fields{{"assert", r.Assert}}
 	}
@@ -243,7 +266,11 @@ func (r *Rule) ListLines(_ Check, q Quoter) []Line {
 	}
 	lines := []Line{{"extract:", strings.Join(extract, "\n")}}
 	if len(r.Agree) > 0 {
-		lines = append(lines, Line{"agree:", quoted(q, r.Agree, ", ") + " (compare " + string(r.Comparison()) + ")"})
+		how := "compare " + string(r.Comparison())
+		if r.Comparison() == CompareSemver || r.Syntax != "" {
+			how += ", syntax " + r.SyntaxShown()
+		}
+		lines = append(lines, Line{"agree:", quoted(q, r.Agree, ", ") + " (" + how + ")"})
 	} else {
 		lines = append(lines, Line{"assert:", r.Assert})
 	}
@@ -387,6 +414,15 @@ func (r *Rule) Validate(c Check) []error {
 		errs = append(errs, fmt.Errorf("compare %q applies to agree; assert compares in its expression, with semver() and semver_satisfies() for versions", r.Compare))
 	} else if r.Compare != "" && !slices.Contains(Compares, r.Compare) {
 		errs = append(errs, fmt.Errorf("compare %q must be one of %s", r.Compare, joinCompares()))
+	}
+	switch {
+	case r.Syntax == "":
+	case hasAssert:
+		errs = append(errs, fmt.Errorf("syntax %q applies to agree with compare: semver; an assert names the syntax as the third argument of semver_satisfies", r.Syntax))
+	case r.Comparison() != CompareSemver:
+		errs = append(errs, fmt.Errorf("syntax %q applies to compare: semver, and this rule compares %s", r.Syntax, r.Comparison()))
+	case !slices.Contains(Syntaxes, r.Syntax):
+		errs = append(errs, fmt.Errorf("syntax %q must be one of %s", r.Syntax, strings.Join(Syntaxes, ", ")))
 	}
 
 	for _, n := range r.Normalize {

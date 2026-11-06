@@ -226,16 +226,22 @@ key keeps one of them.
 **Precision.** How many numbers a version states. A version of one or two numbers, such as `20` or
 `20.11`, stands for every release that starts with them, so under `compare: semver` it agrees with
 any version that starts with the same numbers. A version of three numbers or more, or with a
-pre-release, stands for itself.
+pre-release, stands for itself, and under `syntax: go` every version does.
+
+**Syntax.** The ecosystem whose rules an agree rule with `compare: semver` reads its values by:
+npm, Cargo, PEP 440, Go or RubyGems. A rule that names none reads the syntax of all five, npm's
+rules winning where they differ, so `>1.2` starts at 1.3.0; under `syntax: pep440` it admits
+1.2.1, as pip does.
 
 **Not literal.** A value a file only computes, such as `E_ALL` in php.ini, which PHP reads as a
 number, or `{posargs}` in tox.ini. Its text is what the file wrote, not what the file means, so a
 rule never compares it. A rule that lists the extractor in `skip_not_literal` leaves such values
-out; any other rule with one is unknown. The `ini` extractor marks them, `properties` in a
-template file, `tool_version` a version such as `lts/*` or `system`, which a version manager
+out; any other rule with one is unknown. The `ini` extractor marks them, `properties` a
+placeholder Spring Boot or Log4j fills in and a value in a template file, `tool_version` a version such as `lts/*` or `system`, which a version manager
 resolves, `package_version` a version the build computes, such as `dynamic = ["version"]` in
 pyproject.toml, `dependency` a range or a version the file takes from elsewhere, such as
-`workspace:*` in package.json, `envfile` a value whose `${OTHER}` names a key the file does not set before it,
+`workspace:*` in package.json, or a Go module version such as `v1`, which the go command reads as another version (the latest v1 release a query finds in a go.mod,
+`v1.0.0` in a go.work), `envfile` a value whose `${OTHER}` names a key the file does not set before it,
 `gitlab-ci` a variable that names another, such as `$CI_COMMIT_SHA`, or a number GitLab's YAML
 loader retypes, such as `3.10`, `shell` a value the shell computes and errata does not
 resolve, such as `$(git describe)` or `"$HOME/bin"`, `github-actions` a `${{ }}` expression

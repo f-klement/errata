@@ -18,10 +18,10 @@ import (
 // package x and some not, in every form the reader reads.
 var pools = map[string][]string{
 	"go.mod": {"module m", "go 1.22", "require x v1.0.0", "require (", "\tx v1.2.0 // c", "\ty v2.0.0", ")",
-		"replace x => ../x", "replace x v1.0.0 => x v1.0.1", "// x v9", ""},
+		"replace x => ../x", "replace x v1.0.0 => x v1.0.1", "// x v9", "require x v1", "\tx v1.2", ""},
 	"go.work": {"go 1.22", "use ./a", "replace x => x v1.0.1", "replace (", "\tx v1 => ./y", ")", ""},
 	"requirements.txt": {"x==1.0", "X >= 2 ; python_version > '3'", "x[a]~=3.1 \\", "    --hash=sha256:0", "# x==9", "-r other.txt",
-		"y==1 # x==8", "x @ https://h/x.zip", "", "  x<4  "},
+		"y==1 # x==8", "x @ https://h/x.zip", "", "  x<4  ", "x>=1\\\\", "# x \\", ".0 ; os_name == 'nt'"},
 	"constraints.txt": {"x==1.0", "x\t>1", ""},
 	"Gemfile": {`source "https://rubygems.org"`, `gem "x", "~> 1.0"`, `gem 'x', '>= 1', '< 2'`, `gem "x",`, `  "1.2" # c`,
 		`gem "y", "1"`, `# gem "x", "9"`, `gem "x", require: false`, `gem("x", V)`, `x = "gem"; gem "x", "3"`, "=begin", "gem \"x\", \"7\"", "=end", "", `gem "x", # c`, "  V", `  "2.0"`},
@@ -37,7 +37,12 @@ var lineBreaks = regexp.MustCompile(`\r\n|\r|\n`)
 // textual are the readers whose value is text of the line it is at.
 // A Gemfile's value is the text of the line its string or its name starts
 // on, a bare version with the == the reader writes before it.
-var textual = map[string]bool{"go.mod": true, "go.work": true, "Gemfile.lock": true, "yarn.lock": true, "constraints.txt": true, "Gemfile": true}
+// A requirements file's value is text of the line it starts on with the
+// lines a backslash joins to it, as pip joins them.
+var textual = map[string]bool{"go.mod": true, "go.work": true, "Gemfile.lock": true, "yarn.lock": true, "constraints.txt": true, "requirements.txt": true, "Gemfile": true}
+
+// joins are the readers that join a line ending in a backslash to the next.
+var joins = map[string]bool{"constraints.txt": true, "requirements.txt": true}
 
 // lineEnds are the line ends a file is drawn with: each ends a line.
 var lineEnds = []string{"\n", "\r\n", "\r"}
@@ -94,8 +99,22 @@ func checkLines(t interface{ Fatalf(string, ...any) }, file, data string, got []
 		if v.Text == "" {
 			t.Fatalf("%s: an empty value at line %d", file, v.At.Line)
 		}
-		if textual[file] && !strings.Contains(split[v.At.Line-1], strings.TrimPrefix(v.Text, "==")) {
-			t.Fatalf("%s: %q at line %d, which is %q\n%q", file, v.Text, v.At.Line, split[v.At.Line-1], data)
+		line := split[v.At.Line-1]
+		if joins[file] {
+			// pip strips every backslash at both ends of a line it
+			// continues and joins the next with nothing between.
+			var joined strings.Builder
+			for i := v.At.Line - 1; i < n; i++ {
+				if !strings.HasSuffix(split[i], `\`) {
+					joined.WriteString(split[i])
+					break
+				}
+				joined.WriteString(strings.Trim(split[i], `\`))
+			}
+			line = joined.String()
+		}
+		if textual[file] && !strings.Contains(line, strings.TrimPrefix(v.Text, "==")) {
+			t.Fatalf("%s: %q at line %d, which is %q\n%q", file, v.Text, v.At.Line, line, data)
 		}
 	}
 }

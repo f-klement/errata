@@ -93,21 +93,32 @@ func mustRangeT(t *rapid.T, s string) Range {
 	return r
 }
 
-// FuzzParse reads any text as a value. It never panics, a version reads back
-// from its String when that is within MaxLength, and a range overlaps with itself exactly when it
-// overlaps alone.
+// FuzzParse reads any text as a value, in the unset syntax or one of the
+// five, chosen by syn. It never panics, a version reads back from its
+// String in its syntax when that is within MaxLength, and a range overlaps
+// with itself exactly when it overlaps alone. Each syntax is seeded with
+// its own forms, so the scanners of PEP 440 and RubyGems and the readers
+// of npm, Cargo and Go are fuzzed from the start.
 func FuzzParse(f *testing.F) {
+	syntaxes := append([]Syntax{Any}, Syntaxes...)
 	for _, seed := range []string{
 		"20", "v20.11.1", "^20.1", "~> 3.2", "~=2.2", ">=3.8, !=3.9.0, <4", "1.2.3 - 2.3",
 		"1.x || >=3", "v0.0.0-20191109021931-daa7c04131f5", "1!2.0a1.post2.dev3+local", "go1.22rc1",
 		"===1.0", "lts/*", ">=", "*",
 		// Found by fuzzing: 1024 bytes that String writes as 1025.
 		"1" + strings.Repeat("H", MaxLength-1),
+		// The forms of each syntax.
+		"", "1.*.3", "^0.0.x", "~>1.2", "1.35, <1.40", "=1.2.3-alpha.3", "1.0RC1", "1.0-1", "1.0a.1",
+		"1.2.post-2", "1.0+Ubuntu-1", ">1.0a1", "==1.1.*", "!=1.0+abc", "<=2.1.0+cpu", "1.0.0.pre.1",
+		"1.0.0-rc-1", "2.0.0.racecar1", "~> 2.2.0", "1.21", "1.20", "v1.21", "1.21rc1", ">=1.21.4",
 	} {
-		f.Add(seed, "1.2.3")
+		for i := range syntaxes {
+			f.Add(seed, "1.2.3", uint8(i))
+		}
 	}
-	f.Fuzz(func(t *testing.T, s, other string) {
-		value, err := Parse(s)
+	f.Fuzz(func(t *testing.T, s, other string, n uint8) {
+		syn := syntaxes[int(n)%len(syntaxes)]
+		value, err := syn.Parse(s)
 		if err != nil {
 			return
 		}
@@ -115,21 +126,21 @@ func FuzzParse(f *testing.F) {
 			// String writes a separator the value may leave out, as in 1rc1
 			// and 1-rc.1, so a value near MaxLength can write past it.
 			if text := value.version.String(); len(text) <= MaxLength {
-				again, err := ParseVersion(text)
+				again, err := syn.ParseVersion(text)
 				if err != nil || Compare(again, *value.version) != 0 {
-					t.Fatalf("%q reads as %s, which reads back as %s, %v", s, value.version, again, err)
+					t.Fatalf("%s: %q reads as %s, which reads back as %s, %v", syn, s, value.version, again, err)
 				}
 			}
-			if o, err := ParseRange(other); err == nil {
+			if o, err := syn.ParseRange(other); err == nil {
 				Satisfies(*value.version, o)
 			}
 			return
 		}
 		r := *value.rng
 		if Overlap([]Range{r}) != Overlap([]Range{r, r}) {
-			t.Fatalf("%q overlaps alone and with itself differently", s)
+			t.Fatalf("%s: %q overlaps alone and with itself differently", syn, s)
 		}
-		if o, err := ParseVersion(other); err == nil {
+		if o, err := syn.ParseVersion(other); err == nil {
 			Satisfies(o, r)
 		}
 	})

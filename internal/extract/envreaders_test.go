@@ -134,6 +134,13 @@ func TestEnvChoosesByName(t *testing.T) {
 		"requirements.txt": "", "requirements-dev.in": "", "requirements/base.txt": "",
 		"constraints.txt": "", "poetry.lock": "", "uv.lock": "", "Cargo.toml": "", "Cargo.lock": "",
 		"Gemfile": "", "Gemfile.lock": "", "composer.json": "", "composer.lock": "",
+		// The JSONC and JSON5 files the reference names go to no env
+		// reader, but for a name that starts .env, which stays envfile's as
+		// .env.json does.
+		"tsconfig.json": "", "web/tsconfig.base.json": "", "jsconfig.json": "", "x.jsonc": "",
+		"renovate.json5": "", ".vscode/settings.json": "", ".devcontainer/devcontainer.json": "",
+		".devcontainer.json": "", ".eslintrc.json": "", "a.code-workspace": "",
+		".env.jsonc": "envfile", ".env.json5": "envfile",
 		// A name that starts .env and ends in a literal row's extension is a
 		// code file, no env reader's; .sh is shell's. A data extension stays
 		// envfile's.

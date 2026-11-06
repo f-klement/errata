@@ -15,7 +15,7 @@ func fileOf(i int) string {
 // text of its line gives text its line holds.
 func FuzzDependency(f *testing.F) {
 	seeds := map[string][]string{
-		"go.mod":              {"module m\nrequire x v1.0.0\nreplace x => ../x\n"},
+		"go.mod":              {"module m\nrequire x v1.0.0\nreplace x => ../x\n", "require x v1", "module m\nrequire x v1.2\nreplace x v1.2 => x v1.3\n"},
 		"go.work":             {"go 1.22\nreplace x v1 => x v1.0.1\n"},
 		"package.json":        {`{"dependencies": {"x": "^1"}, "devDependencies": {"x": "latest"}}`},
 		"package-lock.json":   {`{"name": "x", "version": "1", "packages": {"": {"name": "x", "version": "1"}, "node_modules/x": {"version": "2"}}}`, `{"dependencies": {"x": {"version": "1", "dependencies": {"x": {"version": "2"}}}}}`},
@@ -24,7 +24,7 @@ func FuzzDependency(f *testing.F) {
 		"yarn.lock":           {"\"x@^1\", x@^2:\n  version \"1.2.0\"\n", "__metadata:\n  version: 8\n\"x@npm:^1\":\n  version: 1.2.0\n"},
 		"pyproject.toml":      {"[project]\ndependencies = [\"x>=1\"]\n[tool.poetry.dependencies]\nx = {version = \"^1\"}\n"},
 		"requirements.txt":    {"x==1 \\\n  --hash=sha256:0\n# c\n-r y\n"},
-		"constraints.txt":     {"x>=1 ; python_version > '3'\r\n"},
+		"constraints.txt":     {"x>=1 ; python_version > '3'\r\n", "\\\nx!", "x>=1\\\n.0, \\\r\n<2\n", "x>=1\\\\\n.0 \\"},
 		"poetry.lock":         {"[[package]]\nname = \"x\"\nversion = \"1\"\n"},
 		"uv.lock":             {"[[package]]\nname = \"X\"\nversion = \"1\"\n"},
 		"Cargo.toml":          {"[workspace.dependencies]\nx = \"1\"\n[dependencies]\nx.workspace = true\n[target.'cfg(unix)'.dependencies]\nx = {version = \"2\"}\n"},

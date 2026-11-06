@@ -1,8 +1,8 @@
 // Package extract builds the extractors a rule names in errata.yaml. Each one
 // reads one file and returns every value it finds there, with its location.
 // Each extractor kind, the key an extract: entry names, is a reader in a
-// package of its own below this one (yaml, json, toml, regex, text, comment, literal,
-// code, markdown, asciidoc, rst, html, marker, xml, ini, properties, toolversion,
+// package of its own below this one (yaml, json, jsonc for jsonc and json5,
+// toml, regex, text, comment, literal, code, markdown, asciidoc, rst, html, marker, xml, ini, properties, toolversion,
 // packageversion, dependency, envfile, gitlabci, shell, githubactions, jenkins, and
 // filestat for exists and size), and the readers share
 // internal/extract/core; no reader imports another. The env
@@ -41,6 +41,7 @@ import (
 	"github.com/f-klement/errata/internal/extract/ini"
 	"github.com/f-klement/errata/internal/extract/jenkins"
 	ejson "github.com/f-klement/errata/internal/extract/json"
+	"github.com/f-klement/errata/internal/extract/jsonc"
 	"github.com/f-klement/errata/internal/extract/literal"
 	"github.com/f-klement/errata/internal/extract/markdown"
 	"github.com/f-klement/errata/internal/extract/marker"
@@ -62,6 +63,8 @@ import (
 var kinds = registry(
 	register(yaml.Kind, with(yaml.Build, parsers)),
 	register(ejson.Kind, with(ejson.Build, parsers)),
+	register(jsonc.Kind, with(jsonc.Build, parsers)),
+	register(jsonc.JSON5Kind, with(jsonc.BuildJSON5, parsers)),
 	register(toml.Kind, with(toml.Build, parsers)),
 	register(regex.Kind, regex.Build),
 	register(text.Kind, text.Build),

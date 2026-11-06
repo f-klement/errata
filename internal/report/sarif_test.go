@@ -380,6 +380,58 @@ func TestSARIFResultPointsAtTheCheck(t *testing.T) {
 	}
 }
 
+// An exists value that is false names a file that is not there. A result
+// that blames one points at the check, as one that blames no value does, and
+// says where the file would be; a related location of one names the path in
+// its message and places nothing, nor does a check outside the repository.
+// Planted breaks: the Missing case dropped from sarifResultOf, which put the
+// result at legacy/old.conf with no region; dropped from relatedLocation,
+// which placed the related value there.
+func TestSARIFMissingFilePointsAtTheCheck(t *testing.T) {
+	gone := check.Value{Text: "false", At: check.Location{File: "legacy/old.conf", Missing: true}}
+	there := val("true", "app.conf", 0)
+	assert := func(at check.Location, values ...check.Value) check.Result {
+		return check.Result{
+			Check:     check.Check{ID: "a", Reason: "r", Kind: &check.Rule{Assert: "x"}, At: at},
+			Verdict:   check.VerdictFalse,
+			Message:   "assert: false",
+			Blamed:    &check.Blame{},
+			Extracted: []check.Extracted{{Extractor: "config", Values: values}},
+		}
+	}
+	const where = "\nThe value is at legacy/old.conf, where no file is, so this result is at the check."
+	for _, c := range []struct {
+		name, want, msg string
+		res             check.Result
+		related         string
+	}{
+		{"blamed", "errata.yaml:12", "assert: false" + where, assert(check.Location{File: "errata.yaml", Line: 12}, gone), ""},
+		{"a check outside", "nowhere",
+			"assert: false" + where + "\nThe check is in ci.yaml, outside the repository, so this result has no place in a file.",
+			assert(check.Location{File: "ci.yaml", Line: 2, Outside: true}, gone), ""},
+		{"related", "app.conf:0", "assert: false\nThe other values, as [related locations]: [value 1](1).",
+			assert(check.Location{File: "errata.yaml", Line: 12}, there, gone),
+			`nowhere "false" (config) at legacy/old.conf, where no file is`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			res := decodeSARIF(t, writeSARIF(t, check.Report{Results: []check.Result{c.res}})).Runs[0].Results[0]
+			if len(res.Locations) != 1 || res.Locations[0].where() != c.want {
+				t.Fatalf("locations %+v, want %s", res.Locations, c.want)
+			}
+			if res.Message.Text != c.msg {
+				t.Fatalf("message = %q, want %q", res.Message.Text, c.msg)
+			}
+			var related []string
+			for _, r := range res.Related {
+				related = append(related, r.where()+" "+r.Message.Text)
+			}
+			if strings.Join(related, "\n") != c.related {
+				t.Fatalf("related = %q, want %q", related, c.related)
+			}
+		})
+	}
+}
+
 // The driver names the errata that wrote the file, by the version the CLI
 // passes in, and a build without one leaves the key out.
 func TestSARIFCarriesTheVersion(t *testing.T) {

@@ -16,6 +16,8 @@ required:
   - api-port-agrees
   - docs-give-the-api-port
   - docker-run-port-agrees
+  - dev-tools-use-the-service-ports
+  - web-client-links-the-service-ports
   - status-page-ports-agree
   - start-script-port-agrees
   - every-api-port-agrees
@@ -134,6 +136,62 @@ checks:
       admin: {rst: {file: docs/admin.rst, target: code, language: bash, section: Start, pattern: 'docker run -p (\d+):'}}
       site: {html: {file: docs/index.html, target: code, language: bash, section: Install, pattern: 'docker run -p (\d+):'}}
     agree: [chart, readme, handbook, admin, site]
+
+  # Claim: the dev container, the debugger and the editor's tasks start the API and the admin
+  # console on the ports their configs set. jsonc reads VS Code's files past their comments and
+  # trailing commas, as the editor reads them.
+  # See docs/reference.md#jsonc-and-json5; #records; #documents-in-strings.
+  - id: dev-tools-use-the-service-ports
+    reason: >
+      A developer who debugs the API on a port the chart does not open tests a setup nobody
+      runs, and the dev container forwards a port nothing listens on.
+    scope: repo
+    extract:
+      api: {yaml: {file: deploy/values.yaml, path: service.port}}
+      admin: {properties: {file: config/application.properties, key: admin.port}}
+      forwarded: {jsonc: {file: .devcontainer/devcontainer.json, path: 'forwardPorts[*]'}}
+      launch:
+        jsonc: {file: .vscode/launch.json, path: 'configurations[*]', as: record, fields: {name: name, port: env.PORT}}
+      tasks:
+        jsonc: {files: ['.vscode/*.json'], path: 'tasks[*]', as: record, fields: {label: label, port: options.env.PORT}}
+      container:
+        jsonc: {file: .devcontainer/devcontainer.json, path: containerEnv.APP_CONFIG, embedded: [{format: json, path: port}]}
+      debug:
+        jsonc:
+          files: [.vscode/launch.json]
+          path: "configurations[?@.name == 'api'].env.APP_CONFIG"
+          embedded: [{format: json, path: port}]
+    assert: |
+      launch.exists(c, c.name == 'api' && c.port == api[0]) &&
+      launch.exists(c, c.name == 'admin' && c.port == admin[0]) &&
+      tasks.exists(t, t.label == 'serve' && t.port == api[0]) &&
+      api[0] in forwarded && admin[0] in forwarded &&
+      container[0] == api[0] && debug[0] == api[0]
+
+  # Claim: the web client and the status kiosk link to the API and the admin console on the ports
+  # their configs set. json5 reads app.json5 and kiosk.json, whose name says JSON, alike: unquoted
+  # keys, single quotes, a leading point and trailing commas.
+  # See docs/reference.md#jsonc-and-json5; #records; #documents-in-strings.
+  - id: web-client-links-the-service-ports
+    reason: >
+      The client's console links and the kiosk's probes are written by hand. One left on an old
+      port links operators to nothing and shows a running service as down.
+    scope: repo
+    extract:
+      api: {yaml: {file: deploy/values.yaml, path: service.port}}
+      admin: {properties: {file: config/application.properties, key: admin.port}}
+      consoles:
+        json5: {file: web/app.json5, path: 'consoles[*]', as: record, fields: {name: name, port: port}}
+      screens:
+        json5: {files: [web/kiosk.json], path: 'screens[*]', as: record, fields: {name: name, port: port}}
+      client: {json5: {file: web/app.json5, path: api.config, embedded: [{format: json, path: port}]}}
+      health: {json5: {files: [web/kiosk.json], path: health, embedded: [{format: yaml, path: port}]}}
+    assert: |
+      consoles.exists(c, c.name == 'api' && c.port == api[0]) &&
+      consoles.exists(c, c.name == 'admin' && c.port == admin[0]) &&
+      screens.exists(s, s.name == 'api' && s.port == api[0]) &&
+      screens.exists(s, s.name == 'admin' && s.port == admin[0]) &&
+      client[0] == api[0] && health[0] == admin[0]
 
   # Claim: the services file the status page reads lists the API and the admin console on the
   # ports their configs set. json with files takes in every JSON file under docs/, and as:
@@ -261,8 +319,9 @@ checks:
   # Claim: the Python the API runs on is one release line wherever it is named: the image, the
   # version files, the three pipelines and the README. tool_version with files reads
   # pyproject.toml's requires-python, a range, beside .python-version; semver lets a range
-  # agree with the versions that satisfy it. github-actions reads a job's env and a step's
-  # with:, and jenkins the environment of the test stage.
+  # agree with the versions that satisfy it, and syntax: pep440 reads each as pip does.
+  # github-actions reads a job's env and a step's with:, and jenkins the environment of the
+  # test stage.
   # See docs/reference.md#compare; #tool_version; #gitlab-ci; #github-actions; #jenkins; #text.
   - id: python-version-agrees
     reason: >
@@ -279,6 +338,7 @@ checks:
       readme: {text: {file: README.md, pattern: 'Python (\d+\.\d+) or later'}}
     agree: [image, pins, gitlab, github, setup, jenkins, readme]
     compare: semver
+    syntax: pep440
 
   # Claim: both GitLab test jobs run in the image the Dockerfile builds the API from. gitlab-ci
   # with key reads a job keyword rather than a variable.
@@ -336,7 +396,8 @@ checks:
 
   # Claim: the zod that npm installs is one that the app and the JavaScript SDK accept.
   # dependency asks each manifest and the lockfile for one package; with compare: semver
-  # every version among the values must satisfy every range.
+  # every version among the values must satisfy every range, and syntax: npm reads them as
+  # npm does.
   # See docs/reference.md#dependency; #compare.
   - id: zod-in-range
     reason: >
@@ -347,6 +408,7 @@ checks:
       zod: {dependency: {name: zod, files: [package.json, package-lock.json, clients/js/package.json]}}
     agree: [zod]
     compare: semver
+    syntax: npm
 
   # Claim: every lockfile resolves the zod the app's package.json asks for. only splits the
   # manifest's range from the lockfiles' resolved versions, so assert can test one against the

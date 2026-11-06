@@ -32,7 +32,7 @@ func TestBuildRefusesNoKindAndTwoKinds(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := Build(s)
-			extracttest.WantError(t, err, "an extractor sets exactly one of yaml, json, toml, regex")
+			extracttest.WantError(t, err, "an extractor sets exactly one of yaml, json, jsonc, json5, toml, regex")
 		})
 	}
 }
@@ -81,8 +81,8 @@ func TestPlaceOfFiles(t *testing.T) {
 			t.Errorf("%s: file f and files [./f] read two places: %s and %s", k.Key, a, b)
 		}
 	}
-	if took < 7 {
-		t.Errorf("%d kinds take files, want yaml, json, toml, regex, tool_version, package_version and env", took)
+	if took < 9 {
+		t.Errorf("%d kinds take files, want yaml, json, jsonc, json5, toml, regex, tool_version, package_version and env", took)
 	}
 }
 

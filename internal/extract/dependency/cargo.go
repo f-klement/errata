@@ -8,10 +8,6 @@ import (
 // Cargo reads, the forms with _ that older manifests write included.
 var cargoTables = []string{"dependencies", "dev-dependencies", "dev_dependencies", "build-dependencies", "build_dependencies"}
 
-// workspaceText is what a dependency that inherits the workspace's
-// version writes in place of one.
-const workspaceText = "workspace = true"
-
 // readCargo reads the range each dependency table of a Cargo.toml gives
 // the package: [dependencies], [dev-dependencies], [build-dependencies],
 // each under [target.<cfg>] too, and [workspace.dependencies]. A dependency
@@ -20,15 +16,16 @@ const workspaceText = "workspace = true"
 // table, such as { version = "1.0", features = ["derive"] }, read as Cargo
 // reads it, with the ^ a bare version implies (cargoRange); a table
 // without one, from git or a path, gives nothing. One that inherits the
-// workspace's, { workspace = true }, is not literal, unless the same file's
-// [workspace.dependencies] gives the package, which is then its value. A
-// byte order mark at the start is skipped, as Cargo skips it.
+// workspace's, { workspace = true }, is not literal, with the line of its
+// workspace = true as the file wrote it as its text (core.LineText), unless
+// the same file's [workspace.dependencies] gives the package, which is then
+// its value. A byte order mark at the start is skipped, as Cargo skips it.
 func readCargo(rd *reading, data []byte) error {
 	t, err := tree(rd, data, core.TOMLFormat, rd.x.parsers.TOML, true)
 	if err != nil {
 		return err
 	}
-	c := cargo{rd: rd}
+	c := cargo{rd: rd, data: data}
 	if err := c.deps(t.Member("workspace", "dependencies"), sharedTable); err != nil {
 		return err
 	}
@@ -50,11 +47,12 @@ func readCargo(rd *reading, data []byte) error {
 // sharedTable is the table of the versions a workspace's members inherit.
 const sharedTable = "workspace.dependencies"
 
-// cargo is a Cargo.toml being read, and whether its
+// cargo is a Cargo.toml being read, its bytes, and whether its
 // [workspace.dependencies] gives the package, which a member that inherits
 // it then takes.
 type cargo struct {
 	rd     *reading
+	data   []byte
 	shared bool
 }
 
@@ -93,7 +91,7 @@ func (c *cargo) dep(v *core.Node, section string) error {
 		if c.shared {
 			return nil
 		}
-		return c.rd.add(found{text: workspaceText, section: section, role: Range, line: inherit.Line, notLiteral: true})
+		return c.rd.add(found{text: core.LineText(c.data, inherit.Line), section: section, role: Range, line: inherit.Line, notLiteral: true, asWritten: true})
 	}
 	version := v.Member("version")
 	if version == nil {

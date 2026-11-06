@@ -83,7 +83,9 @@ func Build(s Spec) (check.Extractor, error) {
 		return nil, fmt.Errorf("jenkins: stage %s is %d bytes long, over the limit of %d", core.Quote(s.Stage), len(s.Stage), maxName)
 	}
 	r := reader{file: s.File, variable: s.Variable, stage: s.Stage, staged: s.Stage != ""}
-	return core.EntryExtractor{Source: src, Query: core.Query{Key: []byte(s.Variable), HasKey: true}, Read: r.read, NotLiteral: core.TemplateNotLiteral(s.File, computed)}, nil
+	// In a template, a value inside one of the engine's blocks is not literal
+	// either: the rendered file may not hold it.
+	return core.EntryExtractor{Source: src, Query: core.Query{Key: []byte(s.Variable), HasKey: true}, Read: core.TemplateRead(s.File, r.read), NotLiteral: core.TemplateNotLiteral(s.File, computed)}, nil
 }
 
 // Every builds the extractor of the variable variable in every place of
@@ -100,7 +102,7 @@ func Every(file, variable string, maxBytes int64) (check.Extractor, error) {
 		return nil, err
 	}
 	e := x.(core.EntryExtractor)
-	e.Read = reader{file: file, variable: variable}.readEvery
+	e.Read = core.TemplateRead(file, reader{file: file, variable: variable}.readEvery)
 	return e, nil
 }
 

@@ -112,6 +112,12 @@ func (iv interval) holdsRelease() bool {
 	if !iv.lo.inf {
 		lo = iv.lo
 	}
+	if lo.v.ceil && lo.v.pre == nil {
+		// Above every post release of R lie the releases with more
+		// numbers, R.0.1, R.0.0.1 and so on, with no lowest one; any
+		// upper bound above R's posts admits some of them.
+		return iv.hi.inf || Compare(lo.v, iv.hi.v) < 0
+	}
 	below := func(c Version) bool {
 		if iv.hi.inf {
 			return true
@@ -170,36 +176,61 @@ func intersectAll(a, b []interval) []interval {
 	return out
 }
 
+// preRule is when a pre-release satisfies an alternative whose intervals
+// hold it.
+type preRule uint8
+
+const (
+	// preSame: when a comparator names a pre-release of the same numbers,
+	// as npm and Cargo decide.
+	preSame preRule = iota
+	// preNamed: when any comparator names a pre-release, as PEP 440 and
+	// RubyGems decide.
+	preNamed
+	// preFree: always, as Go orders its versions with no rule for
+	// pre-releases.
+	preFree
+)
+
 // alternative is one side of a range's ||: comparators that must all hold.
 type alternative struct {
 	// ivs are the versions the comparators admit together, sorted and
 	// disjoint.
 	ivs []interval
-	// named are the comparators' versions that are pre-releases. A
-	// pre-release satisfies the alternative only when one of them has its
-	// numbers, as npm and Cargo decide.
+	// named are the comparators' versions that are pre-releases, under
+	// preSame. A pre-release satisfies the alternative only when one of
+	// them has its numbers.
 	named []Version
+	rule  preRule
+	// namesPre is true, under preNamed, when a comparator names a
+	// pre-release.
+	namesPre bool
 }
 
 // Range is a version range: alternatives joined by ||, each a list of
 // comparators that must all hold.
 type Range struct {
 	alts []alternative
+	syn  Syntax
 }
 
 // String is r as the intervals it admits: each alternative as >=, >, <= and
 // < comparators, = for a single version and * for every version, the
-// alternatives joined by ||. A bound npm writes with -0, such as <21.0.0-0,
+// alternatives joined by ||. Under PEP 440, =V admits V's local versions,
+// and a bound written +* after a version lies above every local version
+// of it. A bound npm writes with -0, such as <21.0.0-0,
 // lies below every pre-release of 21.0.0.
 func (r Range) String() string {
 	var parts []string
 	for _, a := range r.alts {
+		var ivs []string
 		if len(a.ivs) == 0 {
-			parts = append(parts, "(no version)")
+			ivs = append(ivs, "(no version)")
 		}
 		for _, iv := range a.ivs {
-			parts = append(parts, iv.String())
+			ivs = append(ivs, iv.String())
 		}
+		parts = append(parts, strings.Join(ivs, " || "))
 	}
 	return strings.Join(parts, " || ")
 }
@@ -209,6 +240,9 @@ func (iv interval) String() string {
 	case iv.lo.inf && iv.hi.inf:
 		return "*"
 	case !iv.lo.inf && !iv.hi.inf && Compare(iv.lo.v, iv.hi.v) == 0:
+		return "=" + full(iv.lo.v)
+	case !iv.lo.inf && !iv.hi.inf && iv.lo.inc && iv.hi.inc && iv.hi.v.localTop && iv.lo.v.build == "" && Compare(iv.lo.v, publicOf(iv.hi.v)) == 0:
+		// ==V under PEP 440: V and its local versions.
 		return "=" + full(iv.lo.v)
 	}
 	var parts []string
@@ -229,8 +263,13 @@ func (iv interval) String() string {
 	return strings.Join(parts, " ")
 }
 
-// full is v written with at least three numbers, as a range's bounds are.
+// full is v written with at least three numbers, as the bounds of npm's,
+// Cargo's and the unset syntax's ranges are. The other syntaxes write a
+// bound with the numbers it has.
 func full(v Version) string {
+	if v.syn == codePEP440 || v.syn == codeGo || v.syn == codeRubyGems {
+		return v.String()
+	}
 	for len(v.release) < 3 {
 		v.release = append(slices.Clip(v.release), "0")
 	}
@@ -259,13 +298,12 @@ var operators = []string{"===", "~>", "~=", "==", "!=", ">=", "<=", "^", "~", ">
 // npm: >1.2 and <=1.2 compare at the precision written, so >1.2 starts at
 // 1.3.0, where PEP 440 and RubyGems would admit 1.2.1.
 func ParseRange(s string) (Range, error) {
-	if len(s) > MaxLength {
-		return Range{}, errTooLong
-	}
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return Range{}, errors.New("it is empty")
-	}
+	return Any.ParseRange(s)
+}
+
+// parseAnyRange is ParseRange of a value already trimmed, not empty and
+// within MaxLength.
+func parseAnyRange(s string) (Range, error) {
 	var r Range
 	for _, text := range strings.Split(s, "||") {
 		a, err := parseAlternative(strings.TrimSpace(text))
@@ -282,19 +320,47 @@ func parseAlternative(s string) (alternative, error) {
 		return alternative{}, errors.New("an alternative beside || is empty")
 	}
 	if f := strings.Fields(s); len(f) == 3 && f[1] == "-" {
-		return fold([]string{">=" + f[0], "<=" + f[2]})
+		return fold([]string{">=" + f[0], "<=" + f[2]}, anyClause, preSame)
 	}
+	return fold(joinOperators(strings.Fields(strings.ReplaceAll(s, ",", " ")), operators), anyClause, preSame)
+}
+
+// joinOperators joins an operator written apart from its version, as in
+// ~> 3.2 or >= 20, to the field after it.
+func joinOperators(fields, ops []string) []string {
 	var tokens []string
-	for _, f := range strings.Fields(strings.ReplaceAll(s, ",", " ")) {
-		// An operator written apart from its version, as in ~> 3.2 or
-		// >= 20, joins the version after it.
-		if n := len(tokens); n > 0 && slices.Contains(operators, tokens[n-1]) {
+	for _, f := range fields {
+		if n := len(tokens); n > 0 && slices.Contains(ops, tokens[n-1]) {
 			tokens[n-1] += f
 			continue
 		}
 		tokens = append(tokens, f)
 	}
-	return fold(tokens)
+	return tokens
+}
+
+// clause is what one comparator admits: an interval, and the hole it takes
+// out of the alternative when holed is set (!=, and PEP 440's <V of a post
+// release). The hole is kept by value, so a chain of != allocates nothing
+// for each.
+type clause struct {
+	iv    interval
+	hole  interval
+	holed bool
+	// named is the comparator's version when it is a pre-release, for
+	// preSame; pre is whether it names one, for preNamed.
+	named *Version
+	pre   bool
+}
+
+// anyClause is comparator as a clause.
+func anyClause(t string) (clause, error) {
+	iv, hole, named, err := comparator(t)
+	c := clause{iv: iv, named: named}
+	if hole != nil {
+		c.iv, c.hole, c.holed = everything, *hole, true
+	}
+	return c, err
 }
 
 // fold reads the comparators of one alternative and returns what they admit
@@ -302,22 +368,26 @@ func parseAlternative(s string) (alternative, error) {
 // greatest lower bound and the least upper bound; each != is a hole, and
 // the holes are sorted once and cut out of that interval in one pass. Its
 // time is k log k in the comparators, never their square.
-func fold(tokens []string) (alternative, error) {
+func fold(tokens []string, read func(string) (clause, error), rule preRule) (alternative, error) {
 	var (
-		a     alternative
+		a     = alternative{rule: rule}
 		keep  = everything
 		holes []interval
 		seen  map[string]bool
 	)
 	for _, t := range tokens {
-		iv, hole, named, err := comparator(t)
+		c, err := read(t)
 		if err != nil {
 			return alternative{}, err
 		}
-		if hole != nil {
-			holes = append(holes, *hole)
-		} else {
-			keep = keep.intersect(iv)
+		keep = keep.intersect(c.iv)
+		if c.holed {
+			holes = append(holes, c.hole)
+		}
+		a.namesPre = a.namesPre || c.pre
+		named := c.named
+		if rule != preSame {
+			named = nil
 		}
 		// Satisfies compares a named version's release only, so one per
 		// release gives the same answers, and 94 pre-releases of one
@@ -547,7 +617,9 @@ func admits(op string, o operand, t string) (interval, error) {
 // when some release it stands for does: 20 satisfies ^20.1. A pre-release
 // satisfies an alternative only when one of its comparators names a
 // pre-release of the same numbers, as npm and Cargo decide, so
-// 2.0.0-beta.1 does not satisfy >=1.0.0.
+// 2.0.0-beta.1 does not satisfy >=1.0.0; under PEP 440 and RubyGems, when
+// any comparator names a pre-release; under Go, whenever its intervals
+// hold it.
 func Satisfies(v Version, r Range) bool {
 	for _, a := range r.alts {
 		if v.Partial() {
@@ -563,7 +635,10 @@ func Satisfies(v Version, r Range) bool {
 		if !slices.ContainsFunc(a.ivs, func(iv interval) bool { return iv.contains(v) }) {
 			continue
 		}
-		if !v.prerelease() || slices.ContainsFunc(a.named, func(n Version) bool { return cmpRelease(n, v) == 0 }) {
+		switch {
+		case !v.prerelease(), a.rule == preFree, a.rule == preNamed && a.namesPre:
+			return true
+		case a.rule == preSame && slices.ContainsFunc(a.named, func(n Version) bool { return cmpRelease(n, v) == 0 }):
 			return true
 		}
 	}
@@ -675,6 +750,9 @@ func Overlapping(rs []Range) int {
 	// depth counts, for each range, its intervals open at the sweep; the
 	// alternatives of one range may overlap, so a range covers a stretch
 	// when its depth is above 0. covered marks those ranges.
+	// Go has no rule for pre-releases, so under it any version is one a
+	// range may share.
+	free := !slices.ContainsFunc(rs, func(r Range) bool { return r.syn != Go })
 	depth := make([]int32, len(rs))
 	covered := newPrefixTree(len(rs))
 	longest := 0
@@ -703,7 +781,7 @@ func Overlapping(rs []Range) int {
 		// stretch again and could not fail a test.
 		if lead := covered.leading(); max(lead, longest) != longest {
 			iv := interval{lo: boundAt(at, true), hi: boundAt(events[i].at, false)}
-			if iv.holdsRelease() {
+			if free && !iv.empty() || iv.holdsRelease() {
 				if longest = lead; longest == len(rs) {
 					return longest
 				}

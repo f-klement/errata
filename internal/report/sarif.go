@@ -37,8 +37,10 @@ const srcRoot = "%SRCROOT%"
 
 // configFile is where a result with no value of its own points when its
 // check carries no location, as a check built by hand rather than loaded
-// does: the default config file, at line 1. A loaded program check, or a rule
-// whose extractors returned nothing, points at the line its entry starts on.
+// does: the default config file, at line 1. A loaded program check, a rule
+// whose extractors returned nothing, and a rule that blames an exists value
+// that is false, whose file is not there, point at the line its entry
+// starts on.
 const configFile = "errata.yaml"
 
 // The limits below come from GitHub's page "SARIF support for code scanning"
@@ -605,19 +607,16 @@ func sarifResultOf(res check.Result, ruleIndex int) sarifResult {
 		out.Locations = []sarifLocation{{Physical: placed}}
 	}
 	if out.Locations == nil {
-		if primary < 0 {
-			at := res.Check.At
-			if at.File == "" {
-				at = check.Location{File: configFile, Line: 1}
-			}
-			if p, inside := physical(at); inside {
-				out.Locations = []sarifLocation{{Physical: p}}
-			} else {
-				where := cut(at.File, "path", valueLimit)
-				out.Locations = []sarifLocation{{Message: &sarifMessage{"the check is in " + where + ", outside the repository"}}}
-				msg += "\nThe check is in " + where + ", outside the repository, so this result has no place in a file."
-			}
-		} else {
+		switch {
+		case primary < 0:
+			out.Locations, msg = atCheck(res, msg)
+		case values[primary].value.At.Missing:
+			// An exists value that is false names a file that is not
+			// there, which code scanning cannot show a line of, so the
+			// result is at the check that asked for the file.
+			msg += "\nThe value is at " + cut(values[primary].value.At.File, "path", valueLimit) + ", where no file is, so this result is at the check."
+			out.Locations, msg = atCheck(res, msg)
+		default:
 			first := values[primary]
 			if p, inside := physical(first.value.At); inside {
 				out.Locations = []sarifLocation{{Physical: p}}
@@ -668,6 +667,21 @@ func sarifResultOf(res check.Result, ruleIndex int) sarifResult {
 	return out
 }
 
+// atCheck is the location of a result at its check, the line its entry
+// starts on, and msg with the sentence a check outside the repository adds.
+func atCheck(res check.Result, msg string) ([]sarifLocation, string) {
+	at := res.Check.At
+	if at.File == "" {
+		at = check.Location{File: configFile, Line: 1}
+	}
+	if p, inside := physical(at); inside {
+		return []sarifLocation{{Physical: p}}, msg
+	}
+	where := cut(at.File, "path", valueLimit)
+	return []sarifLocation{{Message: &sarifMessage{"the check is in " + where + ", outside the repository"}}},
+		msg + "\nThe check is in " + where + ", outside the repository, so this result has no place in a file."
+}
+
 // leftOutReserve is how many related location slots a result keeps for
 // values skip_not_literal left out when the compared values would fill the
 // cap. Compared values come first, since they show the disagreement, and
@@ -688,9 +702,13 @@ const notLiteralRemark = "not literal, so skip_not_literal left it out of the co
 func relatedLocation(f named, id int, leftOut bool) sarifLocation {
 	loc := sarifLocation{ID: id}
 	text := label(f)
-	if p, inside := physical(f.value.At); inside {
+	p, inside := physical(f.value.At)
+	switch {
+	case f.value.At.Missing:
+		text = absent(f)
+	case inside:
 		loc.Physical = p
-	} else {
+	default:
 		text = outside(f)
 	}
 	if leftOut {
@@ -754,6 +772,13 @@ func label(f named) string {
 // no physical location, so the message names the path.
 func outside(f named) string {
 	return label(f) + " at " + cut(f.value.At.File, "path", valueLimit) + ", outside the repository"
+}
+
+// absent is the message of a value at a path where no file is, an exists
+// value that is false. It has no physical location, so the message names
+// the path.
+func absent(f named) string {
+	return label(f) + " at " + cut(f.value.At.File, "path", valueLimit) + ", where no file is"
 }
 
 // named is one value with the extractor that returned it.

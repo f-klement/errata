@@ -104,6 +104,35 @@ func TestDependencyReadsGo(t *testing.T) {
 	})
 }
 
+// A version a go.mod or go.work writes in a form that is not canonical is
+// the text as written and not literal: the go command resolves v1 in a
+// go.mod as a query, to the latest v1 release, and modfile alone would give
+// v1.0.0, which the line does not hold. A replace whose version or required
+// version is such a query may apply, so it is not literal either. Planted
+// breaks: readGoMod and replaces without the Canonical test; replaces
+// skipping a replace of a version a query may resolve to.
+func TestDependencyReadsGoVersionsAsWritten(t *testing.T) {
+	run(t, []readCase{
+		{"a canonical version", "x", "go.mod", "module m\nrequire x v1.2.3\n", "v1.2.3@go.mod:2 [go.mod require (resolved)]"},
+		{"a major alone", "x", "go.mod", "require x v1", "v1!@go.mod:1 [go.mod require (resolved)]"},
+		{"a major and minor", "x", "go.mod", "module m\nrequire x v1.2\n", "v1.2!@go.mod:2 [go.mod require (resolved)]"},
+		{"a pseudo-version with build metadata", "x", "go.mod", "module m\nrequire x v0.0.0-20200101000000-abcdef123456+meta\n",
+			"v0.0.0-20200101000000-abcdef123456+meta!@go.mod:2 [go.mod require (resolved)]"},
+		{"a replace by a short version", "x", "go.mod", "module m\nrequire x v1.2.3\nreplace x => x v1.3\n",
+			"v1.2.3@go.mod:2 [go.mod require (resolved)]; v1.3!@go.mod:3 [go.mod replace (resolved)]"},
+		{"a replace of the query required", "x", "go.mod", "module m\nrequire x v1\nreplace x v1 => x v1.0.1\n",
+			"v1!@go.mod:2 [go.mod require (resolved)]; v1.0.1@go.mod:3 [go.mod replace (resolved)]"},
+		{"a replace of a version a query may resolve to", "x", "go.mod", "module m\nrequire x v1\nreplace x v1.5.0 => x v1.0.1\n",
+			"v1!@go.mod:2 [go.mod require (resolved)]; v1.0.1!@go.mod:3 [go.mod replace (resolved)]"},
+		{"a replace of a query", "x", "go.mod", "module m\nrequire x v1.0.0\nreplace x v1 => x v1.0.1\n",
+			"v1.0.0@go.mod:2 [go.mod require (resolved)]; v1.0.1!@go.mod:3 [go.mod replace (resolved)]"},
+		{"a replace of another canonical version", "x", "go.mod", "module m\nrequire x v1.0.0\nreplace x v1.5.0 => x v1.0.1\n",
+			"v1.0.0@go.mod:2 [go.mod require (resolved)]"},
+		{"a replace of a query the file does not require", "x", "go.mod", "module m\nreplace x v1 => x v1.0.1\n", ""},
+		{"go.work", "x", "go.work", "go 1.22\nreplace x v1 => x v1.2\n", "v1.2!@go.work:2 [go.work replace (resolved)]"},
+	})
+}
+
 // module: true gives the path a go.mod's module directive declares, and
 // refuses a name beside it and any file that is no go.mod. Planted break:
 // readGoMod reading requires under module: true.
@@ -254,6 +283,25 @@ other = { git = "https://example.com/o.git" }
 		{"uv's dev-dependencies", "pytest", "pyproject.toml", "[tool.uv]\ndev-dependencies = [\"pytest>=8\"]\n", ">=8@pyproject.toml:2 [pyproject.toml tool.uv.dev-dependencies (range)]"},
 		{"PDM's dev-dependencies", "pytest", "pyproject.toml", "[tool.pdm.dev-dependencies]\ntest = [\"pytest>=8\"]\n", ">=8@pyproject.toml:2 [pyproject.toml tool.pdm.dev-dependencies (range)]"},
 		{"constraints", "flask", "constraints.txt", "Flask >= 3.0 ; python_version > '3'\n", ">= 3.0@constraints.txt:1 [requirements (range)]"},
+		// A requirement a backslash joins over lines is at the line its
+		// value starts on.
+		{"a specifier on the line after the name", "x", "constraints.txt", "a==1\nx \\\n  >=1 ; os_name == 'nt'\n", ">=1@constraints.txt:3 [requirements (range)]"},
+		{"a name after a joined blank line", "x", "constraints.txt", "\\\nx!\n", "!@constraints.txt:2 [requirements (range)]"},
+		{"a pin's version on the line after the ==", "x", "requirements.txt", "x== \\\r\n1.0 \\\r\n --hash=sha256:0\r\n", "1.0@requirements.txt:2 [requirements (resolved)]"},
+		{"a URL on the line after the @", "x", "requirements.txt", "x @\\\n https://h/x.zip\n", "https://h/x.zip!@requirements.txt:2 [requirements (range)]"},
+		{"parentheses over lines", "x", "requirements.txt", "x (\\\n>=1)\n", ">=1@requirements.txt:2 [requirements (range)]"},
+		{"a specifier pip joins with nothing between", "x", "requirements.txt", "x>=1\\\n.0,\\\n<2\n", ">=1.0,<2@requirements.txt:1 [requirements (range)]"},
+		{"a marker on a later line", "x", "requirements.txt", "x[a]~=3.1 \\\nX >= 2 ; python_version > '3'", "~=3.1 X >= 2@requirements.txt:1 [requirements (range)]"},
+		{"a pin and a marker on later lines", "x", "requirements.txt", "x ==\\\n 1.0 \\\n; os_name == 'nt'\n", "1.0@requirements.txt:2 [requirements (resolved)]"},
+		{"parentheses with a blank inside", "x", "requirements.txt", "x ( >=1 ) ; os_name == 'nt'\n", ">=1@requirements.txt:1 [requirements (range)]"},
+		// Each expected reading below is pip's own, from req_file's
+		// join_lines and ignore_comments run on the input.
+		{"a backslash on the last line", "x", "requirements.txt", "x>=1 \\", ">=1@requirements.txt:1 [requirements (range)]"},
+		{"a backslash on the last line before its end", "x", "requirements.txt", "a==1\nx>=1 \\\n", ">=1@requirements.txt:2 [requirements (range)]"},
+		{"a comment the backslash joins the next line to", "y", "requirements.txt", "x # c \\\ny>=1\n", ""},
+		{"a comment line ends a join", "x", "requirements.txt", "x>=1 \\\n# c \\\nx<2\n", ">=1@requirements.txt:1 [requirements (range)]; <2@requirements.txt:3 [requirements (range)]"},
+		{"a comment line right after a join", "x", "requirements.txt", "x>=1\\\n# c\n", ">=1@requirements.txt:1 [requirements (range)]"},
+		{"every backslash at the end is stripped", "x", "requirements.txt", "x>=1\\\\\n.0\n", ">=1.0@requirements.txt:1 [requirements (range)]"},
 		{"poetry.lock", "requests", "poetry.lock", "[[package]]\nname = \"requests\"\nversion = \"2.31.0\"\n\n[[package]]\nname = \"idna\"\nversion = \"3.6\"\n",
 			"2.31.0@poetry.lock:3 [poetry.lock (resolved)]"},
 		{"uv.lock", "my_app", "uv.lock", "version = 1\n\n[[package]]\nname = \"my-app\"\nversion = \"0.1.0\"\nsource = { editable = \".\" }\n",
@@ -283,7 +331,11 @@ serde = "1.0"
 	root := "[workspace.dependencies]\nserde = \"1.0.200\"\n\n[dependencies]\nserde.workspace = true\n"
 	run(t, []readCase{
 		{"Cargo.toml", "serde", "crates/cli/Cargo.toml", member,
-			"^1.0.190@crates/cli/Cargo.toml:5 [Cargo.toml dependencies (range)]; workspace = true!@crates/cli/Cargo.toml:10 [Cargo.toml dev-dependencies (range)]; ^1.0@crates/cli/Cargo.toml:13 [Cargo.toml target build-dependencies (range)]"},
+			"^1.0.190@crates/cli/Cargo.toml:5 [Cargo.toml dependencies (range)]; serde = { workspace = true }!@crates/cli/Cargo.toml:10 [Cargo.toml dev-dependencies (range)]; ^1.0@crates/cli/Cargo.toml:13 [Cargo.toml target build-dependencies (range)]"},
+		{"inherits by a dotted key, after a tab", "serde", "Cargo.toml", "[dependencies]\nserde.workspace\t= true # shared\n",
+			"serde.workspace\t= true # shared!@Cargo.toml:2 [Cargo.toml dependencies (range)]"},
+		{"inherits in a table of its own", "serde", "Cargo.toml", "[dependencies.serde]\n  workspace = true\n  features = [\"derive\"]\n",
+			"workspace = true!@Cargo.toml:2 [Cargo.toml dependencies (range)]"},
 		{"a renamed dependency", "serde_json", "Cargo.toml", member, "^1@Cargo.toml:6 [Cargo.toml dependencies (range)]"},
 		{"a path dependency", "local", "Cargo.toml", member, ""},
 		{"values in the order of their lines", "serde", "Cargo.toml", "[dependencies]\nserde = \"1\"\n[workspace.dependencies]\nserde = \"2\"\n",

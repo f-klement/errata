@@ -1,0 +1,20 @@
+{
+  // The debugger's launch configurations, one for each service.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "api",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "src/server.py",
+      "env": {"PORT": "8080", "APP_CONFIG": "{\"port\": 8080}"},
+    },
+    {
+      "name": "admin",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "src/admin.py",
+      "env": {"PORT": "9090"}, // the console's own port
+    },
+  ],
+}

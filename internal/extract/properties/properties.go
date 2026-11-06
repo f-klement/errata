@@ -6,6 +6,7 @@ package properties
 import (
 	"bytes"
 	"errors"
+	"strings"
 	"unicode/utf16"
 	"unicode/utf8"
 
@@ -39,9 +40,48 @@ func Resolve(p Spec) Spec {
 }
 
 // Describe is what p's extractor returns: flat values, not literal in a
-// template file, as Build marks them.
+// file whose placeholders Spring or Log4j fill in and in a template file,
+// as Build marks them.
 func Describe(p Spec) check.Description {
-	return check.Description{Label: "properties", NotLiteral: core.TemplateNotLiteral(p.File, nil) != nil}
+	return check.Description{Label: "properties", NotLiteral: notLiteral(p.File) != nil}
+}
+
+// notLiteral is the test of a value of file that the tool reading it, or a
+// template engine, computes: a ${ in a file of Spring Boot's
+// (application.properties, bootstrap.properties and their -profile
+// files) or of Log4j's (log4j2.properties, log4j2-test.properties and
+// log4j.properties), which fill in ${name} from their own properties and
+// the environment, and Log4j writes $${ as ${. A template is tested as
+// the file it renders. Java reads any other value as written; a
+// placeholder Maven's resource filtering fills in is not modelled, since
+// the pom, not the file, turns it on.
+func notLiteral(file string) func(*core.Entry) bool {
+	_, base := core.FileParts(core.Untemplated(file))
+	var test func(*core.Entry) bool
+	if placeholderFile(base) {
+		test = func(e *core.Entry) bool { return bytes.Contains(e.Value, []byte("${")) }
+	}
+	return core.TemplateNotLiteral(file, test)
+}
+
+// placeholderFile reports whether base names a properties file Spring Boot
+// or Log4j reads and fills placeholders in: application, bootstrap,
+// log4j2 and log4j, each alone or, but for log4j, with -something after
+// it, then .properties.
+func placeholderFile(base string) bool {
+	stem, ok := strings.CutSuffix(base, ".properties")
+	if !ok {
+		return false
+	}
+	if stem == "log4j" {
+		return true
+	}
+	for _, name := range []string{"application", "bootstrap", "log4j2"} {
+		if stem == name || strings.HasPrefix(stem, name+"-") {
+			return true
+		}
+	}
+	return false
 }
 
 // Build checks p and returns its extractor.
@@ -53,8 +93,9 @@ func Build(p Spec) (check.Extractor, error) {
 	if p.Key == "" {
 		return nil, errors.New("properties: key is required")
 	}
-	// Java reads every value as written; a template's engine does not.
-	return core.EntryExtractor{Source: src, Query: core.Query{Key: []byte(p.Key), HasKey: true}, Read: readProperties, NotLiteral: core.TemplateNotLiteral(p.File, nil)}, nil
+	// Java reads every value as written; Spring, Log4j and a template's
+	// engine do not.
+	return core.EntryExtractor{Source: src, Query: core.Query{Key: []byte(p.Key), HasKey: true}, Read: core.TemplateRead(p.File, readProperties), NotLiteral: notLiteral(p.File)}, nil
 }
 
 // readProperties reads a .properties file as java.util.Properties.load does

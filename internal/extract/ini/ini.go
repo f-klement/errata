@@ -55,6 +55,10 @@ type iniDialect struct {
 	// the form its entries are compared in. Its errors start without a kind.
 	query func(Spec) (core.Query, error)
 	read  core.ReadFunc
+	// readFor, when set, is the reader of a file the spec names, where
+	// the file's name changes how its tool reads it: php reads .user.ini
+	// later than php.ini. read is still the reader of its tests.
+	readFor func(file string) core.ReadFunc
 	// notLiteral, for the file a spec names, is the test of an entry whose
 	// value the file's tool computes rather than reads as written, such as
 	// php's E_ALL & ~E_DEPRECATED; nil when the tool reads every value of
@@ -118,19 +122,30 @@ func Describe(i Spec) check.Description {
 
 // notLiteralIn is the test of an entry of file whose value the dialect's
 // tool or a template engine computes, nil when the dialect computes none
-// and the file is no template.
+// and the file is no template. The tool's test is the one for the file the
+// template renders, so setup.cfg.j2 is marked as setup.cfg is.
 func (d *iniDialect) notLiteralIn(file string) func(*core.Entry) bool {
 	var test func(*core.Entry) bool
 	if d.notLiteral != nil {
-		test = d.notLiteral(file)
+		test = d.notLiteral(core.Untemplated(file))
 	}
 	return core.TemplateNotLiteral(file, test)
 }
 
-// chooseDialect is the dialect named, or the one for the file when none is.
+// readerFor is the dialect's reader of file.
+func (d *iniDialect) readerFor(file string) core.ReadFunc {
+	if d.readFor != nil {
+		return d.readFor(file)
+	}
+	return d.read
+}
+
+// chooseDialect is the dialect named, or the one for the file when none is:
+// for a template, the file it renders, so php.ini.j2 is read in the php
+// dialect and hosts.j2 in ansible's.
 func chooseDialect(name, file string) (*iniDialect, error) {
 	if name == "" {
-		return dialectFor(file), nil
+		return dialectFor(core.Untemplated(file)), nil
 	}
 	for _, d := range iniDialects {
 		if d.name == name {
@@ -172,7 +187,8 @@ func Build(i Spec) (check.Extractor, error) {
 	if err != nil {
 		return nil, fmt.Errorf("ini: %s: %w", d.name, err)
 	}
-	return core.EntryExtractor{Source: src, Query: q, Read: d.read, NotLiteral: d.notLiteralIn(i.File)}, nil
+	// In a template, a value inside one of the engine's blocks is marked too.
+	return core.EntryExtractor{Source: src, Query: q, Read: core.TemplateRead(i.File, d.readerFor(i.File)), NotLiteral: d.notLiteralIn(i.File)}, nil
 }
 
 // eachTextLine calls f with every line of data and its number, until f
