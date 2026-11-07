@@ -15,3 +15,9 @@ coverage.product.out
 **/testdata/rapid/
 # Claude Code puts a subagent's isolated worktree here; each is a checkout of its own
 /.claude/worktrees/
+# go build in a helper's directory leaves its binary there, named after the directory
+/scripts/casecover/casecover
+/scripts/clidoc/clidoc
+/scripts/loccensus/loccensus
+/scripts/slowtests/slowtests
+/scripts/testreach/testreach

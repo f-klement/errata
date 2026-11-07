@@ -44,6 +44,27 @@ var textual = map[string]bool{"go.mod": true, "go.work": true, "Gemfile.lock": t
 // joins are the readers that join a line ending in a backslash to the next.
 var joins = map[string]bool{"constraints.txt": true, "requirements.txt": true}
 
+// unquotes are the readers whose file holds Go strings, which modfile
+// unquotes, so a value written with an escape, such as "v1.0.\x30" for
+// v1.0.0, is text of its line only once each string is unquoted. The
+// planted break: checkLines without unquoted, which fails FuzzDependency's
+// seeds that write a value with an escape.
+var unquotes = map[string]bool{"go.mod": true, "go.work": true}
+
+// goStrings are the Go strings a line can hold: interpreted and raw.
+var goStrings = regexp.MustCompile("\"(?:[^\"\\\\]|\\\\.)*\"|`[^`]*`")
+
+// unquoted is line with each Go string it holds unquoted, and one that
+// does not unquote left as written.
+func unquoted(line string) string {
+	return goStrings.ReplaceAllStringFunc(line, func(q string) string {
+		if u, err := strconv.Unquote(q); err == nil {
+			return u
+		}
+		return q
+	})
+}
+
 // lineEnds are the line ends a file is drawn with: each ends a line.
 var lineEnds = []string{"\n", "\r\n", "\r"}
 
@@ -112,6 +133,9 @@ func checkLines(t interface{ Fatalf(string, ...any) }, file, data string, got []
 				joined.WriteString(strings.Trim(split[i], `\`))
 			}
 			line = joined.String()
+		}
+		if unquotes[file] {
+			line = unquoted(line)
 		}
 		if textual[file] && !strings.Contains(line, strings.TrimPrefix(v.Text, "==")) {
 			t.Fatalf("%s: %q at line %d, which is %q\n%q", file, v.Text, v.At.Line, line, data)

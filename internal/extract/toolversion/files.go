@@ -343,10 +343,10 @@ func readGoMod(_ *extractor, f file, data []byte, add func(string, int) error) e
 		if name != "default" {
 			name = strings.TrimPrefix(name, "go")
 		}
-		return add(name, gomod.Line(data, mod.Toolchain.Syntax.Start))
+		return add(name, gomod.LastTokenLine(data, mod.Toolchain.Syntax))
 	}
 	if mod.Go != nil {
-		return add(mod.Go.Version, gomod.Line(data, mod.Go.Syntax.Start))
+		return add(mod.Go.Version, gomod.LastTokenLine(data, mod.Go.Syntax))
 	}
 	return nil
 }

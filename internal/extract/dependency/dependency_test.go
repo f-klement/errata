@@ -80,7 +80,8 @@ func run(t *testing.T, cases []readCase) {
 // version the file does not require; go.work gives its replaces. Planted
 // breaks: replaces taking the old path's version, replaces counting a
 // replace of a version nobody requires, replaces taking a fork's version
-// as literal; a value after a lone CR numbered by modfile's line.
+// as literal; a value after a lone CR numbered by modfile's line; a value
+// in a directive a lone CR splits at the line the directive starts on.
 func TestDependencyReadsGo(t *testing.T) {
 	gomod := "module example.com/m\n\ngo 1.22\n\nrequire (\n\tgolang.org/x/mod v0.42.0\n\tgolang.org/x/net v0.62.0 // indirect\n)\n\nreplace golang.org/x/mod v0.42.0 => golang.org/x/mod v0.42.1\n"
 	run(t, []readCase{
@@ -101,6 +102,19 @@ func TestDependencyReadsGo(t *testing.T) {
 		{"a require after a lone CR", "x", "go.mod", "\rrequire x v1.0.0\n", "v1.0.0@go.mod:2 [go.mod require (resolved)]"},
 		{"a require after a lone CR on line 2", "x", "go.mod", "module m\n\rrequire x v1.0.0\n", "v1.0.0@go.mod:3 [go.mod require (resolved)]"},
 		{"a require a lone CR leaves in a comment", "x", "go.mod", "module m\n// c\rrequire x v1.0.0\n", ""},
+		// A lone CR inside a directive is a blank to modfile and to the go
+		// command, so the directive is whole; its value is at the line of
+		// the token that holds it, past the lone CR, not where the
+		// directive starts.
+		{"a replace a lone CR splits", "x", "go.mod", "require x v1.2\nreplace x v1.2\r=> x v13",
+			"v1.2!@go.mod:1 [go.mod require (resolved)]; v13!@go.mod:3 [go.mod replace (resolved)]"},
+		{"a require a lone CR splits", "x", "go.mod", "module m\nrequire x\rv1.0.0\n", "v1.0.0@go.mod:3 [go.mod require (resolved)]"},
+		{"a block's require a lone CR splits", "x", "go.mod", "require (\n\tx\rv1.0.0\n)\n", "v1.0.0@go.mod:3 [go.mod require (resolved)]"},
+		{"a block's replace a lone CR splits", "x", "go.mod", "require x v1.0.0\nreplace (\n\tx v1.0.0\r=>\ry v2.0.0\n)\n",
+			"v1.0.0@go.mod:1 [go.mod require (resolved)]; v2.0.0!@go.mod:5 [go.mod replace (resolved)]"},
+		{"an escaped version a lone CR splits", "x", "go.mod", "module m\nrequire x\r\"v1.0.\\x30\"\n", "v1.0.0@go.mod:3 [go.mod require (resolved)]"},
+		{"a replace by a directory a lone CR splits", "x", "go.mod", "replace x =>\r../x\n", "../x!@go.mod:2 [go.mod replace (resolved)]"},
+		{"a go.work replace a lone CR splits", "x", "go.work", "go 1.22\nreplace x v1.0.0 =>\rx\rv1.0.1\n", "v1.0.1@go.work:4 [go.work replace (resolved)]"},
 	})
 }
 
@@ -134,12 +148,18 @@ func TestDependencyReadsGoVersionsAsWritten(t *testing.T) {
 }
 
 // module: true gives the path a go.mod's module directive declares, and
-// refuses a name beside it and any file that is no go.mod. Planted break:
-// readGoMod reading requires under module: true.
+// refuses a name beside it and any file that is no go.mod. Planted breaks:
+// readGoMod reading requires under module: true; the path at the line its
+// directive starts on.
 func TestDependencyModulePath(t *testing.T) {
 	repo := map[string]string{"go.mod": "// c\nmodule github.com/f-klement/errata\n\nrequire golang.org/x/mod v0.42.0\n", "tools/go.mod": "go 1.22\n"}
 	if got := values(t, repo, Spec{Module: true, Files: []string{"go.mod", "tools/go.mod"}}); got != "github.com/f-klement/errata@go.mod:2 [go.mod module]" {
 		t.Errorf("got %s", got)
+	}
+	// A lone CR inside the directive is a blank to modfile: the path is
+	// at the line past it.
+	if got := values(t, map[string]string{"go.mod": "module\rm\n"}, Spec{Module: true, Files: []string{"go.mod"}}); got != "m@go.mod:2 [go.mod module]" {
+		t.Errorf("a module directive a lone CR splits: got %s", got)
 	}
 	for _, c := range []struct {
 		spec Spec

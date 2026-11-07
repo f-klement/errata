@@ -278,7 +278,10 @@ cover: test
 # run at once (scripts/mutation.sh --jobs); CI's mutation job sets it from its pod's CPUs and
 # memory. MUTATION_MOST caps a diff run's packages (--most); CI's mutation job sets
 # it, and the packages over it are left out and named. MUTATION_MEMORY_REQUEST is the memory
-# guard's request (--memory-request; ci/README.md, The weekly pass).
+# guard's request (--memory-request; ci/README.md, The weekly pass). MUTATION_NARROW=off runs
+# every mutant against its package's whole tests (--narrow off), and MUTATION_SHOW_KILLED=yes
+# names each killed mutant in the log (--show-killed yes), so two runs compare mutant by mutant
+# (ci/README.md, Narrowing).
 #
 # Only a value given on make's command line counts. make exports command-line variables
 # to every recipe, so `make check MUTATION_SCOPE=x` reaches each make a recipe starts, the
@@ -312,6 +315,12 @@ endif
 ifeq ($(origin MUTATION_PER_PACKAGE),environment)
 override MUTATION_PER_PACKAGE :=
 endif
+ifeq ($(origin MUTATION_NARROW),environment)
+override MUTATION_NARROW :=
+endif
+ifeq ($(origin MUTATION_SHOW_KILLED),environment)
+override MUTATION_SHOW_KILLED :=
+endif
 MUTATION_SCOPE    ?= all
 FUZZ_FLAGS        ?=
 MUTATION_DIFF     ?=
@@ -319,6 +328,8 @@ MUTATION_DEADLINE ?=
 MUTATION_JOBS     ?=
 MUTATION_MOST     ?=
 MUTATION_MEMORY_REQUEST ?=
+MUTATION_NARROW   ?=
+MUTATION_SHOW_KILLED ?=
 
 # An empty FUZZ_TARGETS, from a derivation that broke or set on the command line, is refused: it
 # would pass with no target run.
@@ -334,7 +345,7 @@ fuzz:
 # scripts/mutation.sh runs gremlins from a copy of the tracked tree, one pass per package of
 # MUTATION_SCOPE, each held to its own floors; it says why.
 mutation: $(BIN)/gremlins
-	GREMLINS=$(BIN)/gremlins scripts/mutation.sh $(if $(MUTATION_DIFF),--diff $(MUTATION_DIFF) )$(if $(MUTATION_DEADLINE),--deadline $(MUTATION_DEADLINE) )$(if $(MUTATION_JOBS),--jobs $(MUTATION_JOBS) )$(if $(MUTATION_MOST),--most $(MUTATION_MOST) )$(if $(MUTATION_MEMORY_REQUEST),--memory-request $(MUTATION_MEMORY_REQUEST) )$(MUTATION_SCOPE)
+	GREMLINS=$(BIN)/gremlins scripts/mutation.sh $(if $(MUTATION_DIFF),--diff $(MUTATION_DIFF) )$(if $(MUTATION_DEADLINE),--deadline $(MUTATION_DEADLINE) )$(if $(MUTATION_JOBS),--jobs $(MUTATION_JOBS) )$(if $(MUTATION_MOST),--most $(MUTATION_MOST) )$(if $(MUTATION_MEMORY_REQUEST),--memory-request $(MUTATION_MEMORY_REQUEST) )$(if $(MUTATION_NARROW),--narrow $(MUTATION_NARROW) )$(if $(MUTATION_SHOW_KILLED),--show-killed $(MUTATION_SHOW_KILLED) )$(MUTATION_SCOPE)
 
 vuln: $(BIN)/govulncheck
 	$(BIN)/govulncheck ./...
@@ -356,9 +367,19 @@ public-dry: build
 # The publish and autopatch scripts, against local repositories only. Gremlins too: one test
 # runs it on a module of its own, to show what a diff run mutates. jq reads renovate.json,
 # and cosign checks the signatures in the tests of scripts/fetch-tool.sh.
-ci-test: $(BIN)/gremlins $(BIN)/jq $(BIN)/cosign
+# CI_TEST_SELECT=changed, which only CI's ci-test job passes, runs only the files of ci/tests a
+# path changed since the pipeline's base can affect (ci/README.md, Choosing the suites). Only a
+# command-line value counts, as for CI_TEST: an exported one would make a seat's gate skip
+# files. Any value but changed stops make.
+ifeq ($(origin CI_TEST_SELECT),environment)
+override CI_TEST_SELECT :=
+endif
+ifneq ($(filter-out changed,$(CI_TEST_SELECT)),)
+$(error CI_TEST_SELECT is '$(CI_TEST_SELECT)': it takes changed, or nothing for every suite)
+endif
+ci-test:$(BIN)/gremlins $(BIN)/jq $(BIN)/cosign
 	cd ci/autopatch && $(GO) vet ./... && $(GO) test -count=1 ./...
-	GREMLINS=$(BIN)/gremlins JQ=$(BIN)/jq COSIGN=$(BIN)/cosign ci/test-ci.sh
+	GREMLINS=$(BIN)/gremlins JQ=$(BIN)/jq COSIGN=$(BIN)/cosign ci/test-ci.sh$(if $(CI_TEST_SELECT), --changed)
 
 # The release image, built by ko with .goreleaser.yaml's base image and user
 # into a tarball, pushed nowhere, and its config checked against what the

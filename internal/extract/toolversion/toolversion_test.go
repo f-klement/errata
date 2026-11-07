@@ -92,6 +92,9 @@ func TestToolVersionReadsEachFile(t *testing.T) {
 		// modfile reads a lone CR as a blank; the line is errata's.
 		{"go.mod", "go", "module m\n\rgo 1.22\n\rtoolchain go1.22.3\n", "1.22.3@go.mod:5"},
 		{"go.mod", "go", "module m\n\rgo 1.22\n", "1.22@go.mod:3"},
+		// ... and inside a directive, whose value is past the lone CR.
+		{"go.mod", "go", "module m\ngo\r1.22\n", "1.22@go.mod:3"},
+		{"go.mod", "go", "module m\ngo 1.22\ntoolchain\rgo1.22.3\n", "1.22.3@go.mod:4"},
 		{".terraform-version", "terraform", "latest:^1.5\n", "latest:^1.5!@.terraform-version:1"},
 		{".terraform-version", "terraform", "1.7.4\n", "1.7.4@.terraform-version:1"},
 		{".java-version", "java", "17.0\n", "17.0@.java-version:1"},

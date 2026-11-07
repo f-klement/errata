@@ -103,19 +103,22 @@ func FuzzNodes(f *testing.F) {
 }
 
 // A directive's line is errata's, where modfile's is not: a lone CR before
-// it ends a line, and modfile reads it as a blank. The planted break: Line
-// returning p.Line.
+// it ends a line, and modfile reads it as a blank. A lone CR inside a
+// directive leaves it whole, and its value is at the line past it, where
+// the last token starts. The planted breaks: LastTokenLine returning
+// l.Start.Line; LastTokenLine at the line of l.Start.Byte, where the
+// directive starts.
 func TestLineCountsALoneCR(t *testing.T) {
-	data := []byte("module m\n\rgo 1.22\r\ntoolchain go1.22.3\n")
+	data := []byte("module m\n\rgo 1.22\r\ntoolchain\rgo1.22.3\n")
 	mod, err := Parse(core.Source{File: "go.mod", Limit: 1 << 20}, data)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := Line(data, mod.Go.Syntax.Start); got != 3 || mod.Go.Syntax.Start.Line != 2 {
+	if got := LastTokenLine(data, mod.Go.Syntax); got != 3 || mod.Go.Syntax.Start.Line != 2 {
 		t.Errorf("go at line %d, modfile's %d; want 3 and 2", got, mod.Go.Syntax.Start.Line)
 	}
-	if got := Line(data, mod.Toolchain.Syntax.Start); got != 4 {
-		t.Errorf("toolchain at line %d, want 4", got)
+	if got := LastTokenLine(data, mod.Toolchain.Syntax); got != 5 || mod.Toolchain.Name != "go1.22.3" {
+		t.Errorf("toolchain %s at line %d, want go1.22.3 at 5", mod.Toolchain.Name, got)
 	}
 }
 

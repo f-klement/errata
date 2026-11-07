@@ -26,13 +26,13 @@ func readGoMod(rd *reading, data []byte) error {
 		if mod.Module == nil {
 			return nil
 		}
-		return rd.add(found{text: mod.Module.Mod.Path, section: "module", line: gomod.Line(data, mod.Module.Syntax.Start)})
+		return rd.add(found{text: mod.Module.Mod.Path, section: "module", line: gomod.LastTokenLine(data, mod.Module.Syntax)})
 	}
 	required := map[string]bool{}
 	for _, r := range mod.Require {
 		if rd.is(r.Mod.Path) {
 			required[r.Mod.Version] = true
-			if err := rd.add(found{text: r.Mod.Version, section: "require", role: Resolved, line: gomod.Line(data, r.Syntax.Start), notLiteral: !gomod.Canonical(r.Mod.Version)}); err != nil {
+			if err := rd.add(found{text: r.Mod.Version, section: "require", role: Resolved, line: gomod.LastTokenLine(data, r.Syntax), notLiteral: !gomod.Canonical(r.Mod.Version)}); err != nil {
 				return err
 			}
 		}
@@ -75,7 +75,7 @@ func replaces(rd *reading, data []byte, rs []*modfile.Replace, required map[stri
 			}
 			maybe = true
 		}
-		f := found{text: r.New.Version, section: "replace", role: Resolved, line: gomod.Line(data, r.Syntax.Start),
+		f := found{text: r.New.Version, section: "replace", role: Resolved, line: gomod.LastTokenLine(data, r.Syntax),
 			notLiteral: r.New.Path != r.Old.Path || maybe || !gomod.Canonical(r.New.Version)}
 		if f.text == "" {
 			f.text, f.notLiteral = r.New.Path, true

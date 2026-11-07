@@ -15,8 +15,8 @@ func fileOf(i int) string {
 // text of its line gives text its line holds.
 func FuzzDependency(f *testing.F) {
 	seeds := map[string][]string{
-		"go.mod":              {"module m\nrequire x v1.0.0\nreplace x => ../x\n", "require x v1", "module m\nrequire x v1.2\nreplace x v1.2 => x v1.3\n"},
-		"go.work":             {"go 1.22\nreplace x v1 => x v1.0.1\n"},
+		"go.mod":              {"module m\nrequire x v1.0.0\nreplace x => ../x\n", "require x v1", "module m\nrequire x v1.2\nreplace x v1.2 => x v1.3\n", "require x v1.2\nreplace x v1.2\r=> x v13", `require x "v1.0.\x30"`, "require x v1.0.0\nreplace x => \"\\x2e./x\"\n"},
+		"go.work":             {"go 1.22\nreplace x v1 => x v1.0.1\n", "go 1.22\nreplace x => x \"v1.0.\\u0031\"\n"},
 		"package.json":        {`{"dependencies": {"x": "^1"}, "devDependencies": {"x": "latest"}}`},
 		"package-lock.json":   {`{"name": "x", "version": "1", "packages": {"": {"name": "x", "version": "1"}, "node_modules/x": {"version": "2"}}}`, `{"dependencies": {"x": {"version": "1", "dependencies": {"x": {"version": "2"}}}}}`},
 		"npm-shrinkwrap.json": {`{"packages": {"node_modules/a/node_modules/x": {"version": "3"}}}`},

@@ -2,7 +2,8 @@
 # mutation.sh: run gremlins over each package of a scope, each held to its own floors.
 #
 # Usage: scripts/mutation.sh [--diff <base>] [--deadline <epoch seconds>] [--jobs <n>] [--most <n>]
-#                            [--memory-request <quantity>] all | none | <package directory>...
+#                            [--memory-request <quantity>] [--narrow on|off] [--show-killed yes|no]
+#                            all | none | <package directory>...
 #   make mutation                                   every package, as locally and weekly
 #   make mutation MUTATION_SCOPE="internal/config"  the packages listed
 #   make mutation MUTATION_SCOPE="internal/config" MUTATION_DIFF=<commit>
@@ -16,6 +17,10 @@
 #                                                   at most n packages, those with the most
 #                                                   changed lines; the rest are left out (#151)
 #   make mutation MUTATION_MEMORY_REQUEST=2Gi       the memory guard (ci/README.md, The weekly pass)
+#   make mutation ... MUTATION_NARROW=off           every mutant runs its package's whole tests
+#                                                   (--narrow off; narrowing below, #264)
+#   make mutation ... MUTATION_SHOW_KILLED=yes      the log names each killed mutant too (--show-killed yes), so two
+#                                                   runs compare mutant by mutant
 #
 # Each package is one pass, `gremlins unleash <package directory>`, judged alone against its
 # floors (scripts/mutation-floors.txt, read below). A package directory is one under internal/
@@ -111,9 +116,23 @@ quantity_bytes() {
     echo $((n * m))
 }
 
-diff_base="" deadline="" jobs=1 most="" mem_request=""
+diff_base="" deadline="" jobs=1 most="" mem_request="" narrow=yes show_killed="" reach_ok=""
 while :; do
     case "${1:-}" in
+        --narrow)
+            case "${2:-}" in
+                on) narrow=yes ;;
+                off) narrow="" ;;
+                *) refuse "--narrow takes on or off, not '${2:-}'" ;;
+            esac
+            shift 2 ;;
+        --show-killed)
+            case "${2:-}" in
+                yes) show_killed=k ;;
+                no) show_killed="" ;;
+                *) refuse "--show-killed takes yes or no, not '${2:-}'" ;;
+            esac
+            shift 2 ;;
         --memory-request)
             [ "$#" -ge 2 ] || refuse "--memory-request takes the pod's memory request, a Kubernetes quantity such as 2Gi"
             mem_request=$2
@@ -153,7 +172,7 @@ while :; do
         *) break ;;
     esac
 done
-[ "$#" -gt 0 ] || refuse "no scope given. Usage: scripts/mutation.sh [--diff <base>] [--deadline <epoch seconds>] [--jobs <n>] [--most <n>] [--memory-request <quantity>] all | none | <package directory>..."
+[ "$#" -gt 0 ] || refuse "no scope given. Usage: scripts/mutation.sh [--diff <base>] [--deadline <epoch seconds>] [--jobs <n>] [--most <n>] [--memory-request <quantity>] [--narrow on|off] [--show-killed yes|no] all | none | <package directory>..."
 # The memory guard reads one package's anon, which only a run of one package at a time gives
 # (Memory, below).
 [ -z "$mem_request" ] || [ "$jobs" -le 1 ] || refuse "--memory-request bounds each package's own anon, and with --jobs $jobs the packages that run at once share one figure; run them one at a time"
@@ -358,8 +377,10 @@ fi
 # for the reason the git shim gives below.
 [ -f scripts/casecover/main.go ] || refuse "scripts/casecover is missing; it covers case expressions for gremlins"
 [ -f scripts/goshim.sh ] || refuse "scripts/goshim.sh is missing; it runs scripts/casecover for gremlins"
+[ -f scripts/testreach/main.go ] || refuse "scripts/testreach is missing; it narrows each mutant's tests to those that reach its line"
 mkdir "$work/bin"
 go build -o "$work/bin/casecover" ./scripts/casecover || refuse "could not build scripts/casecover"
+go build -o "$work/bin/testreach" ./scripts/testreach || refuse "could not build scripts/testreach"
 # quote <text>: the text as one single quoted word for sh.
 quote() {
     printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
@@ -372,7 +393,7 @@ write_goshim() {
     mkdir -p "$1"
     {
         echo '#!/bin/sh'
-        echo "exec /bin/sh $(quote "$(pwd)/scripts/goshim.sh") $(quote "$(command -v go)") $(quote "$work/bin/casecover") $(quote "$(pwd)") \"\$@\""
+        echo "exec /bin/sh $(quote "$(pwd)/scripts/goshim.sh") $(quote "$(command -v go)") $(quote "$work/bin/casecover") $(quote "$work/bin/testreach") $(quote "$(pwd)") \"\$@\""
     } >"$1/go"
     chmod +x "$1/go"
     goshim_dir=$1
@@ -437,41 +458,47 @@ floors_table=$(sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "$FLOORS_FILE")
 # `mutant <seconds>`, the time a mutant of the package took at one worker, `measuring
 # <seconds>`, the time its measuring took (measure_pass and measure_mutant), both of which the
 # schedule of packages at once reads (alone_look, #236), and `measured <pipeline id or
-# YYYY-MM-DD>`, where they were taken. Every row is checked here, before any pass and whatever
-# the scope, so a malformed row anywhere in the table refuses every run, the tests' among them.
-FLOORS_FORM="a row is a package and three whole numbers, then, once each and in any order, 'from <package>' and the three fields 'mutant <seconds>', 'measuring <seconds>' and 'measured <pipeline id or YYYY-MM-DD>', which come together or not at all"
+# YYYY-MM-DD>`, where they were taken. With those three a row may hold `pass <seconds>`, the
+# package's coverage pass in the same run, which narrowing's rule reads beside `mutant`
+# (narrow_or_not, #264). Every row is checked here, before any pass and whatever the scope, so
+# a malformed row anywhere in the table refuses every run, the tests' among them.
+FLOORS_FORM="a row is a package and three whole numbers, then, once each and in any order, 'from <package>' and the three fields 'mutant <seconds>', 'measuring <seconds>' and 'measured <pipeline id or YYYY-MM-DD>', which come together or not at all, and with those three 'pass <seconds>'"
 bad_rows=$(printf '%s\n' "$floors_table" | awk '{
     ok = (NF >= 4 && (NF - 4) % 2 == 0 && $1 ~ /^internal\/[^ ]*[^\/]$/ && $2 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/ && $4 ~ /^[0-9]+$/)
-    split("", had); timed = 0
+    split("", had); timed = 0; pass = 0
     for (i = 5; i < NF; i += 2) {
         if ($i in had) ok = 0
         had[$i] = 1
         if ($i == "from") { if ($(i + 1) !~ /^internal\/[^ ]*[^\/]$/) ok = 0 }
+        else if ($i == "pass") { if ($(i + 1) !~ /^[0-9]+(\.[0-9]+)?$/) ok = 0; pass = 1 }
         else if ($i == "mutant" || $i == "measuring") { if ($(i + 1) !~ /^[0-9]+(\.[0-9]+)?$/) ok = 0; timed++ }
         else if ($i == "measured") { if ($(i + 1) !~ /^([0-9]+|[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9])$/) ok = 0; timed++ }
         else ok = 0
     }
     if (timed != 0 && timed != 3) ok = 0
+    if (pass && timed != 3) ok = 0
     if (!ok) print $1
 }')
 # shellcheck disable=SC2086
 [ -z "$bad_rows" ] || refuse "$FLOORS_FILE has a row of the wrong form for$(printf ' %s' $bad_rows): $FLOORS_FORM"
 
-# floors_for <package>: efficacy, mcover, base_coef, row_mutant and row_measuring from the
-# package's row, whose form is checked above; false when the table has no row for it, or more
-# than one. row_mutant and row_measuring are empty when the row has no times.
+# floors_for <package>: efficacy, mcover, base_coef, row_mutant, row_measuring and row_pass from
+# the package's row, whose form is checked above; false when the table has no row for it, or
+# more than one. The times are empty when the row has none.
 floors_for() {
     row=$(printf '%s\n' "$floors_table" | awk -v p="$1" '$1 == p {
-        n++; r = $2 " " $3 " " $4; m = "-"; g = "-"
+        n++; r = $2 " " $3 " " $4; m = "-"; g = "-"; q = "-"
         for (i = 5; i < NF; i += 2) {
             if ($i == "mutant") m = $(i + 1)
             else if ($i == "measuring") g = $(i + 1)
+            else if ($i == "pass") q = $(i + 1)
         }
-    } END { if (n != 1) exit 1; print r, m, g }') || return 1
+    } END { if (n != 1) exit 1; print r, m, g, q }') || return 1
     set -- $row
-    efficacy=$1 mcover=$2 base_coef=$3 row_mutant=$4 row_measuring=$5
+    efficacy=$1 mcover=$2 base_coef=$3 row_mutant=$4 row_measuring=$5 row_pass=$6
     [ "$row_mutant" != - ] || row_mutant=""
     [ "$row_measuring" != - ] || row_measuring=""
+    [ "$row_pass" != - ] || row_pass=""
 }
 
 # A package fails when more than TIMEOUT_CAP percent of its mutants that ran timed out, and
@@ -559,7 +586,7 @@ workers() {
 # does after its first mutant. Only in the copy of the tree: it edits the file, then puts it
 # back.
 measure_mutant() {
-    mutant_s="" mutant1_s=""
+    mutant_s="" mutant1_s="" rule1_s=""
     [ -n "${in_copy:-}" ] || return 0
     tags=$(sed -n 's/^  tags: *\([^ #]*\).*/\1/p' .gremlins.yaml)
     # The first Go file the build takes, as go list names it with gremlins' tags: a file a build
@@ -571,30 +598,54 @@ measure_mutant() {
     bounded go test ${tags:+-tags "$tags"} -run '^$' "./$1" >/dev/null 2>&1 || return 0
     cp "$src" "$pw/probe.keep"
     w=$(workers)
-    probe_at "$1" "$w" Probe
+    probe_at "$1" "$w" Probe "$pw/probe.failed"
     mutant_s=$took
-    # The measuring a push's pass makes ends here, so this is where its time is taken.
+    weekly=""
+    [ -n "$diff_base" ] || [ -n "$deadline" ] || weekly=yes
+    # Narrowing's rule compares the pass with a mutant at one worker, as a floors row holds it
+    # (narrow_or_not). Where the row has no such pair and this run takes no such time (a weekly
+    # run does, below), one more mutant is timed, at one worker, for the rule alone (#264, delta
+    # review 2, E2). It has a failure marker of its own: a rule probe that fails leaves the rule
+    # without a figure, and so the package whole, and never the measured mutant, which sets the
+    # limit per mutant (delta review 3, G2).
+    rm -f "$pw/rule.failed"
+    if [ -z "$weekly" ] && [ ! -e "$pw/probe.failed" ] && [ -n "$narrow" ] && { [ -z "$row_pass" ] || [ -z "$row_mutant" ]; }; then
+        if [ "$w" -eq 1 ]; then
+            rule1_s=$mutant_s
+        else
+            probe_at "$1" 1 ProbeRule "$pw/rule.failed"
+            rule1_s=$took
+            if [ -e "$pw/rule.failed" ]; then
+                rm -f "$pw/rule.failed"
+                rule1_s=""
+            fi
+        fi
+    fi
+    # The measuring a push's pass makes ends here, the rule probe's included, so this is where
+    # its time is taken.
     measuring_s=$(awk -v a="$measure_start" -v b="$(date +%s%N)" 'BEGIN { s = (b - a) / 1e9; r = int(s); if (r < s) r++; printf "%d", r }')
     # A run of whole packages with no deadline, the weekly pass's, also times a mutant at one
-    # worker, the time a floors row holds (#247). Another function, so the package is built again.
-    if [ ! -e "$pw/probe.failed" ] && [ -z "$diff_base" ] && [ -z "$deadline" ]; then
-        if [ "$w" -eq 1 ]; then mutant1_s=$mutant_s; else probe_at "$1" 1 ProbeAlone; mutant1_s=$took; fi
+    # worker, the time a floors row holds (#247), and the rule reads it too. Another function, so
+    # the package is built again.
+    if [ ! -e "$pw/probe.failed" ] && [ -n "$weekly" ]; then
+        if [ "$w" -eq 1 ]; then mutant1_s=$mutant_s; else probe_at "$1" 1 ProbeAlone "$pw/probe.failed"; mutant1_s=$took; fi
+        rule1_s=$mutant1_s
     fi
     cp "$pw/probe.keep" "$src"
     if [ -e "$pw/probe.failed" ]; then
         rm -f "$pw/probe.failed"
-        mutant_s="" mutant1_s=""
+        mutant_s="" mutant1_s="" rule1_s=""
         echo "==> mutation: $1: could not time a mutant: its tests failed with a function added to $src"
     fi
 }
-# probe_at <package> <n> <name>: took, the seconds n runs at once of the package's tests take,
-# with a function ErrataMutation<name> added to src; $pw/probe.failed when one failed.
+# probe_at <package> <n> <name> <marker>: took, the seconds n runs at once of the package's
+# tests take, with a function ErrataMutation<name> added to src; the marker file when one failed.
 probe_at() {
     printf '\nfunc ErrataMutation%s() {}\n' "$3" >>"$src"
     start=$(date +%s%N)
     i=0 probes=""
     while [ "$i" -lt "$2" ]; do
-        { bounded go test ${tags:+-tags "$tags"} -failfast "./$1" >/dev/null 2>&1 || : >"$pw/probe.failed"; } &
+        { bounded go test ${tags:+-tags "$tags"} -failfast "./$1" >/dev/null 2>&1 || : >"$4"; } &
         probes="$probes $!"
         i=$((i + 1))
     done
@@ -604,14 +655,15 @@ probe_at() {
     end=$(date +%s%N)
     took=$(awk -v a="$start" -v b="$end" 'BEGIN { printf "%.3f", (b - a) / 1e9 }')
 }
-# floors_row <package> <mutant seconds> <measuring seconds>: the package's floors row, aligned as
-# scripts/mutation-floors.txt aligns it, with its mutant and measuring times set to those,
-# measured in this pipeline, or on today's date outside CI (#247).
+# floors_row <package> <mutant seconds> <measuring seconds> [<pass seconds>]: the package's
+# floors row, aligned as scripts/mutation-floors.txt aligns it, with its mutant, pass and
+# measuring times set to those, measured in this pipeline, or on today's date outside CI (#247,
+# #264). The pass goes in when it was timed.
 floors_row() {
-    printf '%s\n' "$floors_table" | awk -v p="$1" -v m="$2" -v g="$3" -v id="${CI_PIPELINE_ID:-$(date -u +%Y-%m-%d)}" '$1 == p {
+    printf '%s\n' "$floors_table" | awk -v p="$1" -v m="$2" -v g="$3" -v q="${4:-}" -v id="${CI_PIPELINE_ID:-$(date -u +%Y-%m-%d)}" '$1 == p {
         r = sprintf("%-34s %-9s %-7s %-6s ", $1, $2, $3, $4)
-        for (i = 5; i < NF; i += 2) if ($i != "mutant" && $i != "measuring" && $i != "measured") r = r $i " " $(i + 1) " "
-        printf "%smutant %.1f measuring %d measured %s\n", r, m, g, id
+        for (i = 5; i < NF; i += 2) if ($i != "mutant" && $i != "measuring" && $i != "measured" && $i != "pass") r = r $i " " $(i + 1) " "
+        printf "%smutant %.1f %smeasuring %d measured %s\n", r, m, (q == "" ? "" : sprintf("pass %.1f ", q)), g, id
     }'
 }
 
@@ -666,16 +718,21 @@ count() {
 }
 
 # config_for <package> <coefficient>: .gremlins.yaml with both thresholds at 0 and that
-# coefficient, as a file. Its exclude-files gain, first, the pattern `/`: gremlins matches a
+# coefficient, as a file, or half again that coefficient with an index of the package's tests
+# (narrowing, below), the two written to the index's limits for testreach. Its exclude-files gain, first, the pattern `/`: gremlins matches a
 # path relative to the package, so a path with a slash is a file below the package's own
 # directory, in a package nested under it or in testdata. Then each pattern .gremlins.yaml
 # anchors under the package, ^<package>/<rest>, as ^<rest>, so it excludes in this pass what
 # it excludes in a run from the module root.
 config_for() {
-    coef=$2
+    coef=$2 gcoef=$2
+    if [ -n "$reach_ok" ]; then
+        gcoef=$(narrow_coefficient "$2")
+        echo "$2 $gcoef" >"$pw/reach/limits"
+    fi
     sed -e "s/^    efficacy: [0-9]*/    efficacy: 0/" \
         -e "s/^    mutant-coverage: [0-9]*/    mutant-coverage: 0/" \
-        -e "s/^  timeout-coefficient: [0-9]*/  timeout-coefficient: $coef/" \
+        -e "s/^  timeout-coefficient: [0-9]*/  timeout-coefficient: $gcoef/" \
         -e "s/^  workers: [0-9]*/  workers: $pkg_workers/" \
         .gremlins.yaml >"$pw/gremlins.base"
     {
@@ -688,7 +745,7 @@ config_for() {
         END { if (n != 1) exit 1 }
     ' "$pw/gremlins.base" >"$pw/gremlins.yaml" \
         || refuse "a copy of .gremlins.yaml has no single '  exclude-files:' line to add the package's exclusions to"
-    for key in "    efficacy: 0" "    mutant-coverage: 0" "  timeout-coefficient: $coef" "  workers: $pkg_workers"; do
+    for key in "    efficacy: 0" "    mutant-coverage: 0" "  timeout-coefficient: $gcoef" "  workers: $pkg_workers"; do
         grep -q "^$key\( \|\$\)" "$pw/gremlins.yaml" || refuse "could not write '$key' into a copy of .gremlins.yaml"
     done
 }
@@ -871,17 +928,153 @@ bounded() {
     fi
 }
 
+# Narrowing (#264). A mutant used to run its package's whole tests: in pipeline 3036899801 a
+# mutant of internal/extract/core took 11.5 s against a coverage pass of 6.9 s. So before
+# gremlins' pass, scripts/testreach builds an index of the lines each test of the package runs
+# (`testreach index`: the package's test binary built with -cover and run once per test, Example
+# and Fuzz target, each alone with a profile of its own, which casecover then reads as it reads
+# gremlins'). During the pass the go shim hands each mutant's go test to `testreach run`. That
+# builds the mutant's test binary once and runs only the tests the index says reach the
+# mutant's line, once those have passed together on the original code. When one of them fails
+# the mutant is killed: the same test fails in the whole package's run, whose verdict that is.
+# When they pass, or end any other way, it runs the whole package's tests, and their status is
+# the mutant's. So a mutant lives only when the whole package's tests pass; the index decides
+# only how much is run first. A test the index misses (one that reaches the line in a
+# subprocess, say) costs a narrowed run before the whole one, not a verdict. ci/README.md,
+# Narrowing, lists what the index cannot see.
+#
+# The limit. Gremlins gets a coefficient half again the planned one (narrow_coefficient).
+# testreach builds the mutant's test binary once, bounded at the planned limit, and runs the
+# whole tests bounded at the planned limit less the build's time, so build and tests are charged
+# against the planned limit term for term as one cold go test is; a build or a whole run past
+# its bound is timed out, and that is final. The narrowed run and its check get half a limit, and
+# a narrowed run past it goes to the whole run (review of #264, delta review 2, E1). A test
+# binary's output is drained for go test's own wait, and output held past it fails the test, as
+# under go test. A run past its bound is stopped and testreach waits for gremlins' limit, so
+# gremlins reads the timeout; a mutant that times out holds its worker for one and a half
+# limits. The log lines and the timeout cap speak of the planned limit. When testreach cannot
+# read the limits it hands the mutant to go under gremlins' limit, and the package fails
+# (reach_line).
+#
+# A package gets no index, and every mutant its whole tests as before, when its pass is under a
+# third of a mutant (narrow_or_not), when its tests fail run one alone (a test that needs an
+# earlier one would fail every narrowed run it is in), when it has no test files, when --narrow
+# off (MUTATION_NARROW=off) is given, or when building the index fails; the log says which.
+# testreach logs each mutant, and after each pass a line counts how they ran (reach_line).
+
+# narrow_coefficient <coefficient>: the one gremlins gets when narrowing, half again as much,
+# rounded up: the planned limit for the build and the whole run, and half of it for the
+# narrowed run and its check.
+narrow_coefficient() {
+    echo $(($1 + ($1 + 1) / 2))
+}
+
+# narrow_or_not <package>: build_reach when the package's tests are a real part of a mutant's
+# cost, a line saying why not otherwise. A mutant's cost is mostly its build, which narrowing does
+# not shorten, while a survivor runs its tests twice and a mutant that hangs holds its worker
+# for half a limit more; so a package is narrowed only when its pass, the whole tests, is at least a
+# third of the measured mutant (review of #264, owner question 1; the conservative reading until
+# the owner decides).
+narrow_or_not() {
+    reach_ok=""
+    [ -n "$narrow" ] || return 0
+    # The floors row's pair when it has both, timed in one weekly run with one worker; this
+    # run's otherwise. A probe under load (61.9 s for core on 2026-11-06, against 9 s) would
+    # otherwise decide alone.
+    if [ -n "$row_pass" ] && [ -n "$row_mutant" ]; then
+        rule_pass=$row_pass rule_mutant=$row_mutant from="its floors row's"
+    else
+        # The row's mutant was timed with one worker, and so is this run's rule1_s.
+        rule_pass=$pass_s rule_mutant=${rule1_s:-} from="this run's"
+    fi
+    if [ -z "$pass_s" ] || [ -z "$rule_pass" ] || [ -z "$rule_mutant" ]; then
+        echo "==> mutation: $1: not narrowed: its pass or a mutant could not be timed; every mutant runs the whole package's tests"
+        return 0
+    fi
+    if awk -v p="$rule_pass" -v m="$rule_mutant" 'BEGIN { exit !(3 * p < m) }'; then
+        echo "==> mutation: $1: not narrowed: by $from times, its tests, a pass of $rule_pass s, are under a third of a mutant's $rule_mutant s, so narrowing them would save little; every mutant runs the whole package's tests"
+        return 0
+    fi
+    echo "==> mutation: $1: narrowed: by $from times, its tests, a pass of $rule_pass s, are at least a third of a mutant's $rule_mutant s"
+    build_reach "$1" "$(seconds "$coef" "$pass_s")"
+    [ -z "${measuring_s:-}" ] || measuring_s=$(awk -v m="$measuring_s" -v t="$took" 'BEGIN { s = m + t; r = int(s); if (r < s) r++; printf "%d", r }')
+}
+
+# build_reach <package> <limit seconds>: reach_ok set when the index of the package's tests is
+# built in $pw/reach, each test bounded at the planned limit; a log line either way.
+build_reach() {
+    reach_ok=""
+    rm -rf "$pw/reach"
+    mkdir "$pw/reach"
+    tags=$(sed -n 's/^  tags: *\([^ #]*\).*/\1/p' .gremlins.yaml)
+    start=$(date +%s%N)
+    rrc=0
+    bounded "$work/bin/testreach" index "$(command -v go)" "$work/bin/casecover" "$tags" "$(pwd)" "$1" "$pw/reach" "$pkg_workers" "$2" >"$pw/reach.out" 2>&1 || rrc=$?
+    took=$(awk -v a="$start" -v b="$(date +%s%N)" 'BEGIN { printf "%.1f", (b - a) / 1e9 }')
+    if [ "$rrc" -eq 0 ] && [ -s "$pw/reach/index" ]; then
+        reach_ok=yes
+        echo "==> mutation: $1: narrowing: the index of the lines its $(grep -c '^test ' "$pw/reach/index") tests run took $took s"
+    elif [ "$rrc" -eq 3 ]; then
+        echo "==> mutation: $1: not narrowed: $(head -n 1 "$pw/reach.out"); every mutant runs the whole package's tests"
+    else
+        echo "==> mutation: $1: not narrowed: building the index of its tests failed (exit $rrc) after $took s; every mutant runs the whole package's tests:"
+        sed 's/^/==>     /' "$pw/reach.out" | head -n 20
+    fi
+}
+
+# reach_line <package>: after a pass, how its mutants ran, from testreach's log, which the next
+# pass starts afresh.
+reach_line() {
+    reach_bad=""
+    [ -n "$reach_ok" ] || return 0
+    [ -s "$pw/reach/log" ] || { echo "==> mutation: $1: narrowing: no mutant ran"; return 0; }
+    # testreach could not read the limits, so gremlins' limit, more than the planned one, went
+    # to go unchecked: the package fails (judge_pass).
+    reach_bad=$(grep -c '^- 0/0 - - - - limits unreadable' "$pw/reach/log" || true)
+    [ "$reach_bad" != 0 ] || reach_bad=""
+    awk -v p="$1" '
+        # A timeout, which holds the worker past the planned limit until the limit gremlins has: counted
+        # with that time, and the line kept whole, so a later comparison can tell the load from
+        # the mutant.
+        /; held [0-9.]+ past the planned limit/ {
+            to++; h = $0; sub(/.*; held /, "", h); held += h + 0; kept[++nkept] = $0
+        }
+        $3 != "-" && $5 == "-" { nk++; next }
+        $3 != "-" { rr++; if ($5 == "killed") rk++; else if ($5 == "lived") rl++; else ro++; next }
+        {
+            w++
+            why = $7; for (i = 8; i <= NF; i++) why = why " " $i
+            sub(/; held [0-9.]+ past the planned limit$/, "", why)
+            sub(/ \(set checked in [0-9.]+\)/, "", why); sub(/ \(build [0-9.]+\)$/, "", why)
+            if (!(why in n)) order[++k] = why
+            n[why]++
+        }
+        END {
+            printf "==> mutation: %s: narrowing: %d mutants killed by the tests that reach their line; %d passed those and ran the whole package (%d killed, %d lived, %d other); %d ran the whole package alone", p, nk, rr, rk, rl, ro, w
+            for (i = 1; i <= k; i++) printf "%s%s: %d", (i == 1 ? " (" : "; "), order[i], n[order[i]]
+            printf "%s\n", (k > 0 ? ")" : "")
+            if (to > 0) {
+                printf "==> mutation: %s: narrowing: %d mutants timed out, holding their workers %.1f s past the planned limit\n", p, to, held
+                for (i = 1; i <= nkept; i++) printf "==> mutation: %s: narrowing: timed out: %s\n", p, kept[i]
+            }
+        }' "$pw/reach/log"
+    rm -f "$pw/reach/log"
+}
+
 # run_gremlins <diff file> <arguments...>: gremlins with those arguments, bounded, with the go
-# shim first on PATH, and with --diff and the git shim when there is a diff file.
+# shim first on PATH, and with --diff and the git shim when there is a diff file. With an index
+# of the package's tests, ERRATA_MUTATION_REACH names it for the shim.
 run_gremlins() {
     d=$1
     shift
+    reach=""
+    [ -z "$reach_ok" ] || reach=$pw/reach
     if [ -n "$d" ]; then
         PATH="$goshim_dir:$work/shim:$PATH" ERRATA_MUTATION_BASE=$diff_base ERRATA_MUTATION_DIFF=$d \
-            ERRATA_MUTATION_ASKED="$pw/asked" \
+            ERRATA_MUTATION_ASKED="$pw/asked" ERRATA_MUTATION_REACH=$reach \
             bounded "$GREMLINS" unleash --config "$pw/gremlins.yaml" --diff "$diff_base" "$@"
     else
-        PATH="$goshim_dir:$PATH" bounded "$GREMLINS" unleash --config "$pw/gremlins.yaml" "$@"
+        PATH="$goshim_dir:$PATH" ERRATA_MUTATION_REACH=$reach bounded "$GREMLINS" unleash --config "$pw/gremlins.yaml" "$@"
     fi
 }
 
@@ -893,9 +1086,9 @@ pass_once() {
     {
         rc=0
         if [ -n "${2:-}" ]; then
-            run_gremlins "$2" -S ltc "$1" || rc=$?
+            run_gremlins "$2" -S "${show_killed}ltc" "$1" || rc=$?
         else
-            run_gremlins "" -S lt "$1" || rc=$?
+            run_gremlins "" -S "${show_killed}lt" "$1" || rc=$?
         fi
         echo "$rc" >"$pw/rc"
     } 2>&1 | tee "$pw/out"
@@ -907,6 +1100,7 @@ pass_once() {
     killed=$(count Killed) lived=$(count Lived) timedout=$(count "Timed out") uncovered=$(count "Not covered")
     skipped=$(count Skipped)
     ran=$((killed + lived + timedout))
+    reach_line "$1"
 }
 
 # dry_once <package> [<diff file>]: gremlins' dry run, which runs its coverage pass and counts
@@ -987,6 +1181,9 @@ judge_pass() {
     elif [ "${2:-}" != no-cap ] && over_cap; then
         verdict="FAILED, $timedout of $ran mutants timed out, over $TIMEOUT_CAP% and over $TIMEOUT_MIN$again"
         rc=1
+    elif [ -n "${reach_bad:-}" ]; then
+        verdict="FAILED, testreach could not read the limits for $reach_bad mutants, so they ran under gremlins' limit, more than the planned one"
+        rc=1
     elif [ -n "$diff" ] && [ ! -e "$pw/asked" ]; then
         # The shim was not asked for the diff, so gremlins judged every mutant, not the changed
         # lines: it no longer calls git as the shim expects.
@@ -1007,6 +1204,7 @@ unleash() {
         return 0
     fi
     floors_for "$p"
+    reach_ok=""
     measure_start=$(date +%s%N)
     measure_pass "$p"
     measure_mutant "$p"
@@ -1015,8 +1213,12 @@ unleash() {
         return 0
     fi
     coef=$(coefficient_for "$p" "$pass_s")
+    # After the timed mutant, whose edit is put back by then, and with the planned limit; the
+    # index's time counts in the measuring.
+    narrow_or_not "$p"
     if [ -n "$pass_s" ]; then
         limit="limit per mutant $(seconds "$coef" "$pass_s") s: coefficient $coef times a pass of $pass_s s"
+        [ -z "$reach_ok" ] || limit="$limit, and gremlins coefficient $(narrow_coefficient "$coef") to leave a narrowed run the rest"
     else
         limit="limit per mutant unknown: the tests failed when measured; coefficient $coef"
     fi
@@ -1032,7 +1234,7 @@ unleash() {
     fi
     if [ -n "$mutant1_s" ]; then
         [ "$(workers)" -eq 1 ] || echo "==> mutation: $p: a mutant took $mutant1_s s to build and test, 1 at once"
-        floors_row "$p" "$mutant1_s" "$measuring_s" >"$pw/row.line"
+        floors_row "$p" "$mutant1_s" "$measuring_s" "$pass_s" >"$pw/row.line"
     fi
     config_for "$p" "$coef"
     # With a deadline, a dry run counts the mutants first, and a package whose pass would not
@@ -1248,6 +1450,7 @@ alone_look() {
     p=$(cat "$pw/name")
     rm -f "$pw/alone"
     echo "$PER_PACKAGE" >"$pw/slot_cost"
+    reach_ok=""
     floors_for "$p"
     if [ -z "$row_mutant" ]; then
         echo "==> mutation: $p: no mutant time in its floors row, so it runs in a slot, counted at $PER_PACKAGE s"

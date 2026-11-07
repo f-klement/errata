@@ -44,6 +44,9 @@
 # `measuring <seconds>`, the time the script's measuring of its pass and a
 # mutant took, and `measured <pipeline id or YYYY-MM-DD>`, where the two were
 # taken. scripts/mutation.sh refuses a row with some of them and not all.
+# With those three a row may hold `pass <seconds>`, the package's coverage pass
+# in the same run; narrowing reads it beside `mutant` to decide whether the
+# package's tests are worth narrowing (#264).
 # When packages run at once under a deadline, a package with these times whose
 # mutants would not fit at its share of the workers, and would at all of them,
 # runs alone with all of them first, when that leaves time for the others

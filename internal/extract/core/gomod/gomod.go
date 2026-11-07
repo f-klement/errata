@@ -28,12 +28,18 @@ func Parse(s core.Source, data []byte) (*modfile.File, error) {
 	return parseMod(s, data, func() (*modfile.File, error) { return parseGoMod(s.File, data, asWritten) })
 }
 
-// Line is the line of data, a go.mod or go.work file, that p starts on, as
-// errata numbers every file's lines (core/lineend). modfile ends a line at
-// a LF alone and reads a lone CR as a blank, as the go command does, so a
-// directive after a lone CR is on a later line than p.Line says; the values
-// stay modfile's, and only the line is errata's.
-func Line(data []byte, p modfile.Position) int { return core.LineOf(data, p.Byte) }
+// LastTokenLine is the line of data, a go.mod or go.work file, that the
+// last token of l starts on, as errata numbers every file's lines
+// (core/lineend). A caller reports a value at it only when the value is
+// that token, as the version or path of every directive errata reads is.
+// modfile ends a line at a LF alone and reads a lone CR as a blank, as the
+// go command does. A lone CR before a directive puts it on a later line
+// than modfile's, and one inside it, as in require x\rv1.0.0, leaves the
+// directive whole with its value on a later line than its start. The
+// values stay modfile's; only the line is errata's.
+func LastTokenLine(data []byte, l *modfile.Line) int {
+	return core.LineOf(data, l.End.Byte-len(l.Token[len(l.Token)-1]))
+}
 
 // ParseWork is Parse for a go.work file, which modfile.ParseWork reads.
 func ParseWork(s core.Source, data []byte) (*modfile.WorkFile, error) {
