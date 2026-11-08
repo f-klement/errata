@@ -2,9 +2,10 @@
 // reads one file and returns every value it finds there, with its location.
 // Each extractor kind, the key an extract: entry names, is a reader in a
 // package of its own below this one (yaml, json, jsonc for jsonc and json5,
-// toml, regex, text, comment, literal, code, markdown, asciidoc, rst, html, marker, xml, ini, properties, toolversion,
-// packageversion, dependency, envfile, gitlabci, shell, githubactions, jenkins, and
-// filestat for exists and size), and the readers share
+// toml, regex, text, comment, literal, code, markdown, asciidoc, rst, html, marker, xml, ini and
+// systemd, properties, toolversion,
+// packageversion, dependency, envfile, gitlabci, shell, githubactions, jenkins,
+// etc, and filestat for exists and size), and the readers share
 // internal/extract/core; no reader imports another. The env
 // kind asks those that declare themselves env readers for one variable
 // across several files, through the functions this package hands it. Below, a kind is always an
@@ -34,6 +35,7 @@ import (
 	"github.com/f-klement/errata/internal/extract/dependency"
 	"github.com/f-klement/errata/internal/extract/env"
 	"github.com/f-klement/errata/internal/extract/envfile"
+	"github.com/f-klement/errata/internal/extract/etc"
 	"github.com/f-klement/errata/internal/extract/filestat"
 	"github.com/f-klement/errata/internal/extract/githubactions"
 	"github.com/f-klement/errata/internal/extract/gitlabci"
@@ -92,6 +94,12 @@ var kinds = registry(
 	register(shell.Kind, shell.Build),
 	register(githubactions.Kind, with(githubactions.Build, yaml.ParseNoted)),
 	register(jenkins.Kind, jenkins.Build),
+	// systemd reads a unit in the ini reader's systemd dialect, with its
+	// drop-ins, and is an env reader.
+	register(ini.SystemdKind, ini.BuildSystemd),
+	// etc reads the keyword and value family of Unix configuration files,
+	// and the files they include, by its own logic.
+	register(etc.Kind, etc.Build),
 	// env asks the kinds above that declare themselves env readers;
 	// envReaders is filled from kinds once kinds is, so env's Build reads it
 	// when it is called.
@@ -444,7 +452,8 @@ func (s Spec) Place() Spec {
 
 // Resolved returns s with the defaults Build fills in written out: the
 // max_bytes of the kind it sets, core.DefaultMaxBytes when s leaves it out,
-// and for ini the dialect Build chooses by the file's name when s names none.
+// and for ini and etc the dialect Build chooses by the file's name when s
+// names none.
 // errata list prints it, so a consumer reads the limit and the dialect a
 // check runs with, not only what its author wrote. s is not changed, and
 // what Resolved returns shares no slice, map or pointer with it.

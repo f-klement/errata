@@ -20,6 +20,10 @@ required:
   - web-client-links-the-service-ports
   - status-page-ports-agree
   - start-script-port-agrees
+  - unit-port-matches-chart
+  - unit-log-level-matches-env-file
+  - quadlet-image-matches-compose
+  - backup-alert-covers-one-run
   - every-api-port-agrees
   - log-level-agrees
   - admin-port-agrees
@@ -47,6 +51,9 @@ required:
   - icons-come-from-the-submodule
   - icons-path-agrees
   - ssh-port-agrees
+  - sshd-listens-on-the-inventory-port
+  - deploy-logs-in-with-a-key
+  - search-hosts-have-room
   - restore-reads-the-backup-dir
   - app-env-sets-every-value
   - every-route-is-documented
@@ -225,20 +232,76 @@ checks:
       pipeline: {jenkins: {file: Jenkinsfile, variable: API_PORT}}
     agree: [script, dev, pipeline]
 
+  # Claim: the systemd unit runs the API on the port the chart exposes. systemd reads the unit
+  # with the drop-ins beside it in systemd's order, and splits Environment= into variables: the
+  # drop-in's empty Environment= drops the 8000 the unit set. A unit file is no INI file
+  # configparser reads, since a \ at the end of a line continues it.
+  # See docs/reference.md#systemd; #compare.
+  - id: unit-port-matches-chart
+    reason: >
+      The bare metal hosts run the API from its systemd unit, the cluster from the chart. A port
+      that differs sends the load balancer's health checks to a port nothing listens on.
+    scope: repo
+    extract:
+      unit: {systemd: {file: deploy/api.service, section: Service, key: Environment, variable: API_PORT}}
+      chart: {yaml: {file: deploy/values.yaml, path: service.port}}
+    agree: [unit, chart]
+
+  # Claim: the unit logs at the level the app's env file sets. systemd reads deploy/app.env as
+  # EnvironmentFile= reads a file, where ${HOME} is text and not a substitution.
+  # See docs/reference.md#systemd; #envfile.
+  - id: unit-log-level-matches-env-file
+    reason: >
+      The unit and the env file each set the log level. When they differ, the hosts log at
+      another level than the containers that read the env file.
+    scope: repo
+    extract:
+      unit: {systemd: {file: deploy/api.service, section: Service, key: Environment, variable: LOG_LEVEL}}
+      file: {systemd: {file: deploy/app.env, variable: LOG_LEVEL, max_bytes: 4096}}
+    agree: [unit, file]
+
+  # Claim: the Quadlet runs the image compose runs. Image= names the Quadlet file api.image
+  # beside it, which systemd's Image= reads through to the reference it pulls.
+  # See docs/reference.md#systemd; #yaml.
+  - id: quadlet-image-matches-compose
+    reason: >
+      The container hosts run the API from a Quadlet and developers from compose. A tag that
+      differs tests one release and ships another.
+    scope: repo
+    extract:
+      quadlet: {systemd: {file: deploy/quadlet/api.container, section: Container, key: Image}}
+      compose: {yaml: {file: deploy/compose.yaml, path: services.api.image}}
+    agree: [quadlet, compose]
+
+  # Claim: the backup alert's threshold lies between one run of the backup timer and two.
+  # calendar_interval reads OnCalendar= as systemd reads a calendar event, here every six hours.
+  # See docs/reference.md#systemd; #assert.
+  - id: backup-alert-covers-one-run
+    reason: >
+      The alert fires when no backup finished within the threshold. Below one interval it
+      fires between healthy runs; above two it stays quiet through a missed run.
+    scope: repo
+    extract:
+      timer: {systemd: {file: deploy/backup.timer, section: Timer, key: OnCalendar, max_bytes: 4096}}
+      stale: {yaml: {file: monitoring/backup.yaml, path: for}}
+    assert: |
+      duration(stale[0]) >= calendar_interval(timer[0]) &&
+      duration(stale[0]) <= calendar_interval(timer[0]) * 2
+
   # Claim: every file that sets API_PORT sets 8080. env reads one variable across files of
   # different kinds, each with the reader its name chooses, and a glob takes in every script.
   # ci/build.yml is a GitLab CI file under a name that chooses no reader, so readers names one.
   # See docs/reference.md#env; #a-set-of-files.
   - id: every-api-port-agrees
     reason: >
-      API_PORT is set in four kinds of file read by four tools. One rule over all of them catches
+      API_PORT is set in five kinds of file read by five tools. One rule over all of them catches
       the file nobody remembered, including a script added later.
     scope: repo
     extract:
       port:
         env:
           name: API_PORT
-          files: [.env, 'scripts/*.sh', .gitlab-ci.yml, ci/build.yml, Jenkinsfile]
+          files: [.env, 'scripts/*.sh', .gitlab-ci.yml, ci/build.yml, Jenkinsfile, deploy/api.service]
           readers: {ci/build.yml: gitlab-ci}
     agree: [port]
 
@@ -706,6 +769,50 @@ checks:
       second: {ini: {file: inventory/hosts, dialect: ansible, section: web, host: web2, key: ansible_port}}
       guide: {rst: {file: docs/admin.rst, target: table, column: SSH port, key: Host, row: web1}}
     agree: [inventory, second, guide]
+
+  # Claim: sshd listens on the port Ansible connects on. etc reads sshd_config as sshd does, the
+  # drop-ins its Include names too; the second time names the dialect, and with match: takes the
+  # port sshd applies to the deploy user's connection.
+  # See docs/reference.md#etc; #includes; #match-the-values-openssh-applies; #ini.
+  - id: sshd-listens-on-the-inventory-port
+    reason: >
+      Ansible connects on the inventory's port. When sshd moves to another, every playbook run
+      fails to connect, and the hosts drift from git until someone notices.
+    scope: repo
+    extract:
+      sshd: {etc: {file: deploy/ssh/sshd_config, key: Port}}
+      deploy: {etc: {file: deploy/ssh/sshd_config, dialect: sshd, key: port, match: {user: deploy, address: 10.0.0.5}}}
+      inventory: {ini: {file: inventory/hosts, section: web, host: web1, key: ansible_port}}
+    agree: [sshd, deploy, inventory]
+
+  # Claim: no one logs in to the web hosts with a password, the deploy user least of all. block:
+  # reads the deploy user's Match block and the lines outside any block as written; match: reads
+  # what sshd applies to a connection of the deploy user.
+  # See docs/reference.md#blocks-and-conditions; #match-the-values-openssh-applies.
+  - id: deploy-logs-in-with-a-key
+    reason: >
+      A password on a host the build network reaches can be guessed from any compromised runner.
+      The key is the only way in that the runbook revokes.
+    scope: repo
+    extract:
+      outside: {etc: {file: deploy/ssh/sshd_config, key: PasswordAuthentication, block: ""}}
+      block: {etc: {file: deploy/ssh/sshd_config, key: PasswordAuthentication, block: Match User deploy Address 10.0.0.0/24}}
+      applied: {etc: {file: deploy/ssh/sshd_config, dialect: sshd, key: passwordauthentication, match: {user: deploy, address: 10.0.0.7}}}
+    assert: outside.all(v, v == 'no') && block.all(v, v == 'no') && applied == ['no']
+
+  # Claim: the search index's hosts map enough memory areas and open enough files. etc reads the
+  # sysctl files in sysctl's order, the last value the one the host applies, and the limits files
+  # in pam_limits' order.
+  # See docs/reference.md#drop-in-directories; #etc.
+  - id: search-hosts-have-room
+    reason: >
+      The search index refuses to start under 262144 memory areas, and drops connections once
+      it runs out of files. A drop-in that sets less fails only on the host it lands on.
+    scope: repo
+    extract:
+      maps: {etc: {files: [deploy/sysctl/sysctl.conf, deploy/sysctl/sysctl.d/*.conf], key: vm.max_map_count}}
+      files: {etc: {files: [deploy/security/limits.conf, deploy/security/limits.d/*.conf], key: hard nofile}}
+    assert: int(maps[size(maps) - 1]) >= 262144 && files.all(v, int(v) >= 65536)
 
   # Claim: the restore command in the admin guide reads from the directory the backup script
   # writes to. The script lets an operator point it elsewhere through a variable, a value

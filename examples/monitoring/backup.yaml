@@ -1,0 +1,3 @@
+# The alert that fires when no backup finished within the threshold.
+alert: BackupStale
+for: 9h

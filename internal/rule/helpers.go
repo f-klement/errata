@@ -27,6 +27,7 @@ import (
 //	int(s), uint(s), double(s)  CEL's conversions, with an error naming s
 //	duration(s)         a Go duration (90s, 1h30m) or a Prometheus one (2d, 1w)
 //	cron_interval(s)    the time between the runs of a cron schedule, as a duration
+//	calendar_interval(s)  the same of a systemd calendar event (calendar.go)
 //	port_split(s)       "8080:80/tcp" as {ip, host, container, protocol}
 //	same_set(a, b)      a and b hold the same members, ignoring order and repeats
 //	subset(a, b)        every member of a is in b
@@ -105,6 +106,12 @@ func helpers() []cel.EnvOption {
 			cel.Overload("errata_cron_interval_string", []*cel.Type{cel.StringType}, cel.DurationType,
 				cel.UnaryBinding(stringFunc("cron_interval", func(s string) (ref.Val, error) {
 					d, err := cronInterval(s)
+					return types.Duration{Duration: d}, err
+				})))),
+		cel.Function("calendar_interval",
+			cel.Overload("errata_calendar_interval_string", []*cel.Type{cel.StringType}, cel.DurationType,
+				cel.UnaryBinding(stringFunc("calendar_interval", func(s string) (ref.Val, error) {
+					d, err := calendarInterval(s)
 					return types.Duration{Duration: d}, err
 				})))),
 		cel.Function("port_split",

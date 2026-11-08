@@ -1,0 +1,10 @@
+# sshd on Larder's web hosts. Debian's drop-ins first, as its own sshd_config does.
+Include /etc/ssh/sshd_config.d/*.conf
+
+Port 2222
+PasswordAuthentication no
+
+# The deploy user logs in from the build network with its key, and forwards nothing.
+Match User deploy Address 10.0.0.0/24
+  PasswordAuthentication no
+  AllowTcpForwarding no

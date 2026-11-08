@@ -576,3 +576,55 @@ func TestDependencyPlaceAndResolve(t *testing.T) {
 		t.Errorf("Resolve: %+v, spec %+v", r, s)
 	}
 }
+
+// offset maps an index of between back to data through the mark of the piece
+// that holds it: an index in the first of two pieces stops at the second
+// mark. Only the property test reached that stop, by chance, so the coverage
+// of gemfile.offset, and its CRAP score (scripts/crap), changed from run to run.
+func TestGemfileOffsetFindsThePieceOfAnIndex(t *testing.T) {
+	g := gemfile{marks: []mark{{at: 0, off: 10}, {at: 5, off: 30}}}
+	for _, c := range []struct{ i, want int }{{0, 10}, {2, 12}, {5, 30}, {7, 32}} {
+		if got := g.offset(c.i); got != c.want {
+			t.Errorf("offset(%d) = %d, want %d", c.i, got, c.want)
+		}
+	}
+}
+
+// describe names each shape and type of value a message can meet. Only the
+// mapping, the list and the string reached it before, so its CRAP score
+// (scripts/crap) hung on which file a test happened to read.
+func TestDescribeNamesEachValue(t *testing.T) {
+	for _, c := range []struct {
+		n    core.Node
+		want string
+	}{
+		{core.Node{Shape: core.Mapping}, "a mapping"},
+		{core.Node{Shape: core.Sequence}, "a list"},
+		{core.Node{Shape: core.Scalar, Type: core.TypeNumber}, "a number"},
+		{core.Node{Shape: core.Scalar, Type: core.TypeBool}, "a boolean"},
+		{core.Node{Shape: core.Scalar, Type: core.TypeString, Form: core.FormDateTime}, "a date or a time"},
+		{core.Node{Shape: core.Scalar, Type: core.TypeString}, "a string"},
+		{core.Node{Shape: core.Scalar, Type: core.TypeNull}, "null"},
+	} {
+		if got := describe(&c.n); got != c.want {
+			t.Errorf("describe(%+v) = %q, want %q", c.n, got, c.want)
+		}
+	}
+}
+
+// A Yarn 2 lock that is no YAML, or gives an empty version, is refused; an
+// entry whose version is no scalar gives nothing. No test reached these
+// before, so readYarnBerry's CRAP score (scripts/crap) sat at its edge,
+// where a block a property reached by chance would move it.
+func TestYarnBerryRefusesWhatItCannotRead(t *testing.T) {
+	head := "__metadata:\n  version: 8\n\"x@npm:^1\":\n  version: "
+	for _, c := range []struct{ body, want string }{
+		{"__metadata: [\n", "yarn.lock: yaml: line 1"},
+		{head + "\"\"\n", "yarn.lock: line 4: the version is empty"},
+	} {
+		if got := refusal(t, map[string]string{"yarn.lock": c.body}, of("x", "yarn.lock")); !strings.HasPrefix(got, c.want) {
+			t.Errorf("%q: %s, want %s", c.body, got, c.want)
+		}
+	}
+	run(t, []readCase{{"yarn berry, a version that is a list", "x", "yarn.lock", head + "[1]\n", ""}})
+}

@@ -345,6 +345,7 @@ func walkTime(t *testing.T, name string, data []byte, runs int) time.Duration {
 	for range runs {
 		start := time.Now()
 		for range l.Spans(data) {
+			// Drain the spans: the walk itself is what is timed.
 		}
 		fastest = min(fastest, time.Since(start))
 	}

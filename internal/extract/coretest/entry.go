@@ -80,37 +80,70 @@ func LeavesRoom(t *testing.T, x core.EntryExtractor, body string) {
 func CheckEntryValues(t *testing.T, e core.EntryExtractor, data []byte, bound int) {
 	t.Helper()
 	got, err := e.FromData(data)
-	var want []string
-	total := 0
 	lines := core.LastLine(data)
-	rerr := e.Read(data, nil, func(en *core.Entry) error {
-		if en.Line < 1 || en.Line > lines {
-			t.Fatalf("an entry at line %d of %d", en.Line, lines)
-		}
-		if !en.NoValue {
-			total += len(en.Value)
-		}
-		if e.Query.Wants(en) {
-			want = append(want, string(en.Value))
-		}
-		return nil
-	})
+	want, total, rerr := wanted(t, e, data, lines)
 	if total > bound {
 		t.Fatalf("the entries hold %d bytes, more than the file's %d", total, bound)
 	}
-	switch {
-	case err != nil && got != nil:
-		t.Fatalf("values %v with error %v", got, err)
-	case err != nil && rerr == nil && len(want) <= core.MaxValues:
-		t.Fatalf("refused %v, and the reader reads the file", err)
-	case err == nil && rerr != nil:
-		t.Fatalf("values %v, and the reader refuses the file: %v", got, rerr)
-	case err == nil && len(got) != len(want):
-		t.Fatalf("%d values, the query wants %d", len(got), len(want))
+	if msg := verdict(got, want, err, rerr); msg != "" {
+		t.Fatal(msg)
 	}
 	for i, v := range got {
 		if v.Text != want[i] || v.At.Line < 1 || v.At.Line > lines || v.At.File != e.File {
 			t.Fatalf("value %q at %s:%d of %d lines, want %q", v.Text, v.At.File, v.At.Line, lines, want[i])
 		}
 	}
+}
+
+// verdict is what is wrong with FromData's values and error against the
+// values the query wants and the reader's error, "" for nothing.
+func verdict[V any](got []V, want []string, err, rerr error) string {
+	if err != nil {
+		return refusedVerdict(got, want, err, rerr)
+	}
+	if rerr != nil {
+		return fmt.Sprintf("values %v, and the reader refuses the file: %v", got, rerr)
+	}
+	if len(got) != len(want) {
+		return fmt.Sprintf("%d values, the query wants %d", len(got), len(want))
+	}
+	return ""
+}
+
+// refusedVerdict is verdict for a FromData that refused the file: it
+// returns no values, and refuses only what the reader refuses or what
+// passes the bound on values.
+func refusedVerdict[V any](got []V, want []string, err, rerr error) string {
+	if got != nil {
+		return fmt.Sprintf("values %v with error %v", got, err)
+	}
+	if rerr == nil && len(want) <= core.MaxValues {
+		return fmt.Sprintf("refused %v, and the reader reads the file", err)
+	}
+	return ""
+}
+
+// wanted reads data with e's reader and no meter, and returns the values
+// the query's Wants selects, a reset dropping those before it, the bytes
+// of every entry's value, and the reader's error. Each entry must lie on
+// a line of the file's lines.
+func wanted(t *testing.T, e core.EntryExtractor, data []byte, lines int) (want []string, total int, err error) {
+	t.Helper()
+	err = e.Read(data, nil, func(en *core.Entry) error {
+		if en.Line < 1 || en.Line > lines {
+			t.Fatalf("an entry at line %d of %d", en.Line, lines)
+		}
+		if !en.NoValue {
+			total += len(en.Value)
+		}
+		switch {
+		case !e.Query.Wants(en):
+		case en.Kind == core.EntryReset:
+			want = want[:0]
+		default:
+			want = append(want, string(en.Value))
+		}
+		return nil
+	})
+	return want, total, err
 }

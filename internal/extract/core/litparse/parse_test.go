@@ -148,10 +148,23 @@ func TestValues(t *testing.T) {
 		// Ruby: a Gemfile's calls, symbols, a heredoc, modifiers and blocks.
 		{"ruby", "gem 'rails', '~> 7.1', require: false\ngem 'pg'\n", "gem[*]['0']", "rails@1, pg@2"},
 		{"ruby", "gem 'rails', '~> 7.1', require: false\n", "gem[0].require", "false@1"},
+		// A call whose argument the file computes is not literal, whole. Only
+		// a rapid property reached this, by chance, so parser.command's coverage,
+		// and its CRAP score (scripts/crap), changed from run to run.
+		{"ruby", "gem 'rails', ENV['V']\n", "gem[0]", "~gem 'rails', ENV['V']@1"},
 		{"ruby", "V = <<~EOS\n  hello\n    world\nEOS\nW = <<-'X'\n  #{a}\n  X\n", "$[*]", "hello\n  world\n@1,   #{a}\n@5"},
 		{"ruby", "V = <<~EOS\n  #{a}\nEOS\nC = <<~`EOS`\nls\nEOS\n", "$[*]", "~<<~EOS@1, ~<<~`EOS`@4"},
 		{"ruby", "X = 1 if y\nH = { a: 1, 'b' => :c }\n", "H[*]", "1@2, c@2"},
 		{"ruby", "X = 1 if y\n", "X", "~1 if y@1"},
+		// An if after a name is a modifier, since a name may end a value; after
+		// a ( it opens a block, which its End closes. A name and then a ) that
+		// closes nothing is no command, and the reader has lost its place. Only
+		// a rapid property reached the first and the last, by chance, so the
+		// coverage of parser.valueEnd and parser.valueStart, and their CRAP
+		// scores (scripts/crap), changed from run to run.
+		{"ruby", "X = y if z\nW = 2\n", "$[*]", "~y if z@1, 2@2"},
+		{"ruby", "X = (if y then 1 else 2 end)\nW = 2\n", "$[*]", "~(if y then 1 else 2 end)@1, 2@2"},
+		{"ruby", "X = 1\nfoo )\n", "X", "error"},
 		{"ruby", "V = 1\nif x\n  V = 2\nend\nW = 3\n", "$[*]", "~1@1, 3@5"},
 		{"ruby", "V = 1\nwhile x do\n  y\nend\nW = 2\n", "$[*]", "1@1, 2@5"},
 		{"ruby", "V = 'a\\nb' \"c\\n\"\nW = `ls`\n", "$[*]", "a\\nbc\n@1, ~`ls`@2"},

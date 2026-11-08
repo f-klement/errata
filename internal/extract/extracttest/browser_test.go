@@ -55,3 +55,44 @@ func TestXNetDropsTemplate(t *testing.T) {
 		}
 	}
 }
+
+// XNetFoldsName holds where x/net v0.62.0 matches an end tag in foreign
+// content by Unicode case folding (strings.EqualFold), where the standard
+// folds ASCII alone: a tag name with a byte of 0x80 or above, valid UTF-8
+// or not, which the switch's first child then is, or is not, in x/net's
+// tree (flakes review, finding 1), wherever the name stands: after an
+// element x/net's tokenizer alone reads as raw text, as the tree builder
+// does not in svg. A byte of 0x80 or above in text or in an attribute
+// matches no name, and stays compared. The planted breaks: no source
+// counted, which the ſ fails; x/net's tokenizer alone in place of the
+// scan, which the xmp fails.
+func TestXNetFoldsName(t *testing.T) {
+	for src, want := range map[string]bool{
+		"<h1><svg><switch><te\u017ft ></test><text>0":  true, // ſ folds to s
+		"<h1><svg><switch><te\u212at ></tekt><text>0":  true, // the Kelvin sign folds to k
+		"<h1><svg><switch><te\x80t ></te\x85t><text>0": true, // both U+FFFD to x/net
+		// In svg an xmp, a textarea, a plaintext, a noscript or an iframe
+		// leaves the tags after it tags (flakes delta review 1, finding 1).
+		"<h1><svg><xmp><switch><te\u017ft ></test><text>0":       true,
+		"<h1><svg><textarea><switch><te\u017ft ></test><text>0":  true,
+		"<h1><svg><plaintext><switch><te\u017ft ></test><text>0": true,
+		"<h1><svg><noscript><switch><te\u017ft ></test><text>0":  true,
+		"<h1><svg><iframe><switch><te\u017ft ></test><text>0":    true,
+		// A < inside a name is the name's (flakes delta review 2, finding 1).
+		"<h1><svg><switch><te<\u017ft ></te<st><text>0": true,
+		"<a<a<a<a\u017f": true,
+		// An HTML textarea's text is no comment, whatever it holds.
+		"<textarea><!--</textarea><h1><svg><switch><te\u017ft ></test><text>0": true,
+		"<h1>caf\xe9</h1><h2><b>x</h2>":                                        false,
+		"<h1>caf\u00e9</h1>":                                                   false,
+		"<p title=\"\xe9\">x</p>":                                              false,
+		"<h1><svg><switch><teat ></tebt><text>0":                               false,
+	} {
+		if got := XNetFoldsName(src); got != want {
+			t.Errorf("%q: %v, want %v", src, got, want)
+		}
+		if c := BrowserComparable(src); c == want {
+			t.Errorf("%q: comparable %v; a name x/net folds: %v", src, c, want)
+		}
+	}
+}

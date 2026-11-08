@@ -6,7 +6,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"pgregory.net/rapid"
 
@@ -53,6 +52,10 @@ func TestNestStack(t *testing.T) {
 		{"<pre <p <button <div", "pre p button div"},                             // a button ends the p's scope
 		{"<pre <h2 <h3", "pre h3"},                                               // a heading's start ends a heading on top
 		{"<pre <h6 <h5", "pre h5"},                                               // h6 is a heading
+		{"<div <option", "div option"},                                           // an option ends an option on top, and nothing else
+		{"<table <table", "table"},                                               // a table in a table outside a cell ends it, the first element too
+		{"<select <optgroup <option", "select optgroup option"},                  // an option ends no optgroup
+		{"<select <optgroup <optgroup", "select optgroup"},                       // an optgroup ends an optgroup on top
 		{"<pre <h2 <b <h3", "pre h2 b h3"},                                       // and nests below anything else
 		{"<pre <ul <li <li", "pre ul li"},                                        // a list item ends the one open
 		{"<pre <ul <li <div <li", "pre ul li"},                                   // past a div
@@ -285,7 +288,13 @@ func TestTheStepBoundRefuses(t *testing.T) {
 // list "name" is open, "name~" closed by a block's end, "|" a marker; or
 // the refusal.
 func afeAfter(ops string, headings bool) string {
-	n := nest{headings: headings}
+	return afeIn(ops, headings, false)
+}
+
+// afeIn is afeAfter for a nest that follows x/net where it is not the
+// standard when xnet is true (FollowXNetAdoption).
+func afeIn(ops string, headings, xnet bool) string {
+	n := nest{headings: headings, xnet: xnet}
 	for _, op := range strings.Fields(ops) {
 		var err string
 		switch {
@@ -383,12 +392,35 @@ func TestFormattingList(t *testing.T) {
 	}
 }
 
-// Closing a formatting element whose entry the Noah's Ark clause took off
-// the list looks no further back than the last cell: 230 nested cells,
-// each holding 39 formatting elements a block's end closed, cost a page of
-// blocks of twelve <b>s no more than twice its time without them, where a
-// search of the whole list took several times as long (delta review 3 of
-// a13dfeb, finding 3).
+// In x/net's way (FollowXNetAdoption) the adoption agency leaves on the
+// stack, off the list, a formatting element past the third below the
+// block, where the standard takes it off both: the i of <b><i><u><s><em>
+// <div></b>. It holds no entry, so closing it later leaves the code's
+// entry below it open. The planted break: the element kept with its
+// entry's id, which then marks the code's entry closed.
+func TestXNetAdoptionKeepsTheElement(t *testing.T) {
+	for _, row := range [][3]string{
+		{"<b <i <u <s <em <div </b", "u s em div / u s em", "i u s em div / u s em"},
+		{"<a <b <i <u <s <div </a x", "i u s div / i u s", "b i u s div / i u s"},
+		{"<code <b <i <u <s <em <div </b </div </em </s </u </i", "code / code", "code / code"},
+	} {
+		if got := afeIn(row[0], false, false); got != row[1] {
+			t.Errorf("%q by the standard: got %q, want %q", row[0], got, row[1])
+		}
+		if got := afeIn(row[0], false, true); got != row[2] {
+			t.Errorf("%q in x/net's way: got %q, want %q", row[0], got, row[2])
+		}
+	}
+}
+
+// The searches of the list of active formatting elements (push's Noah's
+// Ark clause, afeLast) look no further back than the last cell: a page of
+// blocks of twelve <b>s, after 230 nested cells each holding 39
+// formatting elements a block's end closed, looks at exactly the entries
+// it looks at alone, where a search of the whole list looks at
+// each cell's 39 for every tag (delta review 3 of a13dfeb, finding 3). The
+// test counts the entries (nest.searched), not the time: the wall clock
+// ratio it held before failed once under load at 730 ms against 307 ms.
 // The planted break: the search past the markers.
 func TestTheFormattingSearchStopsAtACell(t *testing.T) {
 	var cells strings.Builder
@@ -403,26 +435,34 @@ func TestTheFormattingSearchStopsAtACell(t *testing.T) {
 	// that what it costs is the search, not the reopening a browser makes
 	// of the 39 closed elements of a cell before text in it.
 	cells.WriteString("<table><tr><td>")
-	body := strings.Repeat("<div>"+strings.Repeat("<b>x", 12)+"</div>", 10_000) // 9 entries dropped a block
-	scan := func(src string) time.Duration {
-		fastest := time.Duration(math.MaxInt64)
-		for range 3 {
-			start := time.Now()
-			s := NewScanner([]byte(src), 1<<30)
-			s.Headings()
-			for s.Next() {
-			}
-			if s.Err() != nil {
-				t.Fatal(s.Err())
-			}
-			fastest = min(fastest, time.Since(start))
+	body := strings.Repeat("<div>"+strings.Repeat("<b>x", 12)+"</div>", 100) // 9 entries dropped a block
+	searched := func(src string) int {
+		s := NewScanner([]byte(src), 1<<30)
+		s.Headings()
+		for s.Next() {
 		}
-		return fastest
+		if s.Err() != nil {
+			t.Fatal(s.Err())
+		}
+		return s.nest.searched
 	}
-	alone, after := scan(body), scan(cells.String()+body)
-	t.Logf("the page took %v, after the cells %v", alone, after)
-	if after > 2*alone+50*time.Millisecond {
-		t.Errorf("after 230 cells of closed formatting elements the page took %v, over twice its %v", after, alone)
+	alone, before := searched(body), searched(cells.String())
+	after := searched(cells.String()+body) - before
+	t.Logf("the page looked at %d entries alone, %d after the cells", alone, after)
+	if alone < 1200 {
+		t.Errorf("the page alone looked at %d entries, fewer than its 1200 <b>s: the count is not the searches'", alone)
+	}
+	if after != alone {
+		t.Errorf("after 230 cells of closed formatting elements the page looked at %d entries, not its %d", after, alone)
+	}
+	// afeLast alone, exactly: after <b> and a cell's marker, a search for
+	// b looks at the u and the i, and stops at the marker.
+	cell := NewScanner([]byte("<b><table><tr><td><i><u>"), 1<<30)
+	for cell.Next() {
+	}
+	from := cell.nest.searched
+	if j := cell.nest.afeLast("b"); j != -1 || cell.nest.searched-from != 2 {
+		t.Errorf("afeLast(b) gave %d, looking at %d entries; want -1, looking at the 2 after the marker", j, cell.nest.searched-from)
 	}
 }
 

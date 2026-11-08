@@ -1,0 +1,8 @@
+# The API as a Podman Quadlet, for the hosts that run containers.
+[Container]
+Image=api.image
+PublishPort=8080:8080
+EnvironmentFile=/etc/larder/api.env
+
+[Install]
+WantedBy=default.target

@@ -19,7 +19,7 @@ import (
 // sends, takes the test binary it runs with it.
 func TestRunTermLeavesNoChildBehind(t *testing.T) {
 	if os.Getenv("TESTREACH_EXEC") == "term" {
-		os.Exit(run(os.Getenv("FAKE_GO"), os.Getenv("ROOT"), os.Getenv("INDEX"), mutantRun))
+		os.Exit(run(os.Getenv("FAKE_GO"), os.Getenv("ROOT"), os.Getenv("INDEX"), hangRun))
 	}
 	cmd, bin, child := startHanging(t, "^TestRunTermLeavesNoChildBehind$", "term")
 	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
@@ -35,6 +35,12 @@ func TestRunTermLeavesNoChildBehind(t *testing.T) {
 		}
 	}
 }
+
+// hangRun is a mutant run whose narrowed share is long, 39.5 s of the 120 s
+// gremlins gives, so that only the signal a test sends ends the hanging
+// binary while the test looks: with mutantRun's 1.5 s, testreach's own limit
+// ended it first on a busy node, and the test passed whatever the signal did.
+var hangRun = []string{"test", "-tags", "mutation", "-timeout", "122s", "-failfast", "example.com/m/internal/p"}
 
 // startHanging runs testreach as a child process of the test, through the
 // test named by run with TESTREACH_EXEC=mode, on a mutant whose narrowed
@@ -57,7 +63,8 @@ func startHanging(t *testing.T, run, mode string) (*exec.Cmd, int, int) {
 		return n
 	}
 	var bin, child int
-	for i := 0; i < 200 && (bin == 0 || child == 0); i++ {
+	// Up to 30 s, for a busy node; the loop ends once both are written.
+	for i := 0; i < 1200 && (bin == 0 || child == 0); i++ {
 		time.Sleep(25 * time.Millisecond)
 		bin, child = readPid(pidFile), readPid(pidFile+".child")
 	}
@@ -68,9 +75,10 @@ func startHanging(t *testing.T, run, mode string) (*exec.Cmd, int, int) {
 	return cmd, bin, child
 }
 
-// gone waits up to 2 s for the process to end.
+// gone waits up to 30 s for the process to end, for a busy node; it returns
+// as soon as it has.
 func gone(pid int) bool {
-	for range 40 {
+	for range 600 {
 		if !alive(pid) {
 			return true
 		}

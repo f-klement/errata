@@ -17,6 +17,7 @@ import (
 	"github.com/f-klement/errata/internal/extract/extracttest"
 	"github.com/f-klement/errata/internal/extract/githubactions"
 	"github.com/f-klement/errata/internal/extract/gitlabci"
+	"github.com/f-klement/errata/internal/extract/ini"
 	"github.com/f-klement/errata/internal/extract/jenkins"
 	"github.com/f-klement/errata/internal/extract/shell"
 )
@@ -39,6 +40,7 @@ var declared = []struct {
 	{shell.Kind.Key, shell.Kind.Env},
 	{githubactions.Kind.Key, githubactions.Kind.Env},
 	{jenkins.Kind.Key, jenkins.Kind.Env},
+	{ini.SystemdKind.Key, ini.SystemdKind.Env},
 }
 
 // fakes are the declared readers, each choosing files by its own name
@@ -243,7 +245,7 @@ func TestBuildRefuses(t *testing.T) {
 		{Spec{Name: "A", Files: []string{"a.sh", "./a.sh"}}, `env: files names "./a.sh" twice`},
 		{Spec{Name: "A", Files: []string{"a[.sh"}}, `env: files entry "a[.sh" is no glob`},
 		{Spec{Name: "A", Files: ok, Readers: map[string]string{"b.sh": "shell"}}, `env: readers names "b.sh", which files does not list`},
-		{Spec{Name: "A", Files: ok, Readers: map[string]string{".env": "yaml"}}, `env: readers gives ".env" the reader "yaml"; write one of envfile, shell, gitlab-ci, github-actions, jenkins`},
+		{Spec{Name: "A", Files: ok, Readers: map[string]string{".env": "yaml"}}, `env: readers gives ".env" the reader "yaml"; write one of envfile, shell, gitlab-ci, github-actions, jenkins, systemd`},
 		{Spec{Name: "BAD", Files: []string{"Jenkinsfile"}}, "env: jenkins: variable BAD refused"},
 		{Spec{Name: "GITHUB_X", Files: []string{".github/workflows/*.yml"}}, "env: github-actions: variable GITHUB_X refused"},
 		{Spec{Name: "GITHUB_X", Files: []string{"ci.yml"}, Readers: map[string]string{"./ci.yml": "github-actions"}}, "variable GITHUB_X refused"},

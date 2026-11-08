@@ -409,23 +409,29 @@ const (
 	closer
 )
 
+// How an opener's text starts, and a closer's whole text.
+const (
+	openWord  = "errata:"
+	closeWord = "/errata"
+)
+
 // classify reads the text of an HTML comment, between its <!-- and its -->:
 // an opener, errata: and an id; a closer, /errata; or no marker. Text that
 // starts with errata: or /errata, its blanks trimmed, and is neither does
 // not parse.
 func classify(text []byte) (kind int, id string, err error) {
 	t := string(trim(text))
-	if rest, ok := strings.CutPrefix(t, "errata:"); ok {
+	if rest, ok := strings.CutPrefix(t, openWord); ok {
 		id = string(trim([]byte(rest)))
 		if !check.ValidID(id) {
 			return 0, "", fmt.Errorf("the marker %s names no id a rule may have: lower-case words joined by single hyphens", core.Quote(t))
 		}
 		return opener, id, nil
 	}
-	if t == "/errata" {
+	if t == closeWord {
 		return closer, "", nil
 	}
-	if strings.HasPrefix(t, "/errata") {
+	if strings.HasPrefix(t, closeWord) {
 		return 0, "", fmt.Errorf("the marker %s does not parse: a marker closes with <!-- /errata --> and nothing more", core.Quote(t))
 	}
 	return notMarker, "", nil
@@ -443,7 +449,7 @@ func markerish(data []byte, from, to int) int {
 		// The blanks after the <!-- only: trimming the end of the rest too
 		// would read it again for each <!--.
 		rest := bytes.TrimLeft(data[at+4:to], " \t\n\f\r")
-		if bytes.HasPrefix(rest, []byte("errata:")) || bytes.HasPrefix(rest, []byte("/errata")) {
+		if bytes.HasPrefix(rest, []byte(openWord)) || bytes.HasPrefix(rest, []byte(closeWord)) {
 			return at
 		}
 		i = at + 4

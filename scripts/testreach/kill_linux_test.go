@@ -13,7 +13,7 @@ import (
 // with it, as gremlins' kill of go did. The planted break: Pdeathsig removed.
 func TestRunKillTakesTheBinaryWithIt(t *testing.T) {
 	if os.Getenv("TESTREACH_EXEC") == "kill" {
-		os.Exit(run(os.Getenv("FAKE_GO"), os.Getenv("ROOT"), os.Getenv("INDEX"), mutantRun))
+		os.Exit(run(os.Getenv("FAKE_GO"), os.Getenv("ROOT"), os.Getenv("INDEX"), hangRun))
 	}
 	cmd, bin, _ := startHanging(t, "^TestRunKillTakesTheBinaryWithIt$", "kill")
 	t.Cleanup(func() { _ = syscall.Kill(-bin, syscall.SIGKILL) })

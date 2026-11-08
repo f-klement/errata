@@ -325,6 +325,12 @@ var describes = []string{
 	`{"shell": {"file": "a.sh", "name": "A"}}`,
 	`{"github-actions": {"file": "ci.yml", "job": "j", "key": "runs-on"}}`,
 	`{"jenkins": {"file": "Jenkinsfile", "variable": "A"}}`,
+	`{"systemd": {"file": "api.service", "section": "Service", "key": "ExecStart"}}`,
+	`{"systemd": {"file": "api.env", "variable": "A"}}`,
+	`{"ini": {"file": "api.service", "section": "Service", "key": "ExecStart"}}`,
+	`{"etc": {"file": "sshd_config", "key": "Port"}}`,
+	`{"etc": {"files": ["sysctl.d/*.conf"], "key": "vm.swappiness"}}`,
+	`{"etc": {"file": "roles/x/templates/limits.conf.j2", "key": "nofile", "block": "*"}}`,
 	`{"env": {"name": "A", "files": [".env"]}}`,
 	`{"exists": {"file": "a"}}`,
 	`{"size": {"file": "a"}}`,
@@ -336,15 +342,18 @@ var describes = []string{
 // whose own tests show it marking such values. A core.EntryExtractor shows
 // it in its NotLiteral, so the test reads that instead and none is listed.
 var mayNotLiteral = map[string]bool{
-	`{"tool_version": {"tool": "node"}}`:                                    true,
-	`{"package_version": {}}`:                                               true,
-	`{"dependency": {"name": "x", "files": ["go.mod"]}}`:                    true,
-	`{"gitlab-ci": {"file": ".gitlab-ci.yml", "job": "j", "key": "image"}}`: true,
-	`{"github-actions": {"file": "ci.yml", "job": "j", "key": "runs-on"}}`:  true,
-	`{"env": {"name": "A", "files": [".env"]}}`:                             true,
-	`{"literal": {"file": "settings.py", "path": "DEBUG"}}`:                 true,
-	`{"code": {"file": "server.go", "const": "DefaultPort"}}`:               true,
-	`{"code": {"file": "__init__.py", "name": "__version__"}}`:              true,
+	`{"tool_version": {"tool": "node"}}`:                                                   true,
+	`{"package_version": {}}`:                                                              true,
+	`{"dependency": {"name": "x", "files": ["go.mod"]}}`:                                   true,
+	`{"gitlab-ci": {"file": ".gitlab-ci.yml", "job": "j", "key": "image"}}`:                true,
+	`{"github-actions": {"file": "ci.yml", "job": "j", "key": "runs-on"}}`:                 true,
+	`{"env": {"name": "A", "files": [".env"]}}`:                                            true,
+	`{"systemd": {"file": "api.service", "section": "Service", "key": "ExecStart"}}`:       true,
+	`{"literal": {"file": "settings.py", "path": "DEBUG"}}`:                                true,
+	`{"code": {"file": "server.go", "const": "DefaultPort"}}`:                              true,
+	`{"code": {"file": "__init__.py", "name": "__version__"}}`:                             true,
+	`{"etc": {"file": "sshd_config", "key": "Port"}}`:                                      true,
+	`{"etc": {"file": "roles/x/templates/limits.conf.j2", "key": "nofile", "block": "*"}}`: true,
 }
 
 // builtNotLiteral is whether x, built from raw, may return a not literal
@@ -457,12 +466,14 @@ func TestDescribeCarriesMaxBytes(t *testing.T) {
 // Every kind that reads one file builds a core.FileReader, which reads the
 // bytes core hands it: the seam a file set and a plugin host build on. The
 // kinds that find their files by their own logic are the exceptions,
-// gitlab-ci among them since it reads the files a pipeline includes, and so
+// gitlab-ci among them since it reads the files a pipeline includes, and
+// etc since it reads the files a configuration file includes, and
+// systemd, which reads a unit's drop-ins, and so
 // are a spec of files:, which builds a core.FileSet of FileReaders, and a
 // regex that searches for another extractor's values, which reads once
 // those values are known. Planted break: text's FromShared removed.
 func TestEveryOneFileReaderIsAFileReader(t *testing.T) {
-	ownFiles := map[string]bool{"tool_version": true, "package_version": true, "dependency": true, "env": true, "exists": true, "size": true, "gitlab-ci": true, "marker": true}
+	ownFiles := map[string]bool{"tool_version": true, "package_version": true, "dependency": true, "env": true, "exists": true, "size": true, "gitlab-ci": true, "marker": true, "etc": true, "systemd": true}
 	seen := map[string]bool{}
 	// describes holds json only as a file set.
 	for _, raw := range append(slices.Clone(describes), `{"json": {"file": "a.json", "path": "a"}}`) {

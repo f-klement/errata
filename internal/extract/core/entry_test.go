@@ -3,6 +3,7 @@ package core
 import (
 	"bytes"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/f-klement/errata/internal/extract/extracttest"
@@ -253,5 +254,76 @@ func TestTooDeepAndShapeNames(t *testing.T) {
 	}
 	if Mapping.String() != "a mapping" || Sequence.String() != "a sequence" {
 		t.Errorf("%s and %s", Mapping, Sequence)
+	}
+}
+
+// A reset of the query's key drops the values its key had before it, and
+// a reset of another key, or a name, drops nothing; the query and the
+// matcher both select it. Planted breaks: the reset not selected; a reset
+// read as an empty value; the values kept after a reset.
+func TestAResetDropsTheValuesBeforeIt(t *testing.T) {
+	entries := []Entry{
+		{Section: []byte("s"), SectionSeq: 1, Key: []byte("k"), Value: []byte("1"), Line: 1},
+		{Section: []byte("s"), SectionSeq: 1, Key: []byte("j"), Kind: EntryReset, Line: 2},
+		{Section: []byte("s"), SectionSeq: 1, Key: []byte("k"), Value: []byte("2"), Line: 3},
+		{Section: []byte("s"), SectionSeq: 1, Key: []byte("k"), Kind: EntryReset, Line: 4},
+		{Section: []byte("s"), SectionSeq: 1, Key: []byte("k"), Value: []byte("3"), Line: 5},
+		{Section: []byte("s"), SectionSeq: 1, Key: []byte("k"), Kind: EntryName, Value: []byte("n"), Line: 6},
+	}
+	read := func(_ []byte, _ *Meter, visit func(*Entry) error) error {
+		for i := range entries {
+			if err := visit(&entries[i]); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	q := Query{Section: []byte("s"), Key: []byte("k"), HasKey: true}
+	if !q.Wants(&entries[3]) || q.Wants(&entries[1]) || q.Wants(&entries[5]) {
+		t.Error("the query selects the wrong resets or names")
+	}
+	x := EntryExtractor{Source: Source{File: "f", Limit: 1 << 20}, Query: q, Read: read}
+	got, err := x.FromData(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := extracttest.Texts(got); s != "3@5" {
+		t.Errorf("got %q, want 3@5", s)
+	}
+}
+
+// FromData's budget is the floor and WorkPerByte for each byte of the file
+// and of the query's names, and its values may hold max_bytes exactly, one
+// more refused. Planted breaks: a name's bytes left out of the budget, or
+// subtracted; the bound refusing at max_bytes itself.
+func TestFromDataBounds(t *testing.T) {
+	var budget int64
+	q := Query{Section: []byte("se"), Host: []byte("hos"), Key: []byte("k"), HasKey: true}
+	value := []byte("abc")
+	read := func(_ []byte, m *Meter, visit func(*Entry) error) error {
+		budget = m.Budget
+		return visit(&Entry{Section: []byte("se"), Key: []byte("k"), Value: value, Line: 1})
+	}
+	q.HasHost, q.MatchHost = false, nil
+	x := EntryExtractor{Source: Source{File: "f", Limit: 3}, Query: q, Read: read}
+	if _, err := x.FromData([]byte("12345")); err != nil {
+		t.Fatalf("values of max_bytes: %v", err)
+	}
+	if want := int64(workFloor + WorkPerByte*(5+2+3+1)); budget != want {
+		t.Errorf("budget %d, want %d", budget, want)
+	}
+	value = []byte("abcd")
+	_, err := x.FromData([]byte("12345"))
+	extracttest.WantError(t, err, "hold more than 3 bytes in all")
+}
+
+// A drop-in's name is read once, from the first directory listed, and the
+// names in byte order across the directories, a digit before a capital.
+// Planted break: the last of a name kept.
+func TestFirstOfEachName(t *testing.T) {
+	got := FirstOfEachName([]string{"etc/a.d/20-b.conf", "etc/a.d/B.conf", "usr/lib/a.d/10-a.conf", "usr/lib/a.d/20-b.conf"})
+	want := "usr/lib/a.d/10-a.conf etc/a.d/20-b.conf etc/a.d/B.conf"
+	if strings.Join(got, " ") != want {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }

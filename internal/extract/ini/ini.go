@@ -18,7 +18,7 @@ import (
 
 // Spec returns every value of Key in Section of an INI file. Dialect names
 // the INI the file is written in, as the tool that reads it reads it:
-// plain (Python's configparser), tox, php, git or ansible. Left out, it is
+// plain (Python's configparser), tox, php, git, ansible or systemd. Left out, it is
 // chosen by the file's name (dialectFor). Subsection is read only by git and
 // Host only by ansible.
 //
@@ -40,12 +40,12 @@ type Spec struct {
 // file order, the rules a spec's names are checked and compared by, and the
 // file names it is chosen for; a new one is one more value in iniDialects.
 // The ini extractor keeps the entries its query wants, and nothing else, so
-// a file of many keys costs no memory for each key. Two dialects come later
-// through this seam: systemd units (v0.4.0), whose reader adds \
-// continuation and an entry kind for an empty assignment that clears the
-// values a list key has collected so far, and EditorConfig, whose extractor
-// selects the sections whose glob matches a path rather than a section by
-// name, from the entries the same reader returns.
+// a file of many keys costs no memory for each key. The systemd dialect
+// came through this seam, with \ continuation and core.EntryReset, the
+// empty assignment that clears what a list key collected. One more comes
+// later: EditorConfig, whose extractor selects the sections whose glob
+// matches a path rather than a section by name, from the entries the same
+// reader returns.
 type iniDialect struct {
 	name string
 	// files reports whether the dialect reads file when the spec names no
@@ -78,7 +78,7 @@ const (
 
 // iniDialects are the dialects in the order a file name is tried against
 // them; plain comes last and takes every file.
-var iniDialects = []*iniDialect{gitDialect, ansibleDialect, toxDialect, phpDialect, plainDialect}
+var iniDialects = []*iniDialect{gitDialect, ansibleDialect, toxDialect, phpDialect, systemdDialect, plainDialect}
 
 // dialectNames lists the dialects in a message.
 func dialectNames() string {
@@ -95,7 +95,9 @@ func dialectNames() string {
 // inventory, inventory.ini and any file under a directory named inventory
 // or inventories; tox for tox.ini; php for php.ini and a name ending in
 // .ini under a directory named php, as /etc/php/8.3/fpm/conf.d/10-opcache.ini
-// is; plain for every other file.
+// is; systemd for a unit or Quadlet file by its type, such as api.service
+// or web.container, and a .conf file in a drop-in directory such as
+// api.service.d; plain for every other file.
 func dialectFor(file string) *iniDialect {
 	for _, d := range iniDialects {
 		if d.files == nil || d.files(file) {

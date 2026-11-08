@@ -7,6 +7,7 @@ import (
 	"fmt"
 	slashpath "path"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/f-klement/errata/internal/check"
@@ -113,6 +114,27 @@ func FileParts(file string) (dirs []string, base string) {
 	return strings.Split(slashpath.Dir(p), "/"), slashpath.Base(p)
 }
 
+// FirstOfEachName is files sorted by base name, byte by byte, a name two
+// share kept once, from the first listed: the order of a tool whose first
+// drop-in directory to hold a name masks the others, as systemd's
+// conf_files_list and chrony's confdir and sourcedir read them.
+func FirstOfEachName(files []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, f := range files {
+		if _, b := FileParts(f); !seen[b] {
+			seen[b] = true
+			out = append(out, f)
+		}
+	}
+	slices.SortStableFunc(out, func(a, b string) int {
+		_, x := FileParts(a)
+		_, y := FileParts(b)
+		return strings.Compare(x, y)
+	})
+	return out
+}
+
 // EntryKind is what an entry is.
 type EntryKind uint8
 
@@ -122,6 +144,10 @@ const (
 	// EntryName is a name a line holds with no key: an ansible host line's
 	// host, or a group a children section lists. Its value is the name.
 	EntryName
+	// EntryReset is a key set to nothing, which drops the values its key
+	// collected in its section before it, as systemd reads Environment=
+	// on a line of its own. It has no value of its own.
+	EntryReset
 )
 
 // Entry is one value a file sets, with the names it is set under, as its
@@ -166,7 +192,8 @@ type Query struct {
 }
 
 // Wants reports whether the query selects e: the reference the fuzz targets
-// hold the matcher to.
+// hold the matcher to. A query of a key selects the key's resets too, which
+// drop what it selected before them.
 func (q *Query) Wants(e *Entry) bool {
 	switch {
 	case !bytes.Equal(e.Section, q.Section):
@@ -174,7 +201,7 @@ func (q *Query) Wants(e *Entry) bool {
 	case q.HasHost && !q.hostOK(e.Host):
 		return false
 	case q.HasKey:
-		return e.Kind == EntryKey && bytes.Equal(e.Key, q.Key)
+		return e.Kind != EntryName && bytes.Equal(e.Key, q.Key)
 	default:
 		return e.Kind == EntryName
 	}
@@ -202,30 +229,40 @@ func (m *Matcher) Wants(e *Entry) bool {
 	if m.Err = m.m.Charge(entryWork + len(m.q.Key)); m.Err != nil {
 		return false
 	}
+	if !m.sectionWanted(e) || !m.hostWanted(e) {
+		return false
+	}
+	if m.q.HasKey {
+		return e.Kind != EntryName && bytes.Equal(e.Key, m.q.Key)
+	}
+	return e.Kind == EntryName
+}
+
+// sectionWanted reports whether e's section is the query's, comparing it
+// once for each header.
+func (m *Matcher) sectionWanted(e *Entry) bool {
 	if e.SectionSeq != m.sectionSeq {
 		if m.Err = m.m.Charge(len(m.q.Section)); m.Err != nil {
 			return false
 		}
 		m.sectionSeq, m.sectionOK = e.SectionSeq, bytes.Equal(e.Section, m.q.Section)
 	}
-	if !m.sectionOK {
-		return false
+	return m.sectionOK
+}
+
+// hostWanted reports whether e's host is one the query selects, matching
+// it once for each host line; true for a query of no host.
+func (m *Matcher) hostWanted(e *Entry) bool {
+	if !m.q.HasHost {
+		return true
 	}
-	if m.q.HasHost {
-		if e.HostSeq != m.hostSeq {
-			m.hostSeq = e.HostSeq
-			if m.hostOK, m.Err = m.q.MatchHost(e.Host, m.q.Host, m.m); m.Err != nil {
-				return false
-			}
-		}
-		if !m.hostOK {
+	if e.HostSeq != m.hostSeq {
+		m.hostSeq = e.HostSeq
+		if m.hostOK, m.Err = m.q.MatchHost(e.Host, m.q.Host, m.m); m.Err != nil {
 			return false
 		}
 	}
-	if m.q.HasKey {
-		return e.Kind == EntryKey && bytes.Equal(e.Key, m.q.Key)
-	}
-	return e.Kind == EntryName
+	return m.hostOK
 }
 
 // hostOK is matchHost with no budget and a refusal read as no match, for
@@ -280,49 +317,71 @@ func (e EntryExtractor) FromShared(data []byte, _ *Spent) ([]check.Value, error)
 
 // FromData returns the values of the entries the query wants, at most
 // maxValues of them and at most the extractor's max_bytes in all, as every
-// extractor's values. A value is mostly a part of the file, but git reads a
+// extractor's values. A reset the query wants drops the values before it;
+// the bytes they held still count against max_bytes, so a file of resets
+// costs no more than one without. A value is mostly a part of the file, but git reads a
 // key with no = as true, four bytes for a key of one, and a byte that is
 // not UTF-8 is three in the U+FFFD Java reads for it.
 func (e EntryExtractor) FromData(data []byte) ([]check.Value, error) {
-	out := []check.Value{}
-	var total int64
-	var stop error
 	work := NewMeter(len(data) + len(e.Query.Section) + len(e.Query.Host) + len(e.Query.Key))
-	m := NewMatcher(&e.Query, work)
-	err := e.Read(data, work, func(en *Entry) error {
-		if !m.Wants(en) {
-			switch {
-			case errors.Is(m.Err, ErrWork):
-				return ErrWork
-			case m.Err != nil:
-				return LineError(en.Line, "%v", m.Err)
-			}
-			return nil
-		}
-		if total += int64(len(en.Value)); total > e.Limit {
-			stop = tooManyBytes(e.File, e.Limit)
-			return errStop
-		}
-		if len(out) == e.ValuesAllowed() {
-			stop = TooManyValues(e.File)
-			return errStop
-		}
-		v := check.Value{Text: string(en.Value), At: check.Location{File: e.File, Line: en.Line}, NotLiteral: e.NotLiteral != nil && e.NotLiteral(en), Origin: en.Origin}
-		if e.Keyed {
-			v.Key, v.HasKey = string(en.Key), true
-		}
-		out = append(out, v)
-		return nil
-	})
+	c := collect{x: e, m: NewMatcher(&e.Query, work), out: []check.Value{}}
+	err := e.Read(data, work, c.visit)
 	switch {
-	case stop != nil:
-		return nil, stop
+	case c.stop != nil:
+		return nil, c.stop
 	case errors.Is(err, ErrWork):
 		return nil, tooMuchWork(e.File)
 	case err != nil:
 		return nil, fmt.Errorf("%s: %w", e.File, err)
 	}
-	return out, nil
+	return c.out, nil
+}
+
+// collect is one FromData's values so far.
+type collect struct {
+	x     EntryExtractor
+	m     *Matcher
+	out   []check.Value
+	total int64
+	stop  error // the bound a value passed, which ends the read
+}
+
+// visit takes the entry if the query wants it: a reset drops the values
+// before it, and any other adds its value, within the bounds.
+func (c *collect) visit(en *Entry) error {
+	if !c.m.Wants(en) {
+		return c.matchError(en)
+	}
+	if en.Kind == EntryReset {
+		c.out = c.out[:0]
+		return nil
+	}
+	if c.total += int64(len(en.Value)); c.total > c.x.Limit {
+		c.stop = tooManyBytes(c.x.File, c.x.Limit)
+		return errStop
+	}
+	if len(c.out) == c.x.ValuesAllowed() {
+		c.stop = TooManyValues(c.x.File)
+		return errStop
+	}
+	v := check.Value{Text: string(en.Value), At: check.Location{File: c.x.File, Line: en.Line}, NotLiteral: c.x.NotLiteral != nil && c.x.NotLiteral(en), Origin: en.Origin}
+	if c.x.Keyed {
+		v.Key, v.HasKey = string(en.Key), true
+	}
+	c.out = append(c.out, v)
+	return nil
+}
+
+// matchError is the error the matcher met on en, nil for none: the work
+// refusal, or a refusal to match its host at its line.
+func (c *collect) matchError(en *Entry) error {
+	switch {
+	case errors.Is(c.m.Err, ErrWork):
+		return ErrWork
+	case c.m.Err != nil:
+		return LineError(en.Line, "%v", c.m.Err)
+	}
+	return nil
 }
 
 // tooManyBytes refuses values that hold more bytes than limit in all.

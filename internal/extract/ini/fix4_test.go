@@ -22,6 +22,7 @@ func TestWorkMeterRefusesAtEveryBudget(t *testing.T) {
 		{"[PHP]\na = x \"y ; z\" 'w' ; c\nb = E_ALL & ~E_DEPRECATED\nc = ${HOME:-x}\nd[] = on\ne = 1 2\nc = 128M\n", ini("php.ini", "PHP", "c")},
 		{gitconfig, gitSpec(".gitconfig", "remote", ptr("origin"), "fetch")},
 		{inventory, Spec{File: "inventory/hosts", Section: "web", Host: "web3.example.com", Key: "x"}},
+		{"[Service]\nExecStart=/a \\\n# c\n  -x\nExecStart=\r\nExecStart=/b\n", unit("Service", "ExecStart")},
 	} {
 		e, err := Build(c.spec)
 		if err != nil {

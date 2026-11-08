@@ -134,10 +134,12 @@ func TestForeignContentEndsWithItsBlock(t *testing.T) {
 
 // An end tag in foreign content costs a constant, however deep the svg
 // (ADR 0003): 256 KiB of </x> inside an svg holding 999 elements, each of
-// which the tag must not close, take no more than twice the time of the
-// same tags with nothing open, where a walk down the stack for each took
-// some 175 times as long (foreign review, finding 1). The planted break:
-// the walk from the top to the nearest HTML element.
+// which the tag must not close, take no more than ten times the time of
+// the same tags with nothing open, where a walk down the stack for each
+// took some 175 times as long (foreign review, finding 1). The bound was
+// twice, the shape of a sibling that failed under load at 2.4 times
+// (flakes review, finding 3). The planted break: the walk from the top to
+// the nearest HTML element.
 func TestAForeignEndTagCostsAConstant(t *testing.T) {
 	const size = 256 << 10
 	deep := "<svg>" + strings.Repeat("<g>", core.MaxDepth-1)
@@ -158,8 +160,8 @@ func TestAForeignEndTagCostsAConstant(t *testing.T) {
 	}
 	alone, inside := scan(strings.Repeat(" ", len(deep))+tags), scan(deep+tags)
 	t.Logf("the end tags took %v alone, %v inside the svg", alone, inside)
-	if inside > 2*alone+50*time.Millisecond {
-		t.Errorf("inside an svg %d deep the end tags took %v, over twice their %v alone", core.MaxDepth, inside, alone)
+	if inside > 10*alone+50*time.Millisecond {
+		t.Errorf("inside an svg %d deep the end tags took %v, over ten times their %v alone", core.MaxDepth, inside, alone)
 	}
 }
 

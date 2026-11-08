@@ -618,6 +618,35 @@ func TestFormattedSize(t *testing.T) {
 	}
 }
 
+// valueSize counts each kind of value %s writes, one case per arm. Only the
+// property test reached some arms, by chance, so the coverage of valueSize,
+// and its CRAP score (scripts/crap), changed from run to run: a Bool in one
+// run of make test and none in the next.
+func TestValueSizeCountsEachKind(t *testing.T) {
+	adapt := types.DefaultTypeAdapter.NativeToValue
+	cases := []struct {
+		name string
+		v    ref.Val
+		want int64
+	}{
+		{"string", types.String("abc"), 3},
+		{"bytes", types.Bytes("ab"), 2},
+		{"bool", types.True, int64(len("false"))},
+		{"null", types.NullValue, int64(len("null"))},
+		{"int", types.Int(1), int64(len("-9223372036854775808"))},
+		{"uint", types.Uint(1), int64(len("-9223372036854775808"))},
+		{"type", types.StringType, int64(len("string"))},
+		{"map", adapt(map[string]any{"k": "vv"}), 2 + 1 + 4 + 2},
+		{"list", adapt([]any{"a", "bb"}), 2 + (1 + 2) + (2 + 2)},
+		{"other", types.Double(1.5), numberSize},
+	}
+	for _, tc := range cases {
+		if got := valueSize(tc.v, math.MaxInt64); got != tc.want {
+			t.Errorf("valueSize(%s) = %d, want %d", tc.name, got, tc.want)
+		}
+	}
+}
+
 // A refused call costs what cel-go charges its arguments, so refusals in a
 // comprehension spend the cost limit by what their guards read, a tenth for
 // each code point: of 100 refused reads of 10001 code points, the first,

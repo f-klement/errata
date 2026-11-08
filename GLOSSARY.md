@@ -246,7 +246,8 @@ pyproject.toml, `dependency` a range or a version the file takes from elsewhere,
 loader retypes, such as `3.10`, `shell` a value the shell computes and errata does not
 resolve, such as `$(git describe)` or `"$HOME/bin"`, `github-actions` a `${{ }}` expression
 other than a matrix variable, or a number YAML retypes, `jenkins` a value Groovy computes,
-such as `credentials('id')` or `"${BUILD_NUMBER}"`, `literal` a value a program computes, such
+such as `credentials('id')` or `"${BUILD_NUMBER}"`, `etc` a value OpenSSH expands, such as
+`%h/.ssh/keys`, `literal` a value a program computes, such
 as `os.environ["PORT"]`, or a name the file changes after it assigns it, `code` the same and a Go
 value only the running program knows, such as `os.Getenv("PORT")` or a `var` the file assigns,
 and `env` any of these
@@ -254,8 +255,9 @@ that the reader of its file marks.
 
 **Condition.** What must hold for a value to be the one a reader names, for a reader that returns
 one value for each case a file chooses between: a GitLab CI rule's `if $CI_COMMIT_TAG`, a
-`parallel:matrix` instance such as `build: [a]`, or a GitHub Actions matrix job such as
-`test (ubuntu-latest, 18)`. A rule compares the value as any other; a message
+`parallel:matrix` instance such as `build: [a]`, a GitHub Actions matrix job such as
+`test (ubuntu-latest, 18)`, or the block of a Unix configuration file, such as sshd's
+`Match User git`. A rule compares the value as any other; a message
 names its condition after its place.
 
 **Check protocol.** The way errata runs a program check. errata runs the

@@ -27,7 +27,7 @@ func (fakeSpec) Bound() int64 { return 0 }
 // variable names the variable, the file, and whether the facade handed it
 // the YAML parser it hands the CI readers.
 var fakeEnv = check.EnvChoice{
-	Order:      60,
+	Order:      70,
 	Chooses:    func(file string) bool { return path.Ext(file) == ".fake" },
 	Sniffs:     func(head []byte) bool { return string(head) == "#!" },
 	SniffBytes: 2,
@@ -87,7 +87,7 @@ func TestEnvAsksARegisteredReader(t *testing.T) {
 		t.Errorf("got  %s\nwant %s", g, want)
 	}
 	_, err = env.Build(env.Spec{Name: "A", Files: []string{"x"}, Readers: map[string]string{"x": "nope"}}, rs)
-	extracttest.WantError(t, err, "write one of envfile, shell, gitlab-ci, github-actions, jenkins, fake")
+	extracttest.WantError(t, err, "write one of envfile, shell, gitlab-ci, github-actions, jenkins, systemd, fake")
 }
 
 // Every registered env reader's name test, as env asks them: a name
@@ -146,6 +146,12 @@ func TestEnvChoosesByName(t *testing.T) {
 		// envfile's.
 		".env.py": "", ".env.js": "", "src/.env.d.ts": "", ".env.rb": "",
 		".env.toml": "envfile", ".env.yaml": "envfile", ".env.yml": "envfile", ".env.json": "envfile",
+		// systemd takes the units that start a process, and Quadlet's
+		// .container; a timer, a drop-in and an environment file, which has
+		// a name of any shape, go to none, and .env.service stays envfile's.
+		"deploy/api.service": "systemd", "a.socket": "systemd", "srv.mount": "systemd", "a.swap": "systemd",
+		"q/web.container": "systemd", "api@.service": "systemd", "a.timer": "", "a.service.d/10.conf": "",
+		"web.image": "", "a.target": "", ".env.service": "envfile", "a.service.j2": "systemd",
 	} {
 		if got := rs.Choose(file); got != want {
 			t.Errorf("%s: %q, want %q", file, got, want)
@@ -154,12 +160,12 @@ func TestEnvChoosesByName(t *testing.T) {
 }
 
 // env lists the readers by their Order, envfile, shell, gitlab-ci,
-// github-actions, jenkins, and not in the order kinds lists them, where
+// github-actions, jenkins, systemd, and not in the order kinds lists them, where
 // gitlab-ci comes before shell. Planted break: shell's Order past
 // gitlab-ci's.
 func TestEnvListsItsReadersInOrder(t *testing.T) {
 	_, err := Build(Of(env.Kind, env.Spec{Name: "A", Files: []string{".env"}, Readers: map[string]string{".env": "yaml"}}))
-	extracttest.WantError(t, err, `readers gives ".env" the reader "yaml"; write one of envfile, shell, gitlab-ci, github-actions, jenkins`)
+	extracttest.WantError(t, err, `readers gives ".env" the reader "yaml"; write one of envfile, shell, gitlab-ci, github-actions, jenkins, systemd`)
 }
 
 // readersOf refuses two env readers at one Order, one with no Chooses or

@@ -218,6 +218,7 @@ flowchart TB
         shell["internal/extract/shell"]
         githubactions["internal/extract/githubactions"]
         jenkins["internal/extract/jenkins"]
+        etc["internal/extract/etc"]
         env["internal/extract/env"]
         filestat["internal/extract/filestat"]
     end
@@ -325,7 +326,7 @@ reader imports `core` and no other reader, and `core` imports no reader.
 | `internal/extract/core/gomod` | the go.mod and go.work parse the tool_version and dependency readers share: golang.org/x/mod/modfile, the go command's parser, under a limit on the lines and tokens a file can hold, with each module version kept as the file writes it and a panic in modfile turned into a refusal | any one reader |
 | `internal/extract/core/mdparse` | the Markdown parse the text and markdown readers share: goldmark's CommonMark, with GitHub's tables on request, under a guard on its time, nodes and continuations, and the prose that maps text built from the file back to its lines | any one reader |
 | `internal/extract/xml` | XML, with an XPath 1.0 subset of its own | the other readers |
-| `internal/extract/ini`, `internal/extract/properties` | one reader each of entries for core's entry extractor: INI in the plain, git, ansible, tox and php dialects, and Java properties | each other |
+| `internal/extract/ini`, `internal/extract/properties` | one reader each of entries for core's entry extractor: INI in the plain, git, ansible, tox, php and systemd dialects (the last with Podman's grammar for a Quadlet file), and Java properties; `ini` also declares the `systemd` kind, a unit read in the systemd dialect with its drop-ins and its `Environment=` split into variables, and its environment files | each other |
 | `internal/extract/envfile` | dotenv files as docker compose reads them, a reader of entries for core's entry extractor, with compose's substitutions resolved from the keys set before | the other readers |
 | `internal/extract/shell` | the assignments and defaults of a variable in a shell script, parsed with mvdan.cc/sh/v3 under a guard on the depth of its stack, and the values the shell computes marked not literal | the other readers |
 | `internal/extract/jenkins` | the value of an environment variable that a stage of a declarative Jenkinsfile sees, read with a lexer of Groovy's comments and string forms that keeps no statement, and the values Groovy computes marked not literal | the other readers; Groovy's evaluation |
@@ -334,6 +335,7 @@ reader imports `core` and no other reader, and `core` imports no reader.
 | `internal/extract/dependency` | one package's version in every manifest and lockfile a rule lists (Go, npm, pnpm, Yarn, Python, Cargo, Bundler, Composer), each file read by the reader its base name chooses, each value marked a range or a resolved version in its origin, and a range rewritten as its tool reads it; a go.mod's module path, go.mod and go.work read through core/gomod's parse; the Gemfile read through core's lexer table | the other readers, whose parsers it gets from the facade, and any registry or package manager |
 | `internal/extract/gitlabci` | the value one job of a GitLab CI file sees: local includes, extends, `!reference`, defaults and the variable precedence, read with the YAML parser the facade hands it | the other readers, whose parser it gets from the facade; the network |
 | `internal/extract/githubactions` | the value one step or job of a GitHub Actions workflow sees: env: precedence, the matrix's jobs, and the values only GitHub evaluates marked or unknown, read with the YAML parser the facade hands it | the other readers, whose parser it gets from the facade; the network |
+| `internal/extract/etc` | the keyword and value family of Unix configuration files (sshd, ssh, sysctl, resolv, limits, logrotate, nsswitch, modprobe, chrony, ntp), each read in its tool's dialect, with the files a file includes inside the repository and the drop-ins of a directory read in the tool's order, each value's block as its condition, and OpenSSH's Match and Host blocks decided for one connection | the other readers; the host the files configure |
 | `internal/extract/env` | one variable across the files a rule lists: the reader each file's name or shebang chooses, a glob over git's tracked files, and each value's origin, its reader and its job, step or stage | the readers, which the facade hands it as functions |
 | `internal/extract/filestat` | the `exists` and `size` kinds: whether a file is at a name and how many bytes it holds, from core's `Stat`, without opening the file | the other readers |
 | `internal/extract/extracttest`, `internal/extract/coretest` | what the extractors' tests share; only test files import them, and Gremlins and the `make cover` total leave them alone | any reader: `coretest` imports `core` alone, and `extracttest` nothing of errata's but `check` and `core/lineend`, since `core`'s own tests import it |
@@ -342,9 +344,9 @@ reader imports `core` and no other reader, and `core` imports no reader.
 | `internal/heapcap` | the heap watchdog that every package's tests link under the `mutation` tag only | errata's own code: only test files built with the tag import it |
 | `internal/check` | the domain types: `Check`, `Rule`, `Extractor`, `Assertion`, `Value`, `Location`, `Extracted`, `Scope`, `Verdict`, `Result`, `Report`, and `ExtractorKind` with the `Description` and `Shape` it gives of what an extractor returns | every other package |
 
-`scripts/casecover`, `scripts/slowtests`, `scripts/clidoc` and `scripts/loccensus` are tools of
-the build, run by `make mutation`, `make slow`, `make cli-doc` and `make loc`; errata's binary
-does not import them, and the graphs leave them out.
+`scripts/casecover`, `scripts/slowtests`, `scripts/clidoc`, `scripts/loccensus` and `scripts/crap`
+are tools of the build, run by `make mutation`, `make slow`, `make cli-doc`, `make loc` and
+`make cover`; errata's binary does not import them, and the graphs leave them out.
 
 ## The seams
 
@@ -476,6 +478,8 @@ flowchart LR
         k_shell["shell"]
         k_github["github-actions"]
         k_jenkins["jenkins"]
+        k_systemd["systemd"]
+        k_etc["etc"]
         k_env["env"]
         k_exists["exists"]
         k_size["size"]
@@ -489,9 +493,11 @@ flowchart LR
     table -->|"extract.Build"| x["check.Extractor"]
 ```
 
-Two kinds, `exists` and `size`, come from one package, `filestat`. The `env` kind reads one
-variable across several files, each with the reader its name or shebang chooses: `envfile`,
-`shell`, `gitlab-ci`, `github-actions` and `jenkins` declare themselves env readers, each at an
+Two kinds, `exists` and `size`, come from one package, `filestat`, and two, `ini` and `systemd`,
+from `ini`, since the systemd kind reads through the ini reader's systemd dialect. The `env` kind
+reads one variable across several files, each with the reader its name or shebang chooses:
+`envfile`, `shell`, `gitlab-ci`, `github-actions`, `jenkins` and `systemd` declare themselves env
+readers, each at an
 `Order` of its own, and the facade hands them to `env` as functions, so `env` imports none of them.
 A reader that needs another format's parser, such as `tool_version` reading a `package.json`, gets
 it from the facade in `core.Parsers` for the same reason. Wherever two kinds must share more than a
@@ -710,7 +716,7 @@ flowchart LR
     check --> mutation["mutation: Gremlins, one pass per package"]
     gate --> lint["lint: golangci-lint on linux, windows and darwin, and with the mutation tag"]
     gate --> test["test: go test -race, with the coverage profile"]
-    gate --> cover["cover: at least 90% of the product code"]
+    gate --> cover["cover: at least 90% of the product code, and each function below CRAP 10 or in the baseline"]
     gate --> slow["slow: the tests too slow for -race, once each"]
     gate --> fuzz["fuzz: every Fuzz target"]
     gate --> vuln["vuln: govulncheck"]

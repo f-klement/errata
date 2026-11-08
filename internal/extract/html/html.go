@@ -209,10 +209,19 @@ type table struct {
 	cut int
 }
 
+// followXNet is whether a reading follows x/net v0.62.0 where it is not
+// the standard (htmlparse's FollowXNetAdoption). The browser tests alone
+// set it, to compare a page errata reads by the standard there. A plain
+// variable is safe only because no html test calls t.Parallel.
+var followXNet bool
+
 func newReading(sel *markup.Select, src []byte, limit int64) *reading {
 	r := &reading{sel: sel, src: src, lines: core.NewLineCursor(src),
 		s: htmlparse.NewScanner(src, htmlparse.MaxTokens(limit)), p: prose{maxPieces: int(limit / bytesPerPiece)}}
 	r.s.Headings()
+	if followXNet {
+		r.s.FollowXNetAdoption()
+	}
 	if sel.Path != nil {
 		r.outline = markup.NewOutline(sel.Path)
 	}

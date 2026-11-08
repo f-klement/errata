@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -105,28 +106,109 @@ func TestChangedTokenFindsTheMutatedLineThroughPrinterSpacing(t *testing.T) {
 
 // world is a package directory and gremlins' working copy of it, with the
 // mutant at Less's < (line 9), an index, the limits, and a fake go. The fake
-// go logs its arguments; given test -c, it sleeps $BUILD_SLEEP seconds and
-// writes a fake test binary to -o, exiting $BUILD_RC; given another go test,
-// gremlins' own, it sleeps $PLAIN_SLEEP and exits $PLAIN_RC. The fake binary logs
-// "bin" and its arguments and, given -test.run, sleeps $NARROW_SLEEP and exits
+// go logs its arguments; given test -c, it writes a fake test binary to -o,
+// exiting $BUILD_RC; given another go test, gremlins' own, it exits $PLAIN_RC.
+// The fake binary logs "bin" and its arguments and, given -test.run, exits
 // $NARROW_RC, else sleeps $WHOLE_SLEEP and exits $WHOLE_RC; with $PID_FILE it
 // writes its pid there and that of a sleep it starts to $PID_FILE.child, and
 // waits for the sleep. With $LINGER it leaves a sleep of that many seconds
-// behind, holding its output. The index's own binary, pkg.test, logs "check"
-// and exits $CHECK_RC.
-type world struct{ root, work, index, goBin, log string }
+// behind, holding its output, and with $NARROW_LINGER the same on a narrowed
+// run only. The index's own binary, pkg.test, logs "check" and exits $CHECK_RC.
+//
+// The commands run, but the time each step takes is the one in took, not the
+// machine's: see charge.
+type world struct {
+	root, work, index, goBin, log string
+	// took is the time charged to each step: build, check, narrow, whole,
+	// and go for any other go command. A step it leaves out runs under
+	// bounded's own clock and limit.
+	took   map[string]time.Duration
+	calls  *[]call    // each command run, in order
+	waited *time.Time // the deadline testreach waited for after a timeout
+}
+
+// call is a command testreach ran: its step, and the limit and wait for its
+// output testreach gave it.
+type call struct {
+	step          string
+	limit, ioWait time.Duration
+}
+
+// charge replaces bounded for the test. A step that w.took names runs to its
+// end without the limit, and is charged the time w.took gives it: as long as
+// the limit or longer, it is a timeout, as bounded reports one. Its exit, its
+// signal and the wait for its output are the command's own. A step w.took
+// leaves out runs under bounded as it is. The deadline testreach waits for
+// after a timeout is kept in w.waited, not waited for.
+func charge(t *testing.T, w world) {
+	t.Helper()
+	oldRun, oldWait := runBounded, waitUntil
+	t.Cleanup(func() { runBounded, waitUntil = oldRun, oldWait })
+	runBounded = func(name string, args []string, dir string, limit, ioWait time.Duration) outcome {
+		step := stepOf(name, args)
+		*w.calls = append(*w.calls, call{step, limit, ioWait})
+		took, ok := w.took[step]
+		if !ok || limit <= 0 {
+			return bounded(name, args, dir, limit, ioWait)
+		}
+		o := bounded(name, args, dir, time.Hour, ioWait)
+		if took >= limit {
+			return outcome{timedOut: true, took: limit}
+		}
+		o.took = took
+		return o
+	}
+	waitUntil = func(deadline time.Time) { *w.waited = deadline }
+}
+
+// stepOf names the step a command is: the build and gremlins' own go test
+// run go, the check runs the index's pkg.test, and the narrowed and whole
+// runs run the mutant's binary, with -test.run or without.
+func stepOf(name string, args []string) string {
+	switch filepath.Base(name) {
+	case "pkg.test":
+		return "check"
+	case "mutant.test":
+		if slices.ContainsFunc(args, func(a string) bool { return strings.HasPrefix(a, "-test.run=") }) {
+			return "narrow"
+		}
+		return "whole"
+	}
+	if len(args) > 1 && args[1] == "-c" {
+		return "build"
+	}
+	return "go"
+}
+
+// calledFor is the one command run for the step.
+func calledFor(t *testing.T, w world, step string) call {
+	t.Helper()
+	var found []call
+	for _, c := range *w.calls {
+		if c.step == step {
+			found = append(found, c)
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("%d commands for the %s step, want 1: %+v", len(found), step, *w.calls)
+	}
+	return found[0]
+}
 
 const fakeBin = `#!/bin/sh
 echo "bin $*" >>"$GO_LOG"
 if [ -n "${PID_FILE:-}" ]; then
     echo $$ >"$PID_FILE.tmp" && mv "$PID_FILE.tmp" "$PID_FILE"
-    sleep 20 &
+    sleep 120 &
     echo $! >"$PID_FILE.child.tmp" && mv "$PID_FILE.child.tmp" "$PID_FILE.child"
     wait
     exit 0
 fi
 [ -z "${LINGER:-}" ] || sleep "$LINGER" &
-case " $* " in *" -test.run="*) sleep "${NARROW_SLEEP:-0}"; exit "${NARROW_RC:-0}" ;; esac
+case " $* " in *" -test.run="*)
+    [ -z "${NARROW_LINGER:-}" ] || sleep "$NARROW_LINGER" &
+    exit "${NARROW_RC:-0}" ;;
+esac
 sleep "${WHOLE_SLEEP:-0}"
 exit "${WHOLE_RC:-0}"
 `
@@ -134,7 +216,8 @@ exit "${WHOLE_RC:-0}"
 func newWorld(t *testing.T) world {
 	t.Helper()
 	d := t.TempDir()
-	w := world{root: filepath.Join(d, "root"), work: filepath.Join(d, "wd", "internal", "p"), index: filepath.Join(d, "reach"), log: filepath.Join(d, "go.log")}
+	w := world{root: filepath.Join(d, "root"), work: filepath.Join(d, "wd", "internal", "p"), index: filepath.Join(d, "reach"), log: filepath.Join(d, "go.log"),
+		took: map[string]time.Duration{"build": 0, "check": 0, "narrow": 0, "whole": 0}, calls: new([]call), waited: new(time.Time)}
 	for _, dir := range []string{filepath.Join(w.root, "internal", "p"), w.work, w.index} {
 		if err := os.MkdirAll(dir, 0o750); err != nil {
 			t.Fatal(err)
@@ -157,7 +240,6 @@ echo "go $*" >>"$GO_LOG"
 if [ "$1 $2" = "test -c" ]; then
     out=""; prev=""
     for a; do [ "$prev" != -o ] || out=$a; prev=$a; done
-    sleep "${BUILD_SLEEP:-0}"
     [ "${BUILD_RC:-0}" = 0 ] || exit "$BUILD_RC"
     cat >"$out" <<'BIN'
 `+fakeBin+`BIN
@@ -165,7 +247,6 @@ if [ "$1 $2" = "test -c" ]; then
     exit 0
 fi
 [ "$1" = test ] || exit "${GO_RC:-0}"
-sleep "${PLAIN_SLEEP:-0}"
 exit "${PLAIN_RC:-0}"
 `)
 	for _, f := range []string{w.goBin, filepath.Join(w.index, "pkg.test")} {
@@ -176,6 +257,7 @@ exit "${PLAIN_RC:-0}"
 	t.Setenv("GO_LOG", w.log)
 	t.Setenv("TMPDIR", d)
 	t.Chdir(w.work)
+	charge(t, w)
 	return w
 }
 
@@ -263,26 +345,21 @@ func TestRunRerunsASurvivorOfTheNarrowedRunWhole(t *testing.T) {
 // tests are charged against the planned limit as one cold go test is. A 3 s
 // build and 1.5 s of whole tests pass the planned 4 s, so the mutant is timed
 // out, and that is final; after a narrowed run that overruns its share, a 2 s
-// build and 1.5 s of whole tests fit, so it lives (the review's probe).
+// build and 1.5 s of whole tests fit, so it lives (the review's probe). The
+// planted break: the whole run given the planned limit, its build not charged,
+// and the slow build lives.
 func TestRunJudgesBuildAndWholeTestsAgainstThePlannedLimit(t *testing.T) {
-	old := afterLimit
-	afterLimit = -time.Second
-	t.Cleanup(func() { afterLimit = old })
 	for _, tc := range []struct {
-		name, build, narrow, whole string
-		rc                         int
-		log                        string
+		name                 string
+		build, narrow, whole time.Duration
+		rc                   int
+		log                  string
 	}{
-		{"a slow build", "3", "0", "1.5", 1, ` lived \S+ timeout \S+ narrowed, then whole \(set checked in \S+\) \(build \S+\); held 2\.00 past the planned limit$`},
-		{"a narrowed run that overruns", "2", "5", "1.5", 0, ` timeout \S+ lived \S+ narrowed, then whole \(set checked in \S+\) \(build \S+\)$`},
+		{"a slow build", 3 * time.Second, 0, 1500 * time.Millisecond, 1, ` lived 0\.00 timeout 1\.00 narrowed, then whole \(set checked in 0\.00\) \(build 3\.00\); held 2\.00 past the planned limit$`},
+		{"a narrowed run that overruns", 2 * time.Second, 5 * time.Second, 1500 * time.Millisecond, 0, ` timeout 1\.50 lived 1\.50 narrowed, then whole \(set checked in 0\.00\) \(build 2\.00\)$`},
 	} {
 		w := newWorld(t)
-		t.Setenv("BUILD_SLEEP", tc.build)
-		t.Setenv("NARROW_SLEEP", tc.narrow)
-		t.Setenv("WHOLE_SLEEP", tc.whole)
-		// A go test after the narrowing path, as round 3 of the review had it,
-		// would take 2.5 s: 1 s of link and 1.5 s of tests.
-		t.Setenv("PLAIN_SLEEP", "2.5")
+		w.took["build"], w.took["narrow"], w.took["whole"] = tc.build, tc.narrow, tc.whole
 		if rc := run(w.goBin, w.root, w.index, mutantRun); rc != tc.rc {
 			t.Fatalf("%s: exit %d, want %d", tc.name, rc, tc.rc)
 		}
@@ -297,25 +374,67 @@ func TestRunJudgesBuildAndWholeTestsAgainstThePlannedLimit(t *testing.T) {
 
 // The narrowed run's own time is not charged to the whole run: a build of 1 s,
 // narrowed tests of 1 s and whole tests of 2.5 s live, since build and whole
-// tests take 3.5 s of the 4.
+// tests take 3.5 s of the 4. The planted break: the narrowed run's time taken
+// from the whole run's limit too, which leaves it 2 s.
 func TestRunDoesNotChargeTheNarrowedTestsToTheWholeRun(t *testing.T) {
 	w := newWorld(t)
-	t.Setenv("BUILD_SLEEP", "1")
-	t.Setenv("NARROW_SLEEP", "1")
-	t.Setenv("WHOLE_SLEEP", "2.5")
+	w.took["build"], w.took["narrow"], w.took["whole"] = time.Second, time.Second, 2500*time.Millisecond
 	if rc := run(w.goBin, w.root, w.index, mutantRun); rc != 0 {
 		t.Fatalf("exit %d, want 0: build and whole tests fit the planned limit", rc)
+	}
+	if got := calledFor(t, w, "whole").limit; got != 3*time.Second {
+		t.Fatalf("the whole run's limit: %s, want the 3 s the build left", got)
+	}
+}
+
+// The other time verdicts of a run, each pinned by its whole log line: the
+// check's time taken from the narrowed share, which leaves 1 s; a build that
+// takes the planned limit, which is a timeout held until gremlins' limit; a
+// check that takes the whole share, which leaves the mutant to the whole run.
+// The planted breaks: the share left as it was before the check; the build's
+// timeout not read.
+func TestRunPinsTheTimeVerdictsOfTheBuildAndTheCheck(t *testing.T) {
+	for _, tc := range []struct {
+		name                 string
+		build, check, narrow time.Duration
+		rc                   int
+		ran, log             string
+		waited               bool
+	}{
+		{"a check that takes part of the share", 0, 500 * time.Millisecond, 5 * time.Second, 0, build + check + narrowRun + wholeRun,
+			reachingOf + "timeout 1.00 lived 0.00 narrowed, then whole (set checked in 0.50) (build 0.00)\n", false},
+		{"a build that takes the planned limit", 4 * time.Second, 0, 0, 1, build,
+			reachingOf + "- - timeout 4.00 the build took the whole limit; held 2.00 past the planned limit\n", true},
+		{"a check that takes the whole share", 0, 1500 * time.Millisecond, 0, 0, build + check + wholeRun,
+			reachingOf + "- - lived 0.00 no time to run the reaching tests together on the original code (build 0.00)\n", false},
+	} {
+		w := newWorld(t)
+		w.took["build"], w.took["check"], w.took["narrow"] = tc.build, tc.check, tc.narrow
+		if rc := run(w.goBin, w.root, w.index, mutantRun); rc != tc.rc {
+			t.Fatalf("%s: exit %d, want %d", tc.name, rc, tc.rc)
+		}
+		if got := logLines(t, w); got != tc.ran {
+			t.Fatalf("%s: ran\n%s\nwant\n%s", tc.name, got, tc.ran)
+		}
+		if got := read(t, filepath.Join(w.index, "log")); got != tc.log {
+			t.Fatalf("%s: log\n%q\nwant\n%q", tc.name, got, tc.log)
+		}
+		if got := !w.waited.IsZero(); got != tc.waited {
+			t.Fatalf("%s: waited for gremlins' limit: %v, want %v", tc.name, got, tc.waited)
+		}
 	}
 }
 
 // Delta review D3: go test waits for a test binary's output for the larger of
 // 5 s and a tenth of -timeout after it exits, then fails the test, "Test I/O
-// incomplete". A binary that passes and leaves a process holding its output
-// for 8 s, under a planned limit of 20 s, is then a kill after 5 s.
+// incomplete". A binary that passes and leaves a process holding its output,
+// under a planned limit of 20 s, is then a kill after 5 s. The holder sleeps
+// 60 s, so it still holds the output when the wait ends however late the
+// binary exits on a busy machine; the kill of the group ends it then.
 func TestRunFailsOutputStillHeldAsGoTestDoes(t *testing.T) {
 	w := newWorld(t)
 	t.Setenv("CHECK_RC", "1") // no narrowed run: the whole run alone
-	t.Setenv("LINGER", "8")
+	t.Setenv("LINGER", "60")
 	// 30 s from gremlins: 20 s planned, the binaries' -test.timeout 22 s.
 	args := []string{"test", "-tags", "mutation", "-timeout", "32s", "-failfast", "example.com/m/internal/p"}
 	start := time.Now()
@@ -324,8 +443,12 @@ func TestRunFailsOutputStillHeldAsGoTestDoes(t *testing.T) {
 	if rc != 1 {
 		t.Fatalf("exit %d, want the 1 of a failed test", rc)
 	}
-	if took < 4900*time.Millisecond || took > 7*time.Second {
-		t.Fatalf("took %s, want go test's wait of 5 s", took)
+	if got := calledFor(t, w, "whole").ioWait; got != 5*time.Second {
+		t.Fatalf("the wait for output: %s, want go test's 5 s", got)
+	}
+	// Only a lower bound: a busy machine makes the run longer, never shorter.
+	if took < 4900*time.Millisecond {
+		t.Fatalf("took %s, want at least go test's wait of 5 s", took)
 	}
 	if got := read(t, filepath.Join(w.index, "log")); !strings.Contains(got, " - - iowait ") {
 		t.Fatalf("log %q", got)
@@ -333,13 +456,15 @@ func TestRunFailsOutputStillHeldAsGoTestDoes(t *testing.T) {
 }
 
 // Delta review 3 of #264, G1, the reviewer's probe: a narrowed run whose
-// binary passes and leaves a process holding its output for 7 s ends on go
-// test's wait of 5 s. That is no test failure: the whole run, whose other tests
-// run 8 s, outlasts the holder and passes, so the mutant lives.
+// binary passes and leaves a process holding its output ends on go test's
+// wait of 5 s. That is no test failure: the whole run, whose other tests run
+// 8 s, passes, so the mutant lives. The holder sleeps 60 s, past the wait
+// however busy the machine; the planted break: a narrowed run ended by any
+// failure, outcome.failed in place of testFailed, and the mutant is killed.
 func TestRunSendsANarrowedIOWaitToTheWholeRun(t *testing.T) {
 	w := newWorld(t)
-	t.Setenv("LINGER", "7")
-	t.Setenv("WHOLE_SLEEP", "8")
+	t.Setenv("NARROW_LINGER", "60")
+	w.took["narrow"], w.took["whole"] = 5*time.Second, 8*time.Second
 	args := []string{"test", "-tags", "mutation", "-timeout", "32s", "-failfast", "example.com/m/internal/p"}
 	if rc := run(w.goBin, w.root, w.index, args); rc != 0 {
 		t.Fatalf("exit %d, want the 0 of the whole run", rc)
@@ -410,24 +535,37 @@ func TestRunRunsTheWholePackageWhenTheIndexCannotNarrow(t *testing.T) {
 	}
 }
 
+// The whole run runs under bounded's own clock: its 30 s of tests are stopped
+// at the planned 4 s, and testreach then waits until 30 s past gremlins' 6 s.
 func TestRunStopsAWholeRunAtThePlannedLimitAndWaitsForGremlins(t *testing.T) {
 	w := newWorld(t)
-	old := afterLimit
-	// The whole run stops at 4 s, and it waits until 1 s before gremlins' 6 s.
-	afterLimit = -time.Second
-	t.Cleanup(func() { afterLimit = old })
+	delete(w.took, "whole")
 	t.Setenv("WHOLE_SLEEP", "30")
-	start := time.Now()
+	before := time.Now()
 	rc := run(w.goBin, w.root, w.index, mutantRun)
-	took := time.Since(start)
+	after := time.Now()
 	if rc != 1 {
 		t.Fatalf("exit %d after a stopped whole run", rc)
 	}
-	if took < 4900*time.Millisecond || took > 7*time.Second {
-		t.Fatalf("took %s; want the whole run stopped at 4 s and a wait to 5 s", took)
+	if got := calledFor(t, w, "whole").limit; got != 4*time.Second {
+		t.Fatalf("the whole run's limit: %s, want the planned 4 s", got)
+	}
+	// run reads its start between before and after.
+	if wait := 6*time.Second + afterLimit; w.waited.Before(before.Add(wait)) || w.waited.After(after.Add(wait)) {
+		t.Fatalf("waited until %s, want %s past the start, in [%s, %s]", w.waited, wait, before, after)
 	}
 	if got := read(t, filepath.Join(w.index, "log")); !strings.Contains(got, " lived ") || !strings.Contains(got, " timeout ") || !strings.Contains(got, "; held 2.00 past the planned limit") {
 		t.Fatalf("log %q", got)
+	}
+}
+
+// waitUntil returns at the deadline, not before it. The planted break: a
+// waitUntil that returns at once.
+func TestWaitUntilSleepsToTheDeadline(t *testing.T) {
+	deadline := time.Now().Add(200 * time.Millisecond)
+	waitUntil(deadline)
+	if now := time.Now(); now.Before(deadline) {
+		t.Fatalf("returned at %s, before the deadline %s", now, deadline)
 	}
 }
 

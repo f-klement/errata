@@ -774,12 +774,13 @@ func TestTimeZones(t *testing.T) {
 // limit, and reads one of exactly that length.
 func TestHelpersBoundTheirArgument(t *testing.T) {
 	for name, expr := range map[string]string{
-		"duration":      "duration(v[0]) > duration('0s')",
-		"cron_interval": "cron_interval(v[0]) > duration('0s')",
-		"port_split":    "port_split(v[0]).host == ''",
-		"int":           "int(v[0]) > 0",
-		"uint":          "uint(v[0]) > 0u",
-		"double":        "double(v[0]) > 0.0",
+		"duration":          "duration(v[0]) > duration('0s')",
+		"cron_interval":     "cron_interval(v[0]) > duration('0s')",
+		"calendar_interval": "calendar_interval(v[0]) > duration('0s')",
+		"port_split":        "port_split(v[0]).host == ''",
+		"int":               "int(v[0]) > 0",
+		"uint":              "uint(v[0]) > 0u",
+		"double":            "double(v[0]) > 0.0",
 	} {
 		long := strings.Repeat("1", MaxArgument+1)
 		_, err := eval(t, expr, long)

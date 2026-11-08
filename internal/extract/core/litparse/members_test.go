@@ -87,6 +87,11 @@ func TestClassMembers(t *testing.T) {
 		{"java", "public final class Version {\n  static final int[] PORTS = {80, 443};\n  int plain = 7;\n  public static class Inner {\n    public static final long N = 5L;\n  }\n}\n", "Version.Inner.N", "!5L@5"},
 		{"java", "class A\n{\n  static final String S = \"\"\"\n    x\n    \"\"\";\n}\n", "A.S", "!~\"\"\"\n    x\n    \"\"\"@3"},
 		{"java", "interface Limits {\n  int MAX = 10;\n}\n", "Limits.MAX", "!10@2"},
+		// An annotation type: @ before a word of the language is no annotation.
+		// Only a rapid property reached that stop, by chance, so the coverage of
+		// parser.annotations, and its CRAP score (scripts/crap), changed from
+		// run to run.
+		{"java", "@interface Marker {\n  int X = 1;\n}\n", "Marker.X", "!1@2"},
 		{"java", "class A {\n  static int X = 1;\n  static { X = 2; }\n}\n", "A.X", "~1@2"},
 		{"groovy", "class Build {\n  static final String VERSION = '1.0'\n  def name = 'b'\n}\n", "Build.VERSION", "!1.0@2"},
 		{"groovy", "class Build {\n  static final String VERSION = '1.0'\n  def name = 'b'\n}\n", "Build.name", "b@3"},

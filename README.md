@@ -180,7 +180,7 @@ layer in it catches a different kind of defect:
 | Command | What it runs |
 |---|---|
 | `make test` | unit, property and API tests, with the race detector and shuffled order |
-| `make cover` | the same, failing below 90% statement coverage |
+| `make cover` | the same, failing below 90% statement coverage of `internal/`, or on a function of `internal/` or `scripts/` whose CRAP score is 10 or more and not in `scripts/crap-baseline.txt` (`CODING_STANDARDS.md`) |
 | `make slow` | the tests too slow to run under the race detector or once per mutant, run once; it fails when one of them does not run and pass |
 | `make fuzz` | the fuzz targets for the config parser, the check protocol, the JUnit and SARIF writers, assert, the path grammar and each extractor |
 | `make mutation` | Gremlins: changes one operator at a time and fails if the tests still pass, each package judged alone against its floors in `scripts/mutation.sh`. `MUTATION_SCOPE="internal/config internal/cli"` mutates those packages only, and limits `make fuzz` to their targets |

@@ -2,11 +2,14 @@ package rule
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
 
 	"cel.dev/cel-go/cel"
+	"cel.dev/cel-go/common/types"
+	"cel.dev/cel-go/common/types/ref"
 
 	"github.com/f-klement/errata/internal/check"
 )
@@ -546,6 +549,46 @@ func TestDynThatIsNoMapsValueIsRefusedWithItsWayOut(t *testing.T) {
 	for _, expr := range []string{"dyn([1, 'a'][0]) == 1", "1 in dyn([1, 'a'])"} {
 		if _, err := compileNamed(expr+" && size(v) >= 0", []string{"v"}, nil); err != nil {
 			t.Errorf("%s: %v", expr, err)
+		}
+	}
+}
+
+// lookup takes an index into a list literal and a key from a map literal,
+// and says it cannot tell for no key, a key of the wrong type, or a map with
+// a key that is no literal. Only the rapid properties reached the edges, by
+// chance, so the coverage of lookup, and its CRAP score (scripts/crap),
+// changed from run to run.
+func TestLookupInALiteral(t *testing.T) {
+	env, err := cel.NewEnv(cel.Variable("k", cel.StringType))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		lit  string
+		key  ref.Val
+		want string // the member's text, then found and known
+	}{
+		{"[7, 8]", nil, " false false"},
+		{"[7, 8]", types.String("a"), " false false"},
+		{"[7, 8]", types.Int(-1), " false true"},
+		{"[7, 8]", types.Int(2), " false true"},
+		{"[7, 8]", types.Int(1), "8 true true"},
+		{"{'a': 7}", types.String("a"), "7 true true"},
+		{"{'a': 7}", types.String("b"), " false true"},
+		{"{k: 7, 'a': 8}", types.String("b"), " false false"},
+		{"{k: 7, 'a': 8}", types.String("a"), "8 true true"},
+	} {
+		ast, iss := env.Parse(c.lit)
+		if iss.Err() != nil {
+			t.Fatal(iss.Err())
+		}
+		member, found, known := lookup(ast.NativeRep().Expr(), c.key)
+		text := ""
+		if member != nil {
+			text = fmt.Sprint(member.AsLiteral().Value())
+		}
+		if got := fmt.Sprintf("%s %v %v", text, found, known); got != c.want {
+			t.Errorf("lookup(%s, %v) = %q, want %q", c.lit, c.key, got, c.want)
 		}
 	}
 }

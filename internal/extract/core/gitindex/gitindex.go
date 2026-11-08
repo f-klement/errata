@@ -929,13 +929,17 @@ func checkEntry(name string, local func(string) bool) error {
 	return nil
 }
 
+// shortPrefix leads the short name NTFS gives .errata among the first four
+// names that shorten alike, in any case.
+const shortPrefix = "errata~"
+
 // shortErrata reports whether n is a short name Windows may give .errata,
 // in any case: errata~ and digits, as ERRATA~1, the form NTFS gives the
 // first four names that shorten alike, or the hashed form it gives from
 // the fifth on, er, four hex digits, ~ and digits, as ER1A2B~1.
 func shortErrata(n string) bool {
-	if len(n) > len("errata~") && strings.EqualFold(n[:len("errata~")], "errata~") {
-		return digits(n[len("errata~"):])
+	if len(n) > len(shortPrefix) && strings.EqualFold(n[:len(shortPrefix)], shortPrefix) {
+		return digits(n[len(shortPrefix):])
 	}
 	if len(n) > len("er1a2b~") && strings.EqualFold(n[:2], "er") && n[6] == '~' {
 		for _, c := range strings.ToLower(n[2:6]) {

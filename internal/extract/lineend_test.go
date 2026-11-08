@@ -15,7 +15,7 @@ import (
 // CR not counted by lineend.Count, which moves every kind but those that
 // fold the file first; a lone CR not folded by lineend.Fold, which moves
 // those; and each reader's own count of its lines (ini's dialects,
-// properties, toolversion's and packageversion's line reads), each put back
+// properties, etc, toolversion's and packageversion's line reads), each put back
 // to count LF alone.
 func TestEveryKindNumbersALoneCRsLine(t *testing.T) {
 	files := map[string]string{
@@ -28,6 +28,9 @@ func TestEveryKindNumbersALoneCRsLine(t *testing.T) {
 		"git.config":     "[s]\n\tx = a\rb\n\tv = 1\n",
 		"php.ini":        "[s]\rx = 0\rv = 1\r",
 		"hosts":          "[web]\rh1\rh2 v=1\r",
+		"u.service":      "[s]\rx=0\rv=1\r",
+		"q.container":    "[s]\nx=a\rb\nv=1\n",
+		"api.vars":       "# c\rx\nV=1\n",
 		"s.sh":           "# c\rx\nV=1\n",
 		".env":           "# c\rx\nV=1\n",
 		"Jenkinsfile":    "// c\rpipeline {\n  agent any // c\renvironment { V = '1' }\n  stages { stage('s') { steps { echo 'x' } } }\n}\n",
@@ -40,6 +43,7 @@ func TestEveryKindNumbersALoneCRsLine(t *testing.T) {
 		"h.html":         "<p>a\r\r<pre>v</pre>",
 		"a.adoc":         "= T\r\r----\rv\r----\r",
 		"d.rst":          "a\r\r.. v\r",
+		"sshd_config":    "# c\rPort 1\rv 1\r",
 	}
 	root := extracttest.Repo(t, files)
 	for raw, want := range map[string]string{
@@ -52,6 +56,9 @@ func TestEveryKindNumbersALoneCRsLine(t *testing.T) {
 		`{"ini": {"file": "git.config", "dialect": "git", "section": "s", "key": "v"}}`:  "1@4",
 		`{"ini": {"file": "php.ini", "dialect": "php", "section": "s", "key": "v"}}`:     "1@3",
 		`{"ini": {"file": "hosts", "dialect": "ansible", "section": "web", "key": "v"}}`: "1@3",
+		`{"ini": {"file": "u.service", "section": "s", "key": "v"}}`:                     "1@3",
+		`{"ini": {"file": "q.container", "section": "s", "key": "v"}}`:                   "1@4",
+		`{"systemd": {"file": "api.vars", "variable": "V"}}`:                             "1@3",
 		`{"shell": {"file": "s.sh", "name": "V"}}`:                                       "1@3",
 		`{"envfile": {"file": ".env", "name": "V"}}`:                                     "1@3",
 		`{"jenkins": {"file": "Jenkinsfile", "variable": "V", "stage": "s"}}`:            "1@4",
@@ -64,6 +71,7 @@ func TestEveryKindNumbersALoneCRsLine(t *testing.T) {
 		`{"html": {"file": "h.html", "target": "code"}}`:                                 "v@3",
 		`{"asciidoc": {"file": "a.adoc", "target": "code"}}`:                             "v@4",
 		`{"rst": {"file": "d.rst", "target": "comment"}}`:                                "v@3",
+		`{"etc": {"file": "sshd_config", "key": "v"}}`:                                   "1@3",
 	} {
 		e, err := Build(decode(t, raw))
 		if err != nil {

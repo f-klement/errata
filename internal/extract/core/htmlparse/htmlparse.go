@@ -433,7 +433,7 @@ func (s *Scanner) tag(selfClosing bool) bool {
 	}
 	if s.name == "template" {
 		if !s.closing {
-			s.tmpl = &nest{inert: true, quirks: s.nest.quirks}
+			s.tmpl = &nest{inert: true, quirks: s.nest.quirks, xnet: s.nest.xnet}
 		}
 		return false
 	}
@@ -587,6 +587,22 @@ func (s *Scanner) BreaksLine() bool {
 // block off the stack (adopt). The browser tests compare no such page
 // with the oracle.
 func (s *Scanner) StandardOnly() bool { return s.nest.standardOnly }
+
+// FollowXNetAdoption has the scan follow golang.org/x/net/html v0.62.0,
+// the browser tests' oracle, in the one rule where StandardOnly says it is
+// not the standard: the adoption agency takes a fourth formatting element
+// below a block off the list, and x/net leaves it on the stack, where the
+// standard takes it off. The browser tests compare a page StandardOnly
+// marks with x/net so, and no page goes uncompared. No reader calls it.
+func (s *Scanner) FollowXNetAdoption() { s.nest.xnet = true }
+
+// XNetMovesText reports whether, in x/net's way, text came while an
+// element the adoption agency left on the stack was still open. x/net's
+// tree puts that text inside the element, which stands before the block
+// the agency moved, where the scan reads it in the order of the source,
+// so the line breaks around it differ: such a page's read in x/net's way
+// is not x/net's, and the browser tests do not compare it.
+func (s *Scanner) XNetMovesText() bool { return s.nest.movedText }
 
 // Foreign reports whether the tag is an element's of svg or math, an svg
 // or a math among them, which no reader takes for the HTML element of its

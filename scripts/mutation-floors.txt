@@ -144,6 +144,8 @@ internal/extract/dependency        85        85      5
 internal/extract/env               85        85      5
 # envfile: 100% on a dry run.
 internal/extract/envfile           85        85      5
+# etc: new in v0.4.0 (#104), held to the floor every reader has.
+internal/extract/etc               85        85      5
 internal/extract/filestat          85        85      5
 # githubactions: 87.25%, 52 of 408 not covered, efficacy 95.79%, on 2026-10-25,
 # before case expressions were covered; #209 did not measure it again. The 52

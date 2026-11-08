@@ -451,6 +451,11 @@ func TestPermalinksAreNoPartOfAHeading(t *testing.T) {
 	}
 	got := read(t, sel("section", func(s *markup.Selector) { s.Section = "Install guide" }), `<h2>Install <a href="/guide">guide</a></h2><p>x</p>`)
 	want(t, "a link with text", got, "1:x")
+	// An end tag of a link with none open changes nothing. Only a property
+	// reached it, by chance, so reading.link's CRAP score (scripts/crap)
+	// changed from run to run.
+	got = read(t, sel("section", func(s *markup.Selector) { s.Section = "Install" }), `<h2>Install</a></h2><p>x</p>`)
+	want(t, "a link end with no link open", got, "1:x")
 	got = read(t, sel("section", func(s *markup.Selector) { s.Section = "C#" }), `<h2>C<a href="/cs">#</a></h2><p>x</p>`)
 	want(t, "a mark linking elsewhere", got, "1:x")
 	got = read(t, sel("section", func(s *markup.Selector) { s.Section = "§ 3 Scope" }), `<h2><a href="/s3">§</a> 3 Scope</h2><p>x</p>`)

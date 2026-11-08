@@ -1,0 +1,12 @@
+# The Larder API on the bare metal hosts, which systemd runs.
+[Unit]
+Description=Larder API on %H
+After=network-online.target
+
+[Service]
+Environment=API_PORT=8000 LOG_LEVEL=debug
+ExecStart=/usr/local/bin/larder-api --port ${API_PORT}
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

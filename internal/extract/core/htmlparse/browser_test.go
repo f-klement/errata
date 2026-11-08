@@ -17,9 +17,16 @@ import (
 // blanks folded, both sorted as extracttest.BrowserRead holds them; or the
 // scan's refusal.
 func scanReads(src string) (extracttest.BrowserRead, error) {
+	return scanReadsIn(src, false)
+}
+
+// scanReadsIn is scanReads, with the scan following x/net where it is not
+// the standard when xnet is true (FollowXNetAdoption).
+func scanReadsIn(src string, xnet bool) (extracttest.BrowserRead, error) {
 	var out extracttest.BrowserRead
 	s := NewScanner(core.LineFeeds([]byte(src)), 1<<30) // as the html kind folds it
 	s.Headings()
+	s.nest.xnet = xnet
 	var pre, head strings.Builder
 	inPre, inHead := false, false
 	for s.Next() {
@@ -45,7 +52,7 @@ func scanReads(src string) (extracttest.BrowserRead, error) {
 			head.WriteByte(' ')
 		}
 	}
-	out.StandardOnly, out.Rebuilt = s.StandardOnly(), s.nest.rebuilds > 0
+	out.StandardOnly, out.Rebuilt, out.XNetMoved = s.StandardOnly(), s.nest.rebuilds > 0, s.XNetMovesText()
 	if err := s.Err(); err != nil {
 		return out, err
 	}
@@ -63,21 +70,24 @@ func scanReads(src string) (extracttest.BrowserRead, error) {
 // sameScan fails t unless the scanner places src's text in its pres and
 // headings as the HTML standard's tree builder does, or refuses src for a
 // heading inside a heading where the tree has one, for the adoption agency,
-// which it returns as "formatting", or past a bound. It compares nothing
-// where the oracle is not the standard: "standard" where the scan says it
-// followed the standard where x/net does not, "template" where x/net
-// drops a template.
+// which it returns as "formatting", or past a bound. Where the scan says
+// it followed the standard where x/net does not (StandardOnly), it scans
+// src again in x/net's way and compares that. It compares nothing where
+// x/net drops a template, "template", nor where in x/net's way text came
+// while an element x/net kept was open, "moved".
 func sameScan(t interface {
 	Helper()
 	Fatalf(string, ...any)
 }, src string) string {
 	t.Helper()
 	got, err := scanReads(src)
-	switch {
-	case got.StandardOnly:
-		return "standard" // errata followed the standard where x/net does not
-	case extracttest.XNetDropsTemplate(src):
+	if extracttest.XNetDropsTemplate(src) {
 		return "template" // x/net drops the template and all after it
+	}
+	if got.StandardOnly {
+		if got, err = scanReadsIn(src, true); got.XNetMoved {
+			return "moved" // x/net's tree puts the text before a block (XNetMovesText)
+		}
 	}
 	want := extracttest.BrowserReads(src, LineTag, false)
 	if err != nil {
@@ -160,18 +170,16 @@ func TestTheScanIsTheBrowsers(t *testing.T) {
 			why[sameScan(t, src)]++
 		}
 	})
-	t.Logf("of %d generated documents %d met a rebuild, %d were refused for the adoption agency, %d not compared where errata followed the standard and x/net does not, %d where x/net drops a template",
-		cases, rebuilt, why["formatting"], why["standard"], why["template"])
+	t.Logf("of %d generated documents %d met a rebuild, %d were refused for the adoption agency, %d not compared where x/net drops a template",
+		cases, rebuilt, why["formatting"], why["template"])
 	if rebuilt*100 < cases {
 		t.Errorf("%d of %d generated documents met a rebuild, under one in a hundred", rebuilt, cases)
 	}
 	if why["template"]*10 > cases {
 		t.Errorf("%d of %d generated documents were not compared, as x/net drops a template there, over one in ten", why["template"], cases)
 	}
-	for _, w := range []string{"formatting", "standard"} {
-		if why[w]*50 > cases {
-			t.Errorf("%d of %d generated documents were %s, over one in fifty", why[w], cases, map[string]string{"formatting": "refused for the adoption agency", "standard": "not compared, as errata followed the standard where x/net does not"}[w])
-		}
+	if why["formatting"]*50 > cases {
+		t.Errorf("%d of %d generated documents were refused for the adoption agency, over one in fifty", why["formatting"], cases)
 	}
 }
 

@@ -9,7 +9,7 @@ import (
 )
 
 // fuzzFiles are names that choose each dialect.
-var fuzzFiles = []string{"setup.cfg", ".gitmodules", "x/.git/config", "hosts", "inventory/a", "tox.ini", "php.ini", "etc/php/conf.d/a.ini"}
+var fuzzFiles = []string{"setup.cfg", ".gitmodules", "x/.git/config", "hosts", "inventory/a", "tox.ini", "php.ini", "etc/php/conf.d/a.ini", "a.service", "web.container.d/a.conf"}
 
 // Every dialect reads any file into entries at lines inside it, holding no
 // more bytes than the file, and an ini extractor returns exactly the values
@@ -19,10 +19,10 @@ var fuzzFiles = []string{"setup.cfg", ".gitmodules", "x/.git/config", "hosts", "
 // reader (TestLongSpecHostIsRefusedAgainstARange checks when it comes).
 func FuzzINI(f *testing.F) {
 	// The dialect is the index in iniDialects (0 git, 1 ansible, 2 tox, 3 php,
-	// 4 plain), and any other byte none, which the file's name, the index in
-	// fuzzFiles, chooses.
-	f.Add(uint8(4), uint8(0), setupCfg, "options", "", "", "install_requires")
-	f.Add(uint8(4), uint8(0), "a = 1\n[s]\n  k = a\n\n  b\n# c\n\tc\n[t]\nk: 2\r\n", "s", "", "", "k")
+	// 4 systemd, 5 plain), and any other byte none, which the file's name,
+	// the index in fuzzFiles, chooses.
+	f.Add(uint8(5), uint8(0), setupCfg, "options", "", "", "install_requires")
+	f.Add(uint8(5), uint8(0), "a = 1\n[s]\n  k = a\n\n  b\n# c\n\tc\n[t]\nk: 2\r\n", "s", "", "", "k")
 	f.Add(uint8(0), uint8(0), gitconfig, "remote", "origin", "", "fetch")
 	f.Add(uint8(9), uint8(1), gitmodules, "submodule", "Docs", "", "url")
 	f.Add(uint8(0), uint8(0), "A", "A", "0", "", "A")
@@ -32,6 +32,8 @@ func FuzzINI(f *testing.F) {
 	f.Add(uint8(1), uint8(0), "h1 a='x y' b=\"c\\\"d\" x=\"5 # c\" # e\fh2\u2028[g:children]\nweb # c\n", "ungrouped", "", "h1", "b")
 	f.Add(uint8(9), uint8(5), "[testenv]\ndeps = a # c\n  b\\\n  c\ncommands = x \\#y\n", "testenv", "", "", "DEPS")
 	f.Add(uint8(9), uint8(6), "[PHP]\na = x \"y ; z\" 'w' ; c\nb = E_ALL & ~E_DEPRECATED\nc = ${HOME:-x}\nd[] = on\n", "PHP", "", "", "a")
+	f.Add(uint8(9), uint8(8), "\xef\xbb\xbf[Service]\nExecStart=/a \\\n# c\n  -x\nExecStart=\n\nExecStart=%h\\\n\r\n[Unit]\x00X=1\n\rY", "Service", "", "", "ExecStart")
+	f.Add(uint8(4), uint8(0), "[S]\nK=a\\\n\\\nK=\nK=b\\", "S", "", "", "K")
 	// The nightly's find of 2026-10-23: line 3's host has a port.
 	f.Add(uint8(1), uint8(0), "[g]\nh v=1\ndb1:2222 v=1\n", "g", "", strings.Repeat("d", maxHostMatch+1), "v")
 	f.Fuzz(func(t *testing.T, dialect, file uint8, data, section, sub, host, key string) {

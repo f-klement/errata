@@ -230,8 +230,11 @@ fmt: $(BIN)/golangci-lint
 # One run gives the verdicts and the coverage profile that `cover` reads.
 # rapid runs 100 cases per property by default; CI can raise it with
 # RAPID_CHECKS=1000 make test.
+# -coverpkg instruments internal/, the product code the total of `cover`
+# judges, and scripts/, whose tools `cover` holds to CRAP below 10 as well.
+# cmd/errata has no tests of its own and is left out.
 test:
-	$(GO) test -race -shuffle=on -timeout 2m -count=1 -coverprofile=coverage.out -coverpkg=./internal/... ./...
+	$(GO) test -race -shuffle=on -timeout 2m -count=1 -coverprofile=coverage.out -coverpkg=./internal/...,./scripts/... ./...
 
 # Tests too slow for the race detector or for a rerun per mutant: each calls
 # slowOnly, which skips under -race, -short and the mutation tag (except
@@ -257,14 +260,21 @@ slow:
 		  { echo "make slow: $$name did not pass in $$pkg; it is skipped there, or SLOW_TESTS names a test that does not exist" >&2; exit 1; }; \
 	done
 
-# The total leaves out the packages named like httptest, extracttest and
+# The total is of the product code, internal/: it leaves out scripts/, the
+# tools of the build, and the packages named like httptest, extracttest and
 # coretest: only tests import them, and their failure branches run only
 # when a test fails. Gremlins leaves them out too (.gremlins.yaml).
+# Then scripts/crap scores each function of internal/ and scripts/ for CRAP
+# from the same profile and holds the scores to scripts/crap-baseline.txt:
+# below 10, or no higher than the function's row (CODING_STANDARDS.md). It
+# leaves out the helper packages as the total does, and -require refuses a
+# package of either directory that the run did not instrument.
 cover: test
-	@grep -vE '^[^:]*test/[^/:]*\.go:' coverage.out > coverage.product.out; \
+	@grep -vE '^[^:]*test/[^/:]*\.go:|^[^:]*/errata/scripts/' coverage.out > coverage.product.out; \
 	total=$$($(GO) tool cover -func=coverage.product.out | awk '/^total:/ {sub("%","",$$3); print $$3}'); \
 	echo "coverage $$total% (minimum $(COVERAGE_MIN)%)"; \
-	awk -v t=$$total -v m=$(COVERAGE_MIN) 'BEGIN { exit !(t >= m) }'
+	awk -v t=$$total -v m=$(COVERAGE_MIN) 'BEGIN { exit !(t >= m) }' || exit 1; \
+	$(GO) run ./scripts/crap -require internal -require scripts -baseline scripts/crap-baseline.txt coverage.out
 
 # The packages fuzz and mutation cover: all, none, or package directories such as
 # "internal/config internal/cli". CI's test job sets it from ci/mutation-scope.sh and passes

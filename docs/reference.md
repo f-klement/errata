@@ -55,6 +55,8 @@ new user needs it, with four checks worked through from the files to the fix, an
   - [`shell`](#shell)
   - [`github-actions`](#github-actions)
   - [`jenkins`](#jenkins)
+  - [`etc`](#etc)
+  - [`systemd`](#systemd)
   - [`env`](#env)
   - [`exists` and `size`](#exists-and-size)
 - [Limits](#limits)
@@ -631,6 +633,7 @@ or a timestamp does not load (see [Mappings whole](#mappings-whole)).
 | `int(s)`, `double(s)`, `uint(s)` | the number in `s`, by CEL's own conversions; an error names `s` |
 | `duration(s)` | a duration from a Go duration (`90s`, `1h30m`, `1.5h`) or a Prometheus one (`2d`, `1w`, `1d12h`; a day is 24 hours, a year 365 days) |
 | `cron_interval(s)` | the time between the runs of a five field cron schedule, as a duration |
+| `calendar_interval(s)` | the time between the runs of a systemd calendar event, such as a timer's `OnCalendar=`, as a duration |
 | `port_split(s)` | a Compose port such as `"127.0.0.1:8080:80/udp"` as a map with `ip`, `host`, `container` and `protocol`; the protocol is `tcp` when the string names none |
 | `same_set(a, b)` | true when two lists hold the same members, in any order and with any repeats |
 | `subset(a, b)` | true when every member of `a` is in `b` |
@@ -708,6 +711,24 @@ hour. Day of month and month must be
 `*`, because months differ in length. `@hourly`, `@daily`, `@midnight` and `@weekly` are read as
 cron writes them. A schedule whose runs are not evenly spaced, such as `30 5 * * 1-5`, has no
 interval, and the rule is unknown.
+
+`calendar_interval` reads a calendar event as systemd 257 does (systemd.time(7)): weekdays such
+as `Mon..Fri` or `Sat,Sun`, a date, a time of hours, minutes and seconds, each written as a
+value, `*`, a range `a..b`, a repeat `a/n` or `a..b/n`, or a list of these, and a time zone at the
+end, `UTC` or an IANA name such as `Europe/Berlin`. Seconds take a fraction, as in `*:*:0/0.5`.
+`minutely`, `hourly`, `daily` and `weekly` are read as systemd writes them. The year, the month
+and the day of the month must be `*`, since months differ in length, so `monthly`, `quarterly`,
+`yearly` and `*-*-01` have no interval. The runs are evenly spaced when the finest field that
+holds more than one value spaces its values evenly and every coarser field is `*`:
+`*:0/15` runs every 15 minutes, `00/6:15` every 6 hours, `Mon 03:00` every week. `Mon..Fri
+09:00`, which skips the weekend, has no interval, and neither has `*:0/25`, whose last run of an
+hour is 10 minutes before the next hour's first. A field whose components take more than 60000
+steps in all, such as a second split finer than a thousandth, is not read; a value two
+components both take counts twice. A call costs a unit for each byte of the event and each step,
+toward the cost limit. The interval is that of a clock without daylight
+saving changes, so the zone does not change it. An event systemd refuses, and `@` with a time in
+seconds, which is one moment, make the rule unknown. The names of the machine's own zone, which
+systemd also reads, are read only where the IANA database holds them, as it holds `CET`.
 
 When the expression is false, the message shows it with every value each extractor found, by the
 index the expression reads it at:
@@ -808,7 +829,7 @@ An extractor reads one file of the repository and returns a list of values, each
 the line where it starts, or the file alone for `exists` and `size`; `yaml`, `json`, `jsonc`,
 `json5`, `toml` and `regex` read every file `files:` names instead of one (see [A set of files](#a-set-of-files)),
 `tool_version` reads every file that pins one tool, `package_version` each manifest of the package,
-`dependency` one package in every manifest and lockfile a rule lists, `env` one variable in every file a rule lists, and `marker` the markers that name its rule in every
+`dependency` one package in every manifest and lockfile a rule lists, `env` one variable in every file a rule lists, `etc` a configuration file and the files it includes, or the drop-ins `files:` names, and `marker` the markers that name its rule in every
 file git tracks (see [`marker`](#marker)); `exists` and `size` look at one file and read
 none of it. A rule names its extractors under `extract:` and sets exactly one key in each, the
 extractor's kind:
@@ -900,6 +921,7 @@ extract:
 | [`shell`](#shell) | `file`, `name`, and `language` to name the dialect | every value the script assigns the variable, and every default an expansion gives it (see [`shell`](#shell)) |
 | [`github-actions`](#github-actions) | `file`, `job`, `step` for a step by its id or name, and `variable` or `key` | the value the step, or the job, sees of an environment variable or a key such as `runs-on` or `with.node-version`, one for each job of a matrix (see [`github-actions`](#github-actions)) |
 | [`jenkins`](#jenkins) | `file`, `variable`, and `stage` | the value a stage of a declarative Jenkinsfile sees of an environment variable (see [`jenkins`](#jenkins)) |
+| [`systemd`](#systemd) | `file`, `section` and `key`, and `variable` for one variable of `Environment=`; `variable` alone for an environment file | every value of the key in a systemd unit or a Podman Quadlet file with its drop-ins applied, or every value the unit's `Environment=` or an environment file gives the variable (see [`systemd`](#systemd)) |
 | [`env`](#env) | `name`, `files`, and `readers` to give a file its reader | every value of one variable in the files, each read by the reader its name chooses, and each naming its reader and its job, step or stage (see [`env`](#env)) |
 | [`exists`](#exists-and-size) | `file` | `true` when a regular file is there, and `false` when none is, not an unknown (see [`exists` and `size`](#exists-and-size)) |
 | [`size`](#exists-and-size) | `file` | the size of the regular file in bytes, in decimal (see [`exists` and `size`](#exists-and-size)) |
@@ -1222,7 +1244,8 @@ set before it, a name alone that compose takes from the environment, and in a te
 plain `3.10` ([`gitlab-ci`](#gitlab-ci)), `shell` for a value the shell expands, such as
 `$(git describe)` ([`shell`](#shell)), `github-actions` for a `${{ }}` expression
 other than a matrix variable, or a plain `3.10` ([`github-actions`](#github-actions)), `jenkins` for
-a value Groovy computes, such as `credentials('id')` ([`jenkins`](#jenkins)), `literal` for a
+a value Groovy computes, such as `credentials('id')` ([`jenkins`](#jenkins)), `etc` for a value
+OpenSSH expands, such as `%h/.ssh/keys`, and in a template file ([`etc`](#etc)), `literal` for a
 value a program computes, such as `os.environ["PORT"]` or `"v" + VERSION` ([`literal`](#literal)), `code` for
 the same and for a Go value only the running program knows, such as `os.Getenv("PORT")` ([`code`](#code)), and `env` for
 any of these that the reader of its file marks; a `${{ }}` read with `yaml:` is still plain text,
@@ -2563,10 +2586,14 @@ or the math's, and the tags in it are tags, so a `<b>` in an svg's `<style>` end
 text after it shows. HTML resumes in an svg's `<foreignObject>`, `<title>` and `<desc>`, in a math
 `<mi>`, `<mo>`, `<mn>`, `<ms>` and `<mtext>`, and in an `<annotation-xml>` whose encoding is HTML,
 where a `<style>` or a `<textarea>` is HTML's again and its text raw. errata's tests hold it to
-golang.org/x/net/html's tree builder, which follows the standard but in two places, where errata
+golang.org/x/net/html's tree builder, which follows the standard but in four places, where errata
 follows the standard: x/net drops a `<template>` opened below an integration point and everything
-after it, and it leaves open each formatting element past the third that the adoption agency
-takes off its list below a block.
+after it, it leaves open each formatting element past the third that the adoption agency takes off
+its list below a block, it matches an end tag in svg or math to its element by Unicode case folding,
+so `</test>` closes `<teſt>`, and its caption mode leaves `<th>` out of the tags that end a
+`<caption>`. The tests leave pages with a caption out of the comparison. errata compares tag names
+byte for byte, with ASCII letters in either case: the standard's match for names in UTF-8, and a
+windows-1252 browser's for bytes that are not UTF-8.
 
 errata reads only what a browser draws. In svg and math it leaves out the text of an element a
 browser draws nothing of, and of everything inside it: SVG 2's never rendered elements
@@ -2862,6 +2889,7 @@ file's name chooses:
 | `ansible` | `hosts`, `hosts.ini`, `inventory`, `inventory.ini`, any file under a directory named `inventory` or `inventories` | ansible-core's ini inventory plugin (2.21) |
 | `tox` | `tox.ini` | tox 4 |
 | `php` | `php.ini` and a name that starts with `php.ini`, such as `php.ini-production`, `php.ini-development` and `php.ini.dist`; and a name ending in `.ini` under a directory named `php` | PHP 8.4, in the mode PHP reads php.ini in |
+| `systemd` | a unit of a type systemd reads (`.service`, `.socket`, `.timer`, `.mount` and the rest), a Podman Quadlet file (`.container`, `.volume`, `.network`, `.kube`, `.image`, `.pod`, `.build`), and a `.conf` file in a drop-in directory such as `api.service.d` or `service.d` | systemd 257's unit file parser, and for a Quadlet file and its drop-ins Podman 5.4.0's ([`systemd`](#systemd)); before this release these files were read in `plain`, which `dialect: plain` still reads them in |
 | `plain` | every other file: `setup.cfg`, `pytest.ini`, `mypy.ini`, `.flake8` | Python's configparser |
 
 A template file, named with one of the template suffixes listed below, is read as the file it
@@ -2881,9 +2909,11 @@ extract:
     ini: {file: inventory/hosts, section: web, host: web1, key: ansible_host}
 ```
 
-A `dialect` that is not one of these five does not load. Neither does `subsection` outside git,
+A `dialect` that is not one of these six does not load. Neither does `subsection` outside git,
 `host` outside ansible, or a spec without `key`, except in ansible, where the table below says
-when `key` is left out. git and ansible also need `section`. In plain and php, leaving
+when `key` is left out. git, ansible and systemd also need `section`. The systemd dialect
+reads the one file named; the [`systemd`](#systemd) kind reads a unit with its drop-ins, as
+systemd does, and splits `Environment=` into variables. In plain and php, leaving
 `section` out selects the keys before the first header; tox refuses such keys.
 
 `section` and `key` are matched as text, never read as a path: an INI file is two levels deep,
@@ -3492,7 +3522,7 @@ that starts no substitution, and `${A:?}` where the file sets `A` empty. A `name
 of an env file can set, such as `API PORT`, does not load.
 
 systemd's `EnvironmentFile=` reads another dialect (systemd.exec(5), and systemd 257 run with
-`systemd-run -p EnvironmentFile=`). `envfile` reads only compose's; a plain `KEY=value` line
+`systemd-run -p EnvironmentFile=`), which the [`systemd`](#systemd) kind reads. `envfile` reads only compose's; a plain `KEY=value` line
 of letters, digits and `_` reads the same in both. Where the two differ:
 
 - systemd substitutes nothing: `${OTHER}` is the value's text.
@@ -3972,6 +4002,343 @@ against each. The slowest shape measured since, `[` again and again and never cl
 on the same node and 33 MiB above the process's base, refused at the end of the file. Blocks nested 999 deep again and again took 7.3 s, a statement
 of 16 million names 5.5 s, and 3.4 million `env.X = 1` lines 3.1 s, refused at the value limit.
 
+### `etc`
+
+`etc` reads a Unix configuration file of the keyword and value family as the tool that reads it
+does, and returns every value of one keyword, `key`, in the order the tool reads them, each at the
+file and the line of its keyword. `dialect` names the tool; left out, the file's name chooses, once
+a template suffix is taken off:
+
+| Dialect | Chosen for | Reads as |
+|---|---|---|
+| `sshd` | `sshd_config`, any file in `sshd_config.d` | OpenSSH's sshd |
+| `ssh` | `ssh_config`, any file in `ssh_config.d`, `config` in `.ssh` | OpenSSH's ssh |
+| `sysctl` | `sysctl.conf`, any file in `sysctl.d` | procps's `sysctl --system` |
+| `resolv` | `resolv.conf` | glibc's resolver |
+| `limits` | `limits.conf`, any file in `limits.d` | pam_limits |
+| `logrotate` | `logrotate.conf`, any file in `logrotate.d` | logrotate |
+| `nsswitch` | `nsswitch.conf` | glibc |
+| `modprobe` | `modprobe.conf`, any file in `modprobe.d` | kmod |
+| `chrony` | `chrony.conf`, a file in `conf.d` or `sources.d` under `chrony` | chronyd |
+| `ntp` | `ntp.conf` | ntpd |
+
+A file whose name chooses no dialect is refused at load; write `dialect:`. The field tables
+(`fstab`, `passwd`, `hosts` and the like), `sudoers` and udev rules are not read yet.
+
+```yaml
+extract:
+  port:     {etc: {file: roles/ssh/files/sshd_config, key: Port}}
+  forward:  {etc: {files: [etc/sysctl.conf, etc/sysctl.d/*.conf], key: net.ipv4.ip_forward}}
+  git_pw:   {etc: {file: roles/ssh/files/sshd_config, key: PasswordAuthentication, match: {user: git, address: 10.0.0.5}}}
+  rotate:   {etc: {file: etc/logrotate.d/nginx, key: rotate, block: /var/log/nginx/*.log}}
+  nofile:   {etc: {file: etc/security/limits.conf, key: hard nofile}}
+```
+
+Each dialect reads a line as its tool does:
+
+- `sshd` and `ssh`: the keyword runs to white space or `=`, an `=` may stand between keyword and
+  arguments, and a `#` that starts a word outside double or single quotes ends the line; a `\`
+  escapes a quote, a `\` and, outside quotes, a space after it, and is kept before anything else. Keywords match in
+  any case. `Match`, and for `ssh` `Host`, opens a block that runs to the next one or to the end of
+  its file. The value is the arguments as written, quotes kept.
+- `sysctl`: a line that starts with `#` or `;` is a comment, the key runs to the `=`, a `-` before
+  it is dropped, and white space around key and value is taken off. A key written with `/`, such
+  as `net/ipv4/ip_forward`, is the key with `.`, in the file and in `key` alike. A key with a glob,
+  such as `net.ipv4.conf.*.rp_filter`, is matched as written, never against the keys it covers.
+- `resolv`: a line that starts with `;` or `#` is a comment, and a keyword counts only at the start
+  of a line with white space after it. `key` is one of `nameserver`, `domain`, `search`,
+  `options` and `sortlist`. A nameserver is its first word, cut at `;` or `#` too; a domain is its
+  first word; the others are the rest of the line.
+- `limits`: a `#` ends the line, and a line of four words or more is a domain, a type, an item and
+  a value, the rest of the line. The type, the item and the value are read in lower case, as
+  pam_limits lowers them, and so is `key`. `key` is an item, such as `nofile`, or a type and an
+  item, such as `hard nofile`, which takes a line of type `-` too, since it sets both. Each value's
+  condition is its domain and type.
+- `logrotate`: a line that ends with `{` opens a block for the paths before it, `}` closes it, and
+  the lines of a script, from `prerotate`, `postrotate`, `firstaction`, `lastaction` or
+  `preremove` to `endscript`, are passed over. A directive with no argument, such as `compress`,
+  has the empty value. A block whose `{` is not on the line of its paths is not read.
+- `nsswitch`: a `#` ends the line, and a database's name runs to the `:`.
+- `modprobe`: a `\` at the end of a line joins the next to it, with the value at the line where
+  the directive starts. `key` is one of `alias`, `blacklist`, `mask`, `options`, `install`,
+  `remove`, `softdep` and `weakdep`; the value of `blacklist` and `mask` is the module. `options`, `install`, `remove`, `softdep` and `weakdep` put their value
+  under a block, the module they name, with each `-` read as `_` as kmod reads it.
+- `chrony`: a line that starts with `#`, `%`, `!` or `;` is a comment, a run of white space in a
+  value is one space, and keywords match in any case.
+- `ntp`: a `#` ends the line.
+
+Lines end at `\n`, `\r\n` and a lone `\r` in every dialect, as the [XML values](#xml-values) says every
+kind numbers them, though the C tools end a line at `\n` alone.
+
+#### Drop-in directories
+
+`sysctl`, `limits` and `modprobe` take `files:` for a directory of drop-ins, a list or a glob
+matched against the files git tracks, as [A set of files](#a-set-of-files) says, and read the files
+in the tool's order. Of a directory whose name ends in `.d`, only the `.conf` files whose name does
+not start with a `.` are read, as the tools read them. The drop-ins are read by base name, and of two files of one name only the one
+in the directory the tool ranks first: the directory above the drop-in directory (above `security`
+for pam_limits) ending in `etc`, then `run`, `usr/local/lib`, `usr/lib`, `lib` and `usr/etc`, so
+`etc/sysctl.d/50-x.conf` masks `usr/lib/sysctl.d/50-x.conf` whatever the order `files:` lists
+them. Of two files of one name in directories the tools do not rank, such as `a/sysctl.d` and
+`b/sysctl.d`, the first listed masks the other. sysctl reads `sysctl.conf` after the drop-ins, and
+pam_limits `limits.conf` before them. A later value overrides an earlier one for sysctl and pam_limits, so the last value is
+the one the host applies; errata returns every one, so an `agree` rule sees the files disagree,
+and an `assert` can name the last. The other dialects read one `file:`, and refuse `files:`.
+
+#### Includes
+
+A file's includes are read in place, before the lines after them: `Include` in `sshd` and `ssh`,
+each word a file or a glob; `include` in `logrotate`, a file or every file of a directory but the
+editor and package manager leftovers logrotate passes over, such as `.dpkg-old` and `~`;
+`include` in `chrony`, a glob, and `confdir` and `sourcedir`, the `.conf` and `.sources` files of
+their directories by name across them, the first directory listed masking the others; and
+`includefile` in `ntp`. A glob is matched against the files git tracks as glob(3) matches it and
+read in name order, as glob(3) sorts: a `*` or a `?` matches no `.` at the start of a name, and
+`**` is `*`. logrotate reads an included directory with readdir, not a glob, so its files whose
+name starts with a `.` are read too, and none of them is a leftover logrotate passes over. A file
+named outright that is not there is passed over, as the tools pass over it,
+but for chrony, which refuses to start on it. chronyd reads a `sourcedir`'s files after the whole
+configuration, where errata reads them in place, so the order of `server` and `pool` values can
+differ from chronyd's; no value is left out. Values an included file sets in an `sshd` or
+`ssh` block are under that block too, and a block an included file opens ends with that file.
+
+The file `file:` names stands for the tool's main file, and its directory for the tool's home:
+`/etc/ssh` for `sshd` and for `ssh`, but `~/.ssh` for a user's `ssh` config (a file named `config`
+in a directory named `.ssh`), and `/etc` for `logrotate` and `ntp`. A relative path, and one under
+the home, is read below that directory, so Debian's `Include /etc/ssh/sshd_config.d/*.conf` in
+`roles/ssh/files/sshd_config` reads `roles/ssh/files/sshd_config.d/*.conf`, and
+`Include ~/.ssh/config.d/*` in `home/.ssh/config` reads `home/.ssh/config.d/*`. chrony keeps its
+file in two places: a `chrony.conf` in a directory named `chrony` stands for Debian's
+`/etc/chrony/chrony.conf`, and the directory above it for `/etc`; any other `chrony.conf` stands
+for Fedora's `/etc/chrony.conf`, and the `chrony` directory beside it for `/etc/chrony`. A role
+may keep Debian's chrony.conf in `files/` with its `conf.d` beside it, so when a path under
+`/etc/chrony` (or, for a file in `chrony`, under `/etc`) matches nothing where errata reads it but
+matches files below the directory of chrony.conf itself, the rule is unknown and the message names
+both. A directory named `etc` is the host's `/etc`, so this check is left out when chrony.conf's
+directory is named `etc`, or, for a file in `chrony`, the directory above it. Drop-ins kept in
+another directory of a role are not looked for: a `templates/chrony.conf.j2` reads its `conf.d`
+below `templates/`, never in the role's `files/`. An include of any other path, one from `~` but a
+user's `~/.ssh`, one that climbs out of the repository and one a template computes makes the rule
+unknown, since what it sets is not in the repository: `Include /usr/local/etc/ssh/extra.conf`, or `sourcedir
+/run/chrony-dhcp` in Debian's chrony.conf. A `sourcedir` holds only sources, so it does so only
+for `key: server`, `pool` or `peer`. Includes nest at most 16 deep, OpenSSH's limit, so a file
+that includes itself is refused.
+
+#### Blocks and conditions
+
+A value under a block carries the block as its condition, which a report names after its place:
+an `sshd` or `ssh` `Match` or `Host` line, with its words joined by one space and the keyword
+written `Match` or `Host`, and for an included block the outer and inner lines joined by `; `;
+a logrotate block's paths; a limits domain and type; a modprobe module. `block:` keeps only the
+values of one block, compared in that form: `block: Match User git`, `block: /var/log/nginx/*.log`,
+`block: '@admin'` or `block: snd-hda-intel`. The words after `Match` and `Host` are compared as
+written, so `Match user git` is another block than `Match User git`. `block: ""` keeps the values
+outside any block.
+
+#### Match: the values OpenSSH applies
+
+Without `match:`, `sshd` and `ssh` return every value of the keyword, each with its block, and the
+file decides between them for each connection. `match:` names one connection, as Match criteria
+and their values, and keeps the values OpenSSH applies to it: for a keyword that takes one value
+the first it obtains, and for one that takes several every one. ssh reads its file in order, and a
+value outside any block always applies. sshd applies the values of the Match blocks the connection
+matches over those outside any block, so it takes those first, and the others only when no Match
+block it matches sets the keyword.
+
+| Dialect | Criteria `match:` gives | Keywords of several values |
+|---|---|---|
+| `sshd` | `user`, `group` (the user's groups, split at commas), `host`, `address`, `localaddress`, `localport`, `rdomain` | `Port`, `ListenAddress`, `HostKey`, `HostCertificate`, `AcceptEnv`, `Subsystem`, `AllowUsers`, `DenyUsers`, `AllowGroups`, `DenyGroups` |
+| `ssh` | `host`, `originalhost`, `user`, `localuser`, `tagged` | `IdentityFile`, `CertificateFile`, `LocalForward`, `RemoteForward`, `DynamicForward`, `SendEnv` |
+
+Patterns match as OpenSSH matches them: `*` and `?`, lists split at commas with `!` to negate an
+entry, a host in any case, and for an address a network such as `10.0.0.0/8` too. A `Host` line
+holds when the host matches one of its patterns and no negated one; `ssh` also takes `!` before a
+Match criterion. A criterion may be written `User=git` as well as `User git`. `match: {host: ...}`
+is the name the `Host` lines and `Match host` see; errata does not apply canonicalization. ssh
+matches `Match user`, `Match host` and `Match tagged` against the `User`, `Hostname` and `Tag` a
+line before the Match line sets, rather than the connection's own: when such a line may apply to
+the connection, that criterion is one errata cannot decide.
+
+What a block holds may depend on the connecting client or the host in ways the file does not
+show. When a block errata cannot decide sets the keyword before the value errata would return, or
+anywhere for a keyword of several values, the rule is unknown, and the message names the block and
+why: a criterion `match:` does not give; `Match exec`, which runs a command errata never runs;
+`Match canonical` and `Match final`, which hold on a pass of ssh's reading errata does not model;
+sshd's `Match invalid-user`, which holds for a user the host does not know; `localnetwork`,
+`version`, `sessiontype`, `command` and any other criterion errata does not read; a `user`, `host`
+or `tagged` a line before shadows, as above; and an address list with a network sshd refuses.
+sshd keeps the first `Subsystem` of each name and lets a Match block's replace the global one of
+its name; errata returns every `Subsystem` line that applies, so an `assert` names the one it
+means. A value is the file's, not the host's, wherever
+it depends on what the host adds: the user's groups, the networks it is on, the drop-ins a
+package installs outside the repository.
+
+#### Values etc marks
+
+`sshd` and `ssh` expand some values before they use them: a `%` token other than `%%`, such as
+`%h` or `%u`, a `${VAR}` variable, and a `~` for the home directory at the start. errata marks
+such a value not literal, as [Values a file only computes](#values-a-file-only-computes) says. A
+template file is read as the file it renders, as [`ini`](#ini) says, so `sshd_config.j2` is read in
+the `sshd` dialect, and a value with the engine's marks, or inside one of its blocks, is not
+literal. Every other value is the text the tool reads, which errata does not check: a `Port` of
+`x` is returned as written.
+
+### `systemd`
+
+`systemd` returns the values of a key in a section of a systemd unit, read as systemd 257
+reads it, with the drop-ins the repository holds for the unit applied in systemd's order. With
+`variable`, `key` is `Environment`, and the values are those the unit's assignments give the
+variable. A Podman Quadlet file (`.container`, `.volume`, `.network`, `.kube`, `.image`,
+`.pod`, `.build`) is read with Podman 5.4.0's grammar, which differs in the ways
+[Quadlet files](#quadlet-files) lists below.
+
+```yaml
+extract:
+  port:    {systemd: {file: deploy/api.service, section: Service, key: Environment, variable: PORT}}
+  command: {systemd: {file: deploy/api.service, section: Service, key: ExecStart}}
+  image:   {systemd: {file: deploy/web.container, section: Container, key: Image}}
+  every:   {systemd: {file: deploy/backup.timer, section: Timer, key: OnCalendar}}
+  vars:    {systemd: {file: deploy/api.vars, variable: PORT}}
+```
+
+The file's name says what it is: a unit of a type systemd reads (`.service`, `.socket`,
+`.device`, `.mount`, `.automount`, `.swap`, `.target`, `.path`, `.timer`, `.slice`, `.scope`),
+a Quadlet file, or a drop-in, a `.conf` file in a directory such as `api.service.d` or
+`service.d`. A `.network` file is Quadlet's, but one directly in a directory named `network`, as
+in `/etc/systemd/network`, and not below `containers/systemd`, is systemd-networkd's, read with
+systemd's grammar: networkd reads no subdirectory, and Quadlet reads every directory below its
+own. A unit and a Quadlet file need `section` and `key`. Any other file is an
+environment file, as `EnvironmentFile=` names one, and takes `variable` alone. A template file
+is read as the file it renders, as [`ini`](#ini) says.
+
+The unit file is read as systemd's own parser reads it:
+
+- A line ends at `\n`, `\r` or NUL, and so does a run of them in which none repeats, so `\r\n`
+  and `\n\r` each end one line. errata numbers lines as it numbers every file's, so a value
+  after `\n\r` is one line further down than systemd counts it.
+- A line whose first character other than a space or a tab is `#` or `;` is a comment, also
+  between the lines of a value a `\` continues. A `#` later in a line is part of the value.
+- A `\` at the end of a line continues the value on the next, and stands as a space. An empty
+  line ends it. The value is at the line its key is on.
+- `key=value` splits at the first `=`, and spaces and tabs around both go. A line with no `=`,
+  one with nothing before it, and a key before the first section header are ignored, as systemd
+  ignores them with a warning.
+- A key set more than once gives every value, in order. A key set to nothing drops the values it
+  had before in its section, in the unit or a drop-in before, as systemd empties a list such as
+  `ExecStart=` or `Environment=`. For a key that holds one value, systemd uses the last.
+- Section and key names are compared as written, so case matters. errata returns the keys of
+  any section, where systemd ignores a section the unit's type does not read.
+- A section header that does not end in `]`, or whose name holds a quote, a `\` or a control
+  character, a line that is not UTF-8, and a line of 1 MiB or more, joined lines too, make the
+  rule unknown, as systemd refuses to load the unit. systemd's UTF-8 is stricter than most: it
+  refuses the noncharacters U+FDD0 to U+FDEF and U+FFFE and U+FFFF of every plane, and errata
+  refuses them with it, in a unit, in an environment file and in a `\U` escape.
+
+The drop-ins are the `.conf` files of the unit's drop-in directories beside it, found in git's
+index as a glob's files are ([A set of files](#a-set-of-files)), so the repository root must be
+in a git repository. For `foo-bar@x.service` the directories are, in order, `foo-bar@x.service.d`,
+`foo-bar@.service.d`, `foo-.service.d`, `foo-@x.service.d`, `foo-@.service.d` and
+`service.d`: the unit's own, its template's, those of each prefix of the name up to a dash, from
+the longest, each with the template's after it, and the type's. Their files
+are applied in the order of their names, byte by byte, and a name in two directories is read
+from the first. A name that starts with `.` and a file that does not end in `.conf` are not read.
+A drop-in named as `file` is read alone. `max_bytes` is what the unit and its drop-ins hold in
+all. errata finds drop-ins only beside the unit: systemd also reads `/etc`, `/run` and
+`/usr/lib`, which a repository does not hold. A unit name of 256 bytes or more makes the rule
+unknown, as systemd refuses it. A drop-in masked as systemd masks one, a symlink to
+`/dev/null`, is a link that leads out of the repository, and makes the rule unknown as any such
+link does; an empty drop-in reads as one that sets nothing.
+
+A value systemd changes before it uses it is returned as written and marked not literal (see
+[Values a file only computes](#values-a-file-only-computes)): a value with a specifier, such as
+`%i`, `%h` or `%%`, and a value of a key that starts with `Exec` that holds a `$`, since systemd
+expands `$PORT` and `${PORT}` from the environment.
+
+`variable` splits each `Environment=` of the section into assignments as systemd does: words
+are separated by spaces, a `"` or `'` quotes up to the next of the same, and `\` reads one C
+escape such as `\n`, `\x41` or `\u00e9`. A word that is not `NAME=value` with a name of letters,
+digits and `_` is ignored. A word systemd cannot read, such as one with an open quote or `\q`,
+ends the line: the words before it count, those after it do not. A word with a specifier is not
+literal. In a unit systemd runs, each `EnvironmentFile=` of the section that no reset dropped
+makes every value of the variable not literal: systemd reads that file after `Environment=`, and
+errata does not read a file outside the repository, even one a `-` marks as optional, since it
+overrides the unit when it is there. A Quadlet `[Container]` is the other way round, as
+[Quadlet files](#quadlet-files) says. `UnsetEnvironment=` of the section, which systemd applies
+once every other environment is merged and the last assignment of a name has won, drops every
+value of the variable when a word is its name, or its name, `=` and the value it ends with. When
+an `EnvironmentFile=` is left, which may set another value, that second word makes the values
+not literal instead. A reset of `UnsetEnvironment=` drops the words before it. A `%` in a word's
+name, or in the value of a word that names the variable, may expand to a word that unsets it, so
+it makes the values not literal; a specifier in the value of a word that names another variable
+leaves them literal.
+
+| Unit says | `variable: PORT` gives |
+|---|---|
+| `Environment=PORT=8080 HOST=a` | `8080` |
+| `Environment="PORT=80 81"` | `80 81` |
+| `Environment=PORT=8080`, then `Environment=` in a drop-in, then `Environment=PORT=9090` | `9090` |
+| `Environment=PORT=%i` | `%i`, not literal |
+| `Environment=PORT=8080` and `EnvironmentFile=-/etc/api.env` | `8080`, not literal |
+| `Environment=PORT=8080` and `UnsetEnvironment=PORT` | no value |
+| `Environment=PORT=1 PORT=2` and `UnsetEnvironment=PORT=2` | no value |
+| `Environment=PORT=1 PORT=2` and `UnsetEnvironment=PORT=1` | `1` and `2`: PORT ends as 2 |
+| `Environment=PORT=1`, `EnvironmentFile=/etc/a.env` and `UnsetEnvironment=PORT=1` | `1`, not literal |
+| `Environment=PORT=1` and `UnsetEnvironment=OTHER=%i` | `1` |
+
+An environment file is read as `EnvironmentFile=` reads one: `#` or `;` starts a comment line,
+the value is unquoted, `'...'` or `"..."`, systemd substitutes nothing, and a name with `.` or `-`,
+or `export A=1`, is ignored. [`envfile`](#envfile) lists where this differs from compose. A key or
+a value that is not UTF-8 makes the rule unknown, as systemd refuses the file.
+
+`Image=` of a Quadlet file gives the image Quadlet uses, one value: the last `Image=`, as
+Podman's `Lookup` takes it, with the white space at its end and `"` at either end trimmed. One
+that names a `.image` file beside the unit, such as `Image=web.image`, gives that file's
+`ImageTag=` when it sets one that is not empty, and its `Image=` otherwise, each the last and
+trimmed the same way; one that names a `.build` file gives that file's first `ImageTag=`, as
+written. Each file is read with its drop-ins, once. A file that is not there, a `.image` with no
+`Image=`, a `.build` with no `ImageTag=`, and a name with a `/`, which Quadlet does not find,
+make the rule unknown. Any other `Image=` is the reference, which a rule compares with the image
+a chart or a compose file names. A timer's `OnCalendar=` is returned as
+written; `calendar_interval` in an [`assert`](#assert) gives its interval.
+
+#### Quadlet files
+
+Podman 5.4.0 reads a Quadlet file and its drop-ins with its own parser (`UnitFile.Parse` in
+pkg/systemd/parser/unitfile.go), and errata reads them as it does:
+
+- A line ends at `\n` alone. A `\r` or a NUL is a byte of the line, and white space at both ends
+  of a line goes, `\r` with it, as Go's `strings.TrimSpace` takes it.
+- An empty line is a comment, so inside a value a `\` continues it does not end the value: the
+  line after it is joined.
+- A `\` at the end of a line continues the value with no space for it, even after another `\`.
+  On the last line it only goes.
+- A group (`[Container]`) may hold a quote or a `\`; an empty name, or one with `[` or a control
+  character, makes the rule unknown, and so does text other than spaces and tabs after the `]`.
+- A line that is no comment, group or `key=value`, and a key before the first group, make the
+  rule unknown, as Quadlet refuses to generate a unit from the file.
+- No line is too long, and no byte is refused for its UTF-8.
+
+`Environment=` of `[Container]` and of a `.build`'s `[Build]` is split as Podman's
+`LookupAllKeyVal` splits it, which differs from systemd: a quote never closed and a `\` at the
+end are read; an escape writes a character, so `\xff` is `ÿ`; an empty word, such as `""`, ends
+the value and the words after it are dropped; a name is not checked; and an escape Podman does not
+read, such as `\q`, drops the whole line. A word with `%` or `$` is not literal, since the value
+reaches the command line systemd expands. `[Service]` of a Quadlet file goes to the unit Quadlet
+writes, so its `Environment=` is split as systemd splits it. Quadlet passes `[Container]`'s
+`EnvironmentFile=` to `podman run` as `--env-file` and its `Environment=` as `--env`, and Podman
+sets the file's variables first and `--env` over them, so a value `Environment=` sets stays
+literal beside an `EnvironmentFile=`. `[Container]` has no `UnsetEnvironment=`, which Quadlet
+refuses, so errata does not read one there. errata applies the drop-ins of a
+Quadlet file in systemd's order, which differs from Quadlet's in two ways: Quadlet lists the
+directory `foo-@.container.d` before `foo-.container.d` and has no `foo-@x.container.d`, and it
+reads a drop-in whose name starts with `.`.
+
+`systemd` is an env reader: [`env`](#env) reads `Environment=` of a `.service`, `.socket`,
+`.mount`, `.swap` or Quadlet `.container` with it, and an environment file `readers:` gives it.
+errata does not read: a unit in `/etc` or `/usr/lib` that the unit file overrides or is
+overridden by, an alias's drop-ins, `PassEnvironment=` and the manager's own environment, which
+values systemd's specifiers expand to, and which keys a section of a unit type takes.
+
 ### `env`
 
 `env` reads one variable in every file a rule lists, so one rule says that every place that sets
@@ -4013,16 +4380,18 @@ A file's name chooses its reader:
 | `.gitlab-ci.yml`, with its local includes | `gitlab-ci` | the value each job sees, as `job:` would name it ([`gitlab-ci`](#gitlab-ci)) |
 | a `.yml` or `.yaml` file directly in `.github/workflows` | `github-actions` | the value each job's steps see from the workflow's and the job's `env:`, and the value of each step whose own `env:` sets the variable ([`github-actions`](#github-actions)) |
 | `Jenkinsfile` | `jenkins` | the value the pipeline's top sees, and the value of each stage whose `environment` sets the variable ([`jenkins`](#jenkins)) |
+| a unit ending in `.service`, `.socket`, `.mount` or `.swap`, and a Quadlet `.container` | `systemd` | each value `Environment=` gives the variable in the unit's `[Service]`, `[Socket]`, `[Mount]` or `[Swap]`, or the Quadlet's `[Container]`, with the unit's drop-ins applied ([`systemd`](#systemd)) |
 
 A file whose name chooses none is read as a shell script when its first line is a `#!` that names a
 shell errata reads, such as `bin/deploy` with `#!/usr/bin/env bash`. Any other file makes the rule
-unknown, naming it, until `readers:` gives it a reader by its entry in `files`:
+unknown, naming it, until `readers:` gives it a reader by its entry in `files`. `systemd` reads
+such a file as `EnvironmentFile=` reads one:
 
 ```yaml
 env:
   name: API_PORT
-  files: [ci/build.yml, config/app.env]
-  readers: {ci/build.yml: gitlab-ci, config/app.env: envfile}
+  files: [ci/build.yml, config/app.env, deploy/api.vars]
+  readers: {ci/build.yml: gitlab-ci, config/app.env: envfile, deploy/api.vars: systemd}
 ```
 
 An entry with `*`, `?` or `[` is a glob. errata matches it against the files git tracks, read from
@@ -4071,8 +4440,8 @@ for a workflow. `max_bytes` is the most bytes the listed files hold in all, a Gi
 includes too, each read to what the files before it left. `files` lists at most 64 entries, and
 one extractor reads at most 10000 files, empty ones too, since each costs an open whatever it
 holds (see [Limits](#limits)). Dockerfile
-`ENV` and `ARG`, compose `environment:`, Kubernetes `env:` entries and systemd units join the
-readers in later releases.
+`ENV` and `ARG`, compose `environment:` and Kubernetes `env:` entries join the readers in later
+releases.
 
 ### `exists` and `size`
 
@@ -4181,6 +4550,7 @@ core machine.
 | YAML aliases and merge keys | 1000000 nodes, for every file of `files` together | each alias adds the nodes of its anchor, and so does each mapping a merge key names, counted for the whole file before anything is built from them. A key counts by its length too: each 64 bytes of a key that a merge key copies count as one node more, and an alias used as a key counts one node and one more for each 64 bytes of its anchor's text, so a file that merges or repeats long keys many times reaches the limit instead of taking minutes. errata keeps one copy of an anchor, so 5000 mappings that merge one of 99 keys, at the limit, take 0.15 s and 51 MB |
 | GitLab CI resolution | 150 included files, 11 levels of `extends`, 10 of `!reference`, 200 `parallel:matrix` jobs, 1000000 steps | GitLab's own limits on includes (its default), extends, `!reference` and matrices, and a step for each key a merge, an extends or a `!reference` touches, the bound YAML aliases have, since nested `!reference` lists repeat what they select without the file growing. Each is checked as the configuration is built (see [`gitlab-ci`](#gitlab-ci)) |
 | GitHub Actions matrix | 256 jobs, 65536 combinations before `exclude:`, 1000000 steps | GitHub's own limit on a matrix's jobs, and a step for each key an `include:` or `exclude:` entry compares and for each 64 bytes of a value it compares, the bound YAML aliases have, since each entry is matched against every combination (see [`github-actions`](#github-actions)) |
+| `etc` includes and Match decisions | 16 nested includes, 10000 files, 100000 `User`, `Hostname` and `Tag` lines, and 128 units of work a byte | OpenSSH's own limit on nested includes, and core's on files and values. With `match:`, errata decides each block's line once, and each `User`, `Hostname` or `Tag` line once, in the order read, so a file of 8000 of those lines under Host blocks and 8000 Match lines of distinct users takes about eight times as long as one of 1000 (TestMatchShadowIsLinear); each block decided, and each pattern matched, is charged to the read's work budget, the one an INI file's read has (see [`etc`](#etc)) |
 | regex time | 10 s for each 32 MiB of `max_bytes`, and never less than 10 s; for `files`, one limit the searches of every file share; for a pattern that references values, one limit that checking every value and its search share; a `context`'s searches share the limit of the pattern's | the search looks at the clock every 256 characters it reads, so one long search is stopped too. A pattern whose optional tail scans the rest of the line, such as `(\d)(?:.*x)?`, searches the line again after every match: 40 KB of one line took 27 s. One search that finds nothing costs the file times the pattern's width: `([0-9a-f]{40})` over 32 MiB of hex words took 28 s, and `([ab]{0,1000}c)` over 1 MiB 62 s; each is refused at 10 s. The slowest ordinary pattern measured over 32 MiB, `([A-Za-z0-9+/]{64,}={0,2})`, takes 4.7 s. A pattern that starts with a literal skips to each place the literal occurs and tries the pattern there. Where the next place is less than 64 bytes past the text the last try read, or a try reads more than 4 KiB, it searches every place from there on, as it does a pattern without a literal, so it reads at most 4 KiB more than a search of every place does. Over 32 MiB of errata's README, repeated, on the build node, `commit ([0-9a-f]{40})` takes 0.01 s, where a search of every place takes 0.82 s, and `(\d+\.\d+\.\d+)`, which starts with no literal, 1.2 s |
 | a value a regex pattern references | 4096 bytes, and not empty | its pattern is compiled once for each file it searches, and up to twice more, and Go's size check does not stop a long literal: one value of 1 MiB took 1.4 s and 824 MiB of allocation, and one of 4 MiB 5.6 s and 3.8 GB. An empty value would let the pattern match its context alone. See [Values of another extractor](#values-of-another-extractor) |
 | regex capture groups | 32 | a search tracks every group for every thread it keeps alive; 100000 matches of a pattern of 32 groups take 0.5 s and 29 MB |

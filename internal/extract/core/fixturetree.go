@@ -612,7 +612,9 @@ func (d indexDir) enter(name string) (folder, error) {
 	return indexDir{index: d.index, rel: path.Join(d.rel, name)}, nil
 }
 
-func (indexDir) close() {}
+func (indexDir) close() {
+	// The index is in memory: there is no handle to release.
+}
 
 // indexListing reads the entries of an indexDir, n at a time as an
 // *os.File's ReadDir gives them: io.EOF once none is left for n > 0, and

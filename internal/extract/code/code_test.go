@@ -2,6 +2,9 @@ package code
 
 import (
 	"fmt"
+	"go/parser"
+	"maps"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -512,6 +515,28 @@ func TestGoRuneTypes(t *testing.T) {
 		n, _, _, err := g.value("X")
 		if err != nil || n.Type != c.typ || n.Text != c.text {
 			t.Errorf("%s: %+v, %v; want %v %s", c.decl, n, err, c.typ, c.text)
+		}
+	}
+}
+
+// note marks the name at the root of an assigned expression through each
+// kind of step to it, and marks nothing for a root that is no name. No test
+// reached the steps but the name, so goFile.note's CRAP score
+// (scripts/crap) was at the mercy of what a test happened to assign.
+func TestNoteMarksTheRootName(t *testing.T) {
+	for _, c := range []struct{ expr, want string }{
+		{"X", "X"}, {"X.f", "X"}, {"X[1]", "X"}, {"*X", "X"}, {"(X)", "X"},
+		{"(*X.f)[0].g", "X"}, {"f().x", ""},
+	} {
+		e, err := parser.ParseExpr(c.expr)
+		if err != nil {
+			t.Fatalf("%s: %v", c.expr, err)
+		}
+		g := &goFile{assigned: map[string]bool{}}
+		g.note(e)
+		got := strings.Join(slices.Sorted(maps.Keys(g.assigned)), ",")
+		if got != c.want {
+			t.Errorf("note(%s) marks %q, want %q", c.expr, got, c.want)
 		}
 	}
 }

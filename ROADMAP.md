@@ -255,6 +255,13 @@ The files a host is configured with, and the formats the earlier readers left op
 - A `package_version` value that is not literal, such as a workspace version, reported as the
   file writes it or in one canonical spelling, whichever reads better beside the other values.
 
+## Before v0.5.0: every function below CRAP 10
+
+No release of its own and no new features. CRAP weighs a function's complexity by how little of it
+the tests run, and errata holds every function below 10. The functions that scored higher when the
+rule came in are listed in a file that only shrinks; this work empties it, splitting each into
+small helpers behind the same interface, with no verdict changed.
+
 ## v0.5.0: the plugin system
 
 errata stays one small binary, and further integrations install on demand.

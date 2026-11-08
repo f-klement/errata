@@ -57,31 +57,14 @@ func matrixKeys(n int) map[string]string {
 	return map[string]string{".gitlab-ci.yml": b.String()}
 }
 
-// matrixTimesRules is a matrix of 200 instances over a workflow of n
-// rules, whose 199 n candidates were all built before the value limit.
-func matrixTimesRules(n int) map[string]string {
-	var b strings.Builder
-	b.WriteString("workflow:\n  rules:\n")
-	for i := range n {
-		fmt.Fprintf(&b, "    - if: $A\n      variables: {V: v%d}\n", i)
-	}
-	b.WriteString("build:\n  script: [x]\n  parallel:\n    matrix:\n      - V: [x]\n      - W: [")
-	for i := range 199 {
-		if i > 0 {
-			b.WriteString(", ")
-		}
-		fmt.Fprintf(&b, "w%d", i)
-	}
-	b.WriteString("]\n")
-	return map[string]string{".gitlab-ci.yml": b.String()}
-}
-
 // rulesEachSet is a workflow of n rules that each set the variable, under
 // a matrix of 199 instances that do not and one that does: 199 n + 1
 // candidates of their own node and condition, which values deduplicated
 // with a search of those it kept, quadratic in them. A file of n rules
 // alone would make as many candidates only from 100000 rules, whose read
-// takes too long beside the quadratic pass to bound it.
+// takes too long beside the quadratic pass to bound it. The same file at
+// larger n is the matrix times rules shape: its 199 n candidates all built
+// before the value limit.
 func rulesEachSet(n int) map[string]string {
 	var b strings.Builder
 	b.WriteString("workflow:\n  rules:\n")
@@ -120,7 +103,7 @@ var shapes = []shape{
 	// kept took 5.40 s on the build node; three linear reads took 0.12,
 	// 0.13 and 0.14 s (security review, round 2, N4).
 	{"rules each set", rulesEachSet, Spec{File: ".gitlab-ci.yml", Job: "build", Variable: "V"}, "x@.gitlab-ci.yml:", false, 10, (core.MaxValues - 1) / 199, 1500 * time.Millisecond},
-	{"matrix times rules", matrixTimesRules, Spec{File: ".gitlab-ci.yml", Job: "build", Variable: "V"}, ".gitlab-ci.yml: the extractor selects more than 100000 values", true, 1000, 20000, 4 * time.Second},
+	{"matrix times rules", rulesEachSet, Spec{File: ".gitlab-ci.yml", Job: "build", Variable: "V"}, ".gitlab-ci.yml: the extractor selects more than 100000 values", true, 1000, 20000, 4 * time.Second},
 }
 
 // runShapes reads each shape at its small size, or its full size, within

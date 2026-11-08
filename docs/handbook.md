@@ -184,6 +184,7 @@ its own in the reference.
 | the version of a tool, or of the package itself | [`tool_version`](reference.md#tool_version), [`package_version`](reference.md#package_version) |
 | one dependency's version in every manifest and lockfile, or a go.mod's module path | [`dependency`](reference.md#dependency) |
 | a variable a CI job or a script sets | [`gitlab-ci`](reference.md#gitlab-ci), [`github-actions`](reference.md#github-actions), [`jenkins`](reference.md#jenkins), [`shell`](reference.md#shell) |
+| a setting of a systemd unit or a Podman Quadlet, with its drop-ins, such as `ExecStart=`, `Environment=`, `OnCalendar=` or `Image=` | [`systemd`](reference.md#systemd) |
 | one variable in every file that sets it | [`env`](reference.md#env) |
 | whether a file is there, and its size | [`exists`](reference.md#exists-and-size), [`size`](reference.md#exists-and-size) |
 | anything else a regular expression finds | [`regex`](reference.md#regex) |

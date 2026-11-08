@@ -15,6 +15,10 @@ const (
 	veils draw = 1 << iota
 	drawsText
 	switched
+	// kept marks an element x/net's way left on the stack, off the list
+	// (FollowXNetAdoption): x/net's tree puts what comes inside it before
+	// the block the adoption agency moved.
+	kept
 )
 
 // veiled are the foreign elements a browser draws nothing of.
@@ -68,13 +72,23 @@ func (n *nest) drawOf(name string) draw {
 	case len(n.drawn) > 0 && namespace(n.top()) == "svg":
 		d |= n.drawn[len(n.drawn)-1] & drawsText
 	}
+	if len(n.drawn) > 0 {
+		d |= n.drawn[len(n.drawn)-1] & kept // opened inside a kept element, as x/net's tree has it
+	}
 	return d
 }
 
 // textDrawn reports whether a browser draws text right inside the top
-// element: none of the page's elements, or one whose text it draws.
+// element: none of the page's elements, or one whose text it draws. In
+// x/net's way it notes text that goes into a kept element, or into one
+// opened inside it (movedText).
 func (n *nest) textDrawn() bool {
-	return n.veiled == 0 && (len(n.drawn) == 0 || n.drawn[len(n.drawn)-1]&drawsText != 0)
+	top := draw(0)
+	if len(n.drawn) > 0 {
+		top = n.drawn[len(n.drawn)-1]
+	}
+	n.movedText = n.movedText || n.xnet && top&kept != 0
+	return n.veiled == 0 && (len(n.drawn) == 0 || top&drawsText != 0)
 }
 
 // switchChild reports whether a child of an svg switch on top, the start

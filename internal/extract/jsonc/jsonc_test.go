@@ -369,3 +369,27 @@ func TestObjectDepthBoundary(t *testing.T) {
 	_, err := ParseJSONC(deep(core.MaxDepth + 1))
 	extracttest.WantError(t, err, "line 1: nested more than 1000 levels deep")
 }
+
+// singleEscape gives each one character escape its character, \' and \v in
+// JSON5 alone, and refuses any other. Only the rapid property reached most
+// arms, by chance, so the coverage of singleEscape, and its CRAP score
+// (scripts/crap), changed from run to run.
+func TestSingleEscapeEachCharacter(t *testing.T) {
+	for _, c := range []struct {
+		c      byte
+		json5  bool
+		want   byte
+		wantOK bool
+	}{
+		{'"', false, '"', true}, {'\\', false, '\\', true}, {'/', false, '/', true},
+		{'b', false, '\b', true}, {'f', false, '\f', true}, {'n', false, '\n', true},
+		{'r', false, '\r', true}, {'t', false, '\t', true},
+		{'\'', true, '\'', true}, {'\'', false, '\'', false},
+		{'v', true, '\v', true}, {'v', false, '\v', false},
+		{'x', true, 0, false},
+	} {
+		if got, ok := singleEscape(c.c, c.json5); got != c.want || ok != c.wantOK {
+			t.Errorf("singleEscape(%q, %v) = %q, %v; want %q, %v", c.c, c.json5, got, ok, c.want, c.wantOK)
+		}
+	}
+}

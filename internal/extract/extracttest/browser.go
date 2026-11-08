@@ -3,6 +3,7 @@ package extracttest
 import (
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	xhtml "golang.org/x/net/html"
 	"pgregory.net/rapid"
@@ -25,8 +26,13 @@ type BrowserRead struct {
 	// StandardOnly is, of a reader's read, whether it followed a rule of
 	// the HTML standard that x/net, the oracle, does not
 	// (htmlparse.Scanner.StandardOnly): such a read is compared with
-	// StandardReads, if anything.
+	// StandardReads, and read again in x/net's way to compare with x/net.
 	StandardOnly bool
+	// XNetMoved is, of a reader's read in x/net's way, whether text came
+	// while an element x/net leaves on the stack was open, which x/net's
+	// tree moves before a block (htmlparse.Scanner.XNetMovesText): such a
+	// read is not compared.
+	XNetMoved bool
 	// Rebuilt is, of a reader's read where the reader can tell, whether it
 	// followed an adoption agency's rebuild, so that a property test can
 	// say how often its documents meet one.
@@ -610,6 +616,32 @@ var BrowserShapes = []string{
 	"<!doctype html><p>a<table><td>x</table>",
 	"<!DOCTYPE html><h1><p><code><table><td>8</table>\n<h2>",
 	"<pre><code><table><tr><th>Host<th>Port<tr><td>x</code>y</table>", // </code> out of scope past a table: ignored (FuzzHTML)
+	// A button's start tag ends a button in scope, and the heading or pre
+	// opened in it (FuzzBrowser, the flakes seat's fix round 2); past a
+	// table the button is out of scope and stays.
+	"<Button><h1><Button>0",
+	"<div><button><h2>a<button>b</h2>c",
+	"<button><pre>x<button>y</pre>z",
+	"<button><table><tr><td><h3>a<button>b</table>",
+	// A select ends the scope of what is open below it, so </pre> in it
+	// closes nothing, and a select's or an input's start tag in it ends
+	// the select first: the HTML standard's "in body" mode, which x/net
+	// follows (flakes delta review 3, finding 1).
+	"<pre><select>x</pre>y",
+	"<select><h1>a<select>b</h1>",
+	"<select><h1>a<input>b</h1>",
+	"<table><td><select><p>a<select>b</table>",
+	"<pre><select><select>x</pre>y", // the second select opens nothing, so </pre> closes the pre
+	// With a select in scope an hr, an option or an optgroup generates
+	// implied end tags, so the li ends and </li> then closes nothing;
+	// outside one an optgroup ends no optgroup (flakes delta review 4,
+	// finding 1).
+	"<select><h1><li>a<hr>b</li>c</h1>",
+	"<select><h1><dt>a<hr>b</dt>c</h1>",
+	"<table><td><select><li>a<option>b</li>c</table>",
+	"<table><td><select><dd>a<option>b</dd>c</table>",
+	"<table><td><select><li>a<optgroup>b</li>c</table>",
+	"<h1><optgroup>a<optgroup>b</optgroup>c</optgroup>d</h1>",
 }
 
 // BrowserRefusals are the shapes of BrowserShapes a reader refuses, each
@@ -633,16 +665,55 @@ var BrowserRefusals = map[string]string{
 
 // BrowserComparable reports whether a reader's text of src can be compared
 // with the tree builder's. References, CRs and NULs read alike but render
-// apart, and a doctype changes the parse's mode. golang.org/x/net/html's
-// caption mode leaves th out of the tags that end a caption, which the HTML
-// standard lists (x/net v0.62.0, inCaptionIM), so with a caption the oracle
-// is not the standard, and it drops a template opened in an svg's or a
+// apart, and a doctype changes the parse's mode. golang.org/x/net/html
+// matches an end tag in foreign content to its element by Unicode case
+// folding, where the standard folds ASCII alone (XNetFoldsName).
+// Its caption mode leaves th out of the tags that end a caption, which
+// the HTML standard lists (x/net v0.62.0, inCaptionIM), so with a caption
+// the oracle is not the standard, and it drops a template opened in an svg's or a
 // math's integration point and everything after it (XNetDropsTemplate),
 // where it is not either. A reader's read that followed the standard
-// where x/net does not (BrowserRead.StandardOnly) is not compared either.
+// where x/net does not (BrowserRead.StandardOnly) is compared as the
+// reader reads it in x/net's way (htmlparse.Scanner.FollowXNetAdoption).
 func BrowserComparable(src string) bool {
 	return !strings.ContainsAny(src, "&\r\x00") && !strings.Contains(src, "<!") && !strings.Contains(src, "<?") &&
-		!strings.Contains(strings.ToLower(src), "<caption") && !XNetDropsTemplate(src)
+		!strings.Contains(strings.ToLower(src), "<caption") && !XNetDropsTemplate(src) && !XNetFoldsName(src)
+}
+
+// XNetFoldsName reports whether a tag name in src holds a byte of 0x80 or
+// above, where x/net v0.62.0 is not the standard. It matches an end tag
+// in foreign content to an element with strings.EqualFold (parse.go,
+// parseForeignContent), which folds Unicode: </test> closes <te\u017ft>,
+// and </te\x85t> closes <te\x80t>, both U+FFFD to it. The standard folds
+// ASCII letters alone, and leaves the read of a byte that is not UTF-8 to
+// the browser's guess at the encoding. Where a name is a tag depends on
+// the tree: after an xmp, a textarea or a plaintext opened in svg or math
+// the tree builder reads tags (NextIsNotRawText) where x/net's tokenizer
+// alone reads raw text, and a comment in an HTML textarea is text to it.
+// So every < or </ followed by an ASCII letter starts a name here, as the
+// tokenizer starts one, wherever it stands, and the name runs to a blank,
+// a / or a >, a < inside it included, as the tokenizer reads it; one in
+// text, a comment or an attribute only leaves out one input more. A byte of 0x80 or above
+// anywhere else changes no match, and is compared.
+func XNetFoldsName(src string) bool {
+	for rest := src; ; {
+		i := strings.IndexByte(rest, '<')
+		if i < 0 {
+			return false
+		}
+		rest = strings.TrimPrefix(rest[i+1:], "/")
+		if rest == "" || rest[0]|0x20 < 'a' || rest[0]|0x20 > 'z' {
+			continue
+		}
+		end := strings.IndexAny(rest, "\t\n\f\r />")
+		if end < 0 {
+			end = len(rest)
+		}
+		if strings.ContainsFunc(rest[:end], func(r rune) bool { return r >= utf8.RuneSelf }) {
+			return true
+		}
+		rest = rest[end:] // a < inside the name is the name's, and is read once
+	}
 }
 
 // XNetDropsTemplate reports whether x/net v0.62.0's tree builder makes no

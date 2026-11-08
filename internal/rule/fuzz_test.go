@@ -21,6 +21,7 @@ func FuzzAssert(f *testing.F) {
 		{"v.all(a, v.all(b, a + b != ''))", "2d"},
 		{"int(v[0]) * 2 > double(v[1]) * 2.0", "9223372036854775807"},
 		{"cron_interval(v[0]) == duration('1h')", "H/15 H(0-3) * * MON-FRI"},
+		{"calendar_interval(v[0]) == duration('15m')", "Mon..Fri,Sun *-*-* *:0/15:00.5 Europe/Berlin"},
 		// Each of these once made a helper panic, which CEL reported as an
 		// internal error instead of the cause.
 		{"cron_interval(v[0]) > duration('0s')", "1/9223372036854775807 * * * *"},
@@ -36,7 +37,7 @@ func FuzzAssert(f *testing.F) {
 	// set functions with an error in each argument.
 	var helpers []*assertion
 	for _, h := range []string{
-		"cron_interval(v[0]) > duration('0s')", "duration(v[0]) > duration('0s')", "port_split(v[0]).host == ''",
+		"cron_interval(v[0]) > duration('0s')", "calendar_interval(v[0]) > duration('0s')", "duration(v[0]) > duration('0s')", "port_split(v[0]).host == ''",
 		"int(v[0]) > 0", "uint(v[0]) > 0u", "double(v[0]) > 0.0",
 		"timestamp('2020-03-08T12:00:00Z').getHours(v[0]) > 0",
 		"same_set(v, v.map(x, x + v[0]))", "subset(v.map(x, int(x)), [1])", "subset([1], v.map(x, int(x)))",

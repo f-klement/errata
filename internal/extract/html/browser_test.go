@@ -3,7 +3,6 @@ package html
 import (
 	"slices"
 	"strings"
-	"sync/atomic"
 	"testing"
 
 	"pgregory.net/rapid"
@@ -54,7 +53,7 @@ func errataReadsFoster(src string) (extracttest.BrowserRead, bool, error) {
 		}
 	}
 	err = r.read()
-	out.StandardOnly = r.s.StandardOnly()
+	out.StandardOnly, out.XNetMoved = r.s.StandardOnly(), r.s.XNetMovesText()
 	if err != nil {
 		return out, foster, err
 	}
@@ -82,21 +81,26 @@ func refusedFor(err error, want extracttest.BrowserRead) string {
 }
 
 // sameRead fails t unless errata reads src as the browser does, or refuses
-// it for a reason refusedFor accepts, which it returns. It compares nothing
-// where the oracle is not the standard: "standard" where the reading says
-// it followed the standard where x/net does not, "template" where x/net
-// drops a template.
+// it for a reason refusedFor accepts, which it returns. Where the reading
+// says it followed the standard where x/net does not (StandardOnly), it
+// reads src again in x/net's way (htmlparse's FollowXNetAdoption) and
+// compares that, and StandardReads holds the standard's read of it. It
+// compares nothing where x/net drops a template, "template", nor where in
+// x/net's way text came while an element x/net kept was open, "moved",
+// since x/net's tree puts that text before the block.
 func sameRead(t interface {
 	Helper()
 	Fatalf(string, ...any)
 }, src string) string {
 	t.Helper()
 	got, err := errataReads(src)
-	switch {
-	case got.StandardOnly:
-		return "standard" // errata followed the standard where x/net does not
-	case extracttest.XNetDropsTemplate(src):
+	if extracttest.XNetDropsTemplate(src) {
 		return "template" // x/net drops the template and all after it
+	}
+	if got.StandardOnly {
+		if got, err = errataReadsXNet(src); got.XNetMoved {
+			return "moved" // x/net's tree puts the text before a block (XNetMovesText)
+		}
 	}
 	want := extracttest.BrowserReads(src, htmlparse.LineTag, true)
 	if err != nil {
@@ -115,6 +119,81 @@ func sameRead(t interface {
 		}
 	}
 	return ""
+}
+
+// errataReadsXNet is errataReads with the reading following x/net where
+// it is not the standard (followXNet).
+func errataReadsXNet(src string) (extracttest.BrowserRead, error) {
+	followXNet = true
+	defer func() { followXNet = false }()
+	return errataReads(src)
+}
+
+// sameReads reports whether errata's read and the browser's hold the same
+// pres, headings and rows.
+func sameReads(got, want extracttest.BrowserRead) bool {
+	return slices.Equal(got.Pres, want.Pres) && slices.Equal(got.Headings, want.Headings) && slices.Equal(got.Rows, want.Rows)
+}
+
+// In x/net's way (followXNet), errata reads each shape of StandardReads
+// where the adoption agency is the reason as x/net does, and by the
+// standard, as StandardReads holds: so a page the browser tests read in
+// x/net's way differs from errata's own reading in that one rule alone.
+// The planted break: the x/net branch of the adoption agency left out, so
+// that both ways read alike.
+func TestXNetWayReadsAsXNet(t *testing.T) {
+	shapes := 0
+	for src, std := range extracttest.StandardReads {
+		if extracttest.XNetDropsTemplate(src) {
+			continue // the template's divergence, not the agency's
+		}
+		shapes++
+		xnet, err := errataReadsXNet(src)
+		want := extracttest.BrowserReads(src, htmlparse.LineTag, true)
+		if err != nil || !sameReads(xnet, want) {
+			t.Errorf("%q: in x/net's way %+v, %v; x/net %+v", src, xnet, err, want)
+		}
+		if own, err := errataReads(src); err != nil || !own.StandardOnly || !sameReads(own, std) {
+			t.Errorf("%q: errata's own way %+v, %v; the standard %+v", src, own, err, std)
+		}
+	}
+	if shapes < 3 {
+		t.Errorf("%d shapes of the adoption agency in StandardReads, want 3", shapes)
+	}
+}
+
+// In x/net's way, text that comes while an element x/net kept is open
+// goes, in x/net's tree, inside that element, before the block the
+// adoption agency moved: errata reads such a page "0 0" where x/net reads
+// "00", or the other way. sameRead leaves out such a page ("moved"), and
+// only such a page: the agency's StandardReads shapes, where no text
+// comes in the kept element, stay compared. FuzzBrowser found both (the
+// flakes seat's fix round 3). The planted break: XNetMovesText never
+// set, which compares the page and fails.
+func TestXNetMovedTextIsNotCompared(t *testing.T) {
+	for _, src := range xnetMovedText {
+		if got, _ := errataReadsXNet(src); !got.XNetMoved {
+			t.Errorf("%q: in x/net's way the text in the kept element is not noted", src)
+		}
+		if why := sameRead(t, src); why != "moved" {
+			t.Errorf("%q: sameRead %q, want moved", src, why)
+		}
+	}
+	for src := range extracttest.StandardReads {
+		if got, _ := errataReadsXNet(src); got.XNetMoved {
+			t.Errorf("%q: noted as moved, where no text comes in a kept element", src)
+		}
+	}
+}
+
+// xnetMovedText are pages whose text x/net's tree puts in an element its
+// adoption agency kept (TestXNetMovedTextIsNotCompared).
+var xnetMovedText = []string{
+	"<tABle><td><B><A>0<i><C><C><div></B></div></i>0",
+	"<tABle><td><B><i><A><C><C><div></B></div>0<A>0",
+	// The clone the agency leaves open after eight passes is the kept
+	// block's child in x/net's tree (flakes delta review 3, finding 2).
+	"<tABle><td><B><A><i><C><C><div>1</B></div></i><u>" + strings.Repeat("<div>", 8) + "</u>2",
 }
 
 // errata reads each shape of the reviews as the HTML standard's tree
@@ -180,15 +259,13 @@ func TestTheReadingIsTheBrowsers(t *testing.T) {
 			why[sameRead(t, extracttest.GenHTML(t, 4))]++
 		}
 	})
-	t.Logf("of %d generated documents %d were refused for the adoption agency, %d not compared where errata followed the standard and x/net does not, %d where x/net drops a template",
-		cases, why["formatting"], why["standard"], why["template"])
+	t.Logf("of %d generated documents %d were refused for the adoption agency, %d not compared where x/net drops a template",
+		cases, why["formatting"], why["template"])
 	if why["template"]*10 > cases {
 		t.Errorf("%d of %d generated documents were not compared, as x/net drops a template there, over one in ten", why["template"], cases)
 	}
-	for _, w := range []string{"formatting", "standard"} {
-		if why[w]*50 > cases {
-			t.Errorf("%d of %d generated documents were %s, over one in fifty", why[w], cases, map[string]string{"formatting": "refused for the adoption agency", "standard": "not compared, as errata followed the standard where x/net does not"}[w])
-		}
+	if why["formatting"]*50 > cases {
+		t.Errorf("%d of %d generated documents were refused for the adoption agency, over one in fifty", why["formatting"], cases)
 	}
 }
 
@@ -202,6 +279,13 @@ func FuzzBrowser(f *testing.F) {
 		f.Add(s)
 	}
 	f.Add("<tABle><td><Col >0") // the find of the foreign delta review 3: a col closes the cell
+	// x/net folds Unicode where the standard folds ASCII (extracttest.XNetFoldsName;
+	// flakes review, finding 1): ſ folds to s, the Kelvin sign to k.
+	f.Add("<h1><svg><switch><te\u017ft ></test><text>0")
+	f.Add("<h1><svg><switch><te\u212at ></tekt><text>0")
+	for _, s := range xnetMovedText {
+		f.Add(s)
+	}
 	f.Fuzz(func(t *testing.T, src string) {
 		if !extracttest.BrowserComparable(src) {
 			t.Skip()
@@ -209,26 +293,15 @@ func FuzzBrowser(f *testing.F) {
 		if _, foster, err := errataReadsFoster(src); foster || err != nil && bounded(err) {
 			return // foster parenting moves text errata reads where it is (docs/reference.md#html)
 		}
-		// The inputs this process read, and those it did not compare as
-		// errata followed the standard where x/net does not: past 1000, at
-		// most one in fifty of those. The shapes of StandardReads are such
-		// by design, compared by TestBrowserShapes, and count as neither.
-		if _, known := extracttest.StandardReads[src]; known {
-			return
-		}
-		n, skipped := fuzzCompared.Add(1), fuzzStandard.Load()
-		if sameRead(t, src) == "standard" {
-			skipped = fuzzStandard.Add(1)
-		}
-		if n >= 1000 && skipped*50 > n {
-			t.Fatalf("%d of %d inputs were not compared, as errata followed the standard where x/net does not, over one in fifty", skipped, n)
-		}
+		// Every input is compared, a page errata reads by the standard
+		// where x/net is not in x/net's way (sameRead), so the test counts
+		// nothing across inputs, and what it holds of one input it holds of
+		// it alone. A ratio of such pages to all, past 1000 inputs, flaked:
+		// a fuzz worker mutates one input many times over, so its share
+		// followed the input it drew (gate on df27b571, 14 of 2519).
+		sameRead(t, src)
 	})
 }
-
-// fuzzCompared and fuzzStandard count FuzzBrowser's inputs in a process,
-// and those it did not compare as errata followed the standard there.
-var fuzzCompared, fuzzStandard atomic.Int64
 
 // Text of NULs alone, which a browser drops, reopens no formatting
 // element, so the heading after it ends the one open: read, not refused.

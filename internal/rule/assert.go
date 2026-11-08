@@ -278,7 +278,7 @@ func compileWith(expr string, extractors []check.NamedExtractor, lim limits, ext
 	}
 	program, err := env.Program(noted,
 		cel.CostLimit(lim.cost),
-		cel.CostTrackerOptions(append(append(append(append(setCosts(), semverCosts()...), renovateCost()...), stringCosts()...), noteCost)...),
+		cel.CostTrackerOptions(append(append(append(append(append(setCosts(), semverCosts()...), renovateCost()...), stringCosts()...), calendarCost()), noteCost)...),
 		cel.InterruptCheckFrequency(interruptEvery),
 	)
 	if err != nil {

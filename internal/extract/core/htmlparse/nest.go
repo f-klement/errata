@@ -35,6 +35,15 @@ type nest struct {
 	// rebuilds the nest followed.
 	standardOnly bool
 	rebuilds     int
+	// xnet is whether the nest follows x/net v0.62.0 where standardOnly
+	// says it is not the standard (Scanner.FollowXNetAdoption), and
+	// movedText whether, so, text came while an element x/net's way kept
+	// was open (Scanner.XNetMovesText).
+	xnet, movedText bool
+	// searched is the entries of afe the searches for a formatting
+	// element looked at (push, afeLast), which stop at the last marker:
+	// the tests count it, as a cost a clock cannot make flaky.
+	searched int
 	// outside is whether elements may have opened before the block, and
 	// quirks whether the document is in a browser's quirks mode, which
 	// the page's first doctype sets (doctypeQuirks).
@@ -68,7 +77,9 @@ type nest struct {
 	// afe is the browser's list of active formatting elements, which it
 	// reopens after a block's end closed them: each formatting element,
 	// with its index in stack while open and -1 once closed so, and a
-	// marker, at -2, for each cell, caption and object open.
+	// marker, at -2, for each cell, caption and object open. A search of
+	// it for a formatting element, as push's Noah's Ark clause and afeLast
+	// make, counts each entry it looks at in searched, which the tests hold.
 	afe []afeEntry
 	// afeAt is, for each element of stack, the index in afe of its entry,
 	// or -1, so that closing one costs a constant.
@@ -109,6 +120,7 @@ func (n *nest) reset() {
 // marker, or -1.
 func (n *nest) afeLast(name string) int {
 	for j := len(n.afe) - 1; j >= 0 && n.afe[j].at != -2; j-- {
+		n.searched++
 		if n.afe[j].name == name {
 			return j
 		}
@@ -232,21 +244,19 @@ func (n *nest) start(name string, opens bool) string {
 			n.popThrough(i)
 		}
 	case "table":
-		// A table in a table outside a cell ends it.
-		if i := n.last(n.tabular); i >= 0 && n.stack[i] == "table" {
-			n.popThrough(i)
-		}
+		n.closeTable()
 	case "td", "th", "tr", "tbody", "thead", "tfoot", "caption", "col", "colgroup":
 		if !n.tablePart(name) {
 			n.ignored = true // outside a table a browser ignores it
 			return ""
 		}
-	case "option", "optgroup":
-		if n.top() == "option" {
-			n.pop()
-		}
-		if name == "optgroup" && n.top() == "optgroup" {
-			n.pop()
+	case "option", "optgroup", "hr":
+		n.closeOption(name)
+	case "button":
+		n.closeButton()
+	case "select", "input":
+		if n.closeSelect(name) {
+			return "" // a select in a select: ignored, once the first is closed
 		}
 	}
 	if reconstructs(name) {
@@ -304,6 +314,55 @@ func (n *nest) tablePart(name string) bool {
 		n.push("tr")
 	}
 	return true
+}
+
+// closeOption follows the start tag of an option, an optgroup or an hr,
+// by the HTML standard's "in body" rules (13.2.6.4.7). With a select in
+// scope each generates implied end tags, an option all but an optgroup's:
+// a list item, a description term, a p or an option on top ends. With
+// none, an option or an optgroup ends an option on top, and nothing else.
+func (n *nest) closeOption(name string) {
+	if i := n.last(n.posOf("select")); i >= 0 && i >= n.last(n.bounds) {
+		for impliedEnd[n.top()] && (name != "option" || n.top() != "optgroup") {
+			n.pop()
+		}
+		return
+	}
+	if name != "hr" && n.top() == "option" {
+		n.pop()
+	}
+}
+
+// closeButton follows a button's start tag, which ends a button in scope
+// and everything opened inside it, a heading or a pre among them, as the
+// HTML standard's "in body" mode does. FuzzBrowser found
+// <button><h1><button>0 read as a heading of 0, where a browser closes the
+// h1 with the first button and draws the 0 in the second.
+func (n *nest) closeButton() {
+	if i := n.last(n.posOf("button")); i > n.last(n.bounds) {
+		n.popThrough(i)
+	}
+}
+
+// closeTable follows a table's start tag: a table in a table outside a
+// cell ends it.
+func (n *nest) closeTable() {
+	if i := n.last(n.tabular); i >= 0 && n.stack[i] == "table" {
+		n.popThrough(i)
+	}
+}
+
+// closeSelect follows the start tag of a select or an input, which ends a
+// select in scope and everything opened in it, as the HTML standard's "in
+// body" mode does (13.2.6.4.7). It reports whether the tag is a select's,
+// which the standard then ignores: no element opens, and nothing reopens.
+func (n *nest) closeSelect(name string) bool {
+	i := n.last(n.posOf("select"))
+	if i < 0 || i < n.last(n.bounds) {
+		return false // no select, or one out of scope
+	}
+	n.popThrough(i)
+	return name == "select"
 }
 
 // end follows an end tag of name, and returns a refusal, or "".
@@ -387,6 +446,7 @@ func (n *nest) push(name string) {
 		// The Noah's Ark clause: three alike after the last marker at most.
 		var alike, first int
 		for j := len(n.afe) - 1; j >= 0 && n.afe[j].at != -2; j-- {
+			n.searched++
 			if n.afe[j].name == name {
 				alike, first = alike+1, j
 			}
@@ -581,8 +641,12 @@ var closesP = set(`address article aside blockquote center details dialog dir di
 	figcaption figure footer header hgroup main menu nav ol p search section summary ul h1 h2 h3 h4
 	h5 h6 pre listing form plaintext table hr xmp li dd dt`)
 
+// impliedEnd are the elements whose end tags a browser implies
+// ("generate implied end tags", 13.2.6.3).
+var impliedEnd = set(`dd dt li optgroup option p rb rp rt rtc`)
+
 // scopeEnds are the elements that end an element's scope in a browser.
-var scopeEnds = set(`applet caption html table td th marquee object template`)
+var scopeEnds = set(`applet caption html table td th marquee object select template`)
 
 // special are the elements of the HTML standard's special category, but
 // the headings, which isHeading names: no end tag of an element outside it

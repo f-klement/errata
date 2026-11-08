@@ -61,13 +61,7 @@ func (n *nest) adopt(j int) {
 	fe, feID, name := 0, 0, names[0]
 	for range adoptPasses {
 		n.work += len(els) + len(order)
-		fb := -1
-		for k := fe + 1; k < len(els); k++ {
-			if special[els[k].name] || isHeading(els[k].name) {
-				fb = k
-				break
-			}
-		}
+		fb := furthestBlock(fe, len(els), func(k int) string { return els[k].name })
 		if fb < 0 {
 			for k := len(els) - 1; k >= fe; k-- {
 				drop(k)
@@ -87,6 +81,11 @@ func (n *nest) adopt(j int) {
 				unlist(id)
 				id = -1
 				n.standardOnly = true
+				if n.xnet {
+					els[k].id = -1 // x/net's way: off the list, on the stack
+					els[k].d |= kept
+					continue
+				}
 			}
 			if id < 0 {
 				drop(k)
@@ -107,7 +106,7 @@ func (n *nest) adopt(j int) {
 		unlist(feID)
 		els = slices.Delete(els, fe, fe+1)
 		fb--
-		els = slices.Insert(els, fb+1, element{name, clone, drawsText})
+		els = slices.Insert(els, fb+1, element{name, clone, drawsText | els[fb].d&kept}) // a kept block keeps its clone in x/net's tree
 		fe, feID = fb+1, clone
 	}
 	n.work += 2 * len(els) // popped and pushed again
@@ -133,4 +132,16 @@ func (n *nest) adopt(j int) {
 		}
 	}
 	n.closedLine = closed || lineClosed
+}
+
+// furthestBlock is the first of the elements after fe, of the n elements
+// above the formatting element on, that is special or a heading, by the
+// name nameAt gives for each, or -1: the adoption agency's furthest block.
+func furthestBlock(fe, n int, nameAt func(int) string) int {
+	for k := fe + 1; k < n; k++ {
+		if special[nameAt(k)] || isHeading(nameAt(k)) {
+			return k
+		}
+	}
+	return -1
 }

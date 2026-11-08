@@ -448,7 +448,15 @@ func (o outcome) testFailed() bool {
 
 // afterLimit is how long past gremlins' limit testreach waits for gremlins to
 // end it, after a run it stopped at the planned limit.
-var afterLimit = 30 * time.Second
+const afterLimit = 30 * time.Second
+
+// runBounded is bounded. A test replaces it to charge each command a time the
+// test sets, so the verdicts do not depend on how busy the machine is.
+var runBounded = bounded
+
+// waitUntil sleeps until the deadline. A test replaces it to read the
+// deadline instead of waiting for it.
+var waitUntil = func(deadline time.Time) { time.Sleep(time.Until(deadline)) }
 
 func secs(d time.Duration) string { return strconv.FormatFloat(d.Seconds(), 'f', 2, 64) }
 
@@ -514,7 +522,7 @@ func run(goBin, root, indexDir string, args []string) int {
 	}
 	timedOut := func() int {
 		// Gremlins reads a timeout only when its own limit ends the command.
-		time.Sleep(time.Until(start.Add(given)) + afterLimit)
+		waitUntil(start.Add(given + afterLimit))
 		return 1
 	}
 	// held is what a timeout costs past the planned limit: testreach holds
@@ -532,7 +540,7 @@ func run(goBin, root, indexDir string, args []string) int {
 	}
 	defer func() { _ = os.RemoveAll(tmp) }()
 	bin := filepath.Join(tmp, "mutant.test")
-	b = bounded(goBin, m.buildArgs(bin), "", whole, 0)
+	b = runBounded(goBin, m.buildArgs(bin), "", whole, 0)
 	switch {
 	case b.timedOut:
 		// The build alone took the planned limit: timed out, as one go test
@@ -564,7 +572,7 @@ func run(goBin, root, indexDir string, args []string) int {
 		ok, left, checkWhy := checkSet(filepath.Join(indexDir, "pkg.test"), filepath.Join(root, filepath.FromSlash(r.dir)), indexDir, expr, binTimeout, ioWait, narrowed)
 		if ok {
 			ran = true
-			n = bounded(bin, binArgs(binTimeout, expr), "", left, ioWait)
+			n = runBounded(bin, binArgs(binTimeout, expr), "", left, ioWait)
 			if n.testFailed() {
 				logf(n, true, outcome{}, false, "narrowed"+checkWhy)
 				return 1
@@ -574,7 +582,7 @@ func run(goBin, root, indexDir string, args []string) int {
 			why = checkWhy
 		}
 	}
-	w := bounded(bin, binArgs(binTimeout, ""), "", whole-b.took, ioWait)
+	w := runBounded(bin, binArgs(binTimeout, ""), "", whole-b.took, ioWait)
 	if w.timedOut {
 		// Build and whole tests passed the planned limit: timed out, final.
 		logf(n, ran, w, true, fmt.Sprintf("%s (build %s)%s", why, secs(b.took), held))
@@ -602,7 +610,7 @@ func checkSet(origBin, origDir, indexDir, expr string, binTimeout, ioWait, share
 	case "fail":
 		return false, 0, "the reaching tests fail together on the original code"
 	}
-	o := bounded(origBin, binArgs(binTimeout, expr), origDir, share, ioWait)
+	o := runBounded(origBin, binArgs(binTimeout, expr), origDir, share, ioWait)
 	left := share - o.took
 	var verdict string
 	switch {
@@ -622,6 +630,9 @@ func checkSet(origBin, origDir, indexDir, expr string, binTimeout, ioWait, share
 	if verdict == "fail" {
 		return false, 0, "the reaching tests fail together on the original code"
 	}
+	// No test reaches this: a check that takes the whole share times out above,
+	// and one that ends inside it leaves some. Only a binary that exits just
+	// after the share, before bounded's timer marks it stopped, comes here.
 	if left <= 0 {
 		return false, 0, "no time left for a narrowed run after checking its tests"
 	}
