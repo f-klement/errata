@@ -13,7 +13,7 @@ require (
 	github.com/spf13/pflag v1.0.10
 	github.com/theory/jsonpath v0.12.2
 	github.com/yuin/goldmark/v2 v2.1.11
-	go.yaml.in/yaml/v2 v2.4.4
+	go.yaml.in/yaml/v2 v2.4.5
 	go.yaml.in/yaml/v3 v3.0.6
 	golang.org/x/mod v0.42.0
 	golang.org/x/net v0.62.0
