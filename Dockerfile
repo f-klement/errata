@@ -21,7 +21,7 @@ RUN CGO_ENABLED=0 go build -trimpath \
 
 # Docker's official bash image, which is Alpine with bash: checks are programs,
 # usually shell scripts, and may use bash syntax.
-FROM bash:5.3-alpine3.24@sha256:ab2ada570d744f42f517986fdd3c81ef60fe2054ed0c5295a7922e3b0ccd1b02
+FROM bash:5.3-alpine3.24@sha256:bfe8f6d356f2944ec5ad456e44620924862263aa0717036b3c2cdce0ee4c0af0
 COPY --from=build /out/errata /ko-app/errata
 ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/ko-app
 # Root, as in the released image: CI systems mount a workspace owned by the
