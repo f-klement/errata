@@ -1,0 +1,4 @@
+go test fuzz v1
+string("::1:\x89\t")
+byte('\x02')
+bool(false)

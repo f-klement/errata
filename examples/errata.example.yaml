@@ -53,7 +53,13 @@ required:
   - ssh-port-agrees
   - sshd-listens-on-the-inventory-port
   - deploy-logs-in-with-a-key
+  - only-the-api-runs-without-a-password
+  - sudo-asks-again-soon
   - search-hosts-have-room
+  - media-library-is-read-only
+  - base-image-knows-deploy-and-web1
+  - larder-owns-its-devices
+  - larder-device-links
   - restore-reads-the-backup-dir
   - app-env-sets-every-value
   - every-route-is-documented
@@ -800,6 +806,49 @@ checks:
       applied: {etc: {file: deploy/ssh/sshd_config, dialect: sshd, key: passwordauthentication, match: {user: deploy, address: 10.0.0.7}}}
     assert: outside.all(v, v == 'no') && block.all(v, v == 'no') && applied == ['no']
 
+  # Claim: sudo runs nothing without a password but the deploy user's restart and status of the
+  # API, as root, and the operators type theirs. grants: true reads every grant of the main file
+  # and of the drop-ins its @includedir names, whatever its user list, with the aliases resolved,
+  # so a grant that skips the password for ALL, a group or another user fails the check. user:
+  # reads the grants that name one user: deploy's, where skip_not_literal leaves out the grant to
+  # %sudo, which the host decides, and an operator's, from the drop-ins alone through files:.
+  # Defaults !authenticate would skip the password with no tag, so defaults: reads that flag; a
+  # file that never sets it gives no value, which allow_empty lets pass.
+  # See docs/reference.md#sudoers; #grants-to-a-user; #every-grant; #values-a-file-only-computes.
+  - id: only-the-api-runs-without-a-password
+    reason: >
+      The deploy user's key sits on every build runner, and the account has no password. Any
+      other grant that skips the password hands root on the web hosts to anyone who takes over
+      a runner.
+    scope: repo
+    extract:
+      every: {sudoers: {file: deploy/sudo/sudoers, grants: true}}
+      dropins: {sudoers: {files: [deploy/sudo/sudoers.d/*], grants: true}}
+      deploy: {sudoers: {file: deploy/sudo/sudoers, user: deploy}}
+      ops: {sudoers: {files: [deploy/sudo/sudoers.d/*], user: alice}}
+      auth: {sudoers: {file: deploy/sudo/sudoers, defaults: authenticate}}
+    skip_not_literal: [deploy]
+    allow_empty: [auth]
+    assert: >-
+      every.all(g, !('NOPASSWD' in g.tags) || g.user == ['deploy'] && g.command.startsWith('/usr/bin/systemctl ') && g.runas == ['root'])
+      && dropins.all(g, !('ALL' in g.user))
+      && deploy.all(g, g.command.startsWith('/usr/bin/systemctl '))
+      && ops.all(g, !('NOPASSWD' in g.tags))
+      && auth.all(v, v != 'false')
+
+  # Claim: sudo runs commands with a fixed PATH and asks for the password again within five
+  # minutes. defaults: reads every value a Defaults line gives the setting, each with its scope.
+  # See docs/reference.md#sudoers; #defaults-settings.
+  - id: sudo-asks-again-soon
+    reason: >
+      A PATH taken from the caller lets a planted binary run as root, and a long timestamp lets
+      an unlocked terminal run sudo without the password.
+    scope: repo
+    extract:
+      path: {sudoers: {file: deploy/sudo/sudoers, defaults: secure_path}}
+      timeout: {sudoers: {files: [deploy/sudo/sudoers], defaults: timestamp_timeout}}
+    assert: path == ['/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'] && timeout.all(v, int(v) <= 5)
+
   # Claim: the search index's hosts map enough memory areas and open enough files. etc reads the
   # sysctl files in sysctl's order, the last value the one the host applies, and the limits files
   # in pam_limits' order.
@@ -813,6 +862,64 @@ checks:
       maps: {etc: {files: [deploy/sysctl/sysctl.conf, deploy/sysctl/sysctl.d/*.conf], key: vm.max_map_count}}
       files: {etc: {files: [deploy/security/limits.conf, deploy/security/limits.d/*.conf], key: hard nofile}}
     assert: int(maps[size(maps) - 1]) >= 262144 && files.all(v, int(v) >= 65536)
+
+  # Claim: the NAS exports the media library read-only to the players, and every player mounts it
+  # read-only. table reads exports with the drop-ins of exports.d by path and client, and the
+  # fstab of every player by mount point; @players is a netgroup only the host resolves.
+  # See docs/reference.md#table; #the-files-values-and-the-hosts; #a-set-of-files.
+  - id: media-library-is-read-only
+    reason: >
+      A player that writes to the library can corrupt what every other player reads, and the NAS
+      keeps no snapshot of the share.
+    scope: repo
+    extract:
+      export: {table: {files: [deploy/nas/exports, deploy/nas/exports.d/*.exports], column: options, row: {path: /srv/media, client: '@players'}}}
+      mounts: {table: {files: [deploy/players/*/fstab], dialect: fstab, column: mntops, row: {file: /media}}}
+    assert: "'ro' in export && !('rw' in export) && size(by_file(mounts)) == 2 && by_file(mounts).all(f, 'ro' in by_file(mounts)[f])"
+
+  # Claim: the base image's deploy user has the home the playbooks write to and may run docker,
+  # and its hosts file gives web1 the address the inventory connects to. A list column such as
+  # a group's members returns each item as a value.
+  # See docs/reference.md#table; #values-table-marks; #ini.
+  - id: base-image-knows-deploy-and-web1
+    reason: >
+      The playbooks copy keys to the deploy user's home and start containers as it. A base image
+      that moves the home or drops the user from docker fails every deploy on a fresh host.
+    scope: repo
+    extract:
+      home: {table: {file: deploy/base/passwd, column: directory, row: {name: deploy}}}
+      docker: {table: {file: deploy/base/group, dialect: group, column: user_list, row: {group_name: docker}}}
+      web1: {table: {file: deploy/base/hosts, column: ip_address, row: {names: WEB1}}}
+      inventory: {ini: {file: inventory/hosts, section: web, host: web1, key: ansible_host}}
+    assert: home == ['/home/deploy'] && 'deploy' in docker && web1 == inventory
+
+  # Claim: the Larder API can write to the label printer and the scale, and to no other device.
+  # udev reads the rules as systemd-udevd does; tests: picks the printer's rule by its vendor,
+  # which a GOTO before it narrows to USB devices, and op: keeps the assignments that set MODE.
+  # See docs/reference.md#udev; #selecting-rules-by-match-keys; #goto-and-label; #the-files-of-rulesd.
+  - id: larder-owns-its-devices
+    reason: >
+      The API runs as the larder group. A device node it cannot open stops goods-in or packing,
+      and one left at 0666 lets any user on the host print labels or fake a weight.
+    scope: repo
+    extract:
+      printer: {udev: {file: deploy/udev/rules.d/99-larder-printer.rules, key: MODE, tests: {SUBSYSTEM: usb, "ATTR{idVendor}": "0a5f"}}}
+      modes: {udev: {files: [deploy/udev/rules.d/*.rules], key: MODE, op: "="}}
+      groups: {udev: {files: [deploy/udev/rules.d/*.rules], key: GROUP}}
+    assert: printer == ['0660'] && modes.all(v, v == '0660') && groups.all(v, v == 'larder')
+
+  # Claim: the device links the API opens are the ones the rules make. The API reads the scale
+  # at /dev/larder-scale and the printer at /dev/larder-printer.
+  # See docs/reference.md#udev; #selecting-rules-by-match-keys; #values-udev-substitutes-in.
+  - id: larder-device-links
+    reason: >
+      A link the rules no longer make leaves the API opening a path that is not there, and the
+      error names the path, not the rule that changed.
+    scope: repo
+    extract:
+      scale: {udev: {file: deploy/udev/rules.d/60-larder-scale.rules, key: SYMLINK, tests: {"ATTRS{idVendor}": "0403"}}}
+      printer: {udev: {files: [deploy/udev/rules.d/*.rules], key: SYMLINK, op: "+=", tests: {"ATTR{idVendor}": "0a5f"}}}
+    assert: scale == ['larder-scale'] && printer == ['larder-printer']
 
   # Claim: the restore command in the admin guide reads from the directory the backup script
   # writes to. The script lets an operator point it elsewhere through a variable, a value

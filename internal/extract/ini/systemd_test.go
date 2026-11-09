@@ -167,8 +167,10 @@ func TestDropInDirs(t *testing.T) {
 }
 
 // The drop-ins are applied by name across the directories, a name in two
-// read from the first, and a hidden file or one not .conf left out.
-// Planted break: a later directory's file of one name winning.
+// read from the first, and a hidden file or one not .conf left out, a
+// template taken as the file it renders. Planted breaks: a later
+// directory's file of one name winning; a template's name taken with its
+// suffix.
 func TestOrderDropIns(t *testing.T) {
 	files := map[string][]string{
 		"a.service.d": {"d/a.service.d/20-b.conf", "d/a.service.d/x.txt", "d/a.service.d/.h.conf"},
@@ -177,6 +179,15 @@ func TestOrderDropIns(t *testing.T) {
 	got := orderDropIns([]string{"a.service.d", "service.d"}, func(d string) []string { return files[d] })
 	if want := "d/service.d/10-a.conf d/a.service.d/20-b.conf d/service.d/30-c.conf"; strings.Join(got, " ") != want {
 		t.Errorf("got %q, want %q", got, want)
+	}
+	// A template is read as the drop-in it renders, and masks that name.
+	files = map[string][]string{
+		"a.service.d": {"d/a.service.d/20-b.conf.j2", "d/a.service.d/x.txt.j2"},
+		"service.d":   {"d/service.d/20-b.conf", "d/service.d/30-c.conf"},
+	}
+	got = orderDropIns([]string{"a.service.d", "service.d"}, func(d string) []string { return files[d] })
+	if want := "d/a.service.d/20-b.conf.j2 d/service.d/30-c.conf"; strings.Join(got, " ") != want {
+		t.Errorf("templates: got %q, want %q", got, want)
 	}
 }
 
@@ -549,4 +560,36 @@ func TestEnvironmentFileWorkMeterRefusesAtEveryBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 	coretest.RefusesAtEveryBudget(t, x.(core.EntryExtractor), "# c\nA=1\nB='x\ny'\nA=\"2\"")
+}
+
+// A template drop-in is found beside the unit and read as the drop-in it
+// renders, masking a drop-in of that name in a directory after it. Planted
+// break: dropInFiles listing *.conf alone.
+func TestSystemdReadsATemplateDropIn(t *testing.T) {
+	root := extracttest.Tracked(t, map[string]string{
+		"deploy/api.service":                 "[Service]\nExecStart=/bin/api\n",
+		"deploy/api.service.d/10-x.conf.j2":  "[Service]\nExecStart=\nExecStart=/bin/api --port {{ port }}\n",
+		"deploy/service.d/10-x.conf":         "[Service]\nExecStart=\nExecStart=/masked\n",
+		"deploy/api.service.d/20-y.conf.bak": "[Service]\nExecStart=\nExecStart=/backup\n",
+	})
+	if got, want := systemdValues(t, root, sd("deploy/api.service", "Service", "ExecStart", "")), "/bin/api --port {{ port }}@deploy/api.service.d/10-x.conf.j2:3*"; got != want {
+		t.Errorf("got %s\nwant %s", got, want)
+	}
+}
+
+// The drop-in directories are listed for .conf files and the templates of
+// them alone, so a leftover such as 20-y.conf.bak or 20-y.conf~ is never
+// listed: a name it holds with a control character, which a glob that
+// lists it refuses, leaves the unit readable. Planted break: dropInFiles
+// listing *.conf*.
+func TestSystemdListsOnlyDropInNames(t *testing.T) {
+	root := extracttest.Tracked(t, map[string]string{
+		"deploy/api.service":                  "[Service]\nExecStart=/bin/api\n",
+		"deploy/api.service.d/10-x.conf.tmpl": "[Service]\nExecStart=\nExecStart=/bin/api -t\n",
+		"deploy/api.service.d/20-y.conf~\x01": "[Service]\nExecStart=\nExecStart=/leftover\n",
+		"deploy/api.service.d/30-z.conf.bak":  "[Service]\nExecStart=\nExecStart=/backup\n",
+	})
+	if got, want := systemdValues(t, root, sd("deploy/api.service", "Service", "ExecStart", "")), "/bin/api -t@deploy/api.service.d/10-x.conf.tmpl:3"; got != want {
+		t.Errorf("got %s\nwant %s", got, want)
+	}
 }

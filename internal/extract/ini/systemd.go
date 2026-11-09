@@ -499,12 +499,13 @@ func dashPrefix(prefix string) (string, bool) {
 // orderDropIns is the .conf files of dirs, found by list, in the order
 // systemd applies them (conf_files_list_strv): by name, byte by byte, a
 // name in two directories read from the first that lists it, and a name
-// that starts with a dot left out, as systemd skips a hidden file.
+// that starts with a dot left out, as systemd skips a hidden file. A
+// template is the drop-in it renders.
 func orderDropIns(dirs []string, list func(dir string) []string) []string {
 	var files []string
 	for _, d := range dirs {
 		for _, f := range list(d) {
-			if name := path.Base(f); !strings.HasPrefix(name, ".") && strings.HasSuffix(name, ".conf") {
+			if name := path.Base(core.Untemplated(f)); !strings.HasPrefix(name, ".") && strings.HasSuffix(name, ".conf") {
 				files = append(files, f)
 			}
 		}

@@ -501,7 +501,9 @@ func (x unitExtractor) maxValues() int {
 var globEscaper = strings.NewReplacer(`\`, `\\`, `*`, `\*`, `?`, `\?`, `[`, `\[`)
 
 // dropInFiles are the drop-ins of the unit git's index lists beside it, in
-// the order systemd applies them (dropInDirs, orderDropIns).
+// the order systemd applies them (dropInDirs, orderDropIns). Each directory
+// is listed for *.conf and *.conf with each template suffix, so
+// 10-x.conf.j2 is found and a leftover such as 10-x.conf.bak is not.
 func (x unitExtractor) dropInFiles(index *core.Tracked) ([]string, error) {
 	dir := path.Dir(path.Clean(filepath.ToSlash(x.File)))
 	found := map[string][]string{}
@@ -509,9 +511,11 @@ func (x unitExtractor) dropInFiles(index *core.Tracked) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("systemd: %s: %w", core.Quote(x.File), err)
 	}
-	globs := make([]string, len(dirs))
-	for i, d := range dirs {
-		globs[i] = path.Join(globEscaper.Replace(dir), globEscaper.Replace(d), "*.conf")
+	var globs []string
+	for _, d := range dirs {
+		for _, s := range append([]string{""}, core.TemplateSuffixes()...) {
+			globs = append(globs, path.Join(globEscaper.Replace(dir), globEscaper.Replace(d), "*.conf"+s))
+		}
 	}
 	for chunk := range slices.Chunk(globs, core.MaxEntries) {
 		files, err := core.CheckFiles(systemdKey, chunk, x.Limit)

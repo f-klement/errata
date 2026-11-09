@@ -66,8 +66,9 @@ func TestDescribe(t *testing.T) {
 
 // Odd lines each dialect meets: a \ escapes a # in sshd, a negated pattern
 // or address excludes a connection, and a set of sysctl drop-ins without
-// sysctl.conf keeps its order. Planted break: patternList taking a negated
-// match as a match.
+// sysctl.conf keeps its order, and a template masks the file of the name
+// it renders. Planted breaks: patternList taking a negated match as a
+// match; FirstOfEachName taking a template's name with its suffix.
 func TestOddLines(t *testing.T) {
 	runReads(t, []readCase{
 		{"escaped #", map[string]string{"sshd_config": "Banner a\\ #b #c\n"}, one("sshd_config", "banner"), "sshd_config:1=a\\ #b"},
@@ -75,5 +76,7 @@ func TestOddLines(t *testing.T) {
 		{"negated address", map[string]string{"sshd_config": "X 0\nMatch Address 10.0.0.0/8,!10.0.0.9\n X 1\n"}, matching("sshd_config", "x", map[string]string{"address": "10.0.0.9"}), "sshd_config:1=0"},
 		{"sysctl without sysctl.conf", map[string]string{"d/b.conf": "a=2\n", "d/a.conf": "a=1\n"},
 			Spec{Where: core.Where{Files: []string{"d/*.conf"}}, Dialect: "sysctl", Key: "a"}, "d/a.conf:1=1 | d/b.conf:1=2"},
+		{"a template masks the file it renders", map[string]string{"etc/sysctl.d/60-x.conf.j2": "a=1\n", "usr/lib/sysctl.d/60-x.conf": "a=2\n"},
+			Spec{Where: core.Where{Files: []string{"usr/lib/sysctl.d/*", "etc/sysctl.d/*"}}, Key: "a"}, "etc/sysctl.d/60-x.conf.j2:1=1"},
 	})
 }

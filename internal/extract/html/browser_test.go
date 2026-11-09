@@ -290,7 +290,7 @@ func FuzzBrowser(f *testing.F) {
 		if !extracttest.BrowserComparable(src) {
 			t.Skip()
 		}
-		if _, foster, err := errataReadsFoster(src); foster || err != nil && bounded(err) {
+		if fostered(src) {
 			return // foster parenting moves text errata reads where it is (docs/reference.md#html)
 		}
 		// Every input is compared, a page errata reads by the standard
@@ -301,6 +301,48 @@ func FuzzBrowser(f *testing.F) {
 		// followed the input it drew (gate on df27b571, 14 of 2519).
 		sameRead(t, src)
 	})
+}
+
+// fostered reports whether src puts text or an element in a table outside
+// a cell, or is refused by a bound. Where errata's own reading follows the
+// standard and x/net does not (StandardOnly), sameRead compares x/net's
+// way, so a foster in that way counts too: x/net's adoption agency can
+// leave a formatting element open whose end tag closes an svg, so that a
+// desc after it is HTML's and a table in it fosters text the standard's
+// reading never draws.
+func fostered(src string) bool {
+	own, foster, err := errataReadsFoster(src)
+	if foster || err != nil && bounded(err) {
+		return true
+	}
+	if !own.StandardOnly {
+		return false
+	}
+	followXNet = true
+	defer func() { followXNet = false }()
+	_, foster, _ = errataReadsFoster(src)
+	return foster
+}
+
+// A foster in x/net's way alone counts as one: the standard's reading of
+// the find keeps the desc in the svg and draws none of its text, while
+// x/net's closes the svg at </i>, and the table in the desc then moves the
+// t before it, into the outer cell. FuzzBrowser compared it and failed
+// (the landing gate on 2f83bbcf). The planted break: fostered reading
+// errata's own way alone.
+func TestFosterInXNetWayIsNotCompared(t *testing.T) {
+	for _, row := range []struct {
+		src  string
+		want bool
+	}{
+		{"<table><tr><td><b><i><u><s><m><div></b></div><svg></i><desc><table>t", true},
+		{"<table><tr><td><b><i><u><s><m><div></b></div><svg></i><desc>t", false},
+		{"<table><tr><td><desc><table>t", true},
+	} {
+		if got := fostered(row.src); got != row.want {
+			t.Errorf("%q: fostered %t, want %t", row.src, got, row.want)
+		}
+	}
 }
 
 // Text of NULs alone, which a browser drops, reopens no formatting

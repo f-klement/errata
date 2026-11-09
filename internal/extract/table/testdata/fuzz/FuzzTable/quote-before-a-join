@@ -1,0 +1,4 @@
+go test fuzz v1
+string("\"\\\nbd\"")
+byte('\x04')
+bool(false)

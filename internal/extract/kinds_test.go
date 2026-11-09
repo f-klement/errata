@@ -331,6 +331,14 @@ var describes = []string{
 	`{"etc": {"file": "sshd_config", "key": "Port"}}`,
 	`{"etc": {"files": ["sysctl.d/*.conf"], "key": "vm.swappiness"}}`,
 	`{"etc": {"file": "roles/x/templates/limits.conf.j2", "key": "nofile", "block": "*"}}`,
+	`{"sudoers": {"file": "etc/sudoers", "defaults": "secure_path"}}`,
+	`{"sudoers": {"files": ["etc/sudoers.d/*"], "user": "%admin"}}`,
+	`{"sudoers": {"file": "etc/sudoers", "grants": true}}`,
+	`{"table": {"file": "etc/fstab", "column": "mntops", "row": {"file": "/srv"}}}`,
+	`{"table": {"files": ["hosts/*/hosts"], "column": "ip_address"}}`,
+	`{"table": {"file": "roles/x/templates/exports.j2", "column": "options"}}`,
+	`{"udev": {"file": "99-x.rules", "key": "MODE", "tests": {"SUBSYSTEM": "usb"}}}`,
+	`{"udev": {"files": ["etc/udev/rules.d/*.rules"], "key": "SYMLINK", "op": "+="}}`,
 	`{"env": {"name": "A", "files": [".env"]}}`,
 	`{"exists": {"file": "a"}}`,
 	`{"size": {"file": "a"}}`,
@@ -354,6 +362,10 @@ var mayNotLiteral = map[string]bool{
 	`{"code": {"file": "__init__.py", "name": "__version__"}}`:                             true,
 	`{"etc": {"file": "sshd_config", "key": "Port"}}`:                                      true,
 	`{"etc": {"file": "roles/x/templates/limits.conf.j2", "key": "nofile", "block": "*"}}`: true,
+	`{"sudoers": {"files": ["etc/sudoers.d/*"], "user": "%admin"}}`:                        true,
+	`{"table": {"file": "roles/x/templates/exports.j2", "column": "options"}}`:             true,
+	`{"udev": {"file": "99-x.rules", "key": "MODE", "tests": {"SUBSYSTEM": "usb"}}}`:       true,
+	`{"udev": {"files": ["etc/udev/rules.d/*.rules"], "key": "SYMLINK", "op": "+="}}`:      true,
 }
 
 // builtNotLiteral is whether x, built from raw, may return a not literal
@@ -467,13 +479,14 @@ func TestDescribeCarriesMaxBytes(t *testing.T) {
 // bytes core hands it: the seam a file set and a plugin host build on. The
 // kinds that find their files by their own logic are the exceptions,
 // gitlab-ci among them since it reads the files a pipeline includes, and
-// etc since it reads the files a configuration file includes, and
+// etc since it reads the files a configuration file includes, udev, which
+// reads rules.d directories in udev's order, and
 // systemd, which reads a unit's drop-ins, and so
 // are a spec of files:, which builds a core.FileSet of FileReaders, and a
 // regex that searches for another extractor's values, which reads once
 // those values are known. Planted break: text's FromShared removed.
 func TestEveryOneFileReaderIsAFileReader(t *testing.T) {
-	ownFiles := map[string]bool{"tool_version": true, "package_version": true, "dependency": true, "env": true, "exists": true, "size": true, "gitlab-ci": true, "marker": true, "etc": true, "systemd": true}
+	ownFiles := map[string]bool{"tool_version": true, "package_version": true, "dependency": true, "env": true, "exists": true, "size": true, "gitlab-ci": true, "marker": true, "etc": true, "systemd": true, "sudoers": true, "udev": true}
 	seen := map[string]bool{}
 	// describes holds json only as a file set.
 	for _, raw := range append(slices.Clone(describes), `{"json": {"file": "a.json", "path": "a"}}`) {

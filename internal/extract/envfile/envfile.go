@@ -1,6 +1,8 @@
 // Package envfile is the envfile extractor: the values of a key in a dotenv
 // file, read as docker compose reads its .env file and a service's
-// env_file, through core's entry extractor.
+// env_file, through core's entry extractor. A file in etc/default, which a
+// shell sources, and etc/environment, which pam_env reads, are read in
+// dialects of their own (etc.go).
 package envfile
 
 import (
@@ -36,8 +38,13 @@ var Kind = core.Kind[Spec]{Key: kindKey, Place: Place, Resolve: Resolve, Describ
 
 // chooses takes, for the env kind, a name that starts with .env or ends in
 // .env, such as prod.env, which compose's env_file: and systemd's
-// EnvironmentFile= name. It leaves .envrc, direnv's shell script, and a
-// name that ends in .sh to the shell reader. It leaves a code file too, a
+// EnvironmentFile= name, and the files etcDialect reads: a file directly in
+// etc/default and etc/environment, a template suffix taken off. It leaves
+// .envrc, direnv's shell script, and a name that ends in .sh to the shell
+// reader, and in etc/default a template of one, such as x.sh.j2, to none:
+// a script is shell's to read, and readers: can give it shell. A template
+// such as .env.sh.j2 stays envfile's, as v0.3.0 read it. It leaves a
+// code file too, a
 // name whose lexer row has a Syntax, which the literal reader reads, such
 // as .env.d.ts or .env.py; a data name, such as .env.yaml, stays its own.
 func chooses(file string) bool {
@@ -48,7 +55,10 @@ func chooses(file string) bool {
 	if l, ok := core.LanguageFor(base); ok && l.Syntax != nil {
 		return false
 	}
-	return strings.HasPrefix(base, ".env") || strings.HasSuffix(base, ".env")
+	if strings.HasPrefix(base, ".env") || strings.HasSuffix(base, ".env") {
+		return true
+	}
+	return etcDialect(file) != compose && !strings.HasSuffix(path.Base(core.Untemplated(file)), ".sh")
 }
 
 // envRead is the env kind's reader of the variable name in file: Build's.
@@ -174,54 +184,95 @@ func readEnv(data []byte, visit func(*core.Entry) error) error {
 	return readFile(data, nil, "", visit)
 }
 
-// readFile is readEnv charged to m, for file. In a template, a value whose
-// text the engine renders, and one on a line inside a block of the
-// engine's, which the rendered file may not hold, is returned as written
-// and marked computed before its key is bound, so a substitution of its key
-// is computed too.
+// readFile is readEnv charged to m, for file, in the dialect etcDialect
+// chooses by file's name. In a template, a value whose text the engine
+// renders, and one on a line inside a block of the engine's, which the
+// rendered file may not hold, is returned as written and marked computed
+// before its key is bound, so a substitution of its key is computed too.
 func readFile(data []byte, m *core.Meter, file string, visit func(*core.Entry) error) error {
-	rendered := core.TemplateNotLiteral(file, nil)
-	blocks, err := core.TemplateBlocks(file, data, m)
+	d := etcDialect(file)
+	t, err := newMarks(file, data, m)
 	if err != nil {
 		return err
 	}
-	r := envReader{data: data, m: m, lines: core.NewLineCursor(data), vars: map[string]binding{}}
+	switch d {
+	case pamEnv:
+		return readPam(data, m, t, visit)
+	case sourced:
+		return readSourced(file, data, m, t, visit)
+	default:
+		_, err = readCompose(data, m, t, false, false, visit)
+		return err
+	}
+}
+
+// readSourced reads a file a shell sources twice, charged to m both times,
+// so an etc/default file spends the read's work budget twice as fast as
+// another env file. The first read visits nothing and finds whether any
+// statement taints; if one does, the second starts tainted, so every value
+// in the file is marked computed, those before that statement too, since a
+// shell may set an earlier key again there, as in C=3 then A=x C=5.
+func readSourced(file string, data []byte, m *core.Meter, t *marks, visit func(*core.Entry) error) error {
+	tainted, err := readCompose(data, m, t, true, false, func(*core.Entry) error { return nil })
+	if err != nil {
+		return err
+	}
+	if t, err = newMarks(file, data, m); err != nil {
+		return err
+	}
+	_, err = readCompose(data, m, t, true, tainted, visit)
+	return err
+}
+
+// readCompose is readFile in compose's reading, each value t marks, or
+// that a shell would read otherwise in a sourced file, marked computed,
+// and every value of a sourced file when tainted. It reports whether a
+// statement of a sourced file tainted the rest.
+func readCompose(data []byte, m *core.Meter, t *marks, shellSourced, tainted bool, visit func(*core.Entry) error) (bool, error) {
+	r := envReader{data: data, m: m, lines: core.NewLineCursor(data), vars: map[string]binding{}, sourced: shellSourced, tainted: tainted}
 	r.pos = len(data) - len(core.DropBOM(data))
 	var e core.Entry
 	for {
 		more, err := r.statement()
 		if err != nil {
-			return err
+			return r.tainted, err
 		}
 		if !more {
-			return r.m.Charge(len(r.data) - r.charged)
+			return r.tainted, r.m.Charge(len(r.data) - r.charged)
 		}
 		r.raw = nil
 		if err := r.entry(&e); err != nil {
-			return err
+			return r.tainted, err
 		}
-		// One entry for the test, reused: a new one for each statement
-		// escaped to the heap, 144 bytes a statement.
-		r.probe.Value = r.raw
-		if rendered != nil && !e.Computed && rendered(&r.probe) {
-			e.Value, e.Computed = r.raw, true
-		}
-		in, err := blocks.Holds(e.Line)
-		if err != nil {
-			return err
-		}
-		if in && !e.Computed {
-			e.Value, e.Computed = r.raw, true
+		if err := r.mark(&e, t); err != nil {
+			return r.tainted, err
 		}
 		if err := r.m.Charge(core.LineWork + r.pos - r.charged); err != nil {
-			return err
+			return r.tainted, err
 		}
 		r.charged = r.pos
 		r.vars[string(e.Key)] = binding{value: string(e.Value), known: !e.Computed}
 		if err := visit(&e); err != nil {
-			return err
+			return r.tainted, err
 		}
 	}
+}
+
+// mark returns e as written and marked computed where the file's own
+// reader may read it otherwise than compose: in a file a shell sources, as
+// markSourced says, and in a template a value t marks.
+func (r *envReader) mark(e *core.Entry, t *marks) error {
+	if r.sourced {
+		r.markSourced(e)
+	}
+	not, err := t.notLiteral(r.raw, e.Line)
+	// What the engine renders a value to may carry a shell's state, and
+	// errata cannot see it.
+	r.tainted = r.tainted || r.sourced && not
+	if not && !e.Computed {
+		e.Value, e.Computed = r.raw, true
+	}
+	return err
 }
 
 // binding is what the file set a key to: known is false when the value
@@ -242,7 +293,12 @@ type envReader struct {
 	escaped []byte // chars with its escapes read
 	out     []byte // the value substituted
 	raw     []byte // the value as written, between its quotes
-	probe   core.Entry
+	start   int    // where the statement starts, export included
+	sourced bool   // the file is one a shell sources: etc/default
+	tainted bool   // a statement before may carry a shell's state past its line
+	sep     byte   // the statement's separator, =, : or \n, or 0 for none
+	opened  int    // where its value may start: after the separator
+	span    []byte // a value withoutSpan writes its span out of
 }
 
 // statement skips white space and comments to the start of the next
@@ -319,6 +375,7 @@ func inName(c rune) bool {
 // entry reads the statement at pos into e, as locateKeyName and
 // extractVarValue do, and leaves pos after it.
 func (r *envReader) entry(e *core.Entry) error {
+	r.start = r.pos
 	if isExport(r.data[r.pos:]) {
 		r.pos += len("export")
 		r.skipSpace()
@@ -351,7 +408,9 @@ func (r *envReader) entry(e *core.Entry) error {
 	if bytes.Contains(e.Key, []byte(" ")) {
 		return core.LineError(e.Line, "the name %s holds a space, which compose refuses", core.Quote(string(e.Key)))
 	}
+	r.opened = r.pos
 	r.skipSpace()
+	r.sep = sep
 	if sep == '\n' {
 		e.Value, e.Computed = nil, true
 		return nil

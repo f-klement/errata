@@ -322,8 +322,12 @@ func chooseDialect(s Spec) (*dialect, error) {
 	if d := dialectFor(file); d != nil {
 		return d, nil
 	}
-	return nil, fmt.Errorf("etc: no dialect reads a file named %s; write dialect: one of %s", core.Quote(path.Base(file)), dialectNames())
+	return nil, fmt.Errorf("etc: no dialect reads a file named %s; write dialect: one of %s; %s", core.Quote(path.Base(file)), dialectNames(), otherKinds)
 }
+
+// otherKinds names the kinds that read the Unix files no dialect of etc
+// reads, for the refusal of a file whose name chooses no dialect.
+const otherKinds = "the table kind reads a field table such as fstab or passwd, the sudoers kind a sudoers file, and the udev kind udev rules"
 
 // inDir reports whether dirs ends in a directory named name.
 func inDir(dirs []string, name string) bool { return len(dirs) > 0 && dirs[len(dirs)-1] == name }

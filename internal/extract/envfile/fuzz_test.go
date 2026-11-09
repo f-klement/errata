@@ -1,6 +1,7 @@
 package envfile
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -63,4 +64,94 @@ func FuzzEnvfile(f *testing.F) {
 			t.Fatalf("%d of %d read back: %v\n%s", i, len(keys), err, written.String())
 		}
 	})
+}
+
+// The two etc dialects read any file into keys and values at lines inside
+// it. In etc/environment every literal value, written again in double
+// quotes, reads back as itself at the line it was written on. A file in
+// etc/default reads every statement compose does, at its line, and only
+// marks values: a literal one is compose's literal value.
+func FuzzEnvfileEtc(f *testing.F) {
+	f.Add("export A=1\nB=\"x y\"#c\n# c \\\nC='x\nD=1 \\\n\tE=2\nF\n=x\n", "")
+	f.Add("\ufeffA=1\r\nB=\"a\"b\"\r\n1.x=2\nA='x' B=y\rC=z\x00\n", "A")
+	f.Fuzz(func(t *testing.T, data, name string) {
+		for _, file := range []string{"etc/environment", "etc/default/f"} {
+			x, err := Build(Spec{File: file, Name: name})
+			if err != nil {
+				return
+			}
+			e := x.(core.EntryExtractor)
+			if _, err := e.FromData([]byte(data)); err != nil && strings.Contains(err.Error(), "units of work") {
+				continue
+			}
+			coretest.CheckEntryValues(t, e, []byte(data), 1<<20+core.WorkPerByte*len(data))
+		}
+		checkPamWrittenBack(t, data)
+		checkSourcedMarksOnly(t, data)
+	})
+}
+
+// checkPamWrittenBack writes every literal entry pam_env reads in data as
+// KEY="value" and reads it back.
+func checkPamWrittenBack(t *testing.T, data string) {
+	t.Helper()
+	var written strings.Builder
+	var want []string
+	line := 1
+	_ = readFile([]byte(data), nil, "etc/environment", func(en *core.Entry) error {
+		if !en.Computed {
+			entry := string(en.Key) + `="` + string(en.Value) + `"`
+			want = append(want, fmt.Sprintf("%s=%q@%d", en.Key, en.Value, line))
+			written.WriteString(entry + "\n")
+			line += core.LastLine([]byte(entry))
+		}
+		return nil
+	})
+	var got []string
+	err := readFile([]byte(written.String()), nil, "etc/environment", func(en *core.Entry) error {
+		got = append(got, fmt.Sprintf("%s=%q@%d", en.Key, en.Value, en.Line))
+		if en.Computed {
+			t.Fatalf("%s=%q read back computed", en.Key, en.Value)
+		}
+		return nil
+	})
+	if err != nil || strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("read back %q, want %q: %v\n%s", got, want, err, written.String())
+	}
+}
+
+// checkSourcedMarksOnly holds a file in etc/default to compose's reading
+// of data: the same refusal, or the same statements, keys and lines, and a
+// literal value only where compose's is literal and the same.
+func checkSourcedMarksOnly(t *testing.T, data string) {
+	t.Helper()
+	type read struct {
+		key, value string
+		line       int
+		computed   bool
+	}
+	all := func(file string) ([]read, error) {
+		var rs []read
+		err := readFile([]byte(data), nil, file, func(en *core.Entry) error {
+			rs = append(rs, read{string(en.Key), string(en.Value), en.Line, en.Computed})
+			return nil
+		})
+		return rs, err
+	}
+	want, werr := all(".env")
+	got, gerr := all("etc/default/f")
+	// A file compose refuses is refused alike; etc/default's first read
+	// finds it before visiting any entry.
+	if (werr == nil) != (gerr == nil) || werr != nil && werr.Error() != gerr.Error() {
+		t.Fatalf("etc/default refuses with %v, compose with %v", gerr, werr)
+	}
+	if werr == nil && len(got) != len(want) {
+		t.Fatalf("etc/default read %d entries, compose %d", len(got), len(want))
+	}
+	for i, g := range got {
+		w := want[i]
+		if g.key != w.key || g.line != w.line || !g.computed && (w.computed || g.value != w.value) {
+			t.Fatalf("entry %d: etc/default %+v, compose %+v", i, g, w)
+		}
+	}
 }

@@ -1,0 +1,3 @@
+# The NAS exports the library to the players and the backup host.
+/srv/media -sync,no_subtree_check @players(ro,root_squash) \
+    backup.lan(rw)

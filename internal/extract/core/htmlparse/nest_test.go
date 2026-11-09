@@ -181,20 +181,33 @@ func TestScannerEdges(t *testing.T) {
 // standard reads a lone CR, and a CR before a LF, as one LF before it
 // tokenizes, so a browser drops it and reopens no formatting element
 // before it. The scanner reads the source folded, as its callers hand it
-// over (core.LineFeeds). A textarea's first line feed is the tag's too,
-// and a line feed alone in a pre leaves it empty, so the one after a tag a
-// browser ignores is dropped as well. The planted breaks: no line feed
-// dropped, which refuses the find (FuzzHTML, the round after 04c52e9); the
-// line feed alone not taken as alone.
+// over (core.LineFeeds). A textarea's first line feed is the tag's too.
+// x/net drops the line feed while the pre is on top and holds nothing, so
+// a line feed alone, text of NULs alone, a doctype, and a start or end tag
+// a browser ignores leave the next line feed the tag's; a template, a
+// comment or a </p> puts something in the pre, and the line feed after it
+// is text. FuzzBrowser found <pre><th></a> and a line feed read with the
+// line feed (the landing gate on e2adb567). The planted breaks: no line
+// feed dropped, which refuses the find (FuzzHTML, the round after
+// 04c52e9); the line feed alone not taken as alone; the line feed kept
+// after an ignored start tag, after a doctype, or after NULs alone; the
+// ignored mark of an earlier tag left on a template's tag.
 func TestPreFirstCarriageReturn(t *testing.T) {
 	for src, want := range map[string]string{
-		"<pre>\rx</pre>":               "<pre|pre:x|</pre",
-		"<pre>\r\nx</pre>":             "<pre|pre:x|</pre",
-		"<pre>\r</pre>":                "<pre|</pre",
-		"<pre>\r\rx</pre>":             "<pre|pre:\nx|</pre",
-		"<pre>\r</li>\rx":              "<pre|</li|pre:x",
-		"<textarea>\rx</textarea>":     "<textarea|pre:x|</textarea",
-		"<p ><Code ><pre>\r<p></Code>": "<p|<code|<pre|<p|</code",
+		"<pre>\rx</pre>":                    "<pre|pre:x|</pre",
+		"<pre>\r\nx</pre>":                  "<pre|pre:x|</pre",
+		"<pre>\r</pre>":                     "<pre|</pre",
+		"<pre>\r\rx</pre>":                  "<pre|pre:\nx|</pre",
+		"<pre>\r</li>\rx":                   "<pre|</li|pre:x",
+		"<textarea>\rx</textarea>":          "<textarea|pre:x|</textarea",
+		"<p ><Code ><pre>\r<p></Code>":      "<p|<code|<pre|<p|</code",
+		"<pre><th></a>\nx":                  "<pre|<th|</a|pre:x",
+		"<pre>\n<th>\nx":                    "<pre|<th|pre:x",
+		"<pre><!DOCTYPE html>\nx":           "<pre|pre:x",
+		"<pre>\x00<body>\nx":                "<pre|pre:\x00|<body|pre:x",
+		"<pre></a><template></template>\nx": "<pre|</a|pre:\nx",
+		"<pre><!-- c -->\nx":                "<pre|comment:<!-- c -->|pre:\nx",
+		"<pre></p>\nx":                      "<pre|</p|pre:\nx",
 	} {
 		if got := strings.Join(tokens(string(core.LineFeeds([]byte(src))), 100), "|"); got != want {
 			t.Errorf("%q: got %q, want %q", src, got, want)

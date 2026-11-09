@@ -254,6 +254,13 @@ The files a host is configured with, and the formats the earlier readers left op
 - A SARIF result for a file that does not exist points at its check in errata.yaml.
 - A `package_version` value that is not literal, such as a workspace version, reported as the
   file writes it or in one canonical spelling, whichever reads better beside the other values.
+- errata's own review gate reports, for the reviewer to weigh and never as a failure, a change
+  that weakened a Go test: a test or table row removed, a skip or a build constraint added, fewer
+  assertions, or a wanted value changed beside the code it checks.
+- The gate runs the tests a change adds or edits against the code before the change, and names
+  each that passes there, since such a test does not show the change works.
+- The gate reruns those tests under five shuffle seeds and names each whose result differs
+  between the runs.
 
 ## Before v0.5.0: every function below CRAP 10
 

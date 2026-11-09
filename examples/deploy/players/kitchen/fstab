@@ -1,0 +1,2 @@
+LABEL=root  /  ext4  defaults  0  1
+nas.lan:/srv/media  /media  nfs  ro,hard,_netdev  0  0

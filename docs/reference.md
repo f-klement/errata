@@ -56,6 +56,9 @@ new user needs it, with four checks worked through from the files to the fix, an
   - [`github-actions`](#github-actions)
   - [`jenkins`](#jenkins)
   - [`etc`](#etc)
+  - [`sudoers`](#sudoers)
+  - [`table`](#table)
+  - [`udev`](#udev)
   - [`systemd`](#systemd)
   - [`env`](#env)
   - [`exists` and `size`](#exists-and-size)
@@ -1245,7 +1248,8 @@ plain `3.10` ([`gitlab-ci`](#gitlab-ci)), `shell` for a value the shell expands,
 `$(git describe)` ([`shell`](#shell)), `github-actions` for a `${{ }}` expression
 other than a matrix variable, or a plain `3.10` ([`github-actions`](#github-actions)), `jenkins` for
 a value Groovy computes, such as `credentials('id')` ([`jenkins`](#jenkins)), `etc` for a value
-OpenSSH expands, such as `%h/.ssh/keys`, and in a template file ([`etc`](#etc)), `literal` for a
+OpenSSH expands, such as `%h/.ssh/keys`, and in a template file ([`etc`](#etc)), `table` in a
+template file ([`table`](#table)), `literal` for a
 value a program computes, such as `os.environ["PORT"]` or `"v" + VERSION` ([`literal`](#literal)), `code` for
 the same and for a Go value only the running program knows, such as `os.Getenv("PORT")` ([`code`](#code)), and `env` for
 any of these that the reader of its file marks; a `${{ }}` read with `yaml:` is still plain text,
@@ -1311,7 +1315,7 @@ counts only the values left.
 `skip_not_literal` may list only an extractor that can return a not literal value: for any other the
 key would load and leave nothing out, so it does not load. That holds for every kind but `ini`,
 `properties`, `tool_version`, `package_version`, `dependency`, `envfile`, `gitlab-ci`, `shell`,
-`github-actions`, `jenkins`, `literal` and `code`, for an `ini` extractor whose file errata models no transform for, such as
+`github-actions`, `jenkins`, `etc`, `table`, `literal` and `code`, for an `ini` extractor whose file errata models no transform for, such as
 `pytest.ini`, and for a `properties` file that is neither a template nor one of Spring Boot's or
 Log4j's. The message names the kind, and
 for `ini` the dialect and the file:
@@ -3543,6 +3547,101 @@ of letters, digits and `_` reads the same in both. Where the two differ:
 - systemd joins what follows a closing quote to the value: `E="x" y=2` sets `E` to `xy=2`.
   compose sets `E` to `x` and reads `y=2` as the next assignment.
 
+#### `etc/default` and `etc/environment`
+
+Two names choose a dialect of their own, a template suffix such as `.j2` taken off first: a file
+directly in a `default` directory beneath `etc`, such as `etc/default/grub` or
+`rootfs/etc/default/ssh`, and a file named `environment` directly beneath `etc`. The
+[`env`](#env) kind reads both with `envfile`. Any other name, `environment` alone among them, is
+read as compose reads it.
+
+A shell script sources a file in `etc/default`, and a unit's `EnvironmentFile=` may read the same
+file. errata reads it as compose does and returns a value as literal only when compose, a POSIX
+shell and systemd all read its line alike, and no line in the file is one of those named below,
+at which a shell may read on, stop, or set an earlier key again. A line is read alike when it
+is `NAME=value` with nothing but space and tab before it, `NAME` is a shell variable's name
+(`[A-Za-z_][A-Za-z0-9_]*`), and the value is one of these:
+
+- an unquoted word of ASCII letters, digits, `_`, `-`, `.`, `/`, `:`, `,`, `+`, `@`, `%` and
+  `=`, space and tab after it dropped;
+- a value in `"` or `'` that holds no `\`, `$`, `` ` ``, line break or quote of its own kind,
+  with nothing after the closing quote.
+
+Any other value is returned as the file wrote it, between its quotes, and marked not literal,
+and so is every substitution of its key. That covers `export A=1`, which systemd ignores; `A=x y`,
+which a shell runs as the command `y`; `A=x # c`, whose comment is part of the value to systemd;
+`$` and `\`, which the three read differently; `~`, which a shell expands; a key with `.` or `-`;
+a line after a lone CR or with a CR at its end, as in a CRLF file, which a shell keeps in the
+value; and a byte order mark.
+
+compose ends a statement at the end of its line where a shell may read on, or stop sourcing
+the file, or set a key the file set before. So a statement that is not read alike makes every
+value in the file not literal, those before it too, when its line holds `'`, `"`, `\`, `` ` ``,
+`(`, `)`, `<`, `>`, `$`, `|`, `&` or `;`, or when a shell runs a command there:
+
+- `A=it's` opens a quote, `A=x\` joins the next line, `A=x <<B` starts a heredoc, and `A=x )`
+  or a `<` at the end of a line is a syntax error, where the source stops.
+- A key alone, such as `return`, `exit` or `fi`, is a command to a shell, and so is a key with
+  white space before its `=` or `:`, as in `exit =1` or `exit : 1`.
+- A word after white space past the `=`, as in `A=x y`, `A=x exit`, `A= y` or `A = 1`, is a
+  command a shell runs, which may return, exit or stop the rest; and `A=x C=5` or `A=1;C=5`
+  sets `C` again, so an earlier `C=3` is not what the shell ends with.
+
+One span in the value is taken out before that test when it closes on the line it opens: a
+value in `'`; a value in `"` with no `\`, `` ` ``, `$(`, `${` or `$[` in it, since a quote inside
+the braces opens one of its own and bash's `$[` is arithmetic; a command in backticks with no
+`\`, quote or `#` in it and its `(` and `)` balanced, since dash parses it with the file and a
+`#` may hide a `)`; or a command in `$(` and `)` with no `\`, quote, backtick, `#` or `<` in it,
+since a `#` may start a comment that hides the `)` and a here-document reads its body from the
+lines after. `$((` is arithmetic, not a command, and is never taken out: it runs in the
+sourcing shell and may assign, as `A=$((C=5))` does. A shell reads such a span to its close,
+and a command in it runs in a subshell, which cannot set the sourcing shell's variables. The
+value itself stays not literal. So Debian 13's stock line
+``GRUB_DISTRIBUTOR=`( . /etc/os-release && echo ${NAME} )` ``, the lsb_release form of Debian
+12 and Ubuntu, and `GRUB_CMDLINE_LINUX="$GRUB_CMDLINE_LINUX quiet"` leave the other values
+literal. A second span on the line, a span that does not close there, or a byte from the list or
+a word after the span marks every value as before: `` A=`x`;exit `` and `` A=`x` y `` do.
+
+errata reads such a file as one whose commands parse and succeed. In two cases a shell does not
+set the values below a span, and errata still returns them literal: a shell under `set -e`, as
+`grub-mkconfig` runs, exits when the command in a span of an assignment fails; and a span whose
+command does not parse, such as `$(fi)`, stops the source there.
+
+With `A=it's` or `A=x y` in the file, a `B=2` above or below it is `2` marked not literal.
+`export A=1`, whose space comes before the key, `A=x # c`, whose `#` starts a comment, and
+`A: x`, whose command `A:` changes nothing, leave the other lines as they are. In a template,
+such as `etc/default/grub.j2`, a value the engine renders marks every value in the file,
+`A={{ a }}`, `A={{a}}` and `A="{{ a }}"` alike: the engine renders the file before a shell reads
+it, and what the value renders to, which errata does not see, may carry a shell's state.
+
+A file that compose refuses, such as one with `if`, a function or
+`. other-file` in it, makes the rule unknown: read it with the [`shell`](#shell) kind, or give it
+`readers: {etc/default/app: shell}` under `env`.
+
+`etc/environment` is read as pam_env reads it, in Linux-PAM 1.7 built without libeconf, and
+not as compose reads it:
+
+- A line ends at a line feed only. Space and tab before a statement are skipped, and `#`
+  anywhere in a line starts a comment.
+- `export` and one space before a key are dropped. A key is ASCII letters, digits and `_` up to
+  the first `=`; pam_env skips a line whose key holds any other byte, `A = 1` and `x.y=1` among
+  them, and a line that starts with `=`.
+- The value runs to the comment or the end of the line, and the space and tab at its end are
+  part of it. Nothing in it is substituted or escaped: `$HOME` and `\t` are its text.
+- A value that starts with `"` or `'` loses that quote, and its last byte when that is `"` or
+  `'`. Any other quote stays: `A="a"b"` is `a"b`, and `A="x" ` (a space at the end) is `x" `.
+- A line of a key alone asks pam_env to unset the variable; errata returns an empty value marked
+  not literal.
+- A line that `\` ends, before space and tab, and that holds no `#`, joins the next. errata
+  does not model the join, which Linux-PAM releases have changed, and returns the value as the
+  first line wrote it, marked not literal. So it does on the last line, where Linux-PAM turns
+  the `\` into a NUL that ends the value. A value with a NUL byte, where pam_env's C strings
+  end, is marked not literal too.
+
+A build of Linux-PAM with libeconf, as openSUSE ships, reads the file through libeconf, and
+`user_readenv` reads `~/.pam_environment`; errata models neither. pam_env also sets variables
+from `/etc/security/pam_env.conf`, which errata does not read.
+
 ### `gitlab-ci`
 
 `gitlab-ci` returns the value one job of a GitLab CI file sees: of a CI/CD variable with
@@ -4023,7 +4122,9 @@ a template suffix is taken off:
 | `ntp` | `ntp.conf` | ntpd |
 
 A file whose name chooses no dialect is refused at load; write `dialect:`. The field tables
-(`fstab`, `passwd`, `hosts` and the like), `sudoers` and udev rules are not read yet.
+(`fstab`, `passwd`, `hosts` and the like) are read by the [`table`](#table) kind, sudoers files by
+the [`sudoers`](#sudoers) kind and udev rules by the [`udev`](#udev) kind, and the refusal names
+them.
 
 ```yaml
 extract:
@@ -4080,7 +4181,8 @@ in the directory the tool ranks first: the directory above the drop-in directory
 for pam_limits) ending in `etc`, then `run`, `usr/local/lib`, `usr/lib`, `lib` and `usr/etc`, so
 `etc/sysctl.d/50-x.conf` masks `usr/lib/sysctl.d/50-x.conf` whatever the order `files:` lists
 them. Of two files of one name in directories the tools do not rank, such as `a/sysctl.d` and
-`b/sysctl.d`, the first listed masks the other. sysctl reads `sysctl.conf` after the drop-ins, and
+`b/sysctl.d`, the first listed masks the other. A template is the file it renders, so
+`etc/sysctl.d/60-x.conf.j2` masks `usr/lib/sysctl.d/60-x.conf` too. sysctl reads `sysctl.conf` after the drop-ins, and
 pam_limits `limits.conf` before them. A later value overrides an earlier one for sysctl and pam_limits, so the last value is
 the one the host applies; errata returns every one, so an `agree` rule sees the files disagree,
 and an `assert` can name the last. The other dialects read one `file:`, and refuse `files:`.
@@ -4183,6 +4285,449 @@ the `sshd` dialect, and a value with the engine's marks, or inside one of its bl
 literal. Every other value is the text the tool reads, which errata does not check: a `Port` of
 `x` is returned as written.
 
+### `sudoers`
+
+`sudoers` reads a sudoers file as sudo reads it, with the files it includes, and returns the
+values of one Defaults setting, the commands the file grants one user, or every command it grants
+anyone. `file:` names the file,
+which stands for `/etc/sudoers`. `files:` names the drop-ins of a `sudoers.d`, a list or a glob as
+[A set of files](#a-set-of-files) says, read as `#includedir` reads a directory: by path, leaving
+out a file whose name, once a template suffix is taken off, holds a `.` or ends in `~`. All the
+files one spec reads share their aliases, as they do in sudo. A spec sets exactly one of
+`defaults:`, `user:` and `grants: true`.
+
+```yaml
+extract:
+  path:   {sudoers: {file: roles/base/files/sudoers, defaults: secure_path}}
+  deploy: {sudoers: {file: roles/base/files/sudoers, user: deploy}}
+  ops:    {sudoers: {files: [etc/sudoers.d/*], user: '%ops'}}
+  every:  {sudoers: {file: roles/base/files/sudoers, grants: true}}
+```
+
+A line is read as sudo's lexer reads it: a `\` at the end of a line joins the next to it, a `#`
+starts a comment outside double quotes unless a digit follows it at the start of a word (`#1000`,
+`%#50`, a user or group ID), a `\` keeps the character after it, and a part in double quotes is
+taken whole without its quotes. A line errata cannot read makes the rule unknown, and the message
+names it: visudo refuses such a line, and sudo since 1.9.3 drops it and reads on, so what the file
+grants without it is not what it says. Lines end at `\n`, `\r\n` and a lone `\r`, as every kind
+numbers them; sudo drops a line with a lone `\r` in it, where errata reads two.
+
+#### Defaults settings
+
+`defaults:` names a setting, such as `secure_path` or `timestamp_timeout`, and returns each value a
+Defaults line gives it, in the order sudo reads the files, at the line of the value. The value is
+text, in one of four forms:
+
+| The line writes | The value |
+|---|---|
+| `requiretty` | `true` |
+| `!requiretty` | `false` |
+| `secure_path="/usr/sbin:/usr/bin"` | `/usr/sbin:/usr/bin`, the value unquoted |
+| `env_keep += "HOME PATH"`, `env_keep -= LANG` | `+=HOME PATH`, `-=LANG`: the operator, then the value unquoted |
+
+So a value that adds to a list never equals one that sets it. The scope of a scoped line is the
+value's condition: `Defaults:%ops`, `Defaults@web1`,
+`Defaults>root` or `Defaults!/usr/bin/su`, with its list's entries as written and joined by commas
+without the white space sudo allows around them, so `Defaults: bob, alice` is `Defaults:bob,alice`.
+A value of a line with no scope has none. errata does not resolve an alias in a scope, nor decide
+which user, host or command a scope covers.
+
+sudo applies the Defaults lines with no scope first, then the host, user, Runas and command ones,
+each in file order, and a later value replaces an earlier one; errata returns every value in file
+order, so an `assert` can name the one it means, and `agree` sees the lines disagree. errata does
+not check the name of a setting against the ones sudo knows, so a misspelt setting gives no
+value, where visudo refuses the line and sudo logs it.
+
+#### Grants to a user
+
+`user:` names an entry of a user list as sudo writes it: a user, `#uid`, `%group`, `%#gid`,
+`%:group` for a non-Unix group, `+netgroup` or `ALL`. It returns a record, as
+[Records](#records) describes, for each command of each user specification whose user list
+grants the entry, in file order, at the line of the command. Each record has these fields:
+
+| Field | Holds |
+|---|---|
+| `user` | the specification's user list, a list |
+| `host` | its host list, a list |
+| `runas` | the users the command runs as, a list: `(invoking user)` for `()` and `(:group)`, which run it as the user who runs sudo, and empty when the line names no Runas list, so sudo uses `runas_default`, `root` unless a Defaults line sets it |
+| `runas_group` | the groups the command runs as, a list |
+| `tags` | the tags that hold for the command, such as `NOPASSWD` or `NOEXEC`, a list |
+| `options` | the options that hold for it, such as `TIMEOUT=10` or `CWD=/srv`, a list |
+| `command` | the command and its arguments, its words joined by one space, a `!` before a command the line denies |
+
+Each entry of a list is at the line it is written on. A command takes the Runas lists, the tags
+and the options of the command before it in its list, as sudo carries them over, until it sets its
+own; a tag replaces its opposite (`PASSWD` and `NOPASSWD`), and `ROLE` and `TYPE`, like `PRIVS`
+and `LIMITPRIVS`, carry over as a pair, so a command that sets one takes the other only from its
+own line. A command's words are joined by one space. A double quote is part of its word, a `\`
+stays before `*`, `?`, `[`, `]`, `!` and `^`, which it keeps from matching as a pattern, a `\`
+before `:`, `\`, `,`, `=`, `#` or white space is dropped and the byte kept, and `""`, which allows
+no arguments, stays in the command. errata does not read every command sudo does, and these make
+the rule unknown: a command or a first argument that starts with `^`, a regular expression sudo
+1.9.10 and later match; a `\` before any other byte, where sudo drops the line; and a `#` inside
+double quotes, where sudo ends the command. A digest stays before its command, as
+`sha256:... /usr/bin/x`; a `!` after it, `sha256:... !/bin/su`, denies the command, which is then
+written `!sha256:... /bin/su`. errata reads one digest before a command, so a list of them, which
+sudo allows (`sha224:...,sha256:... /usr/bin/x`), makes the rule unknown. A specification with
+several host lists, `alice web = /a : db = /b`, gives each command its own hosts.
+
+The four kinds of alias, `User_Alias`, `Runas_Alias`, `Host_Alias` and `Cmnd_Alias` (or
+`Cmd_Alias`), are resolved wherever a list names one, in any of the files a spec reads, an alias
+inside another too. A command alias gives a record for each of its commands. A negated alias of
+one entry is that entry negated, so two negations cancel; of several, one entry `!(a, b)`, since
+sudo negates what the alias matches as a whole. An alias the files do not define, one that holds
+itself, and one defined twice make the rule unknown: visudo refuses a second definition, and sudo
+since 1.9.3 drops it and keeps the first.
+
+A user list grants the entry as sudo decides it: the last entry that matches wins, so in
+`ALL, !bob` bob is denied, and an alias's outcome is negated with a `!` before it. `ALL` matches
+every entry, and an entry matches itself. What else matches is the host's to decide:
+
+- For a `user:` that names a user, by name or by ID: a group, a netgroup and the other form of
+  the user's name, since the host's `/etc/group`, passwd, LDAP or nsswitch say whom they hold.
+- For a `user:` that names a group: the same group named by ID where it is named by name, or the
+  other way round, and the group written as a Unix and as a non-Unix group (`%ops` and `%:ops`).
+- A name in another case, `Bob` for `bob` or `%Ops` for `%ops`: sudo matches user and group names
+  in any case unless `case_insensitive_user` or `case_insensitive_group` is turned off. errata
+  takes such a name as one that does not match only when a Defaults line with no scope in the
+  files turns the flag off and no scoped line sets it, since a file outside the repository may
+  set it too.
+
+A grant that hangs on such an entry, `%sudo ALL = ALL` or `ALL, !%wheel ALL = /c`, is returned not
+literal, as [Values a file only computes](#values-a-file-only-computes) says: the rule is unknown,
+or with `skip_not_literal` the grant is left out and the rule judges what the file grants the
+entry by name. A `user:` that names a netgroup takes only that netgroup and `ALL`.
+
+errata returns every grant and decides none of the rest: which host the host list covers, whom
+the Runas lists allow, which command a pattern or a directory matches, or the grant sudo takes
+when two match (the last). It does not add the `SETENV` sudo implies for a command of `ALL`.
+
+#### Every grant
+
+`grants: true` returns the same records as `user:`, one for each command a user specification
+grants, but for every specification in the files, whatever its user list: the `user` field says whom
+each grant names, with its aliases resolved and a `!` before an entry it denies. A user named in
+double quotes with a `!` of its own, `"!bob"`, is written `!bob` as well, the same as a denied bob.
+It is the selector for a claim about the whole file, such as "no grant skips the password but the
+deploy user's":
+
+```yaml
+extract:
+  every: {sudoers: {file: roles/base/files/sudoers, grants: true}}
+assert: every.all(g, !('NOPASSWD' in g.tags) || g.user == ['deploy'])
+```
+
+The `NOPASSWD` tag is one way a grant skips the password; a Defaults line that turns
+`authenticate` off is the other, for every grant in its scope, so a claim that nothing skips the
+password reads `defaults: authenticate` too and holds its values to `true`, as the example
+`only-the-api-runs-without-a-password` does.
+
+errata decides nothing about the user list here, so a record is not literal only where a template
+marks it. The key is `grants` because it returns the grants themselves, where `user:` returns the
+grants that reach one entry; `true` is its only value, and `false` is the key left out.
+
+#### sudo's includes
+
+`#include` and `@include` read a file, and `#includedir` and `@includedir` the files of a directory
+that git tracks, by name, leaving out those whose name holds a `.` or ends in `~` and those in a
+directory below it, as sudo does. They are read in place, before the lines after them. `#include`
+and `#includedir` count only at the start of a line, as sudo's lexer reads them, so an indented
+one is a comment; `@include` and `@includedir` may be indented. A path in double quotes may hold
+white space, `%%` is a `%`, and a comment may follow the path. A relative path is read below the
+directory of the file that includes it, as sudo 1.9.1 and later read it. The file `file:` names
+stands for `/etc/sudoers`, so its directory stands for `/etc`, or the directory above it for a file
+in a `sudoers.d`, and a path under `/etc` is read below that directory:
+`@includedir /etc/sudoers.d` in `roles/base/files/sudoers` reads `roles/base/files/sudoers.d`. A
+directory the repository does not hold has no files, so drop-ins only the host holds, such as
+cloud-init's `90-cloud-init-users`, are not seen.
+
+An include errata cannot read makes the rule unknown, since what it sets is not in the
+repository: a path outside `/etc`, one that climbs out of the directory that stands for `/etc`
+(`../outside`, `/etc/../outside`), one that holds `%h`, which sudo replaces with the host's name,
+one a template computes, and a file named outright that the repository does not hold, which the
+host may hold, and which sudo since 1.9.3 logs as missing and reads on without. Includes nest at
+most 128 deep, sudo's limit, so a file that includes itself is refused.
+
+#### Values sudoers marks
+
+A template file is read as the file it renders, as [`ini`](#ini) says, so `sudoers.j2` is read as
+sudoers. A line that holds only one of its engine's tags, such as `{% for u in users %}`, is
+passed over, and a value with the engine's marks, or inside one of its blocks, is not literal, as
+is a record with any such part. A user list entry the engine renders, such as `{{ user }}`, may be
+any user, so `user:` returns a grant that hangs on it, not literal. A host's name, its groups, and
+a file outside the repository are the host's, never the file's; the sections above say how each
+reaches a rule.
+
+### `table`
+
+`table` reads a Unix field table, one row to a line, and returns the values of one column,
+`column`, in file order, each at the file and the line of its field. `dialect` names the table;
+left out, the file's name chooses, once a template suffix is taken off. The columns have the
+names the table's man page gives them:
+
+| Dialect | Chosen for | Columns | Reads as |
+|---|---|---|---|
+| `fstab` | `fstab` | `spec`, `file`, `vfstype`, `mntops`, `freq`, `passno` | util-linux's libmount |
+| `passwd` | `passwd` | `name`, `password`, `uid`, `gid`, `gecos`, `directory`, `shell` | glibc's nss_files |
+| `group` | `group` | `group_name`, `password`, `gid`, `user_list` | glibc's nss_files |
+| `hosts` | `hosts` | `ip_address`, `canonical_hostname`, `aliases`, `names` | glibc's nss_files |
+| `exports` | `exports`, a `.exports` file in `exports.d` | `path`, `client`, `options` | nfs-utils' exportfs |
+| `crypttab` | `crypttab` | `target`, `source`, `key_file`, `options` | systemd-cryptsetup-generator |
+
+hosts(5) has no `names`: it is errata's, the canonical name and the aliases together, since the
+resolver finds a row by any of them. A file whose name chooses no dialect is refused at load;
+write `dialect:`. `shadow`, `gshadow` and the other tables are not read. `files:` reads a
+[set of files](#a-set-of-files), each file one table in the dialect `dialect:` or the first
+entry's name chooses, so `files: [etc/exports, etc/exports.d/*.exports]` reads the exports in
+exportfs's order, and `files: [hosts/*/fstab]` the fstab of every host.
+
+```yaml
+extract:
+  srv_opts: {table: {file: etc/fstab, column: mntops, row: {file: /srv}}}
+  web1:     {table: {file: etc/hosts, column: ip_address, row: {names: web1}}}
+  admins:   {table: {file: etc/group, column: user_list, row: {group_name: wheel}}}
+  nfs_ro:   {table: {file: etc/exports, column: options, row: {path: /srv/nfs, client: '@trusted'}}}
+```
+
+`row` keeps the rows whose columns hold the values it names, every column it names: a field
+equal to the value, or a list one of whose items is. Left out, every row is kept. A value is
+compared as written, byte for byte, but for the host names of `hosts`, which glibc compares in any
+case of the ASCII letters: `row: {names: WEB1}` selects the row that names `web1`. A value is the
+text the tool reads, so an escape fstab or exports decodes is decoded, in the value and before
+`row` compares it: `/mnt/my\040disk` is `/mnt/my disk`. A path is not cleaned, so `/srv/` selects
+no row that writes `/srv`. When several rows match, errata returns the column of each, in file order; glibc's
+lookups take the first row that names a user, a group or a host.
+
+A list column returns its items, each one value at its line: `mntops`, `user_list`, `aliases`,
+`names`, and the `options` of `exports` and `crypttab`. A rule asks whether the list holds an item,
+which `'noatime' in srv_opts` or `admins.exists(u, u == 'alice')` answers. A list with no item
+gives no value, so a rule over a group without members lists the extractor in `allow_empty`. The
+items keep the file's order, and for `exports` the defaults come first. Order matters to the
+tools: libmount and exportfs apply options left to right, so a later option overrides its
+opposite. `/srv -ro trusted(rw)` exports read-write to `trusted`, whose options are `[ro, rw]`, so
+`'ro' in opts` holds for a client that may write. Test for the absence of the opposite instead:
+
+```yaml
+assert: "!('rw' in export) && !('async' in export)"
+```
+
+`mntops` items are split at commas outside double quotes, as libmount reads `context="a,b"`; an
+`exports` option list, whose quotes are gone by then, and a `group` member list at every comma,
+glibc skipping the white space before each member. An empty item is left out; `aliases` are the
+words after the canonical name.
+
+Each dialect splits a line as its tool does:
+
+- `fstab`: fields are runs of anything but spaces and tabs, and a line whose first field starts with
+  `#` is a comment. A row has three fields at least, as libmount reads it: a row that leaves out
+  `mntops` has no option, and `freq` and `passno` are `0` when it leaves them out, at the row's
+  line, as fstab(5) says. libmount decodes each `\ooo` in `spec`, `file`, `vfstype` and `mntops` to
+  the byte it writes, `\040` a space and `\054` a comma, before it splits the options, and so does
+  errata. `freq` and `passno` are the numbers libmount reads: `010` is `10`, and a number past 64
+  bits is the low 32 bits of the long strtol clamps it to, so `99999999999999999999` is `-1`. A row
+  is passed over, as libmount refuses it, when its `freq` or `passno` has no digit or anything after
+  its digits, such as `3y` or `0x1`, or a number past 64 bits has more of the line after it. Words
+  past the sixth field are not read.
+- `passwd` and `group`: fields are split at `:`, the last column taking the rest of the line, so a
+  `:` in a shell stays in it, and a line that starts with `#` after white space is a comment; a `#`
+  anywhere else is text. glibc reads a `passwd` row of four fields, `gecos`, `directory` and `shell`
+  then empty, so `toor:x:0:0` is a user with uid 0, and a `group` row of three, with no member. A
+  `uid` or `gid` is the number glibc reads: white space, a `+` or a `-` and leading zeros before
+  the digits are read, so `00`, `+0`, ` 0` and `-0` are all `0`, and `row: {uid: '0'}` finds
+  each. A row whose id has no digit, anything after its digits, or a value past 32 bits, `-1`
+  included, is passed over, as glibc passes it over. A row whose name starts with `+` or `-` is
+  one of nss compat's, and glibc reads an empty id there as `0`: in `passwd` when a `:` follows it,
+  so `+@admins::::::` is a user with uid 0, and in `group` always. glibc also reads a compat row of
+  fewer fields than four, such as `+` or `+nis` alone, as a user with uid 0; errata passes it over,
+  as it passes over every row too short for its table, so a rule that must see every uid 0 user
+  checks for such a line with a `regex` extractor too.
+- `hosts`: a `#` anywhere starts a comment. A row has an address and a canonical name, and every
+  word after the canonical name is an alias. A row whose address is no IPv4 or IPv6 address, such
+  as `010.0.0.1` or `fe80::1%eth0`, is passed over, as glibc passes it over.
+- `exports`: a `#` that starts a word starts a comment, and one inside a word is text. A `\` right
+  before the line end joins the next line to it; one with a space after it is a word. A word runs to
+  white space outside double quotes, its quotes are dropped wherever they are, and each `\ooo` below
+  `\400` is the byte it writes, as nfs-utils reads a word: `"/srv/my share"`, `/srv/"my share"` and
+  `/srv/my\040share` are one path. A quote left open at a join goes on across it, the join one
+  space. A line is a path and clients, each a host, a network, a wildcard or an `@netgroup` with its
+  options in parentheses. Each client is one row of `path`, `client` and `options`: the default
+  options, then the client's own, each at its line. A word that starts with `-` where a client
+  would start adds its options to the defaults, and the word after it is the client whatever it
+  starts with, so in `/srv -ro -sync a` the client `-sync` and the client `a` both have `[ro]`.
+  A client written as `(rw)` alone, with a space before it, a path with no client, and a `-` word
+  that ends the line, are the client `*`, every host, as exportfs exports them, at the line of the
+  `(rw)`, of the path or of the `-` word, so `row: {client: '*'}` finds every export to the world,
+  `/srv a(rw) -ro` included. exportfs stops reading a file at its first error, and errata refuses
+  the file there, naming the line: an empty path, an option list without its `)` at the end of the
+  word, an option exportfs does not know or an empty one (`rw,,sync`; a comma that ends the list
+  is read), and a quote left open at a line end that joins nothing. errata knows the options
+  nfs-utils' parseopts reads, `mapping=` and the debug build's `fsloc=` not among them, and checks
+  the values of `anonuid=` and `anongid=` (a decimal number), `fsid=` (`root`, a number in C's
+  decimal, octal or hex, or a UUID of 32 hex digits), `sec=` (flavors among `krb5`, `krb5i`,
+  `krb5p`, `unix`, `sys`, `null` and `none`, split at `:`), `xprtsec=` (`none`, `tls` and `mtls`,
+  split at `:`) and `reexport=` (`auto-fsidnum`, `predefined-fsidnum` or `none`). It does not check
+  the values of `mountpoint=`, `mp=`, `refer=`, `replicas=`, `squash_uids=` and `squash_gids=`; a
+  squash list goes on over a comma that a digit follows, as parsesquash reads it. A word the
+  engine of a template writes is not refused.
+- `crypttab`: as `fstab`, without escapes; a row has two fields at least, `key_file` is `none` when a
+  row leaves it out or writes `-`, as systemd reads both, and `options` has no item when the row
+  leaves it out or writes `-` or `none`.
+
+A row with fewer fields than its table needs is passed over, as the tool passes over it. Lines end
+at `\n`, `\r\n` and a lone `\r` in every dialect, as the [XML values](#xml-values) says every kind
+numbers them, though the C tools end a line at `\n` alone: a `passwd` line that ends in `\r\n` has a
+shell that ends in `\r` on the host, and exportfs joins a line only at a `\` before a `\n`.
+
+#### The file's values and the host's
+
+Every value is literal, the text the tool reads from the file, and several name what only the host
+resolves: fstab's and crypttab's `UUID=`, `LABEL=`, `PARTUUID=` and `PARTLABEL=`, which name a
+device by what is written on it; an exports client by `@netgroup`, which NIS or LDAP fills, and by a wildcard or a network,
+which DNS and the connecting address decide; the `+` and `-` lines of `passwd` and `group`, which
+nss compat fills from NIS; and a host name, which the resolver may also find in DNS when `hosts`
+has no row for it. A rule compares the text, so two files agree when they write the same UUID, not
+when two UUIDs name one disk. Nor does errata add what the tool adds by default: mount's
+`defaults`, exportfs's `ro`, `sync` and `root_squash`, or a group a user is in by the `gid` of
+`passwd` alone. The client `*`, the key file `none` and the defaults of `freq` and `passno` are
+the values the tool reads where the file writes none or writes `-`.
+
+#### Values table marks
+
+A template file is read as the file it renders, as [`ini`](#ini) says, so `fstab.j2` is read in the
+`fstab` dialect. Every cell of a line that holds the engine's marks or lies inside one of its blocks
+is not literal, and a field runs on through an expression, so `{{ dev }} /srv ext4 defaults` has the
+four fields it renders. A row whose `row` column the engine writes may be the row the spec names on
+the host, so errata selects it and marks its values not literal: the rule is unknown, unless
+`skip_not_literal` lists the extractor. Every other value is literal.
+
+### `udev`
+
+`udev` reads udev rules files as systemd-udevd 257 reads them, and returns every value the rules
+assign to one key, `key`, in the order udev applies them, each at the file and the line of that
+key and value. `key` is an assignment key as a rule writes it: `MODE`, `OWNER`, `GROUP`, `NAME`,
+`SYMLINK`, `TAG`, `RUN`, `RUN{builtin}`, `OPTIONS`, or one with an attribute, such as
+`ENV{ID_FS_TYPE}`, `ATTR{power/control}`, `SYSCTL{vm.dirty_ratio}` or `SECLABEL{selinux}`. udev
+reads `RUN` as `RUN{program}`, and so does `key`. `op` keeps only the values assigned with one
+operator: `=`, `+=`, `-=` or `:=`, those udev reads the key with. `tests` keeps only the rules that
+test a set of match keys, compared as written, as
+[Selecting rules by match keys](#selecting-rules-by-match-keys) says.
+
+```yaml
+extract:
+  mode:   {udev: {file: deploy/udev/99-printer.rules, key: MODE, tests: {SUBSYSTEM: usb, "ATTR{idVendor}": "0a5f"}}}
+  links:  {udev: {files: [etc/udev/rules.d/*.rules, usr/lib/udev/rules.d/*.rules], key: SYMLINK, op: "+="}}
+  fstype: {udev: {file: rules.d/60-disk.rules, key: "ENV{ID_FS_TYPE}"}}
+```
+
+Each value is the text between the quotes, with `%%` and `$$` read as udev applies them, as
+[Values udev substitutes in](#values-udev-substitutes-in) says. A report names its key and
+operator beside it, such as `key "SYMLINK+="`, and its rule's match keys as its condition, such
+as `when "SUBSYSTEM==\"usb\", ATTR{idVendor}==\"0a5f\""`. A value assigned with `-=` takes the
+value away, so an `assert` that means what the device ends with names `op`.
+
+#### Reading a rules file
+
+- A rule is one line. White space before a line is passed over, and a line that then starts
+  with `#` is a comment, between the lines of a rule too. A `\` at the very end of a line joins
+  the next line to it; with a space after it, it joins nothing.
+- A rule is keys and values, each `KEY=="value"` or `KEY{attribute}=="value"`, with commas or
+  white space between them. The operator is `==` or `!=` for a match key, and `=`, `+=`, `-=` or
+  `:=` for an assignment. The value is in double quotes, a `\"` inside it a quote. Written
+  `e"..."`, it reads C escapes such as `\n`, `\x41` and `\u00e9`, as cunescape does, so `\u`
+  writes any code point, a surrogate too, and `\U` only a character. Written `i"..."`, a match
+  key matches in any case, ASCII letters only, as udev folds them; `ei"..."` and `ie"..."` do
+  both.
+- udev reads some operators as others, with a warning, and so does errata: `+=` as `=` for
+  `MODE`, `OWNER`, `GROUP`, `NAME`, `OPTIONS`, `ATTR` and `SYSCTL`; `:=` as `=` for `ENV`, `TAG`,
+  `ATTR`, `SYSCTL` and `SECLABEL`; and any assignment to `PROGRAM` and `IMPORT` as `==`.
+- udev drops a rule it cannot read whole, so none of its values applies, and errata drops it
+  too: an unknown key, or one written with an operator or an attribute udev does not take it
+  with; a value outside double quotes or with no closing quote; a `#` after the keys, which is no
+  comment in udev; a prefix other than `e` and `i`, or one written twice; `i"..."` on an
+  assignment, or on `TEST`, `PROGRAM` or `IMPORT`; an `e"..."` escape cunescape refuses;
+  `NAME="%k"` or `NAME=""`; an `ENV` udev keeps for itself, such as `ENV{DEVNAME}`; an `OPTIONS`
+  of `link_priority` or `log_level` it cannot read; a `TEST` mode that is no octal mode
+  (`TEST{}` is a `TEST` with no mode); and a rule joined over lines to 16384 bytes or more. An
+  `OPTIONS` value udev does not know is passed over alone, and the rule's other keys apply.
+  `udevadm verify` names each of these.
+- A line of 16384 bytes or more stops udev's read of the file, and a NUL byte ends a line in
+  udev and not in errata, so errata refuses either file and the rule is unknown. Lines end at
+  `\n`, `\r\n` and a lone `\r`, as every kind numbers them.
+
+#### The files of rules.d
+
+`file:` reads one file, whatever its name. `files:` reads the files of rules.d directories, a
+list or a glob matched against the files git tracks, as [A set of files](#a-set-of-files) says,
+in udev's order: of a directory named `rules.d`, only the `.rules` files whose name does not
+start with a `.`, once a template suffix is taken off, by name across the directories. Of two
+files of one name, udev reads only the one in the directory it ranks first: the directory above
+`rules.d` ending in `etc/udev`, then `run/udev`, `usr/local/lib/udev` and `usr/lib/udev`, the
+four systemd 257 searches. errata ranks `lib/udev` with `usr/lib/udev`, its path on a system
+whose `/lib` leads to `/usr/lib`, so `etc/udev/rules.d/50-x.rules` masks `usr/lib/udev/rules.d/50-x.rules` whatever the
+order `files:` lists them. A file git tracks as a symlink to `/dev/null` masks its name and sets
+nothing, as udev reads it. Of two files of one name in directories udev does not rank, the first
+listed masks the other. A template is the file it renders, so `etc/udev/rules.d/60-x.rules.j2`
+masks `usr/lib/udev/rules.d/60-x.rules`. udev applies a later assignment over an earlier one, and the first `:=`
+ends the assignments of its key; errata returns every value, so an `agree` rule sees the files
+disagree, and an `assert` names the one it means.
+
+#### GOTO and LABEL
+
+`GOTO="name"` jumps, when its rule's match keys hold, to the first rule after it in the same file
+whose `LABEL` is that name, past the rules between; a `GOTO` with no such `LABEL` is passed over,
+and so is a rule's second `GOTO`. A rule past a `GOTO` holds only where the `GOTO` does not jump,
+so its condition starts with what the `GOTO` tests, outermost first: one key with its operator
+turned, so `SUBSYSTEM!="usb", GOTO="end"` gives the rules up to `LABEL="end"` the condition
+`SUBSYSTEM=="usb"`, or `not (...)` around several keys. A rule a `GOTO` jumps to holds where
+that `GOTO`'s keys do, each one in the condition as written. A `GOTO` with no match key always
+jumps, so udev reaches the rules past it only by the jump of a `GOTO` before it to a `LABEL`
+among them, the else of an if, and a rule no jump reaches gives no value. Where a rule may be
+reached by two ways that do not meet again, such as past one `GOTO` or by the jump of an earlier
+one whose `LABEL` lies inside its skip, no condition errata writes states when udev applies it,
+so a value there makes the rule unknown, and the message names the `GOTO`s.
+
+#### Selecting rules by match keys
+
+`tests:` names match keys and values, such as `SUBSYSTEM: usb` and `ATTR{idVendor}: 0a5f`, and
+keeps the rules that test each of them: a rule that tests the key with `==` and the value as
+written, or that a `GOTO` before it gives that test as above. errata compares the value as
+written, as text, and never as udev's pattern, so it does not tell which rules apply to a
+device: `tests: {KERNEL: sda}` does not keep a rule of `KERNEL=="sd*"`, nor of
+`KERNEL=="sda|sdb"`, and it does not keep a rule with no `KERNEL` key, which udev applies to
+every device. A value written `i"..."` in the rule compares in any case, ASCII letters only. A
+key udev does not match with, such as `MODE`, is refused at load.
+
+#### Values udev substitutes in
+
+udev substitutes in a value before it applies it: a `%` before one of the letters `N`, `s`, `E`,
+`k`, `n`, `b`, `d`, `p`, `M`, `m`, `c`, `P`, `D`, `L`, `r` and `S`, such as `%k`, and a `$`
+before a name such as `$kernel` or `$env{ID_SERIAL}`. errata marks such a value not literal, as
+[Values a file only computes](#values-a-file-only-computes) says. udev applies `%%` as a `%` and
+`$$` as a `$`, so a value with no other substitution is returned as udev applies it:
+`RUN+="/bin/sh -c 'date +%%s'"` returns `/bin/sh -c 'date +%s'`. udev never formats an
+`OPTIONS` value: it reads the option when it loads the rules, so `OPTIONS="static_node=a%%b"`
+is returned as written, and literal. A template file is read as the file it renders, as [`ini`](#ini) says, so `99-x.rules.j2` is a rules file, and a value with the engine's
+marks, or inside one of its blocks, is not literal.
+
+#### What the host decides
+
+A rules file is the file's, and what applies to a device is the host's in ways errata does not
+read:
+
+- errata selects rules by their keys as written and does not match devices: which rule holds for
+  a device depends on its properties, its parents (`ATTRS`, `KERNELS`, `SUBSYSTEMS`, `DRIVERS`),
+  and what `PROGRAM`, `IMPORT` and `TEST` find when udev runs them.
+- udev resolves `OWNER` and `GROUP` names when it loads the rules, and drops a rule that names a
+  user or group the host does not know.
+- udev splits a `SYMLINK` value at white space into several links, and writes `_` for each
+  character a device name may not hold, unless `OPTIONS="string_escape=none"`; errata returns the
+  value as written, so `SYMLINK+="a b"` is one value for two links, and a check on one link
+  splits the value or asks whether it holds the link.
+- udev drops a rule whose `RUN{builtin}` or `IMPORT{builtin}` names a builtin its build does not
+  have, such as `blkid` without libblkid.
+- The rules a package installs under `/usr/lib/udev/rules.d` are not in the repository unless it
+  holds them, and a file of theirs may mask or be masked by one errata reads.
+
 ### `systemd`
 
 `systemd` returns the values of a key in a section of a systemd unit, read as systemd 257
@@ -4242,6 +4787,8 @@ in a git repository. For `foo-bar@x.service` the directories are, in order, `foo
 the longest, each with the template's after it, and the type's. Their files
 are applied in the order of their names, byte by byte, and a name in two directories is read
 from the first. A name that starts with `.` and a file that does not end in `.conf` are not read.
+A template is read as the drop-in it renders: `10-env.conf.j2` beside the unit is found as
+`10-env.conf`, and masks a `10-env.conf` in a directory after it.
 A drop-in named as `file` is read alone. `max_bytes` is what the unit and its drop-ins hold in
 all. errata finds drop-ins only beside the unit: systemd also reads `/etc`, `/run` and
 `/usr/lib`, which a repository does not hold. A unit name of 256 bytes or more makes the rule
@@ -4375,7 +4922,7 @@ A file's name chooses its reader:
 
 | Name | Reader | What it returns |
 |---|---|---|
-| `.env`, any name that starts with `.env` but `.envrc`, and any name that ends in `.env`, such as `prod.env`; not a code file the [`literal`](#literal) reader reads, such as `.env.d.ts` or `.env.py` | `envfile` | every value of the key ([`envfile`](#envfile)) |
+| `.env`, any name that starts with `.env` but `.envrc`, and any name that ends in `.env`, such as `prod.env`; not a code file the [`literal`](#literal) reader reads, such as `.env.d.ts` or `.env.py`; a file directly in `etc/default` and `etc/environment`, but a name that ends in `.sh`, which is `shell`'s, or a template of one there, such as `etc/default/x.sh.j2`, which no reader takes | `envfile` | every value of the key ([`envfile`](#envfile)), in the dialect of [`etc/default` and `etc/environment`](#etcdefault-and-etcenvironment) for those two |
 | a name that ends in `.sh`, and `.envrc`, direnv's script | `shell` | every value the script gives the variable ([`shell`](#shell)) |
 | `.gitlab-ci.yml`, with its local includes | `gitlab-ci` | the value each job sees, as `job:` would name it ([`gitlab-ci`](#gitlab-ci)) |
 | a `.yml` or `.yaml` file directly in `.github/workflows` | `github-actions` | the value each job's steps see from the workflow's and the job's `env:`, and the value of each step whose own `env:` sets the variable ([`github-actions`](#github-actions)) |

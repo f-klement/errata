@@ -219,6 +219,9 @@ flowchart TB
         githubactions["internal/extract/githubactions"]
         jenkins["internal/extract/jenkins"]
         etc["internal/extract/etc"]
+        sudoers["internal/extract/sudoers"]
+        table["internal/extract/table"]
+        udev["internal/extract/udev"]
         env["internal/extract/env"]
         filestat["internal/extract/filestat"]
     end
@@ -336,6 +339,9 @@ reader imports `core` and no other reader, and `core` imports no reader.
 | `internal/extract/gitlabci` | the value one job of a GitLab CI file sees: local includes, extends, `!reference`, defaults and the variable precedence, read with the YAML parser the facade hands it | the other readers, whose parser it gets from the facade; the network |
 | `internal/extract/githubactions` | the value one step or job of a GitHub Actions workflow sees: env: precedence, the matrix's jobs, and the values only GitHub evaluates marked or unknown, read with the YAML parser the facade hands it | the other readers, whose parser it gets from the facade; the network |
 | `internal/extract/etc` | the keyword and value family of Unix configuration files (sshd, ssh, sysctl, resolv, limits, logrotate, nsswitch, modprobe, chrony, ntp), each read in its tool's dialect, with the files a file includes inside the repository and the drop-ins of a directory read in the tool's order, each value's block as its condition, and OpenSSH's Match and Host blocks decided for one connection | the other readers; the host the files configure |
+| `internal/extract/sudoers` | sudoers and the drop-ins of sudoers.d, read as sudo reads them: Defaults settings with their scopes as conditions, and the commands user specifications grant one user list entry as records, with the four kinds of alias resolved and `#include`, `@include`, `#includedir` and `@includedir` followed inside the repository in sudo's order | the other readers; the host's users, groups and host name |
+| `internal/extract/table` | one column of the rows of a Unix field table (fstab, passwd, group, hosts, exports, crypttab), split into the columns its man page names as the table's tool splits a line, a row selected by the values its columns hold, a list column's items each one value, and a template's computed cells marked | the other readers; the host the tables configure, and what it resolves: a UUID or LABEL, a netgroup, an nss compat line |
+| `internal/extract/udev` | udev rules files read as systemd-udevd reads them: rules joined over lines, match and assignment keys with the operators udev takes, the rules it drops, GOTO and LABEL, the files of rules.d directories in udev's order, and each value with its rule's match keys and the GOTOs before it as its condition | the other readers; the devices the rules apply to and the host's users and groups |
 | `internal/extract/env` | one variable across the files a rule lists: the reader each file's name or shebang chooses, a glob over git's tracked files, and each value's origin, its reader and its job, step or stage | the readers, which the facade hands it as functions |
 | `internal/extract/filestat` | the `exists` and `size` kinds: whether a file is at a name and how many bytes it holds, from core's `Stat`, without opening the file | the other readers |
 | `internal/extract/extracttest`, `internal/extract/coretest` | what the extractors' tests share; only test files import them, and Gremlins and the `make cover` total leave them alone | any reader: `coretest` imports `core` alone, and `extracttest` nothing of errata's but `check` and `core/lineend`, since `core`'s own tests import it |
@@ -344,9 +350,10 @@ reader imports `core` and no other reader, and `core` imports no reader.
 | `internal/heapcap` | the heap watchdog that every package's tests link under the `mutation` tag only | errata's own code: only test files built with the tag import it |
 | `internal/check` | the domain types: `Check`, `Rule`, `Extractor`, `Assertion`, `Value`, `Location`, `Extracted`, `Scope`, `Verdict`, `Result`, `Report`, and `ExtractorKind` with the `Description` and `Shape` it gives of what an extractor returns | every other package |
 
-`scripts/casecover`, `scripts/slowtests`, `scripts/clidoc`, `scripts/loccensus` and `scripts/crap`
-are tools of the build, run by `make mutation`, `make slow`, `make cli-doc`, `make loc` and
-`make cover`; errata's binary does not import them, and the graphs leave them out.
+`scripts/casecover`, `scripts/slowtests`, `scripts/clidoc`, `scripts/loccensus`, `scripts/crap`
+and `scripts/weakened` are tools of the build, run by `make mutation`, `make slow`,
+`make cli-doc`, `make loc`, `make cover` and `ci/gate.sh`; errata's binary does not import them,
+and the graphs leave them out.
 
 ## The seams
 
@@ -480,6 +487,9 @@ flowchart LR
         k_jenkins["jenkins"]
         k_systemd["systemd"]
         k_etc["etc"]
+        k_sudoers["sudoers"]
+        k_table["table"]
+        k_udev["udev"]
         k_env["env"]
         k_exists["exists"]
         k_size["size"]

@@ -1,0 +1,4 @@
+# The deploy user restarts the API, and nothing else.
+Cmnd_Alias API = /usr/bin/systemctl restart api, \
+                 /usr/bin/systemctl status api
+deploy ALL = (root) NOPASSWD: API

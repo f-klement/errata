@@ -117,22 +117,27 @@ func FileParts(file string) (dirs []string, base string) {
 // FirstOfEachName is files sorted by base name, byte by byte, a name two
 // share kept once, from the first listed: the order of a tool whose first
 // drop-in directory to hold a name masks the others, as systemd's
-// conf_files_list and chrony's confdir and sourcedir read them.
+// conf_files_list and chrony's confdir and sourcedir read them. A
+// template's name is the name of the file it renders (Untemplated), so
+// 60-x.conf.j2 masks 60-x.conf and sorts as it.
 func FirstOfEachName(files []string) []string {
 	seen := map[string]bool{}
 	var out []string
 	for _, f := range files {
-		if _, b := FileParts(f); !seen[b] {
+		if b := renderedName(f); !seen[b] {
 			seen[b] = true
 			out = append(out, f)
 		}
 	}
-	slices.SortStableFunc(out, func(a, b string) int {
-		_, x := FileParts(a)
-		_, y := FileParts(b)
-		return strings.Compare(x, y)
-	})
+	slices.SortStableFunc(out, func(a, b string) int { return strings.Compare(renderedName(a), renderedName(b)) })
 	return out
+}
+
+// renderedName is the base name of the file f renders, f's own when it
+// is no template.
+func renderedName(f string) string {
+	_, b := FileParts(Untemplated(f))
+	return b
 }
 
 // EntryKind is what an entry is.
@@ -407,6 +412,11 @@ func HasJinja(v []byte) bool {
 // which an engine renders before any tool reads them. .tpl and .tftpl are
 // also Terraform's templatefile.
 var templateSuffixes = []string{".j2", ".jinja", ".jinja2", ".tmpl", ".tpl", ".tftpl", ".erb"}
+
+// TemplateSuffixes are the suffixes a template file's name ends in, a copy
+// a caller may change: a reader that lists the files of a tool's name, such
+// as a drop-in's *.conf, lists *.conf.j2 and the others with it.
+func TemplateSuffixes() []string { return slices.Clone(templateSuffixes) }
 
 // IsTemplate reports whether a file's name ends in a template suffix.
 func IsTemplate(base string) bool {

@@ -102,7 +102,6 @@ github.com/f-klement/errata/internal/extract/core/htmlparse doctypeQuirks 28.29
 github.com/f-klement/errata/internal/extract/core/htmlparse.Scanner Next 28.56
 github.com/f-klement/errata/internal/extract/core/htmlparse.Scanner foreignTag 12.00
 github.com/f-klement/errata/internal/extract/core/htmlparse.Scanner foreignToken 12.00
-github.com/f-klement/errata/internal/extract/core/htmlparse.Scanner keep 29.08
 github.com/f-klement/errata/internal/extract/core/htmlparse.Scanner tag 18.00
 github.com/f-klement/errata/internal/extract/core/htmlparse.Scanner templateTag 10.06
 github.com/f-klement/errata/internal/extract/core/htmlparse.nest adopt 23.00
@@ -171,7 +170,6 @@ github.com/f-klement/errata/internal/extract/dependency.gemfile span 13.03
 github.com/f-klement/errata/internal/extract/env Build 14.00
 github.com/f-klement/errata/internal/extract/env.extractor Extract 13.00
 github.com/f-klement/errata/internal/extract/envfile expandEscapes 12.00
-github.com/f-klement/errata/internal/extract/envfile readFile 14.06
 github.com/f-klement/errata/internal/extract/envfile.envReader operator 12.00
 github.com/f-klement/errata/internal/extract/envfile.envReader substitute 25.00
 github.com/f-klement/errata/internal/extract/envfile.envReader value 12.00

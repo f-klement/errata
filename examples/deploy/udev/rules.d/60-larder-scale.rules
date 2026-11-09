@@ -1,0 +1,3 @@
+# The scale at the goods-in desk, a USB serial device the Larder API reads weights from.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", \
+  GROUP="larder", MODE="0660", SYMLINK+="larder-scale"

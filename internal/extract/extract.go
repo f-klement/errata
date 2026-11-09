@@ -5,7 +5,7 @@
 // toml, regex, text, comment, literal, code, markdown, asciidoc, rst, html, marker, xml, ini and
 // systemd, properties, toolversion,
 // packageversion, dependency, envfile, gitlabci, shell, githubactions, jenkins,
-// etc, and filestat for exists and size), and the readers share
+// etc, sudoers, table, udev, and filestat for exists and size), and the readers share
 // internal/extract/core; no reader imports another. The env
 // kind asks those that declare themselves env readers for one variable
 // across several files, through the functions this package hands it. Below, a kind is always an
@@ -52,9 +52,12 @@ import (
 	"github.com/f-klement/errata/internal/extract/regex"
 	"github.com/f-klement/errata/internal/extract/rst"
 	"github.com/f-klement/errata/internal/extract/shell"
+	"github.com/f-klement/errata/internal/extract/sudoers"
+	etable "github.com/f-klement/errata/internal/extract/table"
 	"github.com/f-klement/errata/internal/extract/text"
 	"github.com/f-klement/errata/internal/extract/toml"
 	"github.com/f-klement/errata/internal/extract/toolversion"
+	"github.com/f-klement/errata/internal/extract/udev"
 	"github.com/f-klement/errata/internal/extract/xml"
 	"github.com/f-klement/errata/internal/extract/yaml"
 )
@@ -100,6 +103,14 @@ var kinds = registry(
 	// etc reads the keyword and value family of Unix configuration files,
 	// and the files they include, by its own logic.
 	register(etc.Kind, etc.Build),
+	// sudoers reads a sudoers file, the files it includes and their
+	// aliases, by its own logic.
+	register(sudoers.Kind, sudoers.Build),
+	// table reads one column of the rows of a Unix field table.
+	register(etable.Kind, etable.Build),
+	// udev reads udev rules files, and the files of rules.d directories in
+	// udev's order, by its own logic.
+	register(udev.Kind, udev.Build),
 	// env asks the kinds above that declare themselves env readers;
 	// envReaders is filled from kinds once kinds is, so env's Build reads it
 	// when it is called.

@@ -146,6 +146,8 @@ internal/extract/env               85        85      5
 internal/extract/envfile           85        85      5
 # etc: new in v0.4.0 (#104), held to the floor every reader has.
 internal/extract/etc               85        85      5
+# table: new in v0.4.0 (#104), held to the floor every reader has.
+internal/extract/table             85        85      5
 internal/extract/filestat          85        85      5
 # githubactions: 87.25%, 52 of 408 not covered, efficacy 95.79%, on 2026-10-25,
 # before case expressions were covered; #209 did not measure it again. The 52
@@ -193,12 +195,16 @@ internal/extract/regex             85        85      5
 internal/extract/rst               85        85      5
 # shell: 99.59% on a dry run, 1 not covered.
 internal/extract/shell             85        85      5
+# sudoers: new in v0.4.0 (#104), held to the floor every reader has.
+internal/extract/sudoers           85        85      5
 # text: 97.90%, 5 not covered, efficacy 90.56%, after goldmark v2.
 internal/extract/text              85        85      5
 # toml: 87.18%, 10 of 78 not covered, efficacy 97.06%, on 2026-10-22.
 internal/extract/toml              85        85      5
 # toolversion: 92.31%, 9 of 117 not covered, efficacy 99.07%, on 2026-10-23.
 internal/extract/toolversion       85        85      5
+# udev: new in v0.4.0 (#104), held to the floor every reader has.
+internal/extract/udev              85        85      5
 # xml: 99.43%, 3 of its 527 not covered, efficacy 90.46%, on 2026-10-30 with
 # case expressions covered. It had the floor 82 at 82.16% (94 case expressions
 # of 527) until then.

@@ -322,14 +322,13 @@ func (s *Scanner) restart(at, end int) {
 	}
 }
 
-// lineFeed is the length of the line feed text starts with, 0 for none,
-// and whether text is that line feed alone. src's line ends are folded, so
-// a line feed is a LF.
-func lineFeed(text []byte) (n int, alone bool) {
+// lineFeed is the length of the line feed text starts with, 0 for none.
+// src's line ends are folded, so a line feed is a LF.
+func lineFeed(text []byte) int {
 	if bytes.HasPrefix(text, []byte("\n")) {
-		return 1, len(text) == 1
+		return 1
 	}
-	return 0, false
+	return 0
 }
 
 // keep classifies the token the tokenizer is at, of type tt, after the raw
@@ -338,74 +337,130 @@ func (s *Scanner) keep(tt html.TokenType, raw string, dropLF bool) bool {
 	s.name, s.foreign = "", false
 	switch tt {
 	case html.TextToken:
-		s.modeSet = s.modeSet || len(bytes.Trim(s.src[s.start:s.end], " \t\r\n\f")) > 0
-		if s.tmpl != nil || hidden[raw] {
-			return false
-		}
-		if bytes.HasPrefix(s.src[s.start:s.end], []byte("<![CDATA[")) {
-			s.start += len("<![CDATA[")
-			if bytes.HasSuffix(s.src[s.start:s.end], []byte("]]>")) {
-				s.end -= len("]]>")
-			}
-		}
-		if dropLF {
-			n, alone := lineFeed(s.src[s.start:s.end])
-			s.start += n
-			s.dropLF = alone // text of the line feed alone leaves the pre empty
-		}
-		// A browser reopens formatting elements before text it inserts as
-		// HTML's: not a raw element's, nor NULs alone or a pre's first line
-		// feed, which it drops, nor text in foreign content.
-		if raw == "" && len(bytes.Trim(s.src[s.start:s.end], "\x00")) > 0 && !s.foreignToken(&s.nest, false, false) {
-			if err := s.nest.reconstruct(); err != "" {
-				s.err = &NestError{At: s.start, msg: err}
-				return false
-			}
-		}
-		if !s.nest.textDrawn() {
-			return false // inside an svg title, say, or right inside an svg (drawn.go)
-		}
-		s.kind = Text
-		if s.nest.pre > 0 || raw != "" {
-			s.kind = Pre
-		}
-		return s.start < s.end
+		return s.keepText(raw, dropLF)
 	case html.StartTagToken, html.SelfClosingTagToken, html.EndTagToken:
-		s.modeSet = true // no doctype first: quirks mode
-		name, attrs := s.z.TagName()
-		s.name, s.attrs, s.class, s.href, s.attrsRead = string(name), attrs, "", "", false
-		s.fontAttr, s.encoding, s.cond = false, nil, false
-		s.closing = tt == html.EndTagToken
-		kept := s.tag(tt == html.SelfClosingTagToken)
-		for _, n := range []*nest{&s.nest, s.tmpl} {
-			if n != nil && n.work > 0 {
-				// A rebuild's work counts as tokens, one for each element
-				// or entry it touched (adopt).
-				s.charge(n.work*BytesPerToken, s.start)
-				n.work = 0
-			}
-		}
-		if s.err != nil {
-			return false
-		}
-		if dropLF && tt == html.EndTagToken && s.nest.ignored {
-			s.dropLF = true // a browser ignores the tag: the pre is empty, its first line feed the tag's
-		}
-		return kept
+		return s.keepTag(tt, dropLF)
 	case html.CommentToken:
 		s.kind = Comment
 		return s.tmpl == nil && bytes.HasPrefix(s.src[s.start:s.end], []byte("<!--"))
 	case html.DoctypeToken:
-		// The first doctype, before any other token but blanks and
-		// comments, sets the page's mode, by the standard's rules; any later
-		// one, and any in a Markdown block, changes nothing, as in a browser.
-		if !s.modeSet && !s.nest.outside {
-			s.nest.quirks = doctypeQuirks(string(s.z.Text()))
-		}
-		s.modeSet = true
+		s.doctype(dropLF)
 	case html.ErrorToken: // Next stops at an error before keep
 	}
 	return false
+}
+
+// keepText classifies a text token, after the raw element raw and with
+// dropLF, and reports whether Next gives it.
+func (s *Scanner) keepText(raw string, dropLF bool) bool {
+	s.modeSet = s.modeSet || len(bytes.Trim(s.src[s.start:s.end], " \t\r\n\f")) > 0
+	if s.tmpl != nil || hidden[raw] {
+		return false
+	}
+	s.cdata()
+	if dropLF {
+		s.dropFirstLF()
+	}
+	if !s.reopen(raw) {
+		return false
+	}
+	if !s.nest.textDrawn() {
+		return false // inside an svg title, say, or right inside an svg (drawn.go)
+	}
+	s.kind = s.textKind(raw)
+	return s.start < s.end
+}
+
+// cdata takes the markers off a CDATA section, whose text alone is the
+// token's.
+func (s *Scanner) cdata() {
+	if !bytes.HasPrefix(s.src[s.start:s.end], []byte("<![CDATA[")) {
+		return
+	}
+	s.start += len("<![CDATA[")
+	if bytes.HasSuffix(s.src[s.start:s.end], []byte("]]>")) {
+		s.end -= len("]]>")
+	}
+}
+
+// dropFirstLF drops the line feed that starts the text after the start tag
+// of a pre, a listing or a textarea, which is the tag's. x/net's tree
+// builder drops it while the pre is on top and holds nothing yet, so text
+// of NULs alone, which it drops as well, leaves the next line feed the
+// tag's too, as a line feed alone does.
+func (s *Scanner) dropFirstLF() {
+	s.start += lineFeed(s.src[s.start:s.end])
+	s.dropLF = len(bytes.Trim(s.src[s.start:s.end], "\x00")) == 0
+}
+
+// reopen reopens the formatting elements a browser reopens before text it
+// inserts as HTML's: not a raw element's, nor NULs alone or a pre's first
+// line feed, which it drops, nor text in foreign content. It reports false
+// when it refuses the rebuild.
+func (s *Scanner) reopen(raw string) bool {
+	if raw != "" || len(bytes.Trim(s.src[s.start:s.end], "\x00")) == 0 || s.foreignToken(&s.nest, false, false) {
+		return true
+	}
+	if err := s.nest.reconstruct(); err != "" {
+		s.err = &NestError{At: s.start, msg: err}
+		return false
+	}
+	return true
+}
+
+// textKind is Pre for text in a pre or a listing, or in a raw element, and
+// Text for the rest.
+func (s *Scanner) textKind(raw string) Kind {
+	if s.nest.pre > 0 || raw != "" {
+		return Pre
+	}
+	return Text
+}
+
+// keepTag classifies a start, self closing or end tag, of type tt and with
+// dropLF, and reports whether Next gives it. A tag the page's nest ignores
+// leaves the pre it follows holding nothing, so the line feed after it is
+// still the pre's start tag's, as x/net reads <pre><th></a> and a line
+// feed: the stray <th> and </a> make no element.
+func (s *Scanner) keepTag(tt html.TokenType, dropLF bool) bool {
+	s.modeSet = true // no doctype first: quirks mode
+	name, attrs := s.z.TagName()
+	s.name, s.attrs, s.class, s.href, s.attrsRead = string(name), attrs, "", "", false
+	s.fontAttr, s.encoding, s.cond = false, nil, false
+	s.closing = tt == html.EndTagToken
+	s.nest.ignored = false // a tag in a template's content leaves the page's nest alone
+	kept := s.tag(tt == html.SelfClosingTagToken)
+	s.chargeWork()
+	if s.err != nil {
+		return false
+	}
+	if dropLF && s.nest.ignored {
+		s.dropLF = true
+	}
+	return kept
+}
+
+// chargeWork counts a rebuild's work as tokens, one for each element or
+// entry it touched (adopt), in the page's nest and a template's.
+func (s *Scanner) chargeWork() {
+	for _, n := range []*nest{&s.nest, s.tmpl} {
+		if n != nil && n.work > 0 {
+			s.charge(n.work*BytesPerToken, s.start)
+			n.work = 0
+		}
+	}
+}
+
+// doctype follows a doctype, with dropLF. The first doctype, before any
+// other token but blanks and comments, sets the page's mode, by the
+// standard's rules; any later one, and any in a Markdown block, changes
+// nothing, as in a browser. A browser ignores a doctype in a pre, so the
+// line feed after it is still the pre's start tag's.
+func (s *Scanner) doctype(dropLF bool) {
+	if !s.modeSet && !s.nest.outside {
+		s.nest.quirks = doctypeQuirks(string(s.z.Text()))
+	}
+	s.modeSet, s.dropLF = true, dropLF
 }
 
 // tag follows the elements a tag opens or closes that change what the

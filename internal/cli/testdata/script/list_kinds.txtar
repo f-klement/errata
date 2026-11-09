@@ -1,6 +1,6 @@
 # errata list prints each kind of check as errata check loads it, with the
 # defaults the loader fills in written out: a program check's timeout of 30s,
-# an extractor's max_bytes of 33554432, an ini or etc extractor's dialect and a
+# an extractor's max_bytes of 33554432, an ini, etc or table extractor's dialect and a
 # comment, literal or code extractor's language, which the file's name chooses.
 # It reads none of the files the checks name, so none is here, and it exits 0.
 exec errata list -c program.yaml -f json
@@ -216,8 +216,11 @@ checks:
       ts:       {json5: {file: tsconfig.json, path: compilerOptions.target}}
       five:     {jsonc: {file: renovate.json5, path: "extends[0]"}}
       sshd:     {etc: {file: ssh/sshd_config, key: Port}}
+      sudo:     {sudoers: {file: etc/sudoers, defaults: secure_path}}
+      mounts:   {table: {file: etc/fstab, column: mntops, row: {file: /srv}}}
+      udev:     {udev: {file: udev/99-x.rules, key: MODE, tests: {SUBSYSTEM: usb}}}
       unit:     {systemd: {file: deploy/api.service, section: Service, key: Environment, variable: PORT}}
-    assert: int(replicas[0]) <= int(nodes[0]) && size(sshd) + size(prose) + size(note) + size(pom) + size(port) + size(cfg) + size(pkg) + size(dep) + size(marker) + size(hosts) + size(setting) + size(version) + size(ts) + size(five) + size(unit) > 0
+    assert: int(replicas[0]) <= int(nodes[0]) && size(sshd) + size(mounts) + size(prose) + size(note) + size(pom) + size(port) + size(cfg) + size(pkg) + size(dep) + size(marker) + size(hosts) + size(setting) + size(version) + size(ts) + size(five) + size(unit) + size(sudo) + size(udev) > 0
 -- assert.json --
 {
   "version": 1,
@@ -275,6 +278,17 @@ checks:
             "max_bytes": 33554432,
             "target": "comment",
             "pattern": "v(\\S+)"
+          }
+        },
+        "mounts": {
+          "table": {
+            "file": "etc/fstab",
+            "max_bytes": 33554432,
+            "dialect": "fstab",
+            "column": "mntops",
+            "row": {
+              "file": "/srv"
+            }
           }
         },
         "nodes": {
@@ -345,11 +359,28 @@ checks:
             "key": "Port"
           }
         },
+        "sudo": {
+          "sudoers": {
+            "file": "etc/sudoers",
+            "max_bytes": 33554432,
+            "defaults": "secure_path"
+          }
+        },
         "ts": {
           "json5": {
             "file": "tsconfig.json",
             "max_bytes": 33554432,
             "path": "compilerOptions.target"
+          }
+        },
+        "udev": {
+          "udev": {
+            "file": "udev/99-x.rules",
+            "max_bytes": 33554432,
+            "key": "MODE",
+            "tests": {
+              "SUBSYSTEM": "usb"
+            }
           }
         },
         "unit": {
@@ -371,7 +402,7 @@ checks:
         }
       },
       "relation": {
-        "assert": "int(replicas[0]) <= int(nodes[0]) && size(sshd) + size(prose) + size(note) + size(pom) + size(port) + size(cfg) + size(pkg) + size(dep) + size(marker) + size(hosts) + size(setting) + size(version) + size(ts) + size(five) + size(unit) > 0"
+        "assert": "int(replicas[0]) <= int(nodes[0]) && size(sshd) + size(mounts) + size(prose) + size(note) + size(pom) + size(port) + size(cfg) + size(pkg) + size(dep) + size(marker) + size(hosts) + size(setting) + size(version) + size(ts) + size(five) + size(unit) + size(sudo) + size(udev) > 0"
       },
       "normalize": [],
       "allow_empty": [],

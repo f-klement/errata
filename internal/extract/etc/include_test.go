@@ -117,6 +117,7 @@ func TestBuildRefuses(t *testing.T) {
 		want string
 	}{
 		{Spec{Where: where("a.conf"), Key: "k"}, `etc: no dialect reads a file named "a.conf"; write dialect: one of sshd, ssh, sysctl`},
+		{Spec{Where: where("etc/fstab"), Key: "k"}, `, ntp; the table kind reads a field table such as fstab or passwd, the sudoers kind a sudoers file, and the udev kind udev rules`},
 		{Spec{Where: where("a.conf"), Dialect: "fstab", Key: "k"}, `etc: dialect "fstab" is not one errata reads`},
 		{Spec{Where: core.Where{File: "sysctl.conf", Files: []string{"sysctl.d/*.conf"}}, Key: "k"}, "etc: file and files are both set"},
 		{Spec{Where: core.Where{Files: []string{"sshd_config"}}, Key: "k"}, "etc: the sshd dialect reads one file and the files it includes, so files is refused"},

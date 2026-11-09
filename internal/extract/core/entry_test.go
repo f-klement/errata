@@ -318,12 +318,19 @@ func TestFromDataBounds(t *testing.T) {
 }
 
 // A drop-in's name is read once, from the first directory listed, and the
-// names in byte order across the directories, a digit before a capital.
-// Planted break: the last of a name kept.
+// names in byte order across the directories, a digit before a capital,
+// a template by the name it renders. Planted breaks: the last of a name
+// kept; a template's name taken with its suffix.
 func TestFirstOfEachName(t *testing.T) {
 	got := FirstOfEachName([]string{"etc/a.d/20-b.conf", "etc/a.d/B.conf", "usr/lib/a.d/10-a.conf", "usr/lib/a.d/20-b.conf"})
 	want := "usr/lib/a.d/10-a.conf etc/a.d/20-b.conf etc/a.d/B.conf"
 	if strings.Join(got, " ") != want {
 		t.Errorf("got %q, want %q", got, want)
+	}
+	// A template is the file it renders: it masks, and sorts as, the name
+	// without its suffix.
+	got = FirstOfEachName([]string{"etc/a.d/60-x.conf.j2", "etc/a.d/a.conf-b", "usr/lib/a.d/60-x.conf", "usr/lib/a.d/a.conf.j2"})
+	if want := "etc/a.d/60-x.conf.j2 usr/lib/a.d/a.conf.j2 etc/a.d/a.conf-b"; strings.Join(got, " ") != want {
+		t.Errorf("templates: got %q, want %q", got, want)
 	}
 }

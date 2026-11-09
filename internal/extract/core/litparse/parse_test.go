@@ -173,6 +173,10 @@ func TestValues(t *testing.T) {
 		// JavaScript and TypeScript: a Vite config, module.exports, casts.
 		{"javascript", "export default defineConfig({ server: { port: 3000 } })\n", "default['0'].server.port", "3000@1"},
 		{"javascript", "module.exports = { a: [1, 2] }\n", "module.exports.a[*]", "1@1, 2@1"},
+		// An empty statement, a ; that no statement ends, reads as nothing.
+		// Only a rapid property reached it, by chance, so parser.statement's
+		// coverage, and its CRAP score (scripts/crap), changed from run to run.
+		{"javascript", ";\nconst a = 1;;\nconst b = 2\n", "$[*]", "1@2, 2@3"},
 		{"javascript", "const x = `${a}`\nconst y = `b`\nlet z = undefined\n", "$[*]", "~`${a}`@1, b@2, undefined@3"},
 		{"javascript", "const o = { a, b: 1 }\nconst p = { ...q }\n", "$[*]", "~{ a, b: 1 }@1, ~{ ...q }@2"},
 		{"typescript", "export const X: number = 1;\nexport const C = { a: 'b' } as const\n", "C.a", "b@2"},

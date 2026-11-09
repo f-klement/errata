@@ -337,15 +337,19 @@ func TestEnvfileTemplateAllocatesNoEntryAStatement(t *testing.T) {
 }
 
 // The env kind reads a file with envfile when its name starts or ends with
-// .env, and leaves .envrc and a .sh script to the shell reader. Planted
-// breaks: .envrc taken; .env.sh taken; prod.env, which ends in .env, not
-// taken.
+// .env, or is a file in etc/default or etc/environment, and leaves .envrc
+// and a .sh script to the shell reader. Planted breaks: .envrc taken;
+// .env.sh taken; prod.env, which ends in .env, not taken; etc/default/grub
+// not taken.
 func TestEnvChooses(t *testing.T) {
 	for file, want := range map[string]bool{
 		".env": true, ".env.local": true, "app/.env.production": true, "a.env": true, "config/prod.env": true,
 		".envrc": false, ".env.sh": false, "a.env.sh": false, "env": false, "a.envx": false, "deploy.sh": false,
 		".env.py": false, "src/.env.d.ts": false, ".env.JS": false, ".env.local.py": false,
 		".env.yaml": true, ".env.yml": true, ".env.toml": true, ".env.json": true, ".env.example": true,
+		"etc/default/grub": true, "etc/environment": true, "etc/default/grub.j2": true, "etc/default/x.sh": false,
+		"default/grub": false, "environment": false, "etc/default/grub.d/x.cfg": false,
+		"etc/default/x.sh.j2": false, ".env.sh.j2": true, "a.env.sh.j2": false,
 	} {
 		if got := Kind.Env.Chooses(file); got != want {
 			t.Errorf("%s: %t, want %t", file, got, want)

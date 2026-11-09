@@ -1,0 +1,3 @@
+# The operators run anything, and type their password each time.
+User_Alias OPS = alice, bob
+OPS ALL = (ALL) ALL

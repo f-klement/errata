@@ -1,0 +1,8 @@
+# The label printer at the packing station, which the Larder API prints to.
+ACTION=="remove", GOTO="larder_printer_end"
+SUBSYSTEM!="usb", GOTO="larder_printer_end"
+
+ATTR{idVendor}=="0a5f", ATTR{idProduct}=="00d7", MODE="0660", GROUP="larder", \
+  SYMLINK+="larder-printer"
+
+LABEL="larder_printer_end"

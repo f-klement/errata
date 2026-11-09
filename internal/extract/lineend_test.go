@@ -15,7 +15,7 @@ import (
 // CR not counted by lineend.Count, which moves every kind but those that
 // fold the file first; a lone CR not folded by lineend.Fold, which moves
 // those; and each reader's own count of its lines (ini's dialects,
-// properties, etc, toolversion's and packageversion's line reads), each put back
+// properties, etc, table, udev, toolversion's and packageversion's line reads), each put back
 // to count LF alone.
 func TestEveryKindNumbersALoneCRsLine(t *testing.T) {
 	files := map[string]string{
@@ -44,6 +44,8 @@ func TestEveryKindNumbersALoneCRsLine(t *testing.T) {
 		"a.adoc":         "= T\r\r----\rv\r----\r",
 		"d.rst":          "a\r\r.. v\r",
 		"sshd_config":    "# c\rPort 1\rv 1\r",
+		"fstab":          "# c\r/a / x y\r/b v z w\r",
+		"u.rules":        "# c\rMODE=\"0\",\\\rMODE=\"1\"\r",
 	}
 	root := extracttest.Repo(t, files)
 	for raw, want := range map[string]string{
@@ -72,6 +74,8 @@ func TestEveryKindNumbersALoneCRsLine(t *testing.T) {
 		`{"asciidoc": {"file": "a.adoc", "target": "code"}}`:                             "v@4",
 		`{"rst": {"file": "d.rst", "target": "comment"}}`:                                "v@3",
 		`{"etc": {"file": "sshd_config", "key": "v"}}`:                                   "1@3",
+		`{"table": {"file": "fstab", "column": "spec", "row": {"file": "v"}}}`:           "/b@3",
+		`{"udev": {"file": "u.rules", "key": "MODE"}}`:                                   "0@2 1@3",
 	} {
 		e, err := Build(decode(t, raw))
 		if err != nil {

@@ -98,7 +98,8 @@ func TestEnvAsksARegisteredReader(t *testing.T) {
 // github-actions. A new kind's reader runs here with no list to join.
 // Planted breaks: .envrc read as an env file; a workflow in a directory
 // below .github/workflows taken, which GitHub does not run; prod.env not
-// read as an env file; envfile's test taking a .sh name.
+// read as an env file; envfile's test taking a .sh name; etc/default/grub
+// or etc/environment not read as an env file.
 func TestEnvChoosesByName(t *testing.T) {
 	rs := readersOf(kinds)
 	for file, want := range map[string]string{
@@ -152,6 +153,14 @@ func TestEnvChoosesByName(t *testing.T) {
 		"deploy/api.service": "systemd", "a.socket": "systemd", "srv.mount": "systemd", "a.swap": "systemd",
 		"q/web.container": "systemd", "api@.service": "systemd", "a.timer": "", "a.service.d/10.conf": "",
 		"web.image": "", "a.target": "", ".env.service": "envfile", "a.service.j2": "systemd",
+		// envfile takes a file directly in etc/default, which a shell
+		// sources, and etc/environment, which pam_env reads, a template
+		// suffix taken off; a .sh there stays shell's, and a template of
+		// one goes to none. .env.sh.j2 stays envfile's, as v0.3.0 read it.
+		"etc/default/grub": "envfile", "srv/etc/default/ssh": "envfile", "etc/default/grub.j2": "envfile",
+		"etc/environment": "envfile", "etc/environment.j2": "envfile", "etc/default/x.sh": "shell",
+		"default/grub": "", "environment": "", "etc/x/environment": "", "etc/default/grub.d/x.cfg": "",
+		"etc/default/x.sh.j2": "", ".env.sh.j2": "envfile",
 	} {
 		if got := rs.Choose(file); got != want {
 			t.Errorf("%s: %q, want %q", file, got, want)
