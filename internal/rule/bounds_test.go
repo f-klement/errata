@@ -193,11 +193,13 @@ func TestRuleStopsBeforeTheNextExtractorOnCancel(t *testing.T) {
 // time: the rule did not hand it the run's context.
 var errNotCancelled = errors.New("the context did not end")
 
-// blocking waits until its context ends, as a plugin's process would run
-// until it is stopped, and returns the context's error.
-type blocking struct{}
+// blocking cancels the run, then waits until its context ends, as a
+// plugin's process would run until it is stopped, and returns the context's
+// error.
+type blocking struct{ cancel context.CancelFunc }
 
-func (blocking) Extract(ctx context.Context, _ string) ([]check.Value, error) {
+func (b blocking) Extract(ctx context.Context, _ string) ([]check.Value, error) {
+	b.cancel()
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -211,13 +213,14 @@ func (b blocking) ExtractWith(ctx context.Context, root string, _ map[string][]c
 }
 
 // An extractor that blocks until its context ends returns when the run is
-// cancelled, and its rule is unknown with the reason. Planted break: the
-// rule hands the extractor a context of its own, which never ends.
+// cancelled, and its rule is unknown with the reason. The extractor cancels
+// the run itself, so no timer runs. Planted break: the rule hands the
+// extractor a context of its own, which never ends.
 func TestABlockedExtractorReturnsOnCancel(t *testing.T) {
-	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	res := Run(ctx, "", agreeRule(check.NamedExtractor{Name: "a", Extractor: blocking{}}))
-	if res.Verdict != check.VerdictUnknown || !strings.Contains(res.Message, `extractor "a": context deadline exceeded`) {
-		t.Fatalf("verdict %s message %q, want unknown with the deadline", res.Verdict, res.Message)
+	res := Run(ctx, "", agreeRule(check.NamedExtractor{Name: "a", Extractor: blocking{cancel}}))
+	if res.Verdict != check.VerdictUnknown || !strings.Contains(res.Message, `extractor "a": context canceled`) {
+		t.Fatalf("verdict %s message %q, want unknown with the cancellation", res.Verdict, res.Message)
 	}
 }

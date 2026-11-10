@@ -6,6 +6,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -74,6 +75,19 @@ func (b baseline) add(line string) error {
 	}
 	b[k] = s
 	return nil
+}
+
+// within is the rows of the packages named by import path: a row whose
+// namespace is one of them, or one of them followed by a dot and a type name.
+func (b baseline) within(pkgs []string) baseline {
+	out := baseline{}
+	for k, s := range b {
+		ns, _, _ := strings.Cut(k, " ")
+		if slices.ContainsFunc(pkgs, func(p string) bool { return ns == p || strings.HasPrefix(ns, p+".") }) {
+			out[k] = s
+		}
+	}
+	return out
 }
 
 // check holds the scores to the baseline, and names each function that breaks

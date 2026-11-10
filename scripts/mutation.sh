@@ -3,7 +3,7 @@
 #
 # Usage: scripts/mutation.sh [--diff <base>] [--deadline <epoch seconds>] [--jobs <n>] [--most <n>]
 #                            [--memory-request <quantity>] [--narrow on|off] [--show-killed yes|no]
-#                            all | none | <package directory>...
+#                            [--redundant yes|no] all | none | <package directory>...
 #   make mutation                                   every package, as locally and weekly
 #   make mutation MUTATION_SCOPE="internal/config"  the packages listed
 #   make mutation MUTATION_SCOPE="internal/config" MUTATION_DIFF=<commit>
@@ -21,6 +21,9 @@
 #                                                   (--narrow off; narrowing below, #264)
 #   make mutation ... MUTATION_SHOW_KILLED=yes      the log names each killed mutant too (--show-killed yes), so two
 #                                                   runs compare mutant by mutant
+#   make mutation MUTATION_SCOPE=<pkg> MUTATION_REDUNDANT=yes
+#                                                   after each pass, the tests that add no
+#                                                   block and no kill (--redundant yes, below)
 #
 # Each package is one pass, `gremlins unleash <package directory>`, judged alone against its
 # floors (scripts/mutation-floors.txt, read below). A package directory is one under internal/
@@ -116,7 +119,7 @@ quantity_bytes() {
     echo $((n * m))
 }
 
-diff_base="" deadline="" jobs=1 most="" mem_request="" narrow=yes show_killed="" reach_ok=""
+diff_base="" deadline="" jobs=1 most="" mem_request="" narrow=yes show_killed="" reach_ok="" redundant=""
 while :; do
     case "${1:-}" in
         --narrow)
@@ -124,6 +127,13 @@ while :; do
                 on) narrow=yes ;;
                 off) narrow="" ;;
                 *) refuse "--narrow takes on or off, not '${2:-}'" ;;
+            esac
+            shift 2 ;;
+        --redundant)
+            case "${2:-}" in
+                yes) redundant=yes ;;
+                no) redundant="" ;;
+                *) refuse "--redundant takes yes or no, not '${2:-}'" ;;
             esac
             shift 2 ;;
         --show-killed)
@@ -172,7 +182,11 @@ while :; do
         *) break ;;
     esac
 done
-[ "$#" -gt 0 ] || refuse "no scope given. Usage: scripts/mutation.sh [--diff <base>] [--deadline <epoch seconds>] [--jobs <n>] [--most <n>] [--memory-request <quantity>] [--narrow on|off] [--show-killed yes|no] all | none | <package directory>..."
+[ -z "$redundant" ] || [ -n "$narrow" ] || refuse "--redundant yes reads the index narrowing builds, so it takes --narrow on"
+# A diff run kills only the changed lines' mutants, so its kills name too few killers, and the
+# list would name a test that alone kills a mutant elsewhere in the package.
+[ -z "$redundant" ] || [ -z "$diff_base" ] || refuse "--redundant yes reads the kills of a whole pass, so it takes no --diff"
+[ "$#" -gt 0 ] || refuse "no scope given. Usage: scripts/mutation.sh [--diff <base>] [--deadline <epoch seconds>] [--jobs <n>] [--most <n>] [--memory-request <quantity>] [--narrow on|off] [--show-killed yes|no] [--redundant yes|no] all | none | <package directory>..."
 # The memory guard reads one package's anon, which only a run of one package at a time gives
 # (Memory, below).
 [ -z "$mem_request" ] || [ "$jobs" -le 1 ] || refuse "--memory-request bounds each package's own anon, and with --jobs $jobs the packages that run at once share one figure; run them one at a time"
@@ -991,11 +1005,14 @@ narrow_or_not() {
         echo "==> mutation: $1: not narrowed: its pass or a mutant could not be timed; every mutant runs the whole package's tests"
         return 0
     fi
-    if awk -v p="$rule_pass" -v m="$rule_mutant" 'BEGIN { exit !(3 * p < m) }'; then
+    if [ -n "$redundant" ]; then
+        echo "==> mutation: $1: narrowed: --redundant yes reads the index of its tests"
+    elif awk -v p="$rule_pass" -v m="$rule_mutant" 'BEGIN { exit !(3 * p < m) }'; then
         echo "==> mutation: $1: not narrowed: by $from times, its tests, a pass of $rule_pass s, are under a third of a mutant's $rule_mutant s, so narrowing them would save little; every mutant runs the whole package's tests"
         return 0
+    else
+        echo "==> mutation: $1: narrowed: by $from times, its tests, a pass of $rule_pass s, are at least a third of a mutant's $rule_mutant s"
     fi
-    echo "==> mutation: $1: narrowed: by $from times, its tests, a pass of $rule_pass s, are at least a third of a mutant's $rule_mutant s"
     build_reach "$1" "$(seconds "$coef" "$pass_s")"
     [ -z "${measuring_s:-}" ] || measuring_s=$(awk -v m="$measuring_s" -v t="$took" 'BEGIN { s = m + t; r = int(s); if (r < s) r++; printf "%d", r }')
 }
@@ -1026,8 +1043,16 @@ build_reach() {
 # pass starts afresh.
 reach_line() {
     reach_bad=""
-    [ -n "$reach_ok" ] || return 0
-    [ -s "$pw/reach/log" ] || { echo "==> mutation: $1: narrowing: no mutant ran"; return 0; }
+    if [ -z "$reach_ok" ]; then
+        no_list "$1" "the package has no index of its tests, for the reason above"
+        return 0
+    fi
+    if [ ! -s "$pw/reach/log" ]; then
+        echo "==> mutation: $1: narrowing: no mutant ran"
+        no_list "$1" "no mutant ran"
+        rm -f "$pw/reach/kills"
+        return 0
+    fi
     # testreach could not read the limits, so gremlins' limit, more than the planned one, went
     # to go unchecked: the package fails (judge_pass).
     reach_bad=$(grep -c '^- 0/0 - - - - limits unreadable' "$pw/reach/log" || true)
@@ -1059,6 +1084,26 @@ reach_line() {
             }
         }' "$pw/reach/log"
     rm -f "$pw/reach/log"
+    redundant_lines "$1"
+}
+
+# redundant_lines <package>: with --redundant yes, the tests of the package that cover no block
+# no other test covers and kill no mutant no other test kills, from the index and the kills
+# testreach wrote during the pass (`testreach redundant`), which the next pass starts afresh.
+# It lists them and deletes nothing (#287). A pass the deadline stopped killed only some of its
+# mutants, so it gets no list.
+redundant_lines() {
+    if [ -n "$ran_out" ]; then
+        no_list "$1" "the deadline stopped the pass, so its kills are not all of them"
+    elif [ -n "$redundant" ]; then
+        "$work/bin/testreach" redundant "$pw/reach" 2>&1 | sed 's/^/==> mutation: /' || true
+    fi
+    rm -f "$pw/reach/kills"
+}
+
+# no_list <package> <why>: with --redundant yes, the line that says why the pass lists no tests.
+no_list() {
+    [ -z "$redundant" ] || echo "==> mutation: $1: redundant: no list: $2"
 }
 
 # run_gremlins <diff file> <arguments...>: gremlins with those arguments, bounded, with the go

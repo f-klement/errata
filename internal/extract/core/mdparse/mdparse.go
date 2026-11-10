@@ -1178,20 +1178,37 @@ func (p *Prose) Inline(src []byte, n ast.Node) {
 
 // codeSpanText is the text of a code span: its lines between the backtick
 // strings, less the space or newline that CommonMark strips from each end
-// when both ends have one and the text is not all blanks. goldmark's Value
-// strips them in what it gives, two bytes fewer than its indices hold.
+// when both ends have one and the text is not all blanks. The rule is read
+// from the indices, which hold the unstripped text in every goldmark: up to
+// v2.1.14 Value.Bytes gave the stripped text, and from v2.1.15 it gives the
+// raw bytes, so a test of its length stopped seeing the strip.
 func codeSpanText(c *ast.CodeSpan, src []byte) []text.Index {
 	ix := slices.Clone(c.Value.Indices())
-	n := 0
-	for _, s := range ix {
-		n += s.Stop - s.Start
-	}
-	if len(c.Value.Bytes(src)) == n-2 {
+	if stripsEnds(ix, src) {
 		ix[0].Start++
 		ix[len(ix)-1].Stop--
 	}
 	return ix
 }
+
+// stripsEnds is whether CommonMark strips a code span's ends, as goldmark
+// decides it: the text starts and ends with a space or a newline, and is not
+// all blanks. goldmark also refuses a one line span under two bytes, which
+// those two already refuse.
+func stripsEnds(ix []text.Index, src []byte) bool {
+	if len(ix) == 0 {
+		return false
+	}
+	first, last := src[ix[0].Start:ix[0].Stop], src[ix[len(ix)-1].Start:ix[len(ix)-1].Stop]
+	if len(first) == 0 || len(last) == 0 {
+		return false
+	}
+	return spaceOrNewline(first[0]) && spaceOrNewline(last[len(last)-1]) &&
+		slices.ContainsFunc(ix, func(s text.Index) bool { return !util.IsBlank(src[s.Start:s.Stop]) })
+}
+
+// spaceOrNewline is a byte a code span's ends may lose.
+func spaceOrNewline(b byte) bool { return b == ' ' || b == '\n' }
 
 // newline is a line break, as bytes.Count takes it.
 var newline = []byte("\n")

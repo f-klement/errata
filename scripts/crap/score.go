@@ -10,6 +10,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -38,30 +39,60 @@ func (f fn) crap() float64 {
 }
 
 // scoreTree scores every function of the root that the profile and the
-// -require directories put in scope, keyed by fn.key.
-func scoreTree(root, profileName string, require []string) (map[string]fn, error) {
+// -require directories put in scope, or the -only directories alone, keyed by
+// fn.key, and gives the import path of each package it scored.
+func scoreTree(root, profileName string, require, only []string) (map[string]fn, []string, error) {
 	module, err := modulePath(filepath.Join(root, "go.mod"))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	prof, err := readProfileFile(profileName, module)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := checkFiles(root, prof); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	dirs, err := scoredDirs(root, prof, require)
+	dirs, err := pickDirs(root, prof, require, only)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	fns := map[string]fn{}
+	pkgs := make([]string, 0, len(dirs))
 	for _, d := range dirs {
 		if err := scoreDir(root, module, d, prof, fns); err != nil {
+			return nil, nil, err
+		}
+		pkgs = append(pkgs, importPath(module, d))
+	}
+	return fns, pkgs, nil
+}
+
+// pickDirs is the directories to score: the -only ones when there are any,
+// and otherwise those of scoredDirs.
+func pickDirs(root string, prof profile, require, only []string) ([]string, error) {
+	if len(only) > 0 {
+		return onlyDirs(root, only)
+	}
+	return scoredDirs(root, prof, require)
+}
+
+// onlyDirs is the -only directories, each cleaned and from the root, sorted.
+// It refuses one that holds no Go file other than a test.
+func onlyDirs(root string, only []string) ([]string, error) {
+	set := map[string]bool{}
+	for _, d := range only {
+		d = path.Clean(filepath.ToSlash(d))
+		entries, err := os.ReadDir(filepath.Join(root, filepath.FromSlash(d)))
+		if err != nil {
 			return nil, err
 		}
+		if !slices.ContainsFunc(entries, func(e fs.DirEntry) bool { return !e.IsDir() && sourceFile(e.Name()) }) {
+			return nil, fmt.Errorf("-only %s holds no Go package", d)
+		}
+		set[d] = true
 	}
-	return fns, nil
+	return sortedKeys(set), nil
 }
 
 // modulePath is the module line of a go.mod file.

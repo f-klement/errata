@@ -21,6 +21,14 @@ suite of such guards goes green on nothing.
 A refusal is tested for its refusal, not for any failure: assert the message (`REFUSED`, the named
 reason), so a crash for an unrelated reason does not pass as the guard working.
 
+## A fuzz oracle reads the line as the reader does
+
+A fuzz oracle that holds a reader's text to the line it came from compares it with the line as
+the reader reads it: `extracttest.RawLine`, which keeps the blanks at both ends, or that line
+put through the same decoding the reader applies. `core.LineText` trims the line, so a correct
+read of a value that keeps a trailing tab or space fails against it. The table and udev oracles
+each compared with `core.LineText`, and in v0.4.0 each cost a red gate and a fix round.
+
 ## A function scores CRAP below 10
 
 The CRAP of a function is `comp^2 * (1-cov)^3 + comp`, where comp is its cyclomatic complexity

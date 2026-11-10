@@ -424,3 +424,58 @@ func TestAnUnreadableTreeIsRefused(t *testing.T) {
 		}
 	}
 }
+
+// -only scores the packages named and holds only their rows: a gate that ran
+// the tests reaching a change has exact coverage for those packages alone
+// (ci/mutation-scope.sh, "The gate's scope"). A package left out is neither
+// refused for having no block nor scored, and its rows stand, though one is
+// stale and one names a package whose import path starts like q's.
+func TestOnlyScoresThePackagesNamedAndHoldsTheirRows(t *testing.T) {
+	root := tree(t, "example.com/m", map[string]string{
+		"q/q.go":       branchy,
+		"x/y/y.go":     "package y\n\nfunc Y() int {\n\treturn 1\n}\n",
+		"empty/README": "",
+	})
+	got := scores(t, root, branchyProfile(t), "-only", "q/")
+	if len(got) != 3 || got["example.com/m/q.T Branchy"] == "" {
+		t.Fatalf("-only q scored %q, want q's three functions", got)
+	}
+	others := "example.com/m/x/y Gone 15.00\nexample.com/m/qq Z 15.00\nexample.com/m/qq.T Z 15.00\n"
+	for _, c := range []struct {
+		name, base string
+		rc         int
+		want       string
+	}{
+		{"the rows of other packages stand", "example.com/m/q.T Branchy 12.00\n" + others, 0,
+			"crap: 3 functions scored; 1 at 10 or more, each in the baseline at its score or lower"},
+		{"a function of q at 10 or more still needs its row", others, 1,
+			"example.com/m/q.T Branchy scores 12.00"},
+		{"a stale row of q still fails", "example.com/m/q.T Branchy 12.00\nexample.com/m/q Gone 15.00\n" + others, 1,
+			"stale row: example.com/m/q Gone (15.00) is gone from the scored tree"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			rc, out, errb := crap(t, root, branchyProfile(t), "-only", "q", "-baseline", writeFile(t, c.base))
+			if rc != c.rc || !strings.Contains(out, c.want) || errb != "" {
+				t.Errorf("exit %d, stdout %q, stderr %q; want %d and %q", rc, out, errb, c.rc, c.want)
+			}
+			if c.rc == 1 && strings.Contains(out, "example.com/m/x/y") {
+				t.Errorf("a row of a package outside -only was held: %q", out)
+			}
+		})
+	}
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"-only", "x/y"}, "example.com/m/x/y Y at x/y/y.go:3 has statements and no block"},
+		{[]string{"-only", "empty"}, "-only empty holds no Go package"},
+		{[]string{"-only", "nowhere"}, "no such file or directory"},
+		{[]string{"-only", "q", "-require", "q"}, "takes neither -require nor -write-baseline"},
+		{[]string{"-only", "q", "-write-baseline"}, "takes neither -require nor -write-baseline"},
+	} {
+		rc, _, errb := crap(t, root, branchyProfile(t), c.args...)
+		if rc != 2 || !strings.HasPrefix(errb, "crap: ") || !strings.Contains(errb, c.want) {
+			t.Errorf("%q: exit %d, stderr %q; want a refusal naming %q", c.args, rc, errb, c.want)
+		}
+	}
+}

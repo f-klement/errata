@@ -50,6 +50,21 @@ checks:
       dockerfile: {regex: {file: Dockerfile, pattern: '^FROM golang:(\d+\.\d+\.\d+)-'}}
     agree: [gomod, dockerfile]
 
+  - id: dockerfile-base-is-the-release-base
+    reason: >
+      The public Dockerfile builds by hand the image ko builds for a release, and both must start
+      from the same base image, or `docker build` gives users something other than what ships.
+      Renovate moves the Dockerfile's last FROM and .goreleaser.yaml's base_image in one merge
+      request (renovate.json's group "bash base image"), and make dogfood runs on it, so a
+      merge request that moves one and not the other, as when a manager's lookup fails or a hand
+      or autopatch edit moves one pin, fails here. The Dockerfile's pattern takes a FROM with no
+      stage name, the final one.
+    scope: repo
+    extract:
+      dockerfile: {regex: {file: Dockerfile, pattern: '^FROM (\S+)$'}}
+      goreleaser: {regex: {file: .goreleaser.yaml, pattern: '^ *base_image: *(\S+)$'}}
+    agree: [dockerfile, goreleaser]
+
   - id: readme-names-the-go-minor
     reason: >
       The README tells a developer which Go to install, by its minor version. When it names

@@ -197,6 +197,7 @@ func calledFor(t *testing.T, w world, step string) call {
 
 const fakeBin = `#!/bin/sh
 echo "bin $*" >>"$GO_LOG"
+[ -z "${FAIL_OUT:-}" ] || printf '%s\n' "$FAIL_OUT"
 if [ -n "${PID_FILE:-}" ]; then
     echo $$ >"$PID_FILE.tmp" && mv "$PID_FILE.tmp" "$PID_FILE"
     sleep 120 &

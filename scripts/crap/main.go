@@ -5,6 +5,7 @@
 // Usage:
 //
 //	crap [-root dir] [-require dir]... [-baseline file] <profile>
+//	crap [-root dir] [-only dir]... [-baseline file] <profile>
 //	crap [-root dir] [-require dir]... -list <profile>
 //	crap [-root dir] [-require dir]... -write-baseline <profile>
 //	crap -baseline file -shrinks <older baseline>
@@ -33,6 +34,14 @@
 // coretest and the like, which only tests import), files a build constraint
 // leaves out of a plain build, and generated files (`// Code generated ...
 // DO NOT EDIT.`).
+//
+// -only names a package directory, and may be given more than once: only the
+// functions of those packages are scored, and only their rows of the baseline
+// are held to the rules below; every other row stands as it is. A gate that
+// ran only the tests that reach a change passes it (ci/mutation-scope.sh,
+// "The gate's scope", says why their coverage is then exact). It takes
+// neither -require nor -write-baseline, and refuses a directory that holds no
+// Go file other than a test.
 //
 // It refuses, with exit 2 and a line that starts "crap: REFUSED:", rather
 // than score anything 0% by accident: a profile that does not parse or holds
@@ -65,7 +74,7 @@ func main() {
 // options are the command line.
 type options struct {
 	root, baseline, shrinks string
-	require                 []string
+	require, only           []string
 	list, write             bool
 	profile                 string
 }
@@ -85,6 +94,7 @@ func parseArgs(args []string, stderr io.Writer) (options, error) {
 	fs.StringVar(&o.baseline, "baseline", "", "the baseline to hold the scores to")
 	fs.StringVar(&o.shrinks, "shrinks", "", "an older baseline that -baseline may only shrink from")
 	fs.Var((*dirs)(&o.require), "require", "a directory, relative to the root, each package under which the profile must cover")
+	fs.Var((*dirs)(&o.only), "only", "a package directory, relative to the root, whose functions alone are scored and held to the baseline")
 	fs.BoolVar(&o.list, "list", false, "print every function's score, worst first")
 	fs.BoolVar(&o.write, "write-baseline", false, "print the baseline the scores give")
 	if err := fs.Parse(args); err != nil {
@@ -103,6 +113,9 @@ func (o *options) validate(rest []string) error {
 	}
 	if o.list && o.write {
 		return errors.New("-list and -write-baseline are two modes; name one")
+	}
+	if len(o.only) > 0 && (o.write || len(o.require) > 0) {
+		return errors.New("-only scores part of the tree, so it takes neither -require nor -write-baseline")
 	}
 	o.profile = rest[0]
 	return nil
@@ -127,11 +140,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if o.shrinks != "" {
 		return report(stdout, stderr, shrinkMode(o))
 	}
-	fns, err := scoreTree(o.root, o.profile, o.require)
+	fns, scored, err := scoreTree(o.root, o.profile, o.require, o.only)
 	if err != nil {
 		return refuse(stderr, err)
 	}
-	return report(stdout, stderr, scoreMode(o, fns, stdout))
+	return report(stdout, stderr, scoreMode(o, fns, scored, stdout))
 }
 
 // outcome is what a mode ends with: the failures it names, or a refusal.
@@ -155,8 +168,9 @@ func shrinkMode(o options) outcome {
 }
 
 // scoreMode lists the scores, writes the baseline, or checks the scores
-// against the baseline (an empty one when none is named).
-func scoreMode(o options, fns map[string]fn, stdout io.Writer) outcome {
+// against the baseline (an empty one when none is named). scored is the
+// import path of each package scored; under -only, only their rows are held.
+func scoreMode(o options, fns map[string]fn, scored []string, stdout io.Writer) outcome {
 	if o.list {
 		return outcome{err: writeList(stdout, fns)}
 	}
@@ -169,6 +183,9 @@ func scoreMode(o options, fns map[string]fn, stdout io.Writer) outcome {
 		if base, err = readBaselineFile(o.baseline); err != nil {
 			return outcome{err: err}
 		}
+	}
+	if len(o.only) > 0 {
+		base = base.within(scored)
 	}
 	return outcome{problems: check(fns, base), summary: summary(fns, base)}
 }

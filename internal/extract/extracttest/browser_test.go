@@ -56,6 +56,29 @@ func TestXNetDropsTemplate(t *testing.T) {
 	}
 }
 
+// XNetClearsToForeign holds where x/net v0.62.0 clears the stack back to
+// a table context at a foreign element of a table part's name, as the
+// standard does not: the td in the svg's tr, where the standard opens it
+// in the HTML row (FuzzBrowser's find on e50c2c83). It does not hold for
+// a td in an integration point, nor for a page without svg or math. The
+// planted break: no source counted.
+func TestXNetClearsToForeign(t *testing.T) {
+	for src, want := range map[string]bool{
+		"<table><tr><td><tr><svg><tr><desc><td>":   true,
+		"<table><tr><td><tr><math><tr><mi><th>":    true,
+		"<table><tr><td><tr><svg><desc><td>":       false,
+		"<table><tr><td><svg><tr><desc><b>x</svg>": false,
+		"<table><tr><td>x<tr><td>y</table>":        false,
+	} {
+		if got := XNetClearsToForeign(src); got != want {
+			t.Errorf("%q: %v, want %v", src, got, want)
+		}
+		if c := BrowserComparable(src); c == want {
+			t.Errorf("%q: comparable %v; x/net clears to a foreign element: %v", src, c, want)
+		}
+	}
+}
+
 // XNetFoldsName holds where x/net v0.62.0 matches an end tag in foreign
 // content by Unicode case folding (strings.EqualFold), where the standard
 // folds ASCII alone: a tag name with a byte of 0x80 or above, valid UTF-8

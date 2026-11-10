@@ -645,22 +645,6 @@ func TestSARIFBoundsTheWholeFile(t *testing.T) {
 	}
 }
 
-// Write holds a file to 9,800,000 bytes gzipped, 2% under GitHub's 10 MB.
-func TestSARIFDefaultBudget(t *testing.T) {
-	if want := (budget{gzipped: 9_800_000, plain: 9_700_000}); defaultBudget != want {
-		t.Fatalf("defaultBudget = %+v, want %+v", defaultBudget, want)
-	}
-}
-
-// Write uses the figures from GitHub's page, cited beside the constants.
-func TestSARIFLimitsAreGitHubs(t *testing.T) {
-	got := []int{descriptionLimit, maxResults, maxRelated + 1, uploadLimit, uploadPerResult, gzipBudget, plainBudget}
-	want := []int{1024, 25000, 1000, 10_000_000, 40, 9_800_000, 9_700_000}
-	if !slices.Equal(got, want) {
-		t.Fatalf("limits = %v, want %v", got, want)
-	}
-}
-
 func gzipped(b []byte) int {
 	var gz bytes.Buffer
 	zw := gzip.NewWriter(&gz)

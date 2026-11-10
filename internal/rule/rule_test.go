@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"pgregory.net/rapid"
 
@@ -119,21 +118,13 @@ func TestAgreeTrue(t *testing.T) {
 	}
 }
 
-type slow struct{}
-
-func (slow) Extract(context.Context, string) ([]check.Value, error) {
-	time.Sleep(10 * time.Millisecond)
-	return []check.Value{at("x", "f", 1)}, nil
-}
-
-func (s slow) ExtractWith(ctx context.Context, root string, _ map[string][]check.Value) ([]check.Value, error) {
-	return s.Extract(ctx, root)
-}
-
+// Run records how long the rule took. No timer: any run takes some time on
+// the monotonic clock. Planted break: Run's deferred assignment of Duration
+// removed.
 func TestRunRecordsDuration(t *testing.T) {
-	res := Run(context.Background(), "", agreeRule(check.NamedExtractor{Name: "a", Extractor: slow{}}))
-	if res.Duration < 10*time.Millisecond {
-		t.Fatalf("duration = %s, want at least 10ms", res.Duration)
+	res := Run(context.Background(), "", agreeRule(named("a", fake{values: []check.Value{at("x", "f", 1)}})))
+	if res.Duration <= 0 {
+		t.Fatalf("duration = %s, want more than 0", res.Duration)
 	}
 }
 

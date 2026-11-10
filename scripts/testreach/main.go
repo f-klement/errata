@@ -76,6 +76,17 @@
 // the build's, when the build ended it), and why. A result is killed (exit 1),
 // lived (exit 0), exit<n>, signal or timeout; a dash where a run did not
 // happen.
+//
+// Each mutant killed or timed out also adds a line to <index dir>/kills: the
+// site and the tests the binary's output says failed, or a dash when it names
+// none, as for a timeout. A run stops at its first failure (-test.failfast),
+// so the line names a test that kills the mutant, not every one that does.
+//
+//	testreach redundant <index dir>
+//
+// reads the index and the kills a pass left and lists the tests that cover no
+// block no other test covers and kill no mutant no other test kills
+// (redundant.go). It deletes nothing.
 package main
 
 import (
@@ -103,10 +114,7 @@ import (
 )
 
 func main() {
-	if len(os.Args) < 2 {
-		usage()
-	}
-	switch os.Args[1] {
+	switch arg(1) {
 	case "index":
 		if len(os.Args) != 10 {
 			usage()
@@ -133,13 +141,25 @@ func main() {
 			usage()
 		}
 		os.Exit(run(os.Args[2], os.Args[3], os.Args[4], os.Args[5:]))
+	case "redundant":
+		os.Exit(redundantMain(os.Stdout, os.Stderr, os.Args[2:]))
 	default:
 		usage()
 	}
 }
 
+// arg is the command line's argument i, empty when there is none.
+func arg(i int) string {
+	if i < len(os.Args) {
+		return os.Args[i]
+	}
+	return ""
+}
+
+const usageText = "usage: testreach index <go> <casecover> <tags> <module root> <package dir> <out dir> <jobs> <limit>\n       testreach run <go> <module root> <index dir> <go arguments...>\n       testreach redundant <index dir>"
+
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: testreach index <go> <casecover> <tags> <module root> <package dir> <out dir> <jobs> <limit>\n       testreach run <go> <module root> <index dir> <go arguments...>")
+	fmt.Fprintln(os.Stderr, usageText)
 	os.Exit(2)
 }
 
@@ -258,11 +278,13 @@ func runAlone(ctx context.Context, bin, casecover, root, dir, name, profile stri
 }
 
 // profileLine is a profile's block: file:startLine.startCol,endLine.endCol statements count.
-var profileLine = regexp.MustCompile(`^(.+):([0-9]+)\.[0-9]+,([0-9]+)\.[0-9]+ [0-9]+ ([0-9]+)$`)
+var profileLine = regexp.MustCompile(`^(.+):([0-9]+)\.([0-9]+),([0-9]+)\.([0-9]+) [0-9]+ ([0-9]+)$`)
 
-// ranLines writes "<file> <first line> <last line>" for each block of the
-// profile that ran, in a file of the package itself; a file in a directory
-// below it is another package's.
+// ranLines writes "<file> <first line> <last line> <first column> <last
+// column>" for each block of the profile that ran, in a file of the package
+// itself; a file in a directory below it is another package's. The columns
+// tell apart two blocks on one line, such as a condition and the closure in
+// it; reaching reads the lines alone.
 func ranLines(w io.Writer, profile, importPath string) error {
 	data, err := os.ReadFile(profile) //nolint:gosec // the profile runAlone wrote
 	if err != nil {
@@ -270,14 +292,14 @@ func ranLines(w io.Writer, profile, importPath string) error {
 	}
 	for _, line := range strings.Split(string(data), "\n") {
 		m := profileLine.FindStringSubmatch(line)
-		if m == nil || m[4] == "0" {
+		if m == nil || m[6] == "0" {
 			continue
 		}
 		file, ok := strings.CutPrefix(m[1], importPath+"/")
 		if !ok || strings.Contains(file, "/") {
 			continue
 		}
-		fmt.Fprintf(w, "%s %s %s\n", file, m[2], m[3])
+		fmt.Fprintf(w, "%s %s %s %s %s\n", file, m[2], m[4], m[3], m[5])
 	}
 	return nil
 }
@@ -290,7 +312,9 @@ type reach struct {
 	ranges   map[string][]span
 }
 
-type span struct{ first, last, test int }
+// span is a block a test ran: its lines, and its columns, which only
+// redundant reads (zero in an index written without them).
+type span struct{ first, last, firstCol, lastCol, test int }
 
 func readIndex(path string) (*reach, error) {
 	f, err := os.Open(path) //nolint:gosec // the index scripts/mutation.sh names
@@ -310,13 +334,12 @@ func readIndex(path string) (*reach, error) {
 			r.dir = fields[1]
 		case len(fields) == 2 && fields[0] == "test":
 			r.tests = append(r.tests, fields[1])
-		case len(fields) == 3 && len(r.tests) > 0:
-			first, err1 := strconv.Atoi(fields[1])
-			last, err2 := strconv.Atoi(fields[2])
-			if err1 != nil || err2 != nil {
+		case (len(fields) == 3 || len(fields) == 5) && len(r.tests) > 0:
+			n, ok := numbers(fields[1:])
+			if !ok {
 				return nil, fmt.Errorf("%s: not an index line: %q", path, sc.Text())
 			}
-			r.ranges[fields[0]] = append(r.ranges[fields[0]], span{first, last, len(r.tests) - 1})
+			r.ranges[fields[0]] = append(r.ranges[fields[0]], span{n[0], n[1], n[2], n[3], len(r.tests) - 1})
 		default:
 			return nil, fmt.Errorf("%s: not an index line: %q", path, sc.Text())
 		}
@@ -328,6 +351,20 @@ func readIndex(path string) (*reach, error) {
 		return nil, fmt.Errorf("%s names no package or directory", path)
 	}
 	return r, nil
+}
+
+// numbers reads an index line's two or four numbers into four, the columns
+// zero when the line has none.
+func numbers(fields []string) ([4]int, bool) {
+	var n [4]int
+	for i, f := range fields {
+		v, err := strconv.Atoi(f)
+		if err != nil {
+			return n, false
+		}
+		n[i] = v
+	}
+	return n, true
 }
 
 // reaching is the tests that ran the line, in the index's order.
@@ -413,6 +450,8 @@ type outcome struct {
 	// a reason other than how it ended, which tells nothing of the tests.
 	notStarted bool
 	took       time.Duration
+	// fails names the tests a test binary's output says failed (failScan).
+	fails []string
 }
 
 func (o outcome) String() string {
@@ -546,6 +585,7 @@ func run(goBin, root, indexDir string, args []string) int {
 		// The build alone took the planned limit: timed out, as one go test
 		// would be.
 		logf(outcome{}, false, b, true, "the build took the whole limit"+held)
+		recordKill(indexDir, site, nil)
 		return timedOut()
 	case b.signaled:
 		logf(outcome{}, false, b, true, "the build was signalled")
@@ -575,6 +615,7 @@ func run(goBin, root, indexDir string, args []string) int {
 			n = runBounded(bin, binArgs(binTimeout, expr), "", left, ioWait)
 			if n.testFailed() {
 				logf(n, true, outcome{}, false, "narrowed"+checkWhy)
+				recordKill(indexDir, site, n.fails)
 				return 1
 			}
 			why = "narrowed, then whole" + checkWhy
@@ -586,10 +627,12 @@ func run(goBin, root, indexDir string, args []string) int {
 	if w.timedOut {
 		// Build and whole tests passed the planned limit: timed out, final.
 		logf(n, ran, w, true, fmt.Sprintf("%s (build %s)%s", why, secs(b.took), held))
+		recordKill(indexDir, site, nil)
 		return timedOut()
 	}
 	logf(n, ran, w, true, fmt.Sprintf("%s (build %s)", why, secs(b.took)))
 	if w.failed() {
+		recordKill(indexDir, site, w.fails)
 		return 1
 	}
 	return 0
@@ -720,8 +763,9 @@ func catchSignals() func() {
 func bounded(name string, args []string, dir string, limit, ioWait time.Duration) outcome {
 	cmd := exec.CommandContext(context.Background(), name, args...) //nolint:gosec // go, or a test binary built here
 	cmd.Dir = dir
+	scan := &failScan{}
 	if ioWait > 0 {
-		cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
+		cmd.Stdout, cmd.Stderr = scan, scan
 		cmd.WaitDelay = ioWait
 	}
 	ownGroup(cmd)
@@ -758,6 +802,7 @@ func bounded(name string, args []string, dir string, limit, ioWait time.Duration
 	mu.Unlock()
 	// Whatever the group left behind goes too.
 	killGroup(cmd)
+	o.fails = scan.failed()
 	current.Lock()
 	current.cmd = nil
 	current.Unlock()
@@ -773,7 +818,7 @@ func bounded(name string, args []string, dir string, limit, ioWait time.Duration
 			o.code = exitErr.ExitCode()
 		}
 	default:
-		// Copying the output failed, which io.Discard cannot do today. It
+		// Copying the output failed, which failScan cannot do today. It
 		// says nothing of the tests, so a narrowed run sends the mutant to the
 		// whole run, as for a binary that never started (delta review 4 of
 		// #264, H1).

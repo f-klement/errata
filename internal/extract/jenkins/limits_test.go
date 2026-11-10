@@ -21,10 +21,32 @@ func entryExtractor(t *testing.T, s Spec) core.EntryExtractor {
 
 // The extractor returns at most its value limit, and refuses past it, as
 // every extractor does; the scan keeps at most one assignment more than
-// core.MaxValues. The planted break: the scan keeping every assignment,
-// which TestReplayJenkinsShapesAtFullSize's assignments then hold in
-// memory.
+// its cap. The planted break: the scan keeping every assignment, which
+// TestReplayJenkinsShapesAtFullSize's assignments then hold in memory.
+// The cap is lowered to 5 here: at core.MaxValues the checks read 100,010
+// lines three times, 82 of the package's 104 s under make test's race and
+// coverage on a worker node, and the package passed go test's 2m on a busy runner
+// (MR 42's pipeline 3043917907). TestJenkinsValueLimitAtFullSize runs them
+// at the real cap.
 func TestJenkinsValueLimit(t *testing.T) {
+	keep := keepRecords
+	keepRecords = 5
+	t.Cleanup(func() { keepRecords = keep })
+	valueLimit(t)
+}
+
+// The same at core.MaxValues.
+func TestJenkinsValueLimitAtFullSize(t *testing.T) {
+	slowOnly(t)
+	if keepRecords != core.MaxValues {
+		t.Fatalf("the scan keeps %d records, not core.MaxValues", keepRecords)
+	}
+	valueLimit(t)
+}
+
+// valueLimit checks the value limit and the scan's cap, keepRecords.
+func valueLimit(t *testing.T) {
+	t.Helper()
 	x := entryExtractor(t, Spec{File: "Jenkinsfile", Variable: "X"})
 	x.ValueLimit = 3
 	if got, err := x.FromData([]byte(strings.Repeat("env.X = 1\n", 3))); err != nil || len(got) != 3 {
@@ -32,15 +54,15 @@ func TestJenkinsValueLimit(t *testing.T) {
 	}
 	_, err := x.FromData([]byte(strings.Repeat("env.X = 1\n", 4)))
 	extracttest.WantError(t, err, "Jenkinsfile: the extractor selects more than 100000 values, the limit")
-	defs := strings.Repeat("def X = 1\n", core.MaxValues+10)
+	defs := strings.Repeat("def X = 1\n", keepRecords+10)
 	s := newScan([]byte(defs), []byte("X"), nil, nil)
-	if err := s.run(); err != nil || len(s.records) != core.MaxValues+1 {
+	if err := s.run(); err != nil || len(s.records) != keepRecords+1 {
 		t.Fatalf("the scan kept %d assignments, %v", len(s.records), err)
 	}
 	// The def records past the cap do not hide an env.X = after them,
 	// which counts and drops them: the correctness review's witness, which
 	// gave no value.
-	if g := got(t, defs+"env.X = 'b'\n", Spec{Variable: "X"}); g != fmt.Sprintf("b@%d", core.MaxValues+11) {
+	if g := got(t, defs+"env.X = 'b'\n", Spec{Variable: "X"}); g != fmt.Sprintf("b@%d", keepRecords+11) {
 		t.Errorf("got %q", g)
 	}
 	s = newScan([]byte("env.X = 1\n"+defs), []byte("X"), nil, nil)

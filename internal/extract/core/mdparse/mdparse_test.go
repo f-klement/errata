@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -311,12 +312,49 @@ func TestProseOfACodeSpan(t *testing.T) {
 	}
 }
 
+// Each byte of a code span's prose maps where goldmark's own strip puts it,
+// in every goldmark: v2.1.15 stopped stripping the bytes Value.Bytes gives,
+// and TestProseOfACodeSpan failed on it. The cases are the strip's edges: a
+// span all blanks keeps its blanks (which the prose then folds), a span of
+// one space keeps it, a space at one end only stays, two at each end lose
+// one each, and a span whose text is a line end and a space is all blanks.
+func TestProseOfACodeSpanAtTheStripsEdges(t *testing.T) {
+	for _, c := range []struct {
+		src, text string
+		at        []int
+	}{
+		{"a `  ` b", "a b", []int{0, 1, 7}},
+		{"a ` ` b", "a b", []int{0, 1, 6}},
+		{"a `x ` b", "a x b", []int{0, 1, 3, 4, 7}},
+		{"a ` x` b", "a x b", []int{0, 1, 4, 6, 7}},
+		{"`\na\n` b", "a b", []int{2, 5, 6}},
+		{"` \n` b", "b", []int{5}},
+		{"``  a  `` b", "a b", []int{4, 5, 10}},
+	} {
+		doc, err := Parse("f", []byte(c.src), core.DefaultMaxBytes, time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p, err := doc.Prose(false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		at := make([]int, len(p.Text))
+		for i := range p.Text {
+			at[i] = p.Offset(i)
+		}
+		if string(p.Text) != c.text || !slices.Equal(at, c.at) {
+			t.Errorf("%q: prose %q at %v, want %q at %v", c.src, p.Text, at, c.text, c.at)
+		}
+	}
+}
+
 // A block kind the prose does not know is refused, never read as no text:
 // goldmark's table extension makes one. The planted break is the walk into
 // its children, which read the table as nothing.
 func TestProseRefusesABlockItDoesNotKnow(t *testing.T) {
 	src := []byte("x\n\n| a | b |\n|---|---|\n| CI runs on node | builder |\n\nafter\n")
-	md := parser.New(parser.WithExtensions(extension.TableParser))
+	md := parser.New(parser.WithExtensions(extension.NewTableParser()))
 	doc := &Doc{Src: src, Root: md.Parse(src), maxPieces: 1000}
 	_, err := doc.Prose(false)
 	want := "line 3: a block of kind Table, which the text extractor does not read"
@@ -422,7 +460,7 @@ func TestTablesParseAsGoldmark(t *testing.T) {
 	if n := len(extension.NewTableParser().ParserOptions(nil)); n != 2 {
 		t.Fatalf("the table extension has %d options, want 2", n)
 	}
-	md := parser.New(parser.WithExtensions(extension.TableParser))
+	md := parser.New(parser.WithExtensions(extension.NewTableParser()))
 	for _, s := range tableSamples {
 		doc, err := ParseTables("f", []byte(s), core.DefaultMaxBytes, time.Minute)
 		if err != nil {
@@ -638,7 +676,7 @@ func tableDecision(fail func(string, ...any), header, delimiter string, rows ...
 
 // goldmarkWithTables is goldmark's parser with its own table extension,
 // which tableAt and headerCells must agree with.
-var goldmarkWithTables = parser.New(parser.WithExtensions(extension.TableParser))
+var goldmarkWithTables = parser.New(parser.WithExtensions(extension.NewTableParser()))
 
 // tableAt and headerCells decide as goldmark's table extension does, on the
 // cases three reviews found, and on generated rows: headers of pipes,

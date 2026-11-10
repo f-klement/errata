@@ -1,0 +1,2 @@
+go test fuzz v1
+string("<table><tr><td><tr><svg><tr><desc><td>")

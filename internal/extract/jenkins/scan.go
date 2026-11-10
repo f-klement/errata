@@ -181,7 +181,7 @@ type scan struct {
 	pipelineEnv *record // the pipeline's environment's last value
 	stageEnv    map[int]record
 	// records are the env.X = and def X = assignments, at most
-	// core.MaxValues+1 of them, and only env.X = once envSets.
+	// keepRecords+1 of them, and only env.X = once envSets.
 	records []record
 	// envSets is whether an environment block or an env.X = sets the
 	// variable anywhere in the file, in any case; then def X = does not
@@ -192,6 +192,11 @@ type scan struct {
 	// X += that changes what def X = set.
 	loads, declared, withEnv, cellAxis, envOther, reassigned *mention
 }
+
+// keepRecords is how many records a scan keeps before the one more that
+// shows it is past the cap: core.MaxValues. A test lowers it, so that the cap
+// is reached in a few lines and not in 100,000 read three times under -race.
+var keepRecords = core.MaxValues
 
 func newScan(data, name, target []byte, m *core.Meter) *scan {
 	s := &scan{data: data, name: name, target: target, lx: newLexer(data, m), stack: []level{{}}, stageEnv: map[int]record{}}
@@ -873,7 +878,7 @@ func (s *scan) assigned(i int) {
 		return
 	}
 	if lv.assign != formEnvironment {
-		if len(s.records) <= core.MaxValues {
+		if len(s.records) <= keepRecords {
 			s.records = append(s.records, r)
 		}
 		return

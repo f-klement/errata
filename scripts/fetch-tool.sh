@@ -99,7 +99,10 @@ provenance_verify() {
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-get() { curl -sSfL -o "$2" "$1" || refuse "could not download $1"; }
+# get <url> <file>. curl tries again, up to five times within 120 s, on a 408, 429, 500, 502,
+# 503, 504, 522 or 524, and honours a Retry-After: GitHub's release downloads answered 504 to
+# four ci-image:build jobs on 2026-11-08 and 2026-11-09, and each passed when run again.
+get() { curl -sSfL --retry 5 --retry-max-time 120 -o "$2" "$1" || refuse "could not download $1"; }
 get "$url" "$tmp/download"
 get "$sums" "$tmp/sums"
 

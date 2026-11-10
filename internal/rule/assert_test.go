@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -475,16 +476,22 @@ func TestAssertTimeoutInsideAHelper(t *testing.T) {
 	}
 }
 
-// CEL looks at the timeout after every comprehension step, so an evaluation
-// whose steps are slow stops within one step of the deadline. Each step here
-// sleeps 5 ms; a look every 100 steps would come 500 ms late, past the grace.
+// CEL looks at the context after every comprehension step, so an evaluation
+// stops within one step of its context ending. The first step cancels the
+// caller's context, and no timer runs: a look every 100 steps would run 100
+// of them. Planted break: interruptEvery at 100.
 func TestAssertTimeoutLooksEveryStep(t *testing.T) {
-	nap := cel.Function("nap", cel.Overload("nap_string", []*cel.Type{cel.StringType}, cel.BoolType,
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	var steps atomic.Int32
+	step := cel.Function("step", cel.Overload("step_string", []*cel.Type{cel.StringType}, cel.BoolType,
 		cel.UnaryBinding(func(ref.Val) ref.Val {
-			time.Sleep(5 * time.Millisecond)
+			if steps.Add(1) == 1 {
+				cancel()
+			}
 			return types.True
 		})))
-	a, err := compile("v.all(x, nap(x))", []string{"v"}, limits{cost: CostLimit, timeout: time.Millisecond, grace: 200 * time.Millisecond}, nap)
+	a, err := compile("v.all(x, step(x))", []string{"v"}, limits{cost: CostLimit, timeout: time.Minute, grace: time.Minute}, step)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -492,9 +499,9 @@ func TestAssertTimeoutLooksEveryStep(t *testing.T) {
 	for i := range values {
 		values[i] = strconv.Itoa(i)
 	}
-	_, err = a.Eval(context.Background(), asExtracted(map[string][]string{"v": values}, nil, nil))
-	if err == nil || err.Error() != "the evaluation did not finish within the timeout of 1ms" || !errors.Is(err, interpreter.InterruptError{}) {
-		t.Fatalf("error = %v, want the timeout, with CEL stopping in the grace", err)
+	_, err = a.Eval(ctx, asExtracted(map[string][]string{"v": values}, nil, nil))
+	if err == nil || !errors.Is(err, interpreter.InterruptError{}) || steps.Load() > 2 {
+		t.Fatalf("error = %v after %d steps, want CEL interrupted within one step of the cancel", err, steps.Load())
 	}
 }
 

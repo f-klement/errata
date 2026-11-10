@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/f-klement/errata/internal/extract/core"
+	"github.com/f-klement/errata/internal/extract/extracttest"
 )
 
 // Every dialect's reader reads any file into entries in file order, each
@@ -57,7 +58,7 @@ func checkFuzzEntry(t *testing.T, d *dialect, raw []byte, e *entry) {
 	if d == modprobeDialect {
 		return // a \ joins lines, so the directive's words may be on the lines after
 	}
-	line := core.LineText(raw, e.line)
+	line := extracttest.RawLine(raw, e.line)
 	if d != sysctlDialect && !strings.Contains(strings.ToLower(line), strings.ToLower(string(e.key))) {
 		t.Fatalf("%s: line %d is %q, which does not hold the key %q", d.name, e.line, line, e.key)
 	}

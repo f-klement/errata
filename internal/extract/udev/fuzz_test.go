@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/f-klement/errata/internal/extract/core"
+	"github.com/f-klement/errata/internal/extract/extracttest"
 )
 
 // The reader reads any file into rules whose lines are inside the file and
@@ -38,7 +39,7 @@ func FuzzUdev(f *testing.F) {
 				if i+1 < len(l.parts) {
 					end = l.parts[i+1].off
 				}
-				line := bytes.TrimLeft(rawLine(raw, p.line), whitespace)
+				line := bytes.TrimLeft([]byte(extracttest.RawLine(raw, p.line)), whitespace)
 				if !bytes.HasPrefix(line, l.text[p.off:end]) {
 					t.Fatalf("line %d is %q, which does not start with the rule's part %q", p.line, line, l.text[p.off:end])
 				}
@@ -49,17 +50,6 @@ func FuzzUdev(f *testing.F) {
 			t.Fatal(err)
 		}
 	})
-}
-
-// rawLine is line n of data as udev reads it: without its line end, but
-// with the spaces and tabs at its end and a byte order mark at its start,
-// which core.LineText takes off and udev keeps.
-func rawLine(data []byte, n int) []byte {
-	start := 0
-	for range n - 1 {
-		start = core.NextLine(data, start)
-	}
-	return bytes.TrimRight(data[start:core.NextLine(data, start)], "\r\n")
 }
 
 // checkTokens holds the keys of the rule l to FuzzUdev's rules.

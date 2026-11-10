@@ -93,7 +93,7 @@ func checkFuzzLine(t *testing.T, raw []byte, last, line int, text string, inLine
 	if strings.ContainsAny(text, "\r\n") {
 		t.Fatalf("%q at line %d holds a line end", text, line)
 	}
-	l := core.LineText(raw, line)
+	l := extracttest.RawLine(raw, line)
 	if inLine && !strings.ContainsAny(l, "\"\\{") && !strings.Contains(l, text) {
 		t.Fatalf("line %d is %q, which does not hold %q", line, l, text)
 	}

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/f-klement/errata/internal/extract/core"
+	"github.com/f-klement/errata/internal/extract/extracttest"
 )
 
 // Every dialect's reader reads any file, as a template or not, into rows
@@ -88,7 +89,7 @@ func checkFuzzCell(t *testing.T, d *dialect, col column, raw []byte, last int, c
 	if bytes.ContainsAny(c.text, "\r\n") && d != fstabDialect && d != exportsDialect {
 		t.Fatalf("%s: the cell %q at line %d holds a line end", d.name, c.text, c.line)
 	}
-	if line := core.LineText(raw, c.line); string(c.text) != col.def && !holds(d, col, raw, c) {
+	if line := extracttest.RawLine(raw, c.line); string(c.text) != col.def && !holds(d, col, raw, c) {
 		t.Fatalf("%s: line %d is %q, which does not hold the %s cell %q", d.name, c.line, line, col.name, c.text)
 	}
 }
@@ -114,7 +115,7 @@ var numbers = []string{"freq", "passno", "uid", "gid"}
 // so a word of only a quote, "\ then bd", starts with the space and has
 // its first part on the line after.
 func holds(d *dialect, col column, raw []byte, c cell) bool {
-	line := rawLine(raw, c.line)
+	line := extracttest.RawLine(raw, c.line)
 	switch {
 	case slices.Contains(numbers, col.name) && !c.varies:
 		_, err := strconv.Atoi(string(c.text))
@@ -142,16 +143,6 @@ func inExports(raw []byte, c cell, line string) bool {
 
 // joins reports a line a \ right before its end joins to the next.
 func joins(line string) bool { return strings.HasSuffix(line, `\`) }
-
-// rawLine is line n of data without its line end, its white space kept:
-// core.LineText trims it, and a group's last member keeps a tab after it,
-// as glibc reads it.
-func rawLine(data []byte, n int) string {
-	start := lineStart(data, n)
-	line := data[start:core.NextLine(data, start)]
-	line = bytes.TrimSuffix(line, []byte("\n"))
-	return string(bytes.TrimSuffix(line, []byte("\r")))
-}
 
 // lineStart is the offset of line n of data.
 func lineStart(data []byte, n int) int {

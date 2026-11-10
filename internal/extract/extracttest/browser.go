@@ -672,12 +672,53 @@ var BrowserRefusals = map[string]string{
 // the HTML standard lists (x/net v0.62.0, inCaptionIM), so with a caption
 // the oracle is not the standard, and it drops a template opened in an svg's or a
 // math's integration point and everything after it (XNetDropsTemplate),
-// where it is not either. A reader's read that followed the standard
+// where it is not either, and it clears the stack back to a table context
+// at a foreign element of a table part's name (XNetClearsToForeign). A reader's read that followed the standard
 // where x/net does not (BrowserRead.StandardOnly) is compared as the
 // reader reads it in x/net's way (htmlparse.Scanner.FollowXNetAdoption).
 func BrowserComparable(src string) bool {
 	return !strings.ContainsAny(src, "&\r\x00") && !strings.Contains(src, "<!") && !strings.Contains(src, "<?") &&
-		!strings.Contains(strings.ToLower(src), "<caption") && !XNetDropsTemplate(src) && !XNetFoldsName(src)
+		!strings.Contains(strings.ToLower(src), "<caption") && !XNetDropsTemplate(src) && !XNetFoldsName(src) &&
+		!XNetClearsToForeign(src)
+}
+
+// XNetClearsToForeign reports whether x/net v0.62.0's tree of src puts an
+// HTML element in a foreign element named html, table, tbody, thead,
+// tfoot, tr or template. Where the standard clears the stack back to a
+// table context it pops to such an HTML element; x/net stops at an
+// element of the name in any namespace (parse.go, clearStackToContext).
+// So in <table><tr><svg><tr><desc><td> the td goes into the svg's tr, and
+// x/net's table has one row with a cell where the standard's has two. The
+// standard never puts an HTML element straight in one of these foreign
+// elements: none is an integration point. Only a page with svg or math is
+// parsed.
+func XNetClearsToForeign(src string) bool {
+	lower := strings.ToLower(src)
+	if !strings.Contains(lower, "<svg") && !strings.Contains(lower, "<math") {
+		return false
+	}
+	doc, err := xhtml.Parse(strings.NewReader(src))
+	if err != nil {
+		panic(err)
+	}
+	return htmlInForeignContext(doc)
+}
+
+// foreignContexts are the names x/net's clearStackToContext stops at.
+var foreignContexts = map[string]bool{"html": true, "table": true, "tbody": true, "thead": true, "tfoot": true, "tr": true, "template": true}
+
+// htmlInForeignContext reports whether n or a node below it is an HTML
+// element whose parent is a foreign element named in foreignContexts.
+func htmlInForeignContext(n *xhtml.Node) bool {
+	for c := n.FirstChild; c != nil; c = c.NextSibling {
+		if c.Type == xhtml.ElementNode && c.Namespace == "" && n.Type == xhtml.ElementNode && n.Namespace != "" && foreignContexts[n.Data] {
+			return true
+		}
+		if htmlInForeignContext(c) {
+			return true
+		}
+	}
+	return false
 }
 
 // XNetFoldsName reports whether a tag name in src holds a byte of 0x80 or

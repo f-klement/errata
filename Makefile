@@ -60,7 +60,7 @@ FUZZ_TARGETS = $(shell find internal -name testdata -prune -o -name '*_test.go' 
 	| xargs grep -HE '^func Fuzz[A-Za-z0-9_]*[(][A-Za-z_][A-Za-z0-9_]* \*testing\.F[)]' \
 	| sed 's|^\(.*\)/[^/]*_test\.go:func \(Fuzz[A-Za-z0-9_]*\).*|./\1:\2|' | LC_ALL=C sort -u)
 
-.PHONY: check gate precheck build tools lint fmt test cover slow fuzz mutation vuln dogfood public-dry release-dry image-dry ci-local ci-test tool-sums hooks cli-doc cli-doc-check loc clean
+.PHONY: check gate precheck seat-check build tools lint fmt test cover slow fuzz fuzz-first fuzz-rest mutation vuln dogfood public-dry release-dry image-dry ci-local ci-test tool-sums hooks cli-doc cli-doc-check loc clean
 
 # ci/ is stripped from the public mirror, so a public clone runs the gate
 # without the publish and autopatch targets. CI's test job passes CI_TEST=apart
@@ -85,7 +85,13 @@ INTERNAL := $(if $(wildcard ci/public-tree.sh),public-dry $(GATE_SUITE))
 # ci-test, which its ci-test job runs. Its mutation job mutates the lines those
 # packages changed (ci/push-mutation.sh), and the weekly pass runs every
 # package whole.
-gate: lint test cover slow fuzz vuln dogfood image-dry $(INTERNAL)
+#
+# The checks that fail most come first (#279). In the v0.4.0 wave 3, three gates went red in
+# fuzz after 22 to 73 minutes, on a target of the package the seat had changed. So fuzz-first
+# fuzzes FUZZ_FIRST's packages right after lint, and fuzz-rest, at the end, fuzzes the rest of
+# MUTATION_SCOPE: each target still runs once, for FUZZTIME. cover holds CRAP and needs the
+# profile test writes, so it follows test straight away; test runs scripts/slowtests's own test.
+gate: lint fuzz-first test cover slow fuzz-rest vuln dogfood image-dry $(INTERNAL)
 
 check: gate mutation
 
@@ -106,6 +112,39 @@ precheck:
 	$(GO) test -count=1 -run '^TestArch' ./internal/cli
 	GO=$(GO) sh scripts/floors-gaps.sh
 	$(MAKE) --no-print-directory lint $(if $(wildcard ci/public-tree.sh),public-dry)
+
+# What a seat runs on its final commit before handing it back (docs/agents/waves.md, item 7), in
+# one call: ci/run-suite.sh make seat-check PKGS="internal/a internal/b", the package directories
+# it touched. In the v0.4.0 wave 3, 7 of 30 gates went red on a check this runs in minutes: a fuzz
+# find in the seat's own package (3), a CRAP score of 10 or more (2), and a slow test that
+# scripts/slowtests did not list (2). The fast checks run first: the race tests of PKGS,
+# scripts/slowtests's own test, precheck, PKGS's fuzz targets for 60 s each, then cover, which
+# runs every test. A PKGS that is empty once canon_dirs has spelled it (./ and / are), holds
+# anything but a plain directory from the root, or names a directory without Go files is refused, since fuzz would
+# match none of it and pass. Globbing is off while it is checked, so a glob is checked as written.
+# Last, ci/seat-review.sh prints the review checks report.txt holds (weakened, atbase, shuffle)
+# against SEAT_BASE, by default the merge base with main. Their findings go to the reviewer and
+# never fail seat-check. A runner's pod has no main, so through ci/run-suite.sh pass SEAT_BASE
+# and ERRATA_CI_HISTORY=1 (docs/agents/waves.md, item 7). The public mirror has no ci/, so there
+# seat-check ends with cover.
+# canon_dirs: each directory with a leading ./, a trailing / or /. and a doubled / taken off, so
+# it is spelled as the fuzz recipe and FUZZ_TARGETS spell a package. What is left is checked
+# where it is used.
+canon_dirs = $(patsubst %/,%,$(patsubst %/.,%,$(patsubst ./%,%,$(subst //,/,$(subst //,/,$(1))))))
+SEAT_PKGS = $(call canon_dirs,$(PKGS))
+SEAT_BASE ?= $(shell git merge-base origin/main HEAD 2>/dev/null || git merge-base main HEAD 2>/dev/null)
+seat-check:
+	@[ -n "$(strip $(SEAT_PKGS))" ] || { echo "make seat-check: REFUSED: PKGS is empty; name the package directories the change touched, such as PKGS=\"internal/config internal/cli\"" >&2; exit 2; }
+	@set -f; for p in $(SEAT_PKGS); do \
+		printf '%s\n' "$$p" | grep -qE '^[A-Za-z0-9_-]+(/[A-Za-z0-9_-]+)*$$' || { echo "make seat-check: REFUSED: '$$p' in PKGS is not a package directory from the repository's root, such as internal/config: letters, digits, _, - and /, with no glob, . or .." >&2; exit 2; }; \
+		find "$$p" -maxdepth 1 -name '*.go' -type f 2>/dev/null | grep -q . || { echo "make seat-check: REFUSED: '$$p' in PKGS holds no Go file" >&2; exit 2; }; \
+	done
+	$(GO) test -race -count=1 $(addprefix ./,$(SEAT_PKGS))
+	$(GO) test -count=1 ./scripts/slowtests/
+	$(MAKE) --no-print-directory precheck
+	$(MAKE) --no-print-directory fuzz FUZZTIME=60s MUTATION_SCOPE="$(SEAT_PKGS)"
+	$(MAKE) --no-print-directory cover
+	$(if $(wildcard ci/seat-review.sh),GO=$(GO) sh ci/seat-review.sh "$(SEAT_BASE)")
 
 build:
 	CGO_ENABLED=0 $(GO) build -trimpath -ldflags '$(LDFLAGS)' -o errata ./cmd/errata
@@ -130,11 +169,13 @@ SHA256SUM := $(shell command -v sha256sum >/dev/null 2>&1 && echo sha256sum || e
 tools: $(BIN)/golangci-lint $(BIN)/gremlins $(BIN)/govulncheck $(BIN)/goreleaser $(BIN)/syft $(BIN)/ko $(BIN)/jq
 
 # cosign, against its hand pin. It is fetched where a tool's release is, since only those are
-# verified with it.
+# verified with it. curl tries again on a 408, 429, 500, 502, 503, 504, 522 or 524, as
+# scripts/fetch-tool.sh does: the download
+# answered 504 to four ci-image:build jobs on 2026-11-08 and 2026-11-09.
 $(BIN)/cosign:
 ifneq ($(COSIGN_SHA256_$(PLATFORM)),)
 	@tmp=$$(mktemp -d) && trap 'rm -rf "$$tmp"' EXIT && \
-	curl -sSfL -o "$$tmp/b" "$(GH)/sigstore/cosign/releases/download/$(COSIGN_VERSION)/cosign-$(subst _,-,$(PLATFORM))" && \
+	curl -sSfL --retry 5 --retry-max-time 120 -o "$$tmp/b" "$(GH)/sigstore/cosign/releases/download/$(COSIGN_VERSION)/cosign-$(subst _,-,$(PLATFORM))" && \
 	{ echo "$(COSIGN_SHA256_$(PLATFORM))  $$tmp/b" | $(SHA256SUM) -c --quiet - || \
 	  { echo "checksum mismatch for cosign $(COSIGN_VERSION). After a version bump, run make tool-sums." >&2; exit 1; }; } && \
 	mkdir -p "$(BIN)" && install -m 0755 "$$tmp/b" "$@" && \
@@ -225,6 +266,60 @@ lint: $(BIN)/golangci-lint
 fmt: $(BIN)/golangci-lint
 	$(BIN)/golangci-lint fmt ./...
 
+# A gate's scope (#284). ci/gate.sh runs make gate GATE_BASE=<commit>, and ci/mutation-scope.sh
+# --gate then reads the change since that commit and decides which packages test and slow run,
+# which packages' functions cover scores, and how long each fuzz target runs. Its section "The
+# gate's scope" says how, and why the tests it leaves out cannot reach the change. Without
+# GATE_BASE every package runs, as in the push pipeline, the weekly pass and a run by hand. Each
+# step prints a line that starts "==> reach", which report.txt quotes. Only a command-line value
+# counts, as for MUTATION_SCOPE below, and so for FUZZTIME_NEAR and FUZZTIME_FAR; the SCOPE_
+# values are overrides, so that nothing but the scope script narrows them. The pod needs the
+# history for the diff (ERRATA_CI_HISTORY=1).
+ifeq ($(origin GATE_BASE),environment)
+override GATE_BASE :=
+endif
+ifeq ($(origin FUZZTIME_NEAR),environment)
+override FUZZTIME_NEAR := 60s
+endif
+ifeq ($(origin FUZZTIME_FAR),environment)
+override FUZZTIME_FAR := 5s
+endif
+FUZZTIME_NEAR ?= 60s
+FUZZTIME_FAR  ?= 5s
+override SCOPE_WHY          := every package, since no GATE_BASE was given
+override SCOPE_TEST         := all
+override SCOPE_COVER        := all
+override SCOPE_FUZZ_NEAR    :=
+override SCOPE_FUZZ_FAR     := all
+override SCOPE_FUZZTIME_FAR := $(FUZZTIME)
+ifneq ($(GATE_BASE),)
+GATE_SCOPE    := .cache/gate-scope.mk
+GATE_SCOPE_RC := $(shell mkdir -p .cache && MUTATION_SCOPE_BASE='$(GATE_BASE)' sh ci/mutation-scope.sh --gate >$(GATE_SCOPE) 2>.cache/gate-scope.log; echo $$?)
+ifneq ($(GATE_SCOPE_RC),0)
+$(error the gate's scope from GATE_BASE=$(GATE_BASE) failed, exit $(GATE_SCOPE_RC): $(shell cat .cache/gate-scope.log))
+endif
+include $(GATE_SCOPE)
+endif
+# A landing gate scores cover over every package (owner 2026-11-10). GATE_COVER=all, on the
+# command line, makes cover score every function and judge the 90% total, and so makes test run
+# every package's tests, since only that run gives every function exact coverage. slow and fuzz
+# keep the change's scope. ci/gate.sh passes it on a gate without --seat; a seat's gate stays
+# scoped.
+ifneq ($(origin GATE_COVER),command line)
+override GATE_COVER :=
+endif
+ifeq ($(GATE_COVER),all)
+override SCOPE_COVER := all
+endif
+# TEST_RUN: the packages make test runs, every one when cover scores every one.
+TEST_RUN = $(if $(filter all,$(SCOPE_COVER)),all,$(SCOPE_TEST))
+COVER_ALL_WHY := every package, since GATE_COVER=all scores cover over every one
+TEST_WHY = $(if $(GATE_COVER),$(COVER_ALL_WHY),$(SCOPE_WHY))
+# in_scope: ./... for all, or each package directory with ./ before it.
+in_scope = $(if $(filter all,$(1)),./...,$(addprefix ./,$(1)))
+# reach_of: for a step's ==> reach line, every package, or how many and which.
+reach_of = $(if $(filter all,$(1)),every package,$(words $(1)) packages: $(1))
+
 # Unit, property and API (testscript) tests. -timeout bounds every run, so a
 # hung check fails instead of stalling CI.
 # One run gives the verdicts and the coverage profile that `cover` reads.
@@ -233,8 +328,10 @@ fmt: $(BIN)/golangci-lint
 # -coverpkg instruments internal/, the product code the total of `cover`
 # judges, and scripts/, whose tools `cover` holds to CRAP below 10 as well.
 # cmd/errata has no tests of its own and is left out.
+# On a gate, only the packages whose tests reach the change run (above).
 test:
-	$(GO) test -race -shuffle=on -timeout 2m -count=1 -coverprofile=coverage.out -coverpkg=./internal/...,./scripts/... ./...
+	@echo '==> reach test: $(call reach_of,$(TEST_RUN)); $(TEST_WHY)'
+	$(GO) test -race -shuffle=on -timeout 2m -count=1 -coverprofile=coverage.out -coverpkg=./internal/...,./scripts/... $(call in_scope,$(TEST_RUN))
 
 # Tests too slow for the race detector or for a rerun per mutant: each calls
 # slowOnly, which skips under -race, -short and the mutation tag (except
@@ -246,19 +343,21 @@ test:
 # when -run matches nothing, so each must report its own PASS line, and an
 # empty list is refused rather than pass with no test run. A test that checks
 # less on this machine than it can elsewhere logs a line with "narrowed: ",
-# and the target shows it.
+# and the target shows it. On a gate, only the slow tests of the packages make test runs do.
 SLOW_TESTS = $(shell $(GO) run ./scripts/slowtests .)
 slow:
 	@list='$(strip $(SLOW_TESTS))'; \
 	[ -n "$$list" ] || { echo "make slow: REFUSED: SLOW_TESTS is empty, so no slow test would run" >&2; exit 2; }; \
-	for t in $$list; do \
+	ran=0; for t in $$list; do \
 		pkg=$${t%%:*}; name=$${t##*:}; \
+		case " $(SCOPE_TEST) " in *" all "*|*" $${pkg#./} "*) ran=$$((ran + 1)) ;; *) continue ;; esac; \
 		out=$$($(GO) test -count=1 -v -run "^$$name$$" $$pkg 2>&1); status=$$?; \
 		echo "$$out" | grep -E "^(--- |ok|FAIL)|_test\.go:[0-9]+: narrowed: "; \
 		[ $$status -eq 0 ] || { echo "$$out"; exit 1; }; \
 		echo "$$out" | grep -q "^--- PASS: $$name " || \
 		  { echo "make slow: $$name did not pass in $$pkg; it is skipped there, or SLOW_TESTS names a test that does not exist" >&2; exit 1; }; \
-	done
+	done; \
+	echo "==> reach slow: $$ran of $$(echo $$list | wc -w) slow tests, those of $(call reach_of,$(SCOPE_TEST))"
 
 # The total is of the product code, internal/: it leaves out scripts/, the
 # tools of the build, and the packages named like httptest, extracttest and
@@ -269,12 +368,23 @@ slow:
 # below 10, or no higher than the function's row (CODING_STANDARDS.md). It
 # leaves out the helper packages as the total does, and -require refuses a
 # package of either directory that the run did not instrument.
+#
+# On a gate whose tests are scoped, the total is not judged, since the packages whose tests did
+# not run would count as uncovered; the push pipeline judges it. scripts/crap then scores only
+# the packages whose coverage the scoped run has exactly (-only), and every other function keeps
+# its row (ci/mutation-scope.sh, "The gate's scope").
+CRAP_SCOPE = $(if $(filter all,$(SCOPE_COVER)),-require internal -require scripts,$(addprefix -only ,$(SCOPE_COVER)))
 cover: test
 	@grep -vE '^[^:]*test/[^/:]*\.go:|^[^:]*/errata/scripts/' coverage.out > coverage.product.out; \
 	total=$$($(GO) tool cover -func=coverage.product.out | awk '/^total:/ {sub("%","",$$3); print $$3}'); \
-	echo "coverage $$total% (minimum $(COVERAGE_MIN)%)"; \
-	awk -v t=$$total -v m=$(COVERAGE_MIN) 'BEGIN { exit !(t >= m) }' || exit 1; \
-	$(GO) run ./scripts/crap -require internal -require scripts -baseline scripts/crap-baseline.txt coverage.out
+	if [ '$(TEST_RUN)' = all ]; then \
+		echo "coverage $$total% (minimum $(COVERAGE_MIN)%)"; \
+		awk -v t=$$total -v m=$(COVERAGE_MIN) 'BEGIN { exit !(t >= m) }' || exit 1; \
+	else \
+		echo "==> reach cover: the total, $$total% of the packages the scoped tests linked, is not judged; the push pipeline judges it"; \
+	fi; \
+	echo '==> reach cover: CRAP of $(call reach_of,$(SCOPE_COVER))'; \
+	$(if $(strip $(SCOPE_COVER)),$(GO) run ./scripts/crap $(CRAP_SCOPE) -baseline scripts/crap-baseline.txt coverage.out,echo "==> reach cover: no package has exact coverage in this run; the push pipeline scores CRAP")
 
 # The packages fuzz and mutation cover: all, none, or package directories such as
 # "internal/config internal/cli". CI's test job sets it from ci/mutation-scope.sh and passes
@@ -291,7 +401,8 @@ cover: test
 # guard's request (--memory-request; ci/README.md, The weekly pass). MUTATION_NARROW=off runs
 # every mutant against its package's whole tests (--narrow off), and MUTATION_SHOW_KILLED=yes
 # names each killed mutant in the log (--show-killed yes), so two runs compare mutant by mutant
-# (ci/README.md, Narrowing).
+# (ci/README.md, Narrowing). MUTATION_REDUNDANT=yes lists, after each pass, the tests that add no
+# block and no kill (--redundant yes; ci/README.md, Narrowing).
 #
 # Only a value given on make's command line counts. make exports command-line variables
 # to every recipe, so `make check MUTATION_SCOPE=x` reaches each make a recipe starts, the
@@ -331,6 +442,9 @@ endif
 ifeq ($(origin MUTATION_SHOW_KILLED),environment)
 override MUTATION_SHOW_KILLED :=
 endif
+ifeq ($(origin MUTATION_REDUNDANT),environment)
+override MUTATION_REDUNDANT :=
+endif
 MUTATION_SCOPE    ?= all
 FUZZ_FLAGS        ?=
 MUTATION_DIFF     ?=
@@ -340,22 +454,51 @@ MUTATION_MOST     ?=
 MUTATION_MEMORY_REQUEST ?=
 MUTATION_NARROW   ?=
 MUTATION_SHOW_KILLED ?=
+MUTATION_REDUNDANT ?=
 
 # An empty FUZZ_TARGETS, from a derivation that broke or set on the command line, is refused: it
-# would pass with no target run.
+# would pass with no target run. A package in FUZZ_SKIP is left out, as fuzz-rest leaves out what
+# fuzz-first fuzzed. On a gate, a target of a changed package runs for FUZZTIME_NEAR, one of a
+# package whose tests reach a changed one for FUZZTIME_FAR, and any other not at all
+# (ci/mutation-scope.sh, "The gate's scope"). Without a gate's scope every target in
+# MUTATION_SCOPE runs for FUZZTIME. scripts/fuzz-input.sh prints the input of a target that fails,
+# base64 encoded, since the tree go writes it to is thrown away in a runner's pod and in CI.
 fuzz:
 	@[ -n "$(strip $(FUZZ_TARGETS))" ] || { echo "make fuzz: REFUSED: FUZZ_TARGETS is empty, so no fuzz target would run" >&2; exit 2; }
-	@ran=0; for t in $(FUZZ_TARGETS); do \
+	@ran=0; near=0; skip=0; for t in $(FUZZ_TARGETS); do \
 		pkg=$${t%%:*}; name=$${t##*:}; \
 		case " $(MUTATION_SCOPE) " in *" all "*|*" $${pkg#./} "*) ;; *) continue ;; esac; \
-		echo "fuzz $$name for $(FUZZTIME)"; ran=$$((ran + 1)); \
-		$(GO) test -run '^$$' -fuzz "^$$name$$" -fuzztime $(FUZZTIME) -fuzzminimizetime $(FUZZMINIMIZETIME) $(FUZZ_FLAGS) $$pkg || exit 1; \
-	done; echo "fuzz: $$ran targets in scope ($(MUTATION_SCOPE))"
+		case " $(FUZZ_SKIP) " in *" $${pkg#./} "*) continue ;; esac; \
+		case " $(SCOPE_FUZZ_NEAR) " in *" $${pkg#./} "*) ft=$(FUZZTIME_NEAR); near=$$((near + 1)) ;; \
+		*) case " $(SCOPE_FUZZ_FAR) " in *" all "*|*" $${pkg#./} "*) ft=$(SCOPE_FUZZTIME_FAR) ;; *) skip=$$((skip + 1)); continue ;; esac ;; esac; \
+		echo "fuzz $$name for $$ft"; ran=$$((ran + 1)); \
+		sh scripts/fuzz-input.sh run $$pkg $$name $(GO) test -run '^$$' -fuzz "^$$name$$" -fuzztime $$ft -fuzzminimizetime $(FUZZMINIMIZETIME) $(FUZZ_FLAGS) $$pkg || exit 1; \
+	done; echo "fuzz: $$ran targets in scope ($(MUTATION_SCOPE))"; \
+	echo "==> reach fuzz: $$near targets of changed packages for $(FUZZTIME_NEAR), $$((ran - near)) for $(SCOPE_FUZZTIME_FAR), $$skip that cannot reach the change not run"
+
+# The gate's two fuzz passes (#279). FUZZ_FIRST, package directories, is what fuzz-first fuzzes
+# before test, and fuzz-rest fuzzes the rest of MUTATION_SCOPE at the end, so each target runs
+# once. Without a FUZZ_FIRST on the command line it is MUTATION_SCOPE, so CI's test job, which
+# scopes fuzz to the push, fuzzes it all before test; all and none put nothing first. On a gate's
+# scope (GATE_BASE) it is the changed packages, SCOPE_FUZZ_NEAR, whose targets run for
+# FUZZTIME_NEAR. Only command-line values of FUZZ_FIRST and FUZZ_SKIP count, as for
+# MUTATION_SCOPE.
+ifneq ($(origin FUZZ_FIRST),command line)
+override FUZZ_FIRST := $(if $(GATE_BASE),$(SCOPE_FUZZ_NEAR),$(MUTATION_SCOPE))
+endif
+ifeq ($(origin FUZZ_SKIP),environment)
+override FUZZ_SKIP :=
+endif
+FUZZ_FIRST_SCOPE := $(call canon_dirs,$(filter-out all none,$(FUZZ_FIRST)))
+fuzz-first:
+	$(MAKE) --no-print-directory fuzz MUTATION_SCOPE="$(or $(FUZZ_FIRST_SCOPE),none)" FUZZ_SKIP=
+fuzz-rest:
+	$(MAKE) --no-print-directory fuzz FUZZ_SKIP="$(FUZZ_FIRST_SCOPE)"
 
 # scripts/mutation.sh runs gremlins from a copy of the tracked tree, one pass per package of
 # MUTATION_SCOPE, each held to its own floors; it says why.
 mutation: $(BIN)/gremlins
-	GREMLINS=$(BIN)/gremlins scripts/mutation.sh $(if $(MUTATION_DIFF),--diff $(MUTATION_DIFF) )$(if $(MUTATION_DEADLINE),--deadline $(MUTATION_DEADLINE) )$(if $(MUTATION_JOBS),--jobs $(MUTATION_JOBS) )$(if $(MUTATION_MOST),--most $(MUTATION_MOST) )$(if $(MUTATION_MEMORY_REQUEST),--memory-request $(MUTATION_MEMORY_REQUEST) )$(if $(MUTATION_NARROW),--narrow $(MUTATION_NARROW) )$(if $(MUTATION_SHOW_KILLED),--show-killed $(MUTATION_SHOW_KILLED) )$(MUTATION_SCOPE)
+	GREMLINS=$(BIN)/gremlins scripts/mutation.sh $(if $(MUTATION_DIFF),--diff $(MUTATION_DIFF) )$(if $(MUTATION_DEADLINE),--deadline $(MUTATION_DEADLINE) )$(if $(MUTATION_JOBS),--jobs $(MUTATION_JOBS) )$(if $(MUTATION_MOST),--most $(MUTATION_MOST) )$(if $(MUTATION_MEMORY_REQUEST),--memory-request $(MUTATION_MEMORY_REQUEST) )$(if $(MUTATION_NARROW),--narrow $(MUTATION_NARROW) )$(if $(MUTATION_SHOW_KILLED),--show-killed $(MUTATION_SHOW_KILLED) )$(if $(MUTATION_REDUNDANT),--redundant $(MUTATION_REDUNDANT) )$(MUTATION_SCOPE)
 
 vuln: $(BIN)/govulncheck
 	$(BIN)/govulncheck ./...
@@ -389,7 +532,7 @@ $(error CI_TEST_SELECT is '$(CI_TEST_SELECT)': it takes changed, or nothing for 
 endif
 ci-test:$(BIN)/gremlins $(BIN)/jq $(BIN)/cosign
 	cd ci/autopatch && $(GO) vet ./... && $(GO) test -count=1 ./...
-	GREMLINS=$(BIN)/gremlins JQ=$(BIN)/jq COSIGN=$(BIN)/cosign ci/test-ci.sh$(if $(CI_TEST_SELECT), --changed)
+	$(if $(GATE_BASE),CI_TEST_BASE=$(GATE_BASE) )GREMLINS=$(BIN)/gremlins JQ=$(BIN)/jq COSIGN=$(BIN)/cosign ci/test-ci.sh$(if $(CI_TEST_SELECT), --changed)
 
 # The release image, built by ko with .goreleaser.yaml's base image and user
 # into a tarball, pushed nowhere, and its config checked against what the
