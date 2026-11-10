@@ -283,6 +283,8 @@ errata stays one small binary, and further integrations install on demand.
 - The plugin host decides which environment variables a plugin sees, and tells a run the caller
   cancelled apart from one that timed out.
 - The CSV and HCL (Terraform, Packer, Nomad) extractors are the first two plugins.
+- The html reader reads `<frameset>` and `<frame>` as a browser does, where it now reads them as
+  ordinary elements and so takes text a browser drops.
 
 ## v0.6.0: container and manifest readers
 
