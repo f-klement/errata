@@ -13,7 +13,7 @@ LDFLAGS   := -s -w -X github.com/f-klement/errata/internal/cli.Version=$(VERSION
 GOLANGCI_LINT_VERSION := v2.15.0
 GREMLINS_VERSION      := v0.6.0
 GOVULNCHECK_VERSION   := v1.9.0
-GORELEASER_VERSION    := v2.19.0
+GORELEASER_VERSION    := v2.20.0
 SYFT_VERSION          := v1.56.0
 KO_VERSION            := v0.19.1
 JQ_VERSION            := 1.8.2
