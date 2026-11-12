@@ -259,9 +259,17 @@ func index(goBin, casecover, tags, root, pkgDir, outDir string, jobs int, limit 
 // runs the binary for a mutant, then casecover on the profile. It says how the
 // test failed, empty when it passed, and returns an error when casecover fails.
 func runAlone(ctx context.Context, bin, casecover, root, dir, name, profile string, limit time.Duration) (string, error) {
+	covdata := profile + ".d"
+	if err := os.MkdirAll(covdata, 0o750); err != nil { //nolint:gosec // beside the profile, in the index directory scripts/mutation.sh names
+		return "", err
+	}
 	cmd := exec.CommandContext(ctx, bin, "-test.run", "^"+name+"$", "-test.count", "1", "-test.paniconexit0", //nolint:gosec // the binary built above, a name it listed
-		"-test.timeout", limit.String(), "-test.coverprofile", profile)
+		"-test.timeout", limit.String(), "-test.coverprofile", profile, "-test.gocoverdir", covdata)
 	cmd.Dir = dir
+	// GOCOVERDIR as go test sets it: a test that runs its own binary again, as
+	// testscript runs errata in internal/cli, then writes the child's coverage
+	// into the profile instead of a warning on its stderr.
+	cmd.Env = append(os.Environ(), "GOCOVERDIR="+covdata)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		cc := exec.CommandContext(ctx, casecover, root, profile) //nolint:gosec // the casecover scripts/mutation.sh names

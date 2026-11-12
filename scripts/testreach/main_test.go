@@ -717,6 +717,33 @@ func TestIndexRefusesAPackageWhoseTestFailsAlone(t *testing.T) {
 	}
 }
 
+// A test that runs its own binary again, as internal/cli's TestScripts runs
+// errata, passes alone as it does under go test, and the line only the child
+// ran is the test's. Without GOCOVERDIR the child's cover runtime warns on its
+// stderr, which TestScripts' `! stderr .` refused, so internal/cli got no
+// index. The planted break: runAlone without GOCOVERDIR.
+func TestIndexGivesAChildOfTheTestBinaryItsCoverDir(t *testing.T) {
+	root := module(t, map[string]string{
+		"p.go": "package p\n\n// Twice doubles.\nfunc Twice(a int) int {\n\treturn 2 * a\n}\n",
+		"p_test.go": "package p\n\nimport (\n\t\"os\"\n\t\"os/exec\"\n\t\"testing\"\n)\n\n" +
+			"func TestMain(m *testing.M) {\n\tif os.Getenv(\"P_CHILD\") == \"1\" {\n\t\tos.Exit(Twice(0))\n\t}\n\tos.Exit(m.Run())\n}\n\n" +
+			"func TestChild(t *testing.T) {\n\tcmd := exec.Command(os.Args[0])\n\tcmd.Env = append(os.Environ(), \"P_CHILD=1\")\n" +
+			"\tif out, err := cmd.CombinedOutput(); err != nil || len(out) != 0 {\n\t\tt.Fatalf(\"child: %v: %q\", err, out)\n\t}\n}\n",
+	})
+	out := filepath.Join(t.TempDir(), "reach")
+	why, err := index(goBin(t), casecoverBin(t), "", root, "p", out, 1, time.Minute)
+	if err != nil || why != "" {
+		t.Fatalf("index: %q, %v", why, err)
+	}
+	r, err := readIndex(filepath.Join(out, "index"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := r.reaching("p.go", 5); !reflect.DeepEqual(got, []string{"TestChild"}) {
+		t.Errorf("p.go:5, run by the child alone: got %q, want TestChild", got)
+	}
+}
+
 func TestIndexOfAPackageWithoutTests(t *testing.T) {
 	root := module(t, map[string]string{"p.go": "package p\n"})
 	why, err := index(goBin(t), casecoverBin(t), "", root, "p", filepath.Join(t.TempDir(), "reach"), 1, time.Minute)

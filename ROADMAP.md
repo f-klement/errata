@@ -269,6 +269,16 @@ the tests run, and errata holds every function below 10. The functions that scor
 rule came in are listed in a file that only shrinks; this work empties it, splitting each into
 small helpers behind the same interface, with no verdict changed.
 
+## Before v0.5.0: faster checks
+
+No new rule kinds. A trial that moved a project's test guards into errata found errata 1.8 to 9.5
+times slower than the test runners it replaced. This work makes a run cheaper without changing
+any verdict: a regular expression with no literal prefix is scanned for the literals every match
+must hold before the expression runs; each file is read once per run and shared by every check
+that names it; checks run at once on a bounded pool, with the report kept in config order; and a
+failed assertion over many values prints the values that failed, not all of them. It also adds a
+`regex` option that skips comments, so a pointer written in a comment is not an offender.
+
 ## v0.5.0: the plugin system
 
 errata stays one small binary, and further integrations install on demand.

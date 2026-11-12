@@ -2,7 +2,6 @@ package core
 
 import (
 	"errors"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -138,7 +137,11 @@ func TestEachFromShared(t *testing.T) {
 
 // Preparing the values counts against the time limit: Add refuses a value
 // once the limit has passed, without preparing it, and returns a value's
-// own refusal as it is. Planted break: no look at the clock in Add.
+// own refusal as it is. Every value is held to the one deadline the Each was
+// made with, so a value prepared within an hour of its own start is still
+// refused once that deadline is gone. Planted breaks: no look at the clock in
+// Add; Add timing each value against a limit of its own from now, which let
+// 20000 values take 23 s against a limit of 10 s.
 func TestEachAddSharesTheTimeLimit(t *testing.T) {
 	e := newEach("regex", "(", ")", -time.Second)
 	called := false
@@ -148,31 +151,15 @@ func TestEachAddSharesTheTimeLimit(t *testing.T) {
 		t.Error("Add prepared a value past the limit")
 	}
 	e = newEach("regex", "(", ")", time.Hour)
+	if err := e.Add(func() (string, error) { return "a", nil }); err != nil {
+		t.Fatalf("within the limit: %v", err)
+	}
+	e.deadline = time.Now().Add(-time.Second)
+	err = e.Add(func() (string, error) { return "b", nil })
+	extracttest.WantError(t, err, "regex: preparing a pattern for each value took more than 1h0m0s, "+eachLimit+", and stopped after 1 values")
+	e = newEach("regex", "(", ")", time.Hour)
 	refused := errors.New("the value is no RE2 pattern")
 	if err := e.Add(func() (string, error) { return "", refused }); !errors.Is(err, refused) || len(e.values) != 0 {
 		t.Fatalf("Add: %v, values %q; want the value's refusal and no value", err, e.values)
-	}
-}
-
-// The review's shape, scaled down: values that each cost a compile to
-// check, more of them than the limit has time for. Add stops at the limit,
-// one value past it at most, where without the clock all of them were
-// checked first: 20000 took 23 s against a limit of 10 s. Planted break:
-// no look at the clock in Add.
-func TestEachAddStopsCostlyValuesAtTheLimit(t *testing.T) {
-	const heavy = `(?:\pL{1000}|\pN{1000}|\pS{1000}|\pP{1000})`
-	limit := 100 * time.Millisecond
-	e := newEach("regex", "(", ")", limit)
-	start := time.Now()
-	var err error
-	for i := 0; i < 5000 && err == nil; i++ {
-		err = e.Add(func() (string, error) {
-			regexp.MustCompile(heavy)
-			return heavy, nil
-		})
-	}
-	extracttest.WantError(t, err, "preparing a pattern for each value took more than 100ms")
-	if took := time.Since(start); took > 20*limit {
-		t.Errorf("Add took %s to stop, against a limit of %s", took, limit)
 	}
 }
