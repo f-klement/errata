@@ -34,7 +34,7 @@ kos:
     # distroless static base has no shell at all. The digest fixes what is
     # built; ci/autopatch.sh re-resolves the moving 5.3-alpine3.24 tag to its
     # newest digest when Trivy reports a fixed Alpine package.
-    base_image: bash:5.3-alpine3.24@sha256:bfe8f6d356f2944ec5ad456e44620924862263aa0717036b3c2cdce0ee4c0af0
+    base_image: bash:5.3-alpine3.24@sha256:589adbc588d8ef3c1ec3c68333faf4baf5dccb65d3cb50f6cf3d78cad2d6e1b0
     platforms: [linux/amd64, linux/arm64]
     # No working_dir here: in GoReleaser's kos it is the directory to BUILD
     # from, not the image's working directory, and setting it to /repo broke
