@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/f-klement/errata/internal/extract/core/gitindex"
 )
@@ -303,13 +304,15 @@ func (f Files) List(ctx context.Context, root string) ([]Named, error) {
 // Tracked lists files: keys under one root against one read of git's
 // index, for a reader that builds a files: key for each of several names
 // as it reads, such as gitlab-ci's wildcard includes. The index is read at
-// the first glob, as List reads it, and kept with its error.
+// the first glob, as List reads it, and kept with its error. Safe for
+// concurrent use, as the marker walks of a run share one (check.Shared)
+// while their checks run at once.
 type Tracked struct {
 	ctx  context.Context
 	root string
+	once sync.Once
 	ix   gitindex.Index
 	err  error
-	read bool
 }
 
 // NewTracked is a Tracked at root, which reads under ctx.
@@ -320,10 +323,7 @@ func NewTracked(ctx context.Context, root string) *Tracked {
 // List is f.List under t's root, with t's read of the index.
 func (t *Tracked) List(f Files) ([]Named, error) {
 	return f.list(t.root, func() (gitindex.Index, error) {
-		if !t.read {
-			t.ix, t.err = runIndex(t.ctx, t.root)
-			t.read = true
-		}
+		t.once.Do(func() { t.ix, t.err = runIndex(t.ctx, t.root) })
 		return t.ix, t.err
 	})
 }

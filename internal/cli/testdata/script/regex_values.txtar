@@ -8,9 +8,10 @@ exec git init -q
 exec git add infra docs
 ! exec errata check
 stdout '^FALSE pinned-charts-are-renovate-tracked \(repo\)$'
+stdout '^          the all is false for 1 of the 2 values of releases:$'
 stdout '^          releases\[0\] = "gitlab-runner-k3s" at infra/gitlab-runner-k3s/bootstrap.sh:2$'
-stdout '^          releases\[1\] = "gitlab-runner" at infra/gitlab-runner/bootstrap.sh:2$'
-stdout '^          tracked\[0\] = "gitlab-runner" at renovate.json:5$'
+! stdout 'releases\[1\]'
+stdout '^          2 more values not shown: errata check --all-values prints every value$'
 stdout '^1 erratum, 0 unknown.'
 
 # by_file groups a referencing extractor's values by the files it searched,

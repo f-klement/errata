@@ -2,6 +2,7 @@ package core
 
 import (
 	"fmt"
+	"unicode/utf8"
 
 	"github.com/f-klement/errata/internal/extract/core/lexer"
 )
@@ -77,4 +78,48 @@ func CheckSpan(file string, data []byte, s Span) error {
 	what := map[SpanKind]string{SpanComment: "comment", SpanString: "string", SpanName: "quoted name", SpanText: "text"}[s.Kind]
 	return fmt.Errorf("%s: line %d: a %s opens here and runs to the end of the file, so the lexer lost its place and cannot tell comments from code after it; a construct it does not understand, such as a heredoc or a regular expression, holds a quote or a comment's opener (docs/reference.md#comment)",
 		file, LineOf(data, s.Start), what)
+}
+
+// BlankComments is data with every line end read as LF (LineFeeds) and every
+// comment l finds in it blanked: each character of the comment, its
+// delimiters included, one space, and each line feed kept. So the text
+// outside the comments stays on its line and at its column, which counts
+// characters (PathError). A string literal is skipped whole, so a comment's
+// opener inside one stays text. A span of any kind that runs off the end of
+// the file is refused, as every reader of the table refuses it (CheckSpan).
+// Data with no comment is the folded data itself.
+func BlankComments(file string, l Language, data []byte) ([]byte, error) {
+	data = LineFeeds(data)
+	var out []byte
+	last := 0 // the end of the last comment blanked
+	for s := range l.Spans(data) {
+		if err := CheckSpan(file, data, s); err != nil {
+			return nil, err
+		}
+		if s.Kind != SpanComment {
+			continue
+		}
+		out = blank(append(out, data[last:s.Start]...), data[s.Start:s.End])
+		last = s.End
+	}
+	if last == 0 { // a span is never empty, so no comment was blanked
+		return data, nil
+	}
+	return append(out, data[last:]...), nil
+}
+
+// blank appends comment to out with each character one space and each line
+// feed kept. A byte that is no UTF-8 is one character, as Go counts it.
+func blank(out, comment []byte) []byte {
+	for i := 0; i < len(comment); {
+		if comment[i] == '\n' {
+			out = append(out, '\n')
+			i++
+			continue
+		}
+		_, n := utf8.DecodeRune(comment[i:])
+		out = append(out, ' ')
+		i += n
+	}
+	return out
 }

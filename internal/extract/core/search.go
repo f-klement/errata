@@ -32,6 +32,10 @@ type Search struct {
 	prefix   []byte
 	anchored func() *anchors
 	atStart  bool
+	// seek is the literals one of which every match holds, for a pattern
+	// with no prefix; nil when the pattern has a prefix or no such
+	// literals (seekerOf).
+	seek *seeker
 	// TimeLimit bounds the matching. CompileSearchAt sets it from the limit
 	// (regexTime); a test shortens it, so a refusal on time comes fast.
 	TimeLimit time.Duration
@@ -128,6 +132,8 @@ func searchOf(pattern string, re *regexp.Regexp) (Search, error) {
 	if prefix, _ := re.LiteralPrefix(); prefix != "" {
 		e.prefix, e.atStart = []byte(prefix), atStart
 		e.anchored = sync.OnceValue(func() *anchors { return anchor(pattern, back) })
+	} else {
+		e.seek = seekerOf(re.String())
 	}
 	return e, nil
 }
@@ -359,7 +365,7 @@ func (e Search) matches(data []byte, clock *clockedReader) ([]Match, error) {
 func (e Search) each(data []byte, clock *clockedReader, keep func(m []int) error) error {
 	accepted := 0
 	for pos, prevEnd := 0, -1; pos <= len(data); {
-		m := e.find(data, pos, clock)
+		m := e.first(data, pos, clock)
 		if clock.stopped || clock.late() {
 			return fmt.Errorf("%s: matching took more than %s, %s, and stopped after %d matches; "+
 				"start the pattern with ^, drop an optional part that scans to the end of the line, such as (?:.*x)?, "+
@@ -391,6 +397,16 @@ func (e Search) each(data []byte, clock *clockedReader, keep func(m []int) error
 		}
 	}
 	return nil
+}
+
+// first returns the first match at or after start, through clock: a
+// pattern with a seeker searches only near its literals (findNear), and
+// any other as find does.
+func (e Search) first(data []byte, start int, clock *clockedReader) []int {
+	if e.seek != nil {
+		return e.findNear(data, start, clock)
+	}
+	return e.find(data, start, clock)
 }
 
 // find returns the first match at or after start, through clock. A
@@ -523,8 +539,9 @@ type clockedReader struct {
 	deadline time.Time
 	runes    int // runes read since the last look at the clock
 	stopped  bool
-	read     int // bytes read in all
-	spare    int // bytes a search after the tries may still read again (find)
+	read     int    // bytes read in all
+	spare    int    // bytes a search after the tries may still read again (find)
+	found    *found // where a seeker's literals occur in the text find searches (findNear)
 }
 
 func (r *clockedReader) ReadRune() (rune, int, error) {

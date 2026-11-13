@@ -79,7 +79,9 @@ func TestExecuteSharesOneRun(t *testing.T) {
 		n, _ := check.Shared(ctx, "walk", func() (int, error) { calls++; return calls, nil })
 		return check.Result{Check: c, Verdict: check.VerdictTrue, Message: strconv.Itoa(n)}
 	}}
-	checks := []check.Check{{ID: "a", Scope: check.ScopeRepo}, {ID: "b", Scope: check.ScopeRepo}}
+	// Rules: a check of another kind may write, which drops what the run
+	// kept (check.Wrote).
+	checks := rules("a", "b")
 	rep := e.Execute(context.Background(), checks)
 	if rep.Results[0].Message != "1" || rep.Results[1].Message != "1" {
 		t.Errorf("one run: %q and %q, want 1 and 1", rep.Results[0].Message, rep.Results[1].Message)

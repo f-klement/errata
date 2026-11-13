@@ -260,7 +260,7 @@ func compileWith(expr string, extractors []check.NamedExtractor, lim limits, ext
 	if len(errs) > 0 {
 		return nil, errors.Join(errs...)
 	}
-	noted, err := noteOperands(env, ast)
+	noted, err := noteOperands(env, ast, names)
 	if err != nil {
 		return nil, fmt.Errorf("assert: %w", err)
 	}
@@ -278,13 +278,13 @@ func compileWith(expr string, extractors []check.NamedExtractor, lim limits, ext
 	}
 	program, err := env.Program(noted,
 		cel.CostLimit(lim.cost),
-		cel.CostTrackerOptions(append(append(append(append(append(setCosts(), semverCosts()...), renovateCost()...), stringCosts()...), calendarCost()), noteCost)...),
+		cel.CostTrackerOptions(append(append(append(append(append(setCosts(), semverCosts()...), renovateCost()...), stringCosts()...), calendarCost()), noteCost, memberCost)...),
 		cel.InterruptCheckFrequency(interruptEvery),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("assert: %w", err)
 	}
-	return &assertion{program: program, limits: lim, grouped: grouped, maps: whole}, nil
+	return &assertion{program: program, limits: lim, grouped: grouped, maps: whole, top: topPopulation(ast.NativeRep().Expr(), names)}, nil
 }
 
 // mapLiterals refuses each ==, != and in that compares a value CEL types
@@ -665,14 +665,24 @@ func dynMessage(e celast.Expr, t *types.Type) string {
 // The names of the hidden function and variable noteOperands adds. A name
 // that starts with @ cannot be written in an expression.
 const (
-	noteFunction = "@errata_note"
-	noteOverload = "errata_note"
-	logVariable  = "@errata_log"
+	noteFunction   = "@errata_note"
+	noteOverload   = "errata_note"
+	memberFunction = "@errata_member"
+	memberOverload = "errata_member"
+	logVariable    = "@errata_log"
 )
 
 // noteCost charges a note nothing, so the cost limit counts the
 // expression's own work. Reading the log variable still costs 1 per note.
 var noteCost = cost.OverloadTracker(noteOverload, func([]ref.Val, ref.Val) *uint64 {
+	var zero uint64
+	return &zero
+})
+
+// memberCost charges a member's note nothing, as noteCost does: it takes
+// the place of the note its operand would have had, so an expression costs
+// the same with it as without.
+var memberCost = cost.OverloadTracker(memberOverload, func([]ref.Val, ref.Val) *uint64 {
 	var zero uint64
 	return &zero
 })
@@ -696,6 +706,17 @@ func noting() []cel.EnvOption {
 					}
 					return value
 				}))),
+		// The note of the predicate of an assert's top level all, which
+		// also counts the members and keeps where it was false.
+		cel.Function(memberFunction,
+			cel.Overload(memberOverload, []*cel.Type{cel.DynType, logType}, cel.BoolType,
+				cel.OverloadIsNonStrict(),
+				cel.BinaryBinding(func(value, log ref.Val) ref.Val {
+					if l, ok := log.(*errorLog); ok {
+						l.member(value)
+					}
+					return value
+				}))),
 	}
 }
 
@@ -706,8 +727,15 @@ func noting() []cel.EnvOption {
 // error, so the rule is unknown however the operators decided. Short circuit
 // evaluation is unchanged: an operand that does not run is not an error, so
 // size(v) > 0 && int(v[0]) > 0 is false, not unknown, when v is empty.
-func noteOperands(env *cel.Env, checked *cel.Ast) (*cel.Ast, error) {
-	optimizer, err := cel.NewStaticOptimizer(operandNoter{})
+// When the expression's value is an all over one of extractors (topAll),
+// its predicate gets @errata_member in place of the note, which notes it
+// the same way and also keeps the members it was false for.
+func noteOperands(env *cel.Env, checked *cel.Ast, extractors []string) (*cel.Ast, error) {
+	n := operandNoter{}
+	if top, _, ok := topAll(checked.NativeRep().Expr(), extractors); ok {
+		n.step, n.marked = top.LoopStep().ID(), true
+	}
+	optimizer, err := cel.NewStaticOptimizer(n)
 	if err != nil {
 		return nil, err
 	}
@@ -715,9 +743,15 @@ func noteOperands(env *cel.Env, checked *cel.Ast) (*cel.Ast, error) {
 	return noted, issues.Err()
 }
 
-type operandNoter struct{}
+// operandNoter is the optimizer noteOperands runs. When marked, step is
+// the ID of the step of the top level all, whose second operand is the
+// predicate. The optimizer copies the AST and keeps its IDs.
+type operandNoter struct {
+	step   int64
+	marked bool
+}
 
-func (operandNoter) Optimize(ctx *cel.OptimizerContext, a *celast.AST) *celast.AST {
+func (n operandNoter) Optimize(ctx *cel.OptimizerContext, a *celast.AST) *celast.AST {
 	// Post order, so an operand that is itself && or || is rewritten before
 	// it moves under its note.
 	celast.PostOrderVisit(a.Expr(), celast.NewExprVisitor(func(e celast.Expr) {
@@ -731,13 +765,90 @@ func (operandNoter) Optimize(ctx *cel.OptimizerContext, a *celast.AST) *celast.A
 		if fn := e.AsCall().FunctionName(); fn != operators.LogicalAnd && fn != operators.LogicalOr {
 			return
 		}
-		for _, operand := range e.AsCall().Args() {
+		for i, operand := range e.AsCall().Args() {
 			moved := ctx.NewIdent(logVariable) // a node with a new id, given the operand's content
 			moved.SetKindCase(operand)
-			operand.SetKindCase(ctx.NewCall(noteFunction, moved, ctx.NewIdent(logVariable)))
+			operand.SetKindCase(ctx.NewCall(n.noteOf(e.ID(), i), moved, ctx.NewIdent(logVariable)))
 		}
 	}))
 	return a
+}
+
+// noteOf is the function that notes operand i of the && or || call id:
+// @errata_member for the predicate of the top level all, the note
+// otherwise.
+func (n operandNoter) noteOf(id int64, i int) string {
+	if n.marked && id == n.step && i == 1 {
+		return memberFunction
+	}
+	return noteFunction
+}
+
+// topPopulation is what the all whose value e is runs over (topAll), or
+// nil when e is no such all.
+func topPopulation(e celast.Expr, extractors []string) *population {
+	if _, p, ok := topAll(e, extractors); ok {
+		return &p
+	}
+	return nil
+}
+
+// topAll is the all whose value e is, through any cel.bind around it, and
+// the population it runs over, when that is a rule's extractor, as x or
+// by_file(x), that no such cel.bind names again. ok is false for any other
+// expression. The macro writes x.all(v, p) as a comprehension that starts
+// at true, goes on while the result is not false, and steps as
+// result && p, so the step's second operand is p.
+func topAll(e celast.Expr, extractors []string) (c celast.ComprehensionExpr, p population, ok bool) {
+	rebound := map[string]bool{}
+	for e.Kind() == celast.ComprehensionKind && isBind(e.AsComprehension()) {
+		rebound[e.AsComprehension().AccuVar()] = true
+		e = e.AsComprehension().Result()
+	}
+	if e.Kind() != celast.ComprehensionKind || !isAll(e.AsComprehension()) {
+		return nil, population{}, false
+	}
+	c = e.AsComprehension()
+	over := c.IterRange()
+	if over.Kind() != celast.IdentKind || rebound[over.AsIdent()] {
+		return nil, population{}, false
+	}
+	name, grouped := strings.CutPrefix(over.AsIdent(), byFilePrefix)
+	if !slices.Contains(extractors, name) {
+		return nil, population{}, false
+	}
+	return c, population{extractor: name, byFile: grouped}, true
+}
+
+// isBind reports whether c is cel.bind(name, value, result) as the
+// bindings macro writes it: over an empty list, never looping, with the
+// value as its initial result.
+func isBind(c celast.ComprehensionExpr) bool {
+	r, cond := c.IterRange(), c.LoopCondition()
+	return r.Kind() == celast.ListKind && len(r.AsList().Elements()) == 0 &&
+		cond.Kind() == celast.LiteralKind && cond.AsLiteral() == types.False
+}
+
+// isAll reports whether c is x.all(v, p) as the macro writes it, a
+// comprehension of one variable whose result starts at true, steps as
+// result && p while it is not false, and is the value.
+func isAll(c celast.ComprehensionExpr) bool {
+	init, cond, step := c.AccuInit(), c.LoopCondition(), c.LoopStep()
+	return c.IterVar2() == "" &&
+		init.Kind() == celast.LiteralKind && init.AsLiteral() == types.True &&
+		isCall(cond, operators.NotStrictlyFalse, 1) && isIdent(cond.AsCall().Args()[0], c.AccuVar()) &&
+		isCall(step, operators.LogicalAnd, 2) && isIdent(step.AsCall().Args()[0], c.AccuVar()) &&
+		isIdent(c.Result(), c.AccuVar())
+}
+
+// isCall reports whether e calls fn with n arguments.
+func isCall(e celast.Expr, fn string, n int) bool {
+	return e.Kind() == celast.CallKind && e.AsCall().FunctionName() == fn && len(e.AsCall().Args()) == n
+}
+
+// isIdent reports whether e is the name given.
+func isIdent(e celast.Expr, name string) bool {
+	return e.Kind() == celast.IdentKind && e.AsIdent() == name
 }
 
 // everyMember makes exists and all evaluate every member, so whether an
@@ -769,7 +880,12 @@ func everyMember(ctx *cel.OptimizerContext, c celast.ComprehensionExpr) {
 // evaluation's context to the helpers that look at it.
 type errorLog struct {
 	first *types.Err
-	ctx   context.Context
+	// members counts the members the predicate of a top level all ran on,
+	// and offenders holds the position of each it was false for, in that
+	// order (@errata_member).
+	members   int
+	offenders []int
+	ctx       context.Context
 	// patterns are the entries renovate_match compiled in the evaluation.
 	patterns patternCache
 	// cost is what the last renovate_match call costs, which its binding
@@ -799,6 +915,16 @@ func (l *errorLog) note(v ref.Val) {
 	default:
 		l.first = types.NewErr("&& and || need a bool and got a %s", v.Type().TypeName()).(*types.Err)
 	}
+}
+
+// member notes v, the predicate of a top level all for its next member,
+// and keeps that member's position when v is false.
+func (l *errorLog) member(v ref.Val) {
+	l.note(v)
+	if v == types.False {
+		l.offenders = append(l.offenders, l.members)
+	}
+	l.members++
 }
 
 func (l *errorLog) ConvertToNative(reflect.Type) (any, error) {
@@ -886,6 +1012,40 @@ type assertion struct {
 	grouped []string
 	// maps are the extractors it reads as lists of maps.
 	maps []string
+	// top is what the all the expression's value is runs over, nil when
+	// the value is no such all (topAll).
+	top *population
+}
+
+// population is what an assert's top level all runs over: the values of
+// extractor, or with byFile the files of its values, as by_file groups
+// them.
+type population struct {
+	extractor string
+	byFile    bool
+}
+
+// offending is a false top level all's account of its members: what it
+// ran over, how many members its predicate ran on, and the position of
+// each it was false for, in the order the all ran them.
+type offending struct {
+	population
+	members   int
+	offenders []int
+}
+
+// evalOffending is Eval, with the account of a top level all when the
+// expression is one and is false; nil otherwise. The all runs every
+// member (everyMember) and an error in any makes the rule unknown, so on a
+// false result the predicate gave a bool for every member, and the
+// members it gave false for are those that made the all false.
+func (a *assertion) evalOffending(parent context.Context, extracted []check.Extracted) (bool, *offending, error) {
+	log := &errorLog{}
+	holds, err := a.evaluate(parent, extracted, log)
+	if err != nil || holds || a.top == nil {
+		return holds, nil, err
+	}
+	return false, &offending{population: *a.top, members: log.members, offenders: log.offenders}, nil
 }
 
 type outcome struct {
@@ -920,7 +1080,38 @@ type outcome struct {
 // return, keeps its goroutine until it ends, and Eval returns without it; the
 // run goes on. An error that && or || absorbed is still the result.
 func (a *assertion) Eval(parent context.Context, extracted []check.Extracted) (bool, error) {
-	log := &errorLog{}
+	return a.evaluate(parent, extracted, &errorLog{})
+}
+
+// evaluate is Eval with the evaluation's log given, for a caller that
+// reads what the log kept.
+func (a *assertion) evaluate(parent context.Context, extracted []check.Extracted, log *errorLog) (bool, error) {
+	vars, err := a.bindings(extracted)
+	if err != nil {
+		return false, err
+	}
+	vars[logVariable] = log
+	ctx, cancel := context.WithTimeout(parent, a.limits.timeout)
+	defer cancel()
+	log.ctx = ctx
+	o, finished := a.run(ctx, vars)
+	if !finished {
+		return false, a.stopped(parent, nil)
+	}
+	if err := a.failure(parent, ctx, o, log); err != nil {
+		return false, err
+	}
+	result, ok := o.value.Value().(bool)
+	if !ok {
+		return false, fmt.Errorf("the expression gave %v, not a bool", o.value)
+	}
+	return result, nil
+}
+
+// bindings is the variables the expression reads over extracted: each
+// extractor's list, an empty one for a list of maps none came for, and the
+// by_file grouping of each extractor the expression groups.
+func (a *assertion) bindings(extracted []check.Extracted) (map[string]any, error) {
 	vars := map[string]any{}
 	members := make(map[string][]filed, len(extracted))
 	for _, name := range a.maps {
@@ -929,75 +1120,87 @@ func (a *assertion) Eval(parent context.Context, extracted []check.Extracted) (b
 	}
 	for _, x := range extracted {
 		whole := slices.Contains(a.maps, x.Extractor)
-		if whole {
-			if n := countData(x.Values); n != len(x.Values) {
-				return false, fmt.Errorf("extractor %q: %d maps came with %d files, so the values are not whole", x.Extractor, n, len(x.Values))
-			}
+		if n := countData(x.Values); whole && n != len(x.Values) {
+			return nil, fmt.Errorf("extractor %q: %d maps came with %d files, so the values are not whole", x.Extractor, n, len(x.Values))
 		}
-		texts := make([]string, len(x.Values))
-		list := make([]ref.Val, len(x.Values))
-		each := make([]filed, len(x.Values))
-		for i, v := range x.Values {
-			texts[i], list[i] = v.Text, types.String(v.Text)
-			if whole {
-				list[i] = toCEL(v.Data)
-			}
-			each[i] = filed{file: v.At.File, member: list[i]}
-		}
-		vars[x.Extractor], members[x.Extractor] = texts, each
-		if whole {
-			vars[x.Extractor] = types.NewRefValList(types.DefaultTypeAdapter, list)
-		}
+		vars[x.Extractor], members[x.Extractor] = listOf(x.Values, whole)
 	}
 	for _, name := range a.grouped {
 		vars[byFilePrefix+name] = groupByFile(members[name])
 	}
-	vars[logVariable] = log
-	ctx, cancel := context.WithTimeout(parent, a.limits.timeout)
-	defer cancel()
-	log.ctx = ctx
+	return vars, nil
+}
+
+// listOf is values as the expression reads them, their texts or, when
+// whole, a CEL list of each value whole, with each member and its file.
+func listOf(values []check.Value, whole bool) (any, []filed) {
+	texts := make([]string, len(values))
+	list := make([]ref.Val, len(values))
+	each := make([]filed, len(values))
+	for i, v := range values {
+		texts[i], list[i] = v.Text, types.String(v.Text)
+		if whole {
+			list[i] = toCEL(v.Data)
+		}
+		each[i] = filed{file: v.At.File, member: list[i]}
+	}
+	if whole {
+		return types.NewRefValList(types.DefaultTypeAdapter, list), each
+	}
+	return texts, each
+}
+
+// run evaluates the program over vars, and waits a grace past ctx's end
+// for it to return. finished is false when it did not return within it.
+func (a *assertion) run(ctx context.Context, vars map[string]any) (o outcome, finished bool) {
 	done := make(chan outcome, 1)
 	go func() {
 		v, _, err := a.program.ContextEval(ctx, vars)
 		done <- outcome{value: v, err: err}
 	}()
-
-	var o outcome
 	select {
 	case o = <-done:
 	case <-ctx.Done():
 		select {
 		case o = <-done:
 		case <-time.After(a.limits.grace):
-			return false, a.stopped(parent, nil)
+			return outcome{}, false
 		}
 	}
+	return o, true
+}
+
+// failure is why an evaluation that returned o under ctx decided nothing,
+// or nil when it gave a result.
+func (a *assertion) failure(parent, ctx context.Context, o outcome, log *errorLog) error {
 	var cancelled interpreter.EvalCancelledError
 	switch {
-	case errors.As(o.err, &cancelled) && cancelled.Cause == interpreter.CostLimitExceeded && log.first != nil:
-		// The cost limit stopped it, and an error that && or || absorbed
-		// came before, such as calls of entries renovate_match refuses,
-		// each charged for its parse. Both are what the author needs.
-		return false, fmt.Errorf("the evaluation exceeded the cost limit of %d; before it, %w", a.limits.cost, *log.first)
 	case errors.As(o.err, &cancelled) && cancelled.Cause == interpreter.CostLimitExceeded:
-		return false, fmt.Errorf("the evaluation exceeded the cost limit of %d", a.limits.cost)
+		return a.overCost(log)
 	case errors.Is(o.err, interpreter.InterruptError{}):
-		return false, a.stopped(parent, o.err)
+		return a.stopped(parent, o.err)
 	case ctx.Err() != nil:
 		// It finished in the grace without looking at the context.
-		return false, a.stopped(parent, nil)
+		return a.stopped(parent, nil)
 	case o.err != nil:
 		// An error result names its own cause, a panic's internal error
 		// included; the log matters when the result was decided.
-		return false, o.err
+		return o.err
 	case log.first != nil:
-		return false, log.first
+		return log.first
 	}
-	result, ok := o.value.Value().(bool)
-	if !ok {
-		return false, fmt.Errorf("the expression gave %v, not a bool", o.value)
+	return nil
+}
+
+// overCost is the error of an evaluation the cost limit stopped, with the
+// error that && or || absorbed before it when there was one, such as calls
+// of entries renovate_match refuses, each charged for its parse. Both are
+// what the author needs.
+func (a *assertion) overCost(log *errorLog) error {
+	if log.first != nil {
+		return fmt.Errorf("the evaluation exceeded the cost limit of %d; before it, %w", a.limits.cost, *log.first)
 	}
-	return result, nil
+	return fmt.Errorf("the evaluation exceeded the cost limit of %d", a.limits.cost)
 }
 
 // filed is a member of an extractor's list in assert, with the file of

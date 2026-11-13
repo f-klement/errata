@@ -1,0 +1,66 @@
+# A false assert that is an all over an extractor prints the values the all
+# found false, each with its place, and counts the rest; --all-values adds
+# every value. JUnit carries the same message. The verdict and the exit code
+# are the same either way. SARIF puts the result at the first value the
+# message shows and links every other value; any other false assert stays
+# at the first value.
+! exec errata check -c addresses.yaml
+cmp stdout offenders.txt
+
+! exec errata check -c addresses.yaml --all-values
+cmp stdout every.txt
+
+! exec errata check -c addresses.yaml -f junit
+stdout 'message="assert: the expression is false&#xA;  expression: addresses.all\(a, a.endsWith\(&#39;@example.org&#39;\)\)&#xA;  the all is false for 1 of the 3 values of addresses:&#xA;  addresses\[1\] = &#34;kim@gmail.com&#34; at users.py:2&#xA;  2 more values not shown: errata check --all-values prints every value"'
+
+! exec errata check -c addresses.yaml -f sarif
+stdout '"locations": \[\s*\{\s*"physicalLocation": \{\s*"artifactLocation": \{\s*"uri": "users.py",\s*"uriBaseId": "%SRCROOT%"\s*\},\s*"region": \{\s*"startLine": 2\s*\}'
+stdout '"startLine": 1\s*\}\s*\},\s*"message": \{\s*"text": "\\"alice@example.org\\" \(addresses\)"'
+stdout '"startLine": 3\s*\}\s*\},\s*"message": \{\s*"text": "\\"sam@example.org\\" \(addresses\)"'
+
+! exec errata check -c exists.yaml -f sarif
+stdout '"locations": \[\s*\{\s*"physicalLocation": \{\s*"artifactLocation": \{\s*"uri": "users.py",\s*"uriBaseId": "%SRCROOT%"\s*\},\s*"region": \{\s*"startLine": 1\s*\}'
+
+-- exists.yaml --
+checks:
+  - id: some-address-is-kim
+    reason: The fixture names kim at the reserved domain.
+    scope: repo
+    extract:
+      addresses: {regex: {file: users.py, pattern: '([a-z]+@[a-z.]+)'}}
+    assert: addresses.exists(a, a == 'kim@example.org')
+-- addresses.yaml --
+checks:
+  - id: reserved-addresses
+    reason: A fixture address outside reserved space reads as a real mailbox.
+    scope: repo
+    extract:
+      addresses: {regex: {file: users.py, pattern: '([a-z]+@[a-z.]+)'}}
+    assert: addresses.all(a, a.endsWith('@example.org'))
+-- users.py --
+ALICE = "alice@example.org"
+KIM = "kim@gmail.com"
+SAM = "sam@example.org"
+-- offenders.txt --
+FALSE reserved-addresses (repo)
+  why:  A fixture address outside reserved space reads as a real mailbox.
+  said: assert: the expression is false
+          expression: addresses.all(a, a.endsWith('@example.org'))
+          the all is false for 1 of the 3 values of addresses:
+          addresses[1] = "kim@gmail.com" at users.py:2
+          2 more values not shown: errata check --all-values prints every value
+
+1 erratum, 0 unknown. Coverage: ran 1, skipped 0.
+-- every.txt --
+FALSE reserved-addresses (repo)
+  why:  A fixture address outside reserved space reads as a real mailbox.
+  said: assert: the expression is false
+          expression: addresses.all(a, a.endsWith('@example.org'))
+          the all is false for 1 of the 3 values of addresses:
+          addresses[1] = "kim@gmail.com" at users.py:2
+          every value:
+          addresses[0] = "alice@example.org" at users.py:1
+          addresses[1] = "kim@gmail.com" at users.py:2
+          addresses[2] = "sam@example.org" at users.py:3
+
+1 erratum, 0 unknown. Coverage: ran 1, skipped 0.

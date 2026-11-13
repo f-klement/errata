@@ -24,13 +24,15 @@ var replays = []extracttest.Replay[string]{
 	{Name: "the same with (?s) over many lines", Spec: `(?s)(\d)(?:.*x)?`,
 		Body: func() string { return strings.Repeat("1\n", 10000) }, TimeLimit: 100 * time.Millisecond,
 		Refused: "f: matching took more than 100ms, the limit, and stopped after", Bound: 1500 * time.Millisecond},
-	// One search that finds nothing: a counted repeat keeps a thousand
-	// threads alive at each byte. The limit stops it inside the search.
+	// One search that finds its one match at the very end: a counted
+	// repeat keeps a thousand threads alive at each byte. The c the pattern
+	// needs ends the line, so the search runs over the whole line rather
+	// than being skipped (findNear). The limit stops it inside the search.
 	// Stopped 0.12 s, 0.17 s under -race; the search unclocked, with the
 	// limit checked only between searches, 3.3 s, 58.6 s under -race;
 	// bound 1 s.
 	{Name: "one search of a counted repeat", Spec: `([ab]{0,1000}c)`,
-		Body: func() string { return strings.Repeat("b", 64<<10) }, TimeLimit: 100 * time.Millisecond,
+		Body: func() string { return strings.Repeat("b", 64<<10) + "c" }, TimeLimit: 100 * time.Millisecond,
 		Refused: "f: matching took more than 100ms, the limit, and stopped after 0 matches", Bound: time.Second},
 	// A pattern that starts with a literal: the prefix scan finds the
 	// places it starts, and the try at the first stops after the most b
@@ -61,6 +63,20 @@ var replays = []extracttest.Replay[string]{
 		Body:      func() string { return strings.Repeat("x"+strings.Repeat("b", 1000)+strings.Repeat(" ", 100), 2000) },
 		TimeLimit: 100 * time.Millisecond,
 		Refused:   "f: matching took more than 100ms, the limit, and stopped after 0 matches", Bound: time.Second},
+	// Many matches on one long line, the shape of a minified bundle: the
+	// search with a seeker scanned the line for its bounds once for each
+	// match, off the clock, so 20164 dashes on one line of 256 KiB took
+	// 2.37 s, and 80659 on one of 1 MiB 37 s, past its own 10 s limit. It
+	// now scans each line once. On the build node: linear 0.024 s, 0.32 s
+	// under -race; quadratic 0.79 s at the fastest of three; bound 0.25 s.
+	// Under make cover's -race and coverage on a loaded node it took more
+	// than 1 s, so it runs in make slow, and a tenth of it in make test.
+	{Name: "many matches on one long line", Spec: `([\x{2013}\x{2014}])`,
+		Body:   func() string { return strings.Repeat("abcdefghij\u2014", 20164) },
+		Values: 20164, Last: "\u2014", Bound: 250 * time.Millisecond, Full: true},
+	{Name: "many matches on one long line, a tenth", Spec: `([\x{2013}\x{2014}])`,
+		Body:   func() string { return strings.Repeat("abcdefghij\u2014", 2016) },
+		Values: 2016, Last: "\u2014"},
 }
 
 // searchIn is the regex extractor of pattern over the file f.
@@ -70,4 +86,10 @@ func searchIn(pattern string) (check.Extractor, error) {
 
 func TestReplayMeasuredInputs(t *testing.T) {
 	extracttest.RunReplays(t, searchIn, replays, false)
+}
+
+// The full cases, at the sizes their times were measured at.
+func TestReplayMeasuredInputsAtFullSize(t *testing.T) {
+	slowOnly(t)
+	extracttest.RunReplays(t, searchIn, replays, true)
 }

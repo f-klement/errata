@@ -51,3 +51,48 @@ func TestSharedNeverHandsOnAZeroValue(t *testing.T) {
 		t.Errorf("another type: %q %v, want an error", v, err)
 	}
 }
+
+// Each Wrote moves the run's generation on by one, and only that run's;
+// outside a run there is no generation and Wrote does nothing. Planted
+// breaks: Wrote not counting; Generation reporting a run outside one.
+func TestWroteMovesTheGenerationOn(t *testing.T) {
+	if _, ok := Generation(context.Background()); ok {
+		t.Error("a generation outside a run")
+	}
+	Wrote(context.Background())
+	run, other := WithRun(context.Background()), WithRun(context.Background())
+	for want := range uint64(3) {
+		if gen, ok := Generation(run); !ok || gen != want {
+			t.Errorf("generation %d, %v; want %d", gen, ok, want)
+		}
+		Wrote(run)
+	}
+	if gen, _ := Generation(other); gen != 0 {
+		t.Errorf("another run's generation %d, want 0", gen)
+	}
+}
+
+// Once a check of the run may have written to the repository, a result
+// Shared kept is computed again, since it was computed from the files
+// before the write; another run keeps its own. Planted break: Wrote moving
+// the generation on and keeping the results.
+func TestWroteDropsWhatTheRunKept(t *testing.T) {
+	run, other := WithRun(context.Background()), WithRun(context.Background())
+	calls := 0
+	compute := func() (int, error) { calls++; return calls, nil }
+	for _, ctx := range []context.Context{run, other} {
+		if n, _ := Shared(ctx, "walk", compute); n != calls {
+			t.Fatalf("first compute gave %d, want %d", n, calls)
+		}
+	}
+	Wrote(run)
+	if n, _ := Shared(run, "walk", compute); n != 3 {
+		t.Errorf("after a write the run gave %d, want 3, computed again", n)
+	}
+	if n, _ := Shared(run, "walk", compute); n != 3 {
+		t.Errorf("a second ask after the write gave %d, want 3, kept", n)
+	}
+	if n, _ := Shared(other, "walk", compute); n != 2 {
+		t.Errorf("the other run gave %d, want 2, its own", n)
+	}
+}

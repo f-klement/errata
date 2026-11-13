@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"regexp"
 	"regexp/syntax"
+	"slices"
 	"strings"
 
 	"github.com/f-klement/errata/internal/check"
@@ -34,7 +35,14 @@ type Spec struct {
 	// Context is the lines around a match, and the patterns that must and
 	// must not match in them, for the match to count (ADR 0012).
 	Context *core.Context `json:"context,omitempty"`
+	// Skip lists what the search reads past: Comments blanks each file's
+	// comments to spaces, found by the lexer's row that the file's name
+	// chooses (core.BlankComments).
+	Skip []string `json:"skip,omitempty"`
 }
+
+// Comments is the one value skip takes.
+const Comments = "comments"
 
 // The values values_as takes.
 const (
@@ -59,6 +67,9 @@ func Build(r Spec) (check.Extractor, error) {
 		// would lose the fields the rule names.
 		return nil, fmt.Errorf("regex: pattern %s references values, and as: record reads only a pattern that references none; leave as out to read group 1 of each value's matches", core.Quote(r.Pattern))
 	}
+	if err := checkSkip(r.Skip); err != nil {
+		return nil, err
+	}
 	var around *core.Around
 	if r.Context != nil {
 		if around, err = core.CompileContext("regex", *r.Context); err != nil {
@@ -69,19 +80,106 @@ func Build(r Spec) (check.Extractor, error) {
 		if r.ValuesAs != "" {
 			return nil, errors.New("regex: values_as applies to a pattern that references an extractor's values, as (?{name}) does, and this pattern references none")
 		}
-		return core.BuildOneOrSet(Kind.Key, r.Where, func(src core.Source, _ bool) (core.FileReader, error) {
-			e, err := core.CompileSearchAt(Kind.Key, src, r.Pattern)
-			if err != nil {
-				return nil, err
-			}
-			e = e.Around(around)
-			if r.As == "record" {
-				return e.Records("regex")
-			}
-			return e, nil
-		})
+		return core.BuildOneOrSet(Kind.Key, r.Where, searchIn(r, around))
 	}
 	return buildReference(r, *ref, around)
+}
+
+// searchIn builds the reader of one file for r, whose pattern references
+// no values: the search of the pattern with the context around keeps, for
+// group 1 or with as: record for records, reading past what skip lists.
+func searchIn(r Spec, around *core.Around) core.BuildOne {
+	return func(src core.Source, inSet bool) (core.FileReader, error) {
+		e, err := core.CompileSearchAt(Kind.Key, src, r.Pattern)
+		if err != nil {
+			return nil, err
+		}
+		e = e.Around(around)
+		if r.As == "record" {
+			if e, err = e.Records("regex"); err != nil {
+				return nil, err
+			}
+		}
+		return skipping(r.Skip, src, e, inSet)
+	}
+}
+
+// checkSkip refuses a skip that lists nothing, a value other than
+// comments, or comments twice.
+func checkSkip(skip []string) error {
+	if skip != nil && len(skip) == 0 {
+		return fmt.Errorf("regex: skip lists nothing; write skip: [%s] to read past each file's comments, or leave skip out", Comments)
+	}
+	for i, s := range skip {
+		if s != Comments {
+			return fmt.Errorf("regex: skip %s is not one errata reads past; write %s to blank each file's comments, or leave skip out", core.Quote(s), Comments)
+		}
+		if i > 0 {
+			return fmt.Errorf("regex: skip lists %s twice; write it once", Comments)
+		}
+	}
+	return nil
+}
+
+// skipping is r, the reader of the file src names, reading past what skip
+// lists: with comments, the file's comments blanked to spaces by the row of
+// the lexer table its name chooses. A file of one: whose name chooses no row
+// is refused now; a file of a set when it is read, since its name is known
+// only then.
+func skipping(skip []string, src core.Source, r core.FileReader, inSet bool) (core.FileReader, error) {
+	if len(skip) == 0 {
+		return r, nil
+	}
+	b := blanked{Source: src, reader: r}
+	if _, err := b.language(); err != nil && !inSet {
+		return nil, err
+	}
+	return b, nil
+}
+
+// blanked is a reader of one file that reads it with its comments blanked
+// (core.BlankComments): no character of a comment is matched as itself, each
+// reads as a space, which \s and . still match, and each value keeps the
+// line it has in the file.
+type blanked struct {
+	core.Source
+	reader core.FileReader
+}
+
+// language is the row of the lexer table the file's name chooses.
+func (b blanked) language() (core.Language, error) {
+	l, ok := core.LanguageFor(b.File)
+	if !ok {
+		return core.Language{}, fmt.Errorf("regex: %s: skip: [%s] finds comments by the language the file's name chooses, and its name chooses none errata lexes; narrow file or files to files of %s (docs/reference.md#comment)",
+			b.File, Comments, core.LanguageNames())
+	}
+	return l, nil
+}
+
+// ExtractWith is Extract: the values a pattern references reach the
+// reader before it is built.
+func (b blanked) ExtractWith(ctx context.Context, root string, _ map[string][]check.Value) ([]check.Value, error) {
+	return b.Extract(ctx, root)
+}
+
+// Extract reads the file under root and returns the values its reader
+// finds in it with its comments blanked.
+func (b blanked) Extract(ctx context.Context, root string) ([]check.Value, error) {
+	return core.ExtractOne(ctx, root, b.Source, b)
+}
+
+// FromShared blanks the comments of data, the bytes of the file, and hands
+// the text to the reader, which spends the set's budget as it would.
+func (b blanked) FromShared(data []byte, spent *core.Spent) ([]check.Value, error) {
+	l, err := b.language()
+	if err != nil {
+		return nil, err
+	}
+	text, err := core.BlankComments(b.File, l, data)
+	if err != nil {
+		return nil, fmt.Errorf("regex: %w", err)
+	}
+	return b.reader.FromShared(text, spent)
 }
 
 // reference is where a pattern references an extractor's values: the
@@ -135,12 +233,12 @@ func buildReference(r Spec, ref reference, around *core.Around) (check.Extractor
 		return nil, fmt.Errorf("regex: values_as %s must be %s or %s", core.Quote(r.ValuesAs), Literal, AsPattern)
 	}
 	asPattern := r.ValuesAs == AsPattern
-	_, err := core.BuildOneOrSet(Kind.Key, r.Where, func(src core.Source, _ bool) (core.FileReader, error) {
+	_, err := core.BuildOneOrSet(Kind.Key, r.Where, func(src core.Source, inSet bool) (core.FileReader, error) {
 		e, err := core.CompileSearchAt(Kind.Key, src, ref.with(""))
 		if err != nil {
 			return nil, fmt.Errorf("%w (read with %s as an empty value)", err, ref.text())
 		}
-		return e, nil
+		return skipping(r.Skip, src, e, inSet)
 	})
 	if err != nil {
 		return nil, err
@@ -224,8 +322,8 @@ func (e Reference) ExtractWith(ctx context.Context, root string, values map[stri
 		}
 	}
 	searches = searches.Around(e.around)
-	x, err := core.BuildOneOrSet(Kind.Key, e.spec.Where, func(src core.Source, _ bool) (core.FileReader, error) {
-		return searches.In(src), nil
+	x, err := core.BuildOneOrSet(Kind.Key, e.spec.Where, func(src core.Source, inSet bool) (core.FileReader, error) {
+		return skipping(e.spec.Skip, src, searches.In(src), inSet)
 	})
 	if err != nil {
 		return nil, err
@@ -298,8 +396,8 @@ func Place(r Spec) Spec {
 	return r
 }
 
-// Resolve is r with its max_bytes written out, its files and context
-// copied, and values_as written out for a pattern that references values
+// Resolve is r with its max_bytes written out, its files, context and
+// skip copied, and values_as written out for a pattern that references values
 // and leaves it out, for errata list.
 func Resolve(r Spec) Spec {
 	if r.ValuesAs == "" && strings.Contains(r.Pattern, "(?{") {
@@ -310,6 +408,7 @@ func Resolve(r Spec) Spec {
 		c := *r.Context
 		r.Context = &c
 	}
+	r.Skip = slices.Clone(r.Skip)
 	return r
 }
 

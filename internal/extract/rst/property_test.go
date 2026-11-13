@@ -68,6 +68,9 @@ func TestEveryValueIsAtItsLine(t *testing.T) {
 			if err != nil && strings.Contains(err.Error(), "inconsistent with the titles") {
 				return // the blocks' titles may draw levels docutils refuses
 			}
+			if err != nil && strings.Contains(err.Error(), "simple table that starts here has no bottom border") {
+				return // junk such as "= =" opens a simple table no block closes
+			}
 			if err != nil {
 				t.Fatalf("%+v: %v", s.Selector, err)
 			}

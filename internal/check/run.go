@@ -20,6 +20,10 @@ type runKey struct{}
 type run struct {
 	mu   sync.Mutex
 	done map[any]*shared
+	// wrote counts the checks of the run that may have written to the
+	// repository (Wrote), so a reader that keeps what it read knows when
+	// to read again.
+	wrote uint64
 }
 
 // shared is one result of a run, computed once.
@@ -38,7 +42,8 @@ func WithRun(ctx context.Context) context.Context {
 
 // Shared is the result of compute under key in the run ctx holds, computed
 // the first time any check of the run asks for key and handed to every
-// later one, its error too. key is a comparable value that names what
+// later one, its error too, until a check may have written to the
+// repository (Wrote). key is a comparable value that names what
 // compute reads, such as a file and the root it is under. A compute that
 // panics leaves an error for every later caller, never a zero value, and so
 // does a key asked for under two types. Outside a run, compute runs each
@@ -65,4 +70,32 @@ func Shared[T any](ctx context.Context, key any, compute func() (T, error)) (T, 
 		return v, errNoResult
 	}
 	return v, s.err
+}
+
+// Wrote marks that a check of the run in ctx may have written to the
+// repository, as a program check or a generator may (ADR 0011): what a
+// reader kept of the files before it is stale (Generation), and so is
+// every result Shared computed from them, such as a marker walk's read of
+// git's index and of each marked file. Wrote drops those results, so the
+// next caller computes each again. Outside a run it does nothing.
+func Wrote(ctx context.Context) {
+	if r, ok := ctx.Value(runKey{}).(*run); ok {
+		r.mu.Lock()
+		r.wrote++
+		r.done = map[any]*shared{}
+		r.mu.Unlock()
+	}
+}
+
+// Generation is how many times a check of the run in ctx may have written
+// to the repository (Wrote), and whether ctx holds a run: what a reader
+// kept of a file at one generation holds only for that generation.
+func Generation(ctx context.Context) (uint64, bool) {
+	r, ok := ctx.Value(runKey{}).(*run)
+	if !ok {
+		return 0, false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.wrote, true
 }

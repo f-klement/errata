@@ -220,12 +220,13 @@ func TestContextRefusals(t *testing.T) {
 // and one past it is refused, naming the pattern. The pattern has a
 // literal prefix, so its own search is a byte scan. A line of 'a's costs a
 // counted repeat about 60 microseconds a rune, so 4 MB would take about
-// 4 minutes unstopped. Planted break: the context's clock given no
+// 4 minutes unstopped; the line ends in the c the context needs, so its
+// search reads the whole line. Planted break: the context's clock given no
 // deadline of the search's.
 func TestContextSharesTheTimeLimit(t *testing.T) {
 	e := contextSearch(t, `k(1)`, Context{After: 1, With: `[ab]{0,1000}c`})
 	e.TimeLimit = 100 * time.Millisecond
-	data := "k1\n" + strings.Repeat("a", 4<<20) + "\n"
+	data := "k1\n" + strings.Repeat("a", 4<<20) + "c\n"
 	start := time.Now()
 	_, err := e.FromData([]byte(data))
 	took := time.Since(start)
@@ -239,12 +240,13 @@ func TestContextSharesTheTimeLimit(t *testing.T) {
 }
 
 // No match leaves the context unsearched: the same costly context over a
-// file the pattern finds nothing in is no refusal. Planted break: keep
-// searching with no match to keep.
+// file the pattern finds nothing in is no refusal. The line ends in the c
+// the context needs, so a search of it would read it all. Planted break:
+// keep searching with no match to keep.
 func TestContextUnsearchedWithoutAMatch(t *testing.T) {
 	e := contextSearch(t, `k(1)`, Context{With: `[ab]{0,1000}c`})
 	e.TimeLimit = 100 * time.Millisecond
-	if _, err := e.FromData([]byte(strings.Repeat("a", 4<<20) + "\n")); err != nil {
+	if _, err := e.FromData([]byte(strings.Repeat("a", 4<<20) + "c\n")); err != nil {
 		t.Fatal(err)
 	}
 }

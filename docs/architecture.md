@@ -33,7 +33,7 @@ flowchart TD
     compile --> checks
     build -->|"a program or a generated check"| checks
     load -.->|"a load error"| usage["exit 2"]
-    checks --> exec["engine.Execute: one check at a time, in order"]
+    checks --> exec["engine.Execute: rules at once on a pool, the report in config order"]
     exec --> reach{"provider.Reaches the check's scope?"}
     reach -->|"no"| skip["skipped, with its gap"]
     reach -->|"yes"| dispatch["engine.Dispatch by the check's kind"]
@@ -42,7 +42,7 @@ flowchart TD
     dispatch -->|"rule"| rrun["rule.Run"]
     prun --> proc["program.Run: argv, timeout, output bound, process group"]
     pgen --> proc
-    rrun --> read["each extractor reads its files through core"]
+    rrun --> read["each extractor reads its files through core, shared within the run up to 64 MiB"]
     proc --> result["check.Result: true, false or unknown"]
     read --> result
     result --> witness["each witness the check names runs it again on its fixture"]
@@ -87,6 +87,8 @@ through `rule.Compile`, so a type error in CEL is a load error too.
 runs each check through a function, `engine.Runner`. Production passes `engine.Dispatch`, which
 sends each check by its kind to `protocol.Run`, `protocol.RunGenerated` or `rule.Run` (The
 seams, 1).
+Rules and their witnesses run at once on a pool of `GOMAXPROCS` workers; a check of any other kind
+runs alone. The report keeps the order of the config (Decisions taken in the code).
 
 **rule** (`internal/rule`) evaluates a rule. It runs the rule's extractors, holds what they
 return to the bounds, and either compares their values (`agree:`) or evaluates the compiled CEL
@@ -516,7 +518,8 @@ parser, the shared code goes below `core`, as `core/gitindex`, `core/clip`, `cor
 
 `core` holds these, in the order a read meets them:
 
-- the `Source`, a file held inside the repository and to its size cap;
+- the `Source`, a file held inside the repository and to its size cap, whose read a run shares
+  between the extractors that name it, up to 64 MiB (`Reader.Read`);
 - the walk of the repository, and the files git's index tracks (`core/gitindex`), for an
   extractor that reads a set of files;
 - the tree a structured reader parses into, and the path grammar with its filters that selects
@@ -697,6 +700,43 @@ path inside the repository, so a reader that misses a bound, or a plugin, cannot
 memory is not promised, since it depends on a file's shape; a file that exhausts it ends the
 process, which fails the job. ADR
 [0003](adr/0003-extractors-bound-time-and-size-and-let-memory-fail-closed.md) has the reasons.
+
+**A run shares the reads of its files.** Two rules over `**` each read every file, so a config
+with several such rules paid for each read again. The checks of a run share what they read under
+one root (`core.sharedFiles`, kept through `check.Shared`): a file's bytes, or the refusal of its
+read, by the name the spec gave it, and where each name resolves. Each read still holds the file to
+its own limit, so a rule with a smaller `max_bytes` gets the refusal its own read would give; a
+refusal on size is not kept, since a later read may allow more. Each extractor gets a copy of the
+bytes, so no reader can change what another reads. Only reads and lookups are shared: a stat, an
+open read in pieces and a head go to the disk each time. A run keeps at most `core.MaxShared`
+bytes, 64 MiB, the most one extractor may read, and holds them for the whole run on top of what
+each rule reads (about 60 MiB more peak anon on a tree of 28 MiB); a file past that is read
+again by each extractor, as before. What the run kept holds until a check that may write to the
+repository runs, a program check or a generated check (ADR
+[0011](adr/0011-a-generated-check-runs-its-generator-and-compares-what-it-prints.md)): the engine
+then moves the run's generation on (`check.Wrote`) and drops every result the run kept through
+`check.Shared`, such as a marker walk's read of git's index and of each marked file, so the next
+read goes to the disk and every verdict is the one a run that keeps nothing gives. A witness's
+run shares nothing, since each check opens its fixture again. A read that finds another read of
+the same file under way waits for it, so checks that run at once read a file once.
+
+**Rules run at once; the report keeps the config's order.** A config of seventeen rules ran one
+after another on one core while the others sat idle. `engine.Execute` lists a job for each check
+and each of its witnesses, in the order of the config, and runs the rules' jobs on a pool of
+`GOMAXPROCS` workers, each taking the next job and writing its result at the job's own index. So
+the report's order does not depend on which job ends first, and on one core the one worker runs
+the jobs in the config's order, as before. A check of any other kind than a rule (a program, a
+generated check, or a kind with no runner) runs alone: every job before it ends first, and none
+after it starts until it ends, since a generator may write a file a rule reads. A rule only
+reads, so what rules share has to be safe for concurrent use: the run's store (`check.Shared`),
+the shared read, and the marker walks' one read of git's index (`core.Tracked`) each take a lock
+or a `sync.Once`. A result's time is still its own check's wall
+time, so the JUnit times of a run on several cores add up to more than the run took; for the same
+reason a CEL evaluation's wall clock limit now also counts the time it waits beside other rules. Up
+to `GOMAXPROCS` rules hold what they read at once, so a run's peak memory grows with its cores; ADR
+[0003](adr/0003-extractors-bound-time-and-size-and-let-memory-fail-closed.md) lets it fail closed.
+A check that panics on the pool panics again on the goroutine that called `engine.Execute`, once
+the pool's workers are done, so the caller's deferred cleanup runs as it did one at a time.
 
 **The check protocol is exit codes first.** Exit 0 is true, exit 1 is false, anything else is an
 error. Stdout is the message, or the `message` field when stdout is a JSON object. A shell script

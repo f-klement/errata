@@ -130,8 +130,10 @@ errata has three kinds of check, and an entry's keys decide which one it is
   committed file, byte for byte ([`generated`](reference.md#generated)).
 
 Write a rule whenever an extractor can read the values. A rule names every value it compared with
-the file and the line it came from, so a failure says where to look. Its extractors fail closed:
-a file that is gone, a pattern that matches nothing or a value the file only computes makes the
+the file and the line it came from, so a failure says where to look. A false `all` over an
+extractor names only the values it found false (over `by_file`, every value of each file it found
+false), and `errata check --all-values` names every one. Its extractors fail closed: a file that
+is gone, a pattern that matches nothing or a value the file only computes makes the
 rule unknown, where a script's `grep` that matches nothing passes unless the script guards it.
 It reads files and runs nothing. And `errata list --format json` describes it, so other tools can
 read what it checks.

@@ -107,6 +107,10 @@ Flags
       --output sarif=errata.sarif writes both files and prints the text.
   --fail-on-skip (default off)
       A skipped check fails the run with exit code 1, as an unknown does.
+  --all-values (default off)
+      A false assert prints every value its rule read. Without it, an assert
+      that is an all over an extractor prints only the values the all found
+      false, and counts the rest.
 
 Exit codes
   0  every check that ran found its claim true.
@@ -124,6 +128,15 @@ Exit codes
   line ends "A skip fails this run.", JUnit writes the skip as an <error>
   whose message is "skipped: " and the gap, and SARIF writes its
   notification at level error and sets executionSuccessful to false.
+
+--all-values
+  An assert such as addresses.all(a, a.endsWith('@example.com')), or
+  by_file(fences).all(f, ...), is false because of some of its members. The
+  message of such an assert, when false, shows the values of those members,
+  each with its file and line: a value of addresses, or every value of the
+  rule in a file of by_file(fences). A line then counts the values it left
+  out. --all-values adds every value of the rule after them, which is what
+  any other false assert shows. The verdicts are the same either way.
 
 --output
   The exit code and each format's content are the same as without it, and
@@ -173,7 +186,13 @@ Examples:
   # SARIF on stdout, for GitHub code scanning.
   errata check -f sarif > errata.sarif
 
+  # Print every value a false assert read, not only those its all found
+  # false.
+  errata check --all-values
+
 Flags:
+      --all-values           a false assert prints every value its rule
+                             read, not only those its all found false
   -c, --config FILE          the config FILE (default <root>/errata.yaml)
       --fail-on-skip         exit 1 when a check was skipped, as on an unknown
   -f, --format NAME          the NAME of the format on stdout: junit,

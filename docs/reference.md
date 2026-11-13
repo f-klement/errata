@@ -734,7 +734,7 @@ seconds, which is one moment, make the rule unknown. The names of the machine's 
 systemd also reads, are read only where the IANA database holds them, as it holds `CET`.
 
 When the expression is false, the message shows it with every value each extractor found, by the
-index the expression reads it at:
+index the expression reads it at, unless the expression is an `all` over an extractor (below):
 
 ```text
 FALSE staleness-threshold (repo)
@@ -744,6 +744,25 @@ FALSE staleness-threshold (repo)
                       duration(threshold[0]) <= cron_interval(schedule[0]) * 2
           schedule[0] = "17 */6 * * *" at deploy/backup-cronjob.yaml:9
           threshold[0] = "13h" at monitoring/backup-rules.yaml:14
+```
+
+An expression whose value is an `all` over an extractor, as `x.all(v, ...)` or
+`by_file(x).all(f, ...)`, perhaps inside `cel.bind`, is false because of the members its predicate
+is false for. Its message shows only their values: each value of `x` the predicate is false for,
+or, over `by_file(x)`, every value of every extractor in each file it is false for. A line then
+counts the values left out, and `errata check --all-values` prints every value after them. A SARIF
+result points at the first value the message shows and links every other value (see [SARIF](#sarif)). A member
+whose predicate fails, such as `int()` of a word, makes the rule unknown, whose message shows
+every value as before. The verdict is the same with the flag and without it.
+
+```text
+FALSE no-address-outside-reserved-space (repo)
+  why:  A fixture address outside the reserved names reads as a real mailbox.
+  said: assert: the expression is false
+          expression: addresses.all(a, a.endsWith('@example.org'))
+          the all is false for 1 of the 202 values of addresses:
+          addresses[161] = "kim.jones@gmail.com" at backend/tests/test_users.py:40
+          201 more values not shown: errata check --all-values prints every value
 ```
 
 errata type checks the expression when it loads the file. A name that is not one of the rule's
@@ -903,7 +922,7 @@ extract:
 | [`jsonc`](#jsonc-and-json5) | the fields of `json` | what `json` returns, from a JSONC file: JSON with comments and trailing commas |
 | [`json5`](#jsonc-and-json5) | the fields of `json` | what `json` returns, from a JSON5 file |
 | [`toml`](#toml) | `file` or `files`, `path`, `embedded`, and `as: map`, or `as: record` with `fields` | every scalar the path selects, each mapping whole, or a record for each node |
-| [`regex`](#regex) | `file` or `files`, `pattern`, `as: record`, `values_as` for a pattern that references another extractor's values, and `context` to keep a match by the lines around it | capture group 1 of every match (see [Values of another extractor](#values-of-another-extractor) and [The context of a match](#the-context-of-a-match)), or with `as: record` a record of the named groups of each match |
+| [`regex`](#regex) | `file` or `files`, `pattern`, `as: record`, `values_as` for a pattern that references another extractor's values, `context` to keep a match by the lines around it, and `skip: [comments]` to search the code with its comments blanked | capture group 1 of every match (see [Values of another extractor](#values-of-another-extractor) and [The context of a match](#the-context-of-a-match)), or with `as: record` a record of the named groups of each match |
 | [`text`](#text) | `file`, `pattern`, and `code` to read code blocks too | capture group 1 of every match in the prose of a Markdown file |
 | [`comment`](#comment) | `file`, `pattern`, and `language` where the file's name chooses none | capture group 1 of every match in the comments of a source file (see [`comment`](#comment)) |
 | [`literal`](#literal) | `file`, `path`, and `language` where the file's name chooses none | every scalar the path selects in the literal data of a file written in a programming language, any of them marked not literal (see [`literal`](#literal)) |
@@ -1671,7 +1690,8 @@ kinds](#extractors).
 `regex` searches a file, or a [set of files](#a-set-of-files), and returns capture group 1 of
 every match, or a [record](#records) of each match's named groups. Its fields are in the [table of
 kinds](#extractors). [Values of another extractor](#values-of-another-extractor) and [The context
-of a match](#the-context-of-a-match), below, say what `values_as` and `context` do.
+of a match](#the-context-of-a-match), below, say what `values_as` and `context` do, and [Code
+without its comments](#code-without-its-comments) what `skip` does.
 
 `pattern` is Go's [RE2 syntax](https://github.com/google/re2/wiki/Syntax) and needs a capture
 group; a pattern without one, or with more than 32, does not load. Write `(?:...)` for a group
@@ -1807,6 +1827,57 @@ for the pattern alone, and 32 MiB of empty lines each matched by `with: '^$'`, t
 file can cost, was refused at 10 s.
 [ADR 0012](adr/0012-a-regex-keeps-a-match-by-the-lines-around-it.md) says why each line is
 searched alone.
+
+#### Code without its comments
+
+A rule about code is often broken by a comment that names what the rule forbids, or satisfied by
+one that names what it requires. `regex` searches the whole file, comments included, and
+[`comment`](#comment) searches only the comments. `skip: [comments]` makes `regex` search the
+code: each comment the lexer finds in the file, its delimiters included, becomes one space for
+each of its characters, and its line feeds stay. Every value keeps the line it has in the file,
+and the code after a block comment on its line keeps its column, counted in characters. This
+rule says that only the modules a list names read a file's bytes, and a `Blob` named in a
+comment makes no module a reader:
+
+```yaml
+extract:
+  readers:
+    regex:
+      files: ['frontend/src/lib/**/*.ts', 'frontend/src/lib/**/*.tsx']
+      pattern: '\b(Uint8Array|ArrayBuffer|ReadableStream|DOMParser|File|Blob)\b'
+      skip: [comments]
+assert: by_file(readers).all(f, f.endsWith('.d.ts') || f in ['frontend/src/lib/epub.ts', 'frontend/src/lib/zip.ts'])
+```
+
+- The lexer is the one [`comment`](#comment) reads with, and the row of its table is the one the
+  file's name chooses. `skip` blanks what that lexer reads as a comment, and nothing else. It
+  skips each string literal it knows whole, so `"https://example.org"` and `'image/*'` open no
+  comment and the code after them is searched.
+- Where the lexer misreads a construct, it blanks code too, and a rule with `skip` can then
+  hold on a file that holds what it forbids. The constructs are in the list of what the lexer
+  does not understand, under [`comment`](#comment). The two most common: JSX or TSX text that
+  holds a URL, as in `<p>see http://x</p>; const b = new Blob();`, where the `//` blanks the
+  rest of the line, code included; and a shell heredoc, whose body the shell row reads as code,
+  so a line of it that starts with `#` is blanked, and an apostrophe in it opens a string that
+  swaps strings and comments up to the next quote, so a real comment after it is searched and
+  code after a ` #` inside a real string is blanked. Ruby and PHP heredocs read right.
+- A comment inside an interpolation's code, as in `` `a ${ /* c */ x }` `` or Kotlin's
+  `"${ /* c */ x }"`, is not blanked: the lexer reads the whole string as one span.
+- A blanked comment reads as spaces, which `\s`, `.` and `(.*)` match. `(a\s+b)` matches
+  across `a /* x */ b`, and `x = (.*)` over `x = 1 // one` returns `1` followed by seven
+  spaces, so end a value's group before the comment, as `x = (\S+)` does. A shebang such as
+  `#!/bin/bash` is a comment in the shell and Python rows, so it is blanked too.
+- A file whose name chooses no row, such as `README.md`, is refused: with `file:` the rule does
+  not load, and in a set the rule is unknown when the set reads that file, naming it. Narrow
+  `files:` to the files of languages errata lexes. A file in which a comment, a string or a
+  quoted name runs to the end of the file makes the rule unknown, as it makes a `comment` rule
+  (below).
+- `skip` lists `comments` once. An empty list, a value twice, and any other value do not load.
+- The pattern, the [context](#the-context-of-a-match) and the [values of another
+  extractor](#values-of-another-extractor) all search the blanked file, so a `without:` that
+  names a comment, such as `^\s*#`, matches nothing there.
+- The lexer reads the file in one pass, linear in its size, before the search, outside the regex
+  time limit. Line ends read as LF first, as for any `regex`.
 
 ### `text`
 
@@ -5098,7 +5169,7 @@ core machine.
 | GitLab CI resolution | 150 included files, 11 levels of `extends`, 10 of `!reference`, 200 `parallel:matrix` jobs, 1000000 steps | GitLab's own limits on includes (its default), extends, `!reference` and matrices, and a step for each key a merge, an extends or a `!reference` touches, the bound YAML aliases have, since nested `!reference` lists repeat what they select without the file growing. Each is checked as the configuration is built (see [`gitlab-ci`](#gitlab-ci)) |
 | GitHub Actions matrix | 256 jobs, 65536 combinations before `exclude:`, 1000000 steps | GitHub's own limit on a matrix's jobs, and a step for each key an `include:` or `exclude:` entry compares and for each 64 bytes of a value it compares, the bound YAML aliases have, since each entry is matched against every combination (see [`github-actions`](#github-actions)) |
 | `etc` includes and Match decisions | 16 nested includes, 10000 files, 100000 `User`, `Hostname` and `Tag` lines, and 128 units of work a byte | OpenSSH's own limit on nested includes, and core's on files and values. With `match:`, errata decides each block's line once, and each `User`, `Hostname` or `Tag` line once, in the order read, so a file of 8000 of those lines under Host blocks and 8000 Match lines of distinct users takes about eight times as long as one of 1000 (TestMatchShadowIsLinear); each block decided, and each pattern matched, is charged to the read's work budget, the one an INI file's read has (see [`etc`](#etc)) |
-| regex time | 10 s for each 32 MiB of `max_bytes`, and never less than 10 s; for `files`, one limit the searches of every file share; for a pattern that references values, one limit that checking every value and its search share; a `context`'s searches share the limit of the pattern's | the search looks at the clock every 256 characters it reads, so one long search is stopped too. A pattern whose optional tail scans the rest of the line, such as `(\d)(?:.*x)?`, searches the line again after every match: 40 KB of one line took 27 s. One search that finds nothing costs the file times the pattern's width: `([0-9a-f]{40})` over 32 MiB of hex words took 28 s, and `([ab]{0,1000}c)` over 1 MiB 62 s; each is refused at 10 s. The slowest ordinary pattern measured over 32 MiB, `([A-Za-z0-9+/]{64,}={0,2})`, takes 4.7 s. A pattern that starts with a literal skips to each place the literal occurs and tries the pattern there. Where the next place is less than 64 bytes past the text the last try read, or a try reads more than 4 KiB, it searches every place from there on, as it does a pattern without a literal, so it reads at most 4 KiB more than a search of every place does. Over 32 MiB of errata's README, repeated, on the build node, `commit ([0-9a-f]{40})` takes 0.01 s, where a search of every place takes 0.82 s, and `(\d+\.\d+\.\d+)`, which starts with no literal, 1.2 s |
+| regex time | 10 s for each 32 MiB of `max_bytes`, and never less than 10 s; for `files`, one limit the searches of every file share; for a pattern that references values, one limit that checking every value and its search share; a `context`'s searches share the limit of the pattern's | the search looks at the clock every 256 characters it reads, so one long search is stopped too. A pattern whose optional tail scans the rest of the line, such as `(\d)(?:.*x)?`, searches the line again after every match: 40 KB of one line took 27 s. One search that finds nothing, or only a match at the end, costs the file times the pattern's width: `([0-9a-f]{40})` over 32 MiB of hex words took 28 s, and `([ab]{0,1000}c)` over one line of 1 MiB of `b` that ends in a `c`, which the search reads whole to reach it, 19.6 s on the build node; each is refused at 10 s. The slowest ordinary pattern measured over 32 MiB, `([A-Za-z0-9+/]{64,}={0,2})`, takes 4.7 s. A pattern that starts with a literal skips to each place the literal occurs and tries the pattern there. Where the next place is less than 64 bytes past the text the last try read, or a try reads more than 4 KiB, it searches every place from there on, as it does a pattern without a literal, so it reads at most 4 KiB more than a search of every place does. Over 32 MiB of errata's README, repeated, on the build node, `commit ([0-9a-f]{40})` takes 0.01 s, where a search of every place takes 0.82 s. A pattern that starts with no literal but whose every match holds one of a few, as `([\x{2013}\x{2014}])` holds one of two dashes and `(\w*[Gg]etFeatureFlags\w*)` one of two spellings, scans for those literals and searches only the line of each place one occurs, and up to three lines either side of it when a match can hold that many newlines. A pattern with `\A` or `\z`, one whose match can hold more newlines, and one that needs no literal, such as `([a-z]+)`, is searched at every place. Over a 29 MB tree on one core, the class of two dashes takes 0.24 s, where a search of every place takes 1.6 s |
 | a value a regex pattern references | 4096 bytes, and not empty | its pattern is compiled once for each file it searches, and up to twice more, and Go's size check does not stop a long literal: one value of 1 MiB took 1.4 s and 824 MiB of allocation, and one of 4 MiB 5.6 s and 3.8 GB. An empty value would let the pattern match its context alone. See [Values of another extractor](#values-of-another-extractor) |
 | regex capture groups | 32 | a search tracks every group for every thread it keeps alive; 100000 matches of a pattern of 32 groups take 0.5 s and 29 MB |
 | filter work | 4000000000 bytes for the filters of one path, over every file of `files` together | for each member tested, each comparison and each step after `@` counts 256, plus the bytes of each key it looks up and of the literal it compares, counted before the members are tested. A test that a path exists counts each step as it takes it, and a filter inside it counts its members as the outer one does, against the same total. At the limit, with 64 comparisons on each member, the worst shapes measured take 0.36 s to 1.42 s; on the build node, a test whose `[*]` steps fan out through shared nodes reaches the limit and is refused in 0.18 s |
@@ -5514,8 +5585,11 @@ blames the later, the one that does not agree with a value before it, so over `2
 value: with `18` in one file and `20.1.0` in two after it, semver blames `20.1.0`, where the text
 rule would blame `18`, the minority. Ranges alone that no release satisfies blame the first range
 at which the ranges before it stop overlapping, in the same order: over `>=20`, `<22` and `>=23`
-the alert is on `>=23`. An assert rule has no majority, so it blames the first
-value it extracted. A program check reports no values, so its result points at the line where the
+the alert is on `>=23`. An assert whose value is an `all` over an extractor blames the first value
+its message shows: the first value the all was false for, or over `by_file(x)` the first value, in
+the order of the extractors and their values, in a file the all was false for. The alert is then on
+an offending line. Any other assert rule has no
+majority, so it blames the first value it extracted. A program check reports no values, so its result points at the line where the
 check starts in the config file, and so does a rule whose extractors found nothing; the message is
 what the program printed. A rule that blames an `exists` value of `false` points at its check
 too, since no file is at the value's path, and its message names that path.

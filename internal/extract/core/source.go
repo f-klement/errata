@@ -86,7 +86,12 @@ func MaxBytes(n int64) int64 {
 // Reader reads files under one root through one tree, opened once, so
 // the files an extractor reads share the root's open and the directories
 // on their way (chain). Close it when the files are read.
-type Reader struct{ t tree }
+type Reader struct {
+	t tree
+	// shared is what the run reads under the root, nil on a witness's run,
+	// whose fixture each check opens again.
+	shared *sharedFiles
+}
 
 // OpenReader opens root for reads, as Read opens it (openTree).
 func OpenReader(ctx context.Context, root string) (*Reader, error) {
@@ -94,14 +99,38 @@ func OpenReader(ctx context.Context, root string) (*Reader, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Reader{t: t}, nil
+	return readerOf(ctx, root, t), nil
 }
 
-// Read is s.Read under the reader's root.
-func (r *Reader) Read(s Source) ([]byte, error) { return s.readIn(r.t) }
+// readerOf is the Reader of the tree t, open at root: on a run other than
+// a witness's, one that shares what it reads with the run's other readers
+// of root (sharedAt).
+func readerOf(ctx context.Context, root string, t tree) *Reader {
+	r := &Reader{t: t}
+	if !t.held {
+		r.shared = sharedAt(ctx, root)
+	}
+	return r
+}
 
-// Resolved is s.Resolved under the reader's root.
-func (r *Reader) Resolved(s Source) (string, error) { return s.resolvedIn(r.t) }
+// Read is s.Read under the reader's root. A file the run read before, for
+// any extractor, is not read again: its bytes, or the refusal of its read,
+// are the run's, held to s.Limit as a read of s holds them.
+func (r *Reader) Read(s Source) ([]byte, error) {
+	if r.shared == nil {
+		return s.readIn(r.t)
+	}
+	return r.shared.read(s, r.t)
+}
+
+// Resolved is s.Resolved under the reader's root, looked up once in a run
+// for every extractor, as Read reads a file once.
+func (r *Reader) Resolved(s Source) (string, error) {
+	if r.shared == nil {
+		return s.resolvedIn(r.t)
+	}
+	return r.shared.resolved(s, r.t)
+}
 
 // Open is the file s names under the reader's root, open for a reader that
 // reads it in pieces, and its size, refused as Read refuses the file: a
@@ -217,24 +246,32 @@ func notThere(err error) error {
 // Read reads the file under root. A file over the limit is refused before
 // it is read, and a file that grows past it while it is read is refused too.
 // Every error names the file as the spec wrote it, never an absolute path.
+// Within a run, the file is read once for every extractor (Reader.Read).
 func (s Source) Read(ctx context.Context, root string) ([]byte, error) {
 	t, err := openTree(ctx, root)
 	if err != nil {
 		return nil, err
 	}
 	defer t.close()
-	return s.readIn(t)
+	return readerOf(ctx, root, t).Read(s)
 }
 
 // readIn is Read in the tree t, which the caller opened, so the files of a
 // set open their root once.
 func (s Source) readIn(t tree) ([]byte, error) {
-	f, _, err := s.openIn(t)
+	data, _, err := s.readSized(t)
+	return data, err
+}
+
+// readSized is readIn with the size of the file when it was opened.
+func (s Source) readSized(t tree) ([]byte, int64, error) {
+	f, size, err := s.openIn(t)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer f.Close()
-	return s.ReadLimited(f)
+	data, err := s.ReadLimited(f)
+	return data, size, err
 }
 
 // ReadLimited reads r, the file s names as Reader.Open opened it, to the

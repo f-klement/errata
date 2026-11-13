@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"github.com/f-klement/errata/internal/report"
 )
@@ -114,6 +115,10 @@ Flags
       --output sarif=errata.sarif writes both files and prints the text.
   --fail-on-skip (default off)
       A skipped check fails the run with exit code 1, as an unknown does.
+  --all-values (default off)
+      A false assert prints every value its rule read. Without it, an assert
+      that is an all over an extractor prints only the values the all found
+      false, and counts the rest.
 
 Exit codes
   0  every check that ran found its claim true.
@@ -131,6 +136,15 @@ Exit codes
   line ends "A skip fails this run.", JUnit writes the skip as an <error>
   whose message is "skipped: " and the gap, and SARIF writes its
   notification at level error and sets executionSuccessful to false.
+
+--all-values
+  An assert such as addresses.all(a, a.endsWith('@example.com')), or
+  by_file(fences).all(f, ...), is false because of some of its members. The
+  message of such an assert, when false, shows the values of those members,
+  each with its file and line: a value of addresses, or every value of the
+  rule in a file of by_file(fences). A line then counts the values it left
+  out. --all-values adds every value of the rule after them, which is what
+  any other false assert shows. The verdicts are the same either way.
 
 --output
   The exit code and each format's content are the same as without it, and
@@ -175,7 +189,11 @@ const checkExample = `  # Check the repository in the working directory.
   errata check --output junit=errata.xml --fail-on-skip
 
   # SARIF on stdout, for GitHub code scanning.
-  errata check -f sarif > errata.sarif`
+  errata check -f sarif > errata.sarif
+
+  # Print every value a false assert read, not only those its all found
+  # false.
+  errata check --all-values`
 
 func listLong() string {
 	return `Print every check the config holds, as errata check loads it, with the
@@ -246,6 +264,31 @@ func wrapFlags(tmpl string) string {
 	}
 	return tmpl
 }
+
+// plainBools makes each bool flag of c and of every command below it,
+// --help included, print in the help as --name with no value, as it did
+// up to pflag v1.0.10. pflag v1.1.0 writes a bool flag whose value says
+// IsBoolFlag as --name[=true|false]; plainBool hides that method, and
+// NoOptDefVal "true", which pflag prints nothing for, keeps --name alone
+// meaning true. Parsing is the same: --name, --name=false.
+func plainBools(c *cobra.Command) {
+	c.InitDefaultHelpFlag()
+	c.Flags().VisitAll(func(f *pflag.Flag) {
+		if f.Value.Type() == "bool" {
+			f.Value, f.NoOptDefVal = plainBool{f.Value}, "true"
+		}
+	})
+	for _, sub := range c.Commands() {
+		plainBools(sub)
+	}
+}
+
+// plainBool is a bool flag's value without IsBoolFlag (plainBools).
+type plainBool struct{ value pflag.Value }
+
+func (b plainBool) String() string     { return b.value.String() }
+func (b plainBool) Set(s string) error { return b.value.Set(s) }
+func (b plainBool) Type() string       { return b.value.Type() }
 
 // documentBuiltIns gives the help and completion commands cobra adds the
 // same kind of help as errata's own: a Long text with the exit codes, and

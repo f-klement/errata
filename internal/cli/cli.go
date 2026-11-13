@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/f-klement/errata/internal/check"
 	"github.com/f-klement/errata/internal/config"
 	"github.com/f-klement/errata/internal/engine"
 	"github.com/f-klement/errata/internal/report"
@@ -85,6 +86,7 @@ func newRoot(load loader, stdout, stderr io.Writer) *cobra.Command {
 	root.InitDefaultHelpCmd()
 	root.InitDefaultCompletionCmd()
 	documentBuiltIns(root)
+	plainBools(root)
 	root.SetHelpTemplate(root.HelpTemplate() + helpFooter)
 	root.SetUsageTemplate(wrapFlags(root.UsageTemplate()))
 	return root
@@ -164,6 +166,7 @@ func newCheckCmd(load loader) *cobra.Command {
 		format     string
 		outputs    []string
 		failOnSkip bool
+		allValues  bool
 	)
 	cmd := &cobra.Command{
 		Use:     "check",
@@ -196,7 +199,7 @@ func newCheckCmd(load loader) *cobra.Command {
 
 			e := engine.New(absRoot, nil)
 			e.SkipsFail = failOnSkip
-			rep := e.Execute(cmd.Context(), cfg.Checks)
+			rep := e.Execute(runContext(cmd.Context(), allValues), cfg.Checks)
 			var errs []error
 			if err := newReporter(version).Write(cmd.OutOrStdout(), rep); err != nil {
 				errs = append(errs, err)
@@ -215,7 +218,17 @@ func newCheckCmd(load loader) *cobra.Command {
 	cmd.Flags().StringVarP(&format, "format", "f", "text", "the `NAME` of the format on stdout: "+strings.Join(report.FormatNames(), ", "))
 	cmd.Flags().StringArrayVarP(&outputs, "output", "o", nil, "also write the report in FORMAT to the file PATH, as `FORMAT=PATH`; repeatable")
 	cmd.Flags().BoolVar(&failOnSkip, "fail-on-skip", false, "exit 1 when a check was skipped, as on an unknown")
+	cmd.Flags().BoolVar(&allValues, "all-values", false, "a false assert prints every value its rule read, not only those its all found false")
 	return cmd
+}
+
+// runContext is ctx for errata check's run, with check.WithAllValues when
+// --all-values is set.
+func runContext(ctx context.Context, allValues bool) context.Context {
+	if allValues {
+		return check.WithAllValues(ctx)
+	}
+	return ctx
 }
 
 func newListCmd(load loader) *cobra.Command {

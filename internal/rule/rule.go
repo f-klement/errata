@@ -29,10 +29,7 @@ func Run(ctx context.Context, root string, c check.Check) (res check.Result) {
 
 	r := c.Rule()
 	if strings.TrimSpace(r.Assert) != "" {
-		res.Verdict, res.Message, res.Extracted = assert(ctx, root, *r)
-		if res.Verdict == check.VerdictFalse {
-			res.Blamed = firstValue(res.Extracted)
-		}
+		res.Verdict, res.Message, res.Blamed, res.Extracted = assert(ctx, root, *r)
 	} else {
 		res.Verdict, res.Message, res.Note, res.Blamed, res.Extracted = agree(ctx, root, *r)
 	}
@@ -47,8 +44,8 @@ func Run(ctx context.Context, root string, c check.Check) (res check.Result) {
 }
 
 // firstValue blames the first value of the first extractor that returned
-// one, or none: an assert has no majority, so no value is more to blame
-// than another.
+// one, or none: an assert that is not a top level all has no majority, so
+// no value is more to blame than another (blameOf).
 func firstValue(extracted []check.Extracted) *check.Blame {
 	for i, x := range extracted {
 		if len(x.Values) > 0 {
@@ -264,10 +261,10 @@ func notLiteral(name string, values []check.Value) string {
 // a not literal value while skip_not_literal does not list it, or finds no
 // value or a field no record holds while allow_empty does not list it,
 // makes the rule unknown before CEL runs; so does an evaluation that cannot
-// decide.
-func assert(ctx context.Context, root string, r check.Rule) (check.Verdict, string, []check.Extracted) {
+// decide. A false assert blames a value (blameOf).
+func assert(ctx context.Context, root string, r check.Rule) (check.Verdict, string, *check.Blame, []check.Extracted) {
 	if r.Compiled == nil {
-		return check.VerdictUnknown, "assert: the expression was not compiled at load, so it cannot run", nil
+		return check.VerdictUnknown, "assert: the expression was not compiled at load, so it cannot run", nil, nil
 	}
 	names := make([]string, len(r.Extractors))
 	for i, e := range r.Extractors {
@@ -277,20 +274,48 @@ func assert(ctx context.Context, root string, r check.Rule) (check.Verdict, stri
 	problems = append(problems, fieldsNoneHolds(r, extracted)...)
 	switch {
 	case cancelled != "":
-		return check.VerdictUnknown, cancelled, extracted
+		return check.VerdictUnknown, cancelled, nil, extracted
 	case len(problems) > 0:
-		return check.VerdictUnknown, strings.Join(problems, "\n"), extracted
+		return check.VerdictUnknown, strings.Join(problems, "\n"), nil, extracted
 	}
 
-	holds, err := r.Compiled.Eval(ctx, normalized(r, extracted))
+	holds, off, err := evalAssert(ctx, r, normalized(r, extracted))
 	switch {
 	case err != nil:
-		return check.VerdictUnknown, "assert: " + err.Error() + "\n" + saw(r, extracted), extracted
+		return check.VerdictUnknown, "assert: " + err.Error() + "\n" + saw(r, extracted), nil, extracted
 	case holds:
-		return check.VerdictTrue, "", extracted
+		return check.VerdictTrue, "", nil, extracted
 	default:
-		return check.VerdictFalse, "assert: the expression is false\n" + saw(r, extracted), extracted
+		return check.VerdictFalse, "assert: the expression is false\n" + sawFalse(r, extracted, off, check.AllValues(ctx)), blameOf(extracted, off), extracted
 	}
+}
+
+// blameOf is the value a false assert blames: for a top level all the
+// first value its message shows, the first in the order of the extractors
+// and their values that belongs to a member the all found false; for any
+// other assert, or an account that does not match extracted, the first
+// value (firstValue).
+func blameOf(extracted []check.Extracted, off *offending) *check.Blame {
+	if shown, _, ok := offenders(extracted, off); ok {
+		for i, x := range extracted {
+			for j := range x.Values {
+				if shown(i, j) {
+					return &check.Blame{Extractor: i, Value: j}
+				}
+			}
+		}
+	}
+	return firstValue(extracted)
+}
+
+// evalAssert evaluates r's compiled assert over extracted, with the account
+// of its top level all when the assert is one this package compiled.
+func evalAssert(ctx context.Context, r check.Rule, extracted []check.Extracted) (bool, *offending, error) {
+	if a, ok := r.Compiled.(*assertion); ok {
+		return a.evalOffending(ctx, extracted)
+	}
+	holds, err := r.Compiled.Eval(ctx, extracted)
+	return holds, nil, err
 }
 
 // normalized is extracted with r's normalize applied to each value's text
@@ -461,35 +486,168 @@ func (q quoter) quote(v string) string {
 // form it saw, with the place it was found.
 func saw(r check.Rule, extracted []check.Extracted) string {
 	var b strings.Builder
+	sawExpression(&b, r)
+	sawValues(&b, r, extracted, newQuoter(texts(r, extracted)), nil)
+	return strings.TrimSuffix(b.String(), "\n")
+}
+
+// sawExpression writes the lines of saw that show r's expression.
+func sawExpression(b *strings.Builder, r check.Rule) {
 	for i, line := range strings.Split(strings.TrimSpace(r.Assert), "\n") {
 		label := "            "
 		if i == 0 {
 			label = "expression: "
 		}
-		fmt.Fprintf(&b, "  %s%s\n", label, strings.TrimRight(line, " \t\r"))
+		fmt.Fprintf(b, "  %s%s\n", label, strings.TrimRight(line, " \t\r"))
 	}
+}
+
+// texts is the normalized text of every value of extracted, which a
+// message's quoter is built from.
+func texts(r check.Rule, extracted []check.Extracted) []string {
 	var all []string
 	for _, x := range extracted {
 		for _, v := range x.Values {
 			all = append(all, r.Normalized(v.Text))
 		}
 	}
-	q := newQuoter(all)
-	for _, x := range extracted {
+	return all
+}
+
+// sawValues writes a line for each value of extracted that shown keeps,
+// shown(i, j) for value j of extractor i, or for every value when shown is
+// nil, and one for each extractor that found none. It returns how many
+// values it wrote.
+func sawValues(b *strings.Builder, r check.Rule, extracted []check.Extracted, q quoter, shown func(i, j int) bool) int {
+	n := 0
+	for i, x := range extracted {
 		if len(x.Values) == 0 {
-			fmt.Fprintf(&b, "  %s = [] (allow_empty)\n", x.Extractor)
+			fmt.Fprintf(b, "  %s = [] (allow_empty)\n", x.Extractor)
 		}
-		for i, v := range x.Values {
+		for j, v := range x.Values {
+			if shown != nil && !shown(i, j) {
+				continue
+			}
 			text := q.quote(r.Normalized(v.Text))
 			if v.Shown != "" {
 				// A mapping is shown as it is rendered, not quoted again,
 				// and in the form assert saw.
 				text = v.Shown
 			}
-			fmt.Fprintf(&b, "  %s[%d] = %s at %s%s\n", x.Extractor, i, text, v.At, v.Notes())
+			fmt.Fprintf(b, "  %s[%d] = %s at %s%s\n", x.Extractor, j, text, v.At, v.Notes())
+			n++
 		}
 	}
+	return n
+}
+
+// sawFalse is the rest of the message of a false assert. For one whose
+// value is an all over an extractor (off), it shows the expression, then
+// the values of the members the all was false for: each such value, or
+// for by_file(x) every value of every extractor in each such file. It
+// counts the values it leaves out, and shows them as well when every is
+// set (check.AllValues). Any other assert shows every value (saw).
+func sawFalse(r check.Rule, extracted []check.Extracted, off *offending, every bool) string {
+	shown, header, ok := offenders(extracted, off)
+	if !ok {
+		return saw(r, extracted)
+	}
+	var b strings.Builder
+	sawExpression(&b, r)
+	b.WriteString("  " + header + "\n")
+	q := newQuoter(texts(r, extracted))
+	n := sawValues(&b, r, extracted, q, shown)
+	total := 0
+	for _, x := range extracted {
+		total += len(x.Values)
+	}
+	switch {
+	case every:
+		b.WriteString("  every value:\n")
+		sawValues(&b, r, extracted, q, nil)
+	case total > n:
+		fmt.Fprintf(&b, "  %s not shown: errata check --all-values prints every value\n", count(total-n, "more value"))
+	}
 	return strings.TrimSuffix(b.String(), "\n")
+}
+
+// offenders is which values of extracted belong to the members off found
+// false, as sawValues takes it, and the line that says how many members
+// were false. ok is false when off is nil or does not match extracted,
+// which a message then shows whole.
+func offenders(extracted []check.Extracted, off *offending) (shown func(i, j int) bool, header string, ok bool) {
+	if off == nil {
+		return nil, "", false
+	}
+	at := slices.IndexFunc(extracted, func(x check.Extracted) bool { return x.Extractor == off.extractor })
+	if at < 0 || len(off.offenders) == 0 {
+		return nil, "", false
+	}
+	if off.byFile {
+		return fileOffenders(extracted, off)
+	}
+	if !off.fits(len(extracted[at].Values)) {
+		return nil, "", false
+	}
+	falseAt := map[int]bool{}
+	for _, m := range off.offenders {
+		falseAt[m] = true
+	}
+	return func(i, j int) bool { return i == at && falseAt[j] },
+		fmt.Sprintf("the all is false for %s of %s:", ofAll(len(off.offenders), off.members, "value"), off.extractor), true
+}
+
+// fileOffenders is offenders for an all over by_file(x): the members are
+// x's files, and a file the all was false for shows the values every
+// extractor found in it.
+func fileOffenders(extracted []check.Extracted, off *offending) (shown func(i, j int) bool, header string, ok bool) {
+	at := slices.IndexFunc(extracted, func(x check.Extracted) bool { return x.Extractor == off.extractor })
+	files := filesOf(extracted[at].Values)
+	if !off.fits(len(files)) {
+		return nil, "", false
+	}
+	falseIn := map[string]bool{}
+	for _, m := range off.offenders {
+		falseIn[files[m]] = true
+	}
+	return func(i, j int) bool { return falseIn[extracted[i].Values[j].At.File] },
+		fmt.Sprintf("the all is false for %s of by_file(%s); their values:", ofAll(len(off.offenders), off.members, "file"), off.extractor), true
+}
+
+// ofAll is "n of the total nouns", or "the only noun" when total is 1.
+func ofAll(n, total int, noun string) string {
+	if total == 1 {
+		return "the only " + noun
+	}
+	return fmt.Sprintf("%d of the %s", n, count(total, noun))
+}
+
+// fits reports whether off is an account of an all over members members:
+// it ran on each, and each it found false is one of them.
+func (off *offending) fits(members int) bool {
+	if off.members != members {
+		return false
+	}
+	for _, m := range off.offenders {
+		if m < 0 || m >= members {
+			return false
+		}
+	}
+	return true
+}
+
+// filesOf is the file of each of values, each once, in the order of its
+// first value: the order by_file runs over them (groupByFile).
+func filesOf(values []check.Value) []string {
+	var files []string
+	seen := map[string]bool{}
+	for _, v := range values {
+		if !seen[v.At.File] {
+			seen[v.At.File] = true
+			files = append(files, v.At.File)
+		}
+	}
+	return files
 }
 
 // found is one value with the extractor that returned it, and where it is

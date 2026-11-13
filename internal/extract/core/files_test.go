@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/f-klement/errata/internal/extract/extracttest"
@@ -557,6 +558,31 @@ func TestTrackedReadsTheIndexOnce(t *testing.T) {
 	}
 	_, err := second.List(t.Context(), root)
 	extracttest.WantError(t, err, "no git repository holds the root")
+}
+
+// One Tracked lists from several goroutines at once, as the marker walks
+// of a run share one while their checks run on the engine's pool, and
+// each gets what List gives. Planted break, under -race: the index read
+// guarded by a plain flag rather than a sync.Once, a data race.
+func TestTrackedListsAtOnce(t *testing.T) {
+	root := repo(t, map[string]string{"a.yaml": "", "d/b.yaml": ""})
+	tr := NewTracked(t.Context(), root)
+	files, _ := CheckFiles("include", []string{"**/*.yaml"}, 0)
+	want := fmt.Sprint([]Named{{File: "a.yaml", By: []int{0}}, {File: "d/b.yaml", By: []int{0}}})
+	var wg sync.WaitGroup
+	got := make([]string, 8)
+	for i := range got {
+		wg.Go(func() {
+			named, err := tr.List(files)
+			got[i] = fmt.Sprint(named, err)
+		})
+	}
+	wg.Wait()
+	for i, g := range got {
+		if g != want+" <nil>" {
+			t.Errorf("goroutine %d listed %s, want %s", i, g, want)
+		}
+	}
 }
 
 // skipWorktree is a full checkout of files, committed, with each of marked

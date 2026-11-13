@@ -301,3 +301,41 @@ func TestReference(t *testing.T) {
 		t.Error("Reference is not the same twice")
 	}
 }
+
+// A bool flag prints as --name, with no value, as it did up to pflag
+// v1.0.10; pflag v1.1.0 prints --name[=true|false], and a later pflag
+// that changes the form again fails here rather than changing the help
+// and docs/cli.md unseen. --name alone still sets the flag and
+// --name=false clears it. Planted break: plainBools not called, which
+// printed every bool flag, --help included, with [=true|false].
+func TestABoolFlagPrintsWithoutAValue(t *testing.T) {
+	for _, p := range commands(t) {
+		if help := printedHelp(t, p); strings.Contains(help, "[=") {
+			t.Errorf("errata %v --help prints a flag with a value form:\n%s", p, help)
+		}
+	}
+	check := printedHelp(t, []string{"check"})
+	for _, line := range []string{
+		"\n      --all-values           a false assert prints every value its rule\n",
+		"\n      --fail-on-skip         exit 1 when a check was skipped, as on an unknown\n",
+		"\n  -h, --help                 help for check\n",
+	} {
+		if !strings.Contains(check, line) {
+			t.Errorf("errata check --help has no line %q:\n%s", line, check)
+		}
+	}
+	root := newRoot(config.Load, io.Discard, io.Discard)
+	cmd, _, err := root.Find([]string{"check"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for args, want := range map[string]bool{"--all-values": true, "--all-values=false": false, "--all-values=true": true} {
+		flags := cmd.Flags()
+		if err := flags.Parse([]string{args}); err != nil {
+			t.Fatalf("%s: %v", args, err)
+		}
+		if got, err := flags.GetBool("all-values"); err != nil || got != want {
+			t.Errorf("%s: all-values %v, %v; want %v", args, got, err, want)
+		}
+	}
+}

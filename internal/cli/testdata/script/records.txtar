@@ -15,7 +15,8 @@ cp renamed/monitoring.py app/monitoring.py
 ! exec errata check
 stdout '^FALSE landingpage-push-keys-match-gatus \(repo\)$'
 stdout '^          pushed\[1\] = "external_page-queue" at app/monitoring.py:2$'
-stdout '^          gatus\[1\] = \{"group": "external", "name": "landingpage-queue"\} at gatus.yaml:9$'
+stdout '^          the all is false for 1 of the 2 values of pushed:$'
+stdout '^          3 more values not shown: errata check --all-values prints every value$'
 stdout '^1 erratum, 0 unknown. Coverage: ran 3, skipped 0.$'
 cp real/monitoring.py app/monitoring.py
 

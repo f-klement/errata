@@ -285,7 +285,7 @@ func (a *Around) lines(s *Search, key string, data []byte, deadline time.Time, f
 	clock := &clockedReader{deadline: deadline, spare: maxTry}
 	cursor := NewLineCursor(data)
 	for pos := 0; pos <= len(data); {
-		m := s.find(data, pos, clock)
+		m := s.first(data, pos, clock)
 		if clock.stopped || clock.late() {
 			return nil, fmt.Errorf("%s: matching took more than %s, %s, and stopped in the search of the context's %s pattern; shorten a counted repeat in it, such as {0,1000}",
 				file, limit, whose, key)

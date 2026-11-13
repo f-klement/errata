@@ -960,23 +960,25 @@ checks:
   # Claim: every route the API serves is named in the operations guide. The second regex holds a
   # reference to the first, so it is searched once for each route, each put in as text, which
   # values_as: literal says outright. allow_empty lets a route the guide lacks come back as no
-  # value, which makes the assert false rather than the rule unknown.
-  # See docs/reference.md#values-of-another-extractor; #assert.
+  # value, which makes the assert false rather than the rule unknown. skip: [comments] reads
+  # past the retired route commented out in routes.py, which the API no longer serves.
+  # See docs/reference.md#values-of-another-extractor; #assert; #code-without-its-comments.
   - id: every-route-is-documented
     reason: >
       Support answers customers from the operations guide. A route missing there is one they
       cannot help with.
     scope: repo
     extract:
-      routes: {regex: {file: src/routes.py, pattern: '@app\.route\("([^"]+)"\)'}}
+      routes: {regex: {file: src/routes.py, pattern: '@app\.route\("([^"]+)"\)', skip: [comments]}}
       documented: {regex: {file: docs/operations.md, pattern: '`((?{routes}))`', values_as: literal}}
     allow_empty: [documented]
     assert: routes.all(r, r in documented)
 
-  # Claim: no script runs kubectl apply. The glob takes in every script, and context drops a
-  # match on a comment line, so the backup script's warning does not count. allow_empty lets
-  # the extractor find nothing, which is the claim holding.
-  # See docs/reference.md#a-set-of-files; #the-context-of-a-match.
+  # Claim: no script runs kubectl apply. The glob takes in every script, and skip: [comments]
+  # blanks each script's comments, so the backup script's warning does not count, nor would a
+  # comment at the end of a command's line. allow_empty lets the extractor find nothing, which
+  # is the claim holding.
+  # See docs/reference.md#a-set-of-files; #code-without-its-comments.
   - id: scripts-never-apply
     reason: >
       Deploys go through the pipeline, which records who changed what. A script that applies by
@@ -987,7 +989,7 @@ checks:
         regex:
           files: ['scripts/*.sh']
           pattern: '(kubectl\s+apply)'
-          context: {without: '^\s*#'}
+          skip: [comments]
     allow_empty: [applies]
     assert: size(applies) == 0
 

@@ -109,8 +109,9 @@ func (c countingExtractor) ExtractWith(ctx context.Context, root string, _ map[s
 // assert reads a record as a map, a field by its name, and two fields of
 // one record together: the landingpage push keys, each <group>_<name> of a
 // Gatus endpoint. A key no record makes is an erratum whose message shows
-// each record at its line. Planted break: the records handed over flat,
-// which made r.group a type error.
+// that key at its line, and under --all-values each record at its line.
+// Planted break: the records handed over flat, which made r.group a type
+// error.
 func TestAssertReadsAFieldOfEachRecord(t *testing.T) {
 	expr := "pushed.all(k, gatus.exists(r, r.group + '_' + r.name == k))"
 	a, err := compileNamed(expr, []string{"gatus", "pushed"}, []string{"gatus"})
@@ -132,9 +133,13 @@ func TestAssertReadsAFieldOfEachRecord(t *testing.T) {
 	}
 	c.Rule().Extractors[1] = pushed("external_landingpage-registered", "external_page-queue")
 	res := Run(context.Background(), "", c)
-	if res.Verdict != check.VerdictFalse || !strings.Contains(res.Message, `gatus[1] = {"name": "landingpage-queue", "group": "external"} at renovate.json:7`) ||
+	if res.Verdict != check.VerdictFalse || strings.Contains(res.Message, `gatus[1]`) ||
 		!strings.Contains(res.Message, `pushed[1] = "external_page-queue" at monitoring.py:2`) {
 		t.Fatalf("verdict %s message:\n%s", res.Verdict, res.Message)
+	}
+	res = Run(check.WithAllValues(context.Background()), "", c)
+	if res.Verdict != check.VerdictFalse || !strings.Contains(res.Message, `gatus[1] = {"name": "landingpage-queue", "group": "external"} at renovate.json:7`) {
+		t.Fatalf("--all-values: verdict %s message:\n%s", res.Verdict, res.Message)
 	}
 }
 

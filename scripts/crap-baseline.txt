@@ -402,7 +402,6 @@ github.com/f-klement/errata/internal/rule splitPort 12.00
 github.com/f-klement/errata/internal/rule stringsBound 10.00
 github.com/f-klement/errata/internal/rule undeclaredFields 27.00
 github.com/f-klement/errata/internal/rule valueSize 17.57
-github.com/f-klement/errata/internal/rule.assertion Eval 23.01
 github.com/f-klement/errata/internal/rule.cronField mark 18.01
 github.com/f-klement/errata/internal/rule.tracer key 14.00
 github.com/f-klement/errata/internal/rule.tracer member 10.02
