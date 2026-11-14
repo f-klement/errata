@@ -171,12 +171,18 @@ func TestAForeignEndTagCostsAConstant(t *testing.T) {
 // token limit, its work linear in max_bytes (ADR 0003). <b><div></b> is
 // three tokens and a rebuild of eight: two passes over the b and the div
 // and the one entry (3 each), then the div popped and pushed again (2). It
-// reads at a budget of 11 tokens and is refused at 10. The cycle is the
+// reads at a budget of 11 tokens and is refused at 10.
+// <a><b><i><u><div>x</a>y is eight tokens and a rebuild of 26: a first
+// pass over the five elements and four entries (9), a second over the
+// clone moved above the div and the same count (9), which finds no
+// furthest block and closes the clone, then the four elements left popped
+// and pushed again (8). It reads at 34 and is refused at 33. The cycle is the
 // foreign delta review's (finding A): a section, the 13 formatting names
 // but a opened once each, 950 divs, then 120 end tags of each name, the
 // last opened first; uncharged, 1 MiB of it took 14.66 s on builder, and
 // charged it is refused at the token limit. The planted breaks: the work
-// not charged; a quarter of it charged.
+// not charged; a quarter of it charged; the elements pushed again not
+// charged twice.
 func TestTheAdoptionAgencysWorkIsCharged(t *testing.T) {
 	read := func(src string, budget int64) error {
 		s := NewScanner([]byte(src), budget)
@@ -190,6 +196,12 @@ func TestTheAdoptionAgencysWorkIsCharged(t *testing.T) {
 	var many *TooManyTokensError
 	if err := read("<b><div></b>", 10); !errors.As(err, &many) {
 		t.Errorf("one token under the budget: %v, want the token limit", err)
+	}
+	if err := read("<a><b><i><u><div>x</a>y", 34); err != nil {
+		t.Errorf("two passes, at the budget: %v", err)
+	}
+	if err := read("<a><b><i><u><div>x</a>y", 33); !errors.As(err, &many) {
+		t.Errorf("two passes, one token under the budget: %v, want the token limit", err)
 	}
 	names := []string{"b", "big", "code", "em", "font", "i", "nobr", "s", "small", "strike", "strong", "tt", "u"}
 	var cycle strings.Builder

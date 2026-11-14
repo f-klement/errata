@@ -13,27 +13,23 @@ func isAlnum(c byte) bool { return isDigit(c) || isLetter(c) }
 // digits after dots, then a part after - of letters, digits and hyphens,
 // with more such parts after dots.
 func rubyValid(t string) bool {
-	i := 0
-	for i < len(t) && isDigit(t[i]) {
-		i++
-	}
+	i := runOf(t, 0, isDigit)
 	if i == 0 {
 		return false
 	}
 	for i+1 < len(t) && t[i] == '.' && isAlnum(t[i+1]) {
-		i++
-		for i < len(t) && isAlnum(t[i]) {
-			i++
-		}
+		i = runOf(t, i+1, isAlnum)
 	}
 	if i == len(t) {
 		return true
 	}
-	if t[i] != '-' {
-		return false
-	}
-	// From the -, parts of letters, digits and hyphens separated by dots.
-	for _, part := range strings.Split(t[i+1:], ".") {
+	return t[i] == '-' && rubyPreValid(t[i+1:])
+}
+
+// rubyPreValid reports whether s, what follows the - of a version, is
+// parts of letters, digits and hyphens separated by dots.
+func rubyPreValid(s string) bool {
+	for _, part := range strings.Split(s, ".") {
 		if part == "" {
 			return false
 		}
@@ -57,34 +53,49 @@ func parseRuby(t string) (Version, error) {
 		return Version{}, errors.New("it is not a version as RubyGems writes one, a number then parts of letters and digits after dots")
 	}
 	v := Version{epoch: "0", syn: codeRubyGems}
-	add := func(seg string) {
-		n, isNum := parseNum(seg)
-		switch {
-		case isNum && v.pre == nil:
-			v.release = append(v.release, n)
-		case isNum:
-			v.pre = append(v.pre, ident{numeric: true, text: string(n)})
-		default:
-			v.pre = append(v.pre, ident{text: seg})
-		}
-	}
 	start := 0
 	for i := 0; i <= len(t); i++ {
-		if i < len(t) && i > start && isDigit(t[i]) == isDigit(t[i-1]) && isAlnum(t[i]) {
-			continue
-		}
-		if i > start && isAlnum(t[i-1]) {
-			add(t[start:i])
-		}
-		if i < len(t) && t[i] == '-' {
-			add("pre")
-		}
-		start = i
-		if i < len(t) && !isAlnum(t[i]) {
-			start = i + 1
+		if !inRubySegment(t, start, i) {
+			start = v.rubyCut(t, start, i)
 		}
 	}
 	return v, nil
+}
+
+// inRubySegment reports whether the byte i of t carries on the segment
+// from start: a letter after a letter or a digit after a digit.
+func inRubySegment(t string, start, i int) bool {
+	return i < len(t) && i > start && isDigit(t[i]) == isDigit(t[i-1]) && isAlnum(t[i])
+}
+
+// rubyCut ends the segment from start at i, the end of t or a byte that
+// does not carry it on, reading a - as .pre., and is where the next one
+// starts: past a separator, or at i.
+func (v *Version) rubyCut(t string, start, i int) int {
+	if i > start && isAlnum(t[i-1]) {
+		v.rubySegment(t[start:i])
+	}
+	if i < len(t) && t[i] == '-' {
+		v.rubySegment("pre")
+	}
+	if i < len(t) && !isAlnum(t[i]) {
+		return i + 1
+	}
+	return i
+}
+
+// rubySegment appends a segment: a number to the release until the first
+// run of letters, and from it on to the pre-release.
+func (v *Version) rubySegment(seg string) {
+	n, isNum := parseNum(seg)
+	switch {
+	case isNum && v.pre == nil:
+		v.release = append(v.release, n)
+	case isNum:
+		v.pre = append(v.pre, ident{numeric: true, text: string(n)})
+	default:
+		v.pre = append(v.pre, ident{text: seg})
+	}
 }
 
 // cmpRubyIdents orders two pre-releases as Gem::Version#<=> orders the
@@ -92,31 +103,35 @@ func parseRuby(t string) (Version, error) {
 // letters below every number, numbers by value and letters by their bytes.
 // So 1.0.a is below 1.0.a.1 and above 1.0.a.b.
 func cmpRubyIdents(a, b []ident) int {
-	zero := ident{numeric: true, text: "0"}
 	for i := 0; i < len(a) || i < len(b); i++ {
-		x, y := zero, zero
-		if i < len(a) {
-			x = a[i]
-		}
-		if i < len(b) {
-			y = b[i]
-		}
-		switch {
-		case x.numeric && y.numeric:
-			if c := cmpNum(num(x.text), num(y.text)); c != 0 {
-				return c
-			}
-		case x.numeric:
-			return 1
-		case y.numeric:
-			return -1
-		default:
-			if c := strings.Compare(x.text, y.text); c != 0 {
-				return c
-			}
+		if c := cmpRubyIdent(rubyIdentAt(a, i), rubyIdentAt(b, i)); c != 0 {
+			return c
 		}
 	}
 	return 0
+}
+
+// rubyIdentAt is the segment i of ids, 0 when ids is shorter.
+func rubyIdentAt(ids []ident, i int) ident {
+	if i < len(ids) {
+		return ids[i]
+	}
+	return ident{numeric: true, text: "0"}
+}
+
+// cmpRubyIdent orders two segments of a pre-release: a run of letters
+// below every number, numbers by value and letters by their bytes.
+func cmpRubyIdent(x, y ident) int {
+	switch {
+	case x.numeric && y.numeric:
+		return cmpNum(num(x.text), num(y.text))
+	case x.numeric:
+		return 1
+	case y.numeric:
+		return -1
+	default:
+		return strings.Compare(x.text, y.text)
+	}
 }
 
 // rubyString is v as RubyGems' segments, joined by dots: 1.0.0.pre.1. A

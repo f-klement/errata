@@ -222,6 +222,20 @@ func isExpression(n *core.Node) bool {
 // with none. "All include combinations are processed after exclude"
 // (Workflow syntax, strategy.matrix.exclude).
 func (w *workflow) matrix(job string, j *core.Node) ([]combo, error) {
+	m, err := w.matrixNode(job, j)
+	if m == nil || err != nil {
+		return nil, err
+	}
+	s, err := w.spec(job, m)
+	if err != nil {
+		return nil, err
+	}
+	return w.build(job, m, s)
+}
+
+// matrixNode returns the job's strategy.matrix mapping, or nil for a job
+// with none.
+func (w *workflow) matrixNode(job string, j *core.Node) (*core.Node, error) {
 	strategy := j.Field["strategy"]
 	if strategy == nil {
 		return nil, nil
@@ -241,9 +255,45 @@ func (w *workflow) matrix(job string, j *core.Node) ([]combo, error) {
 	case m.Shape != core.Mapping:
 		return nil, fmt.Errorf("%s:%d: the matrix of job %s is %s, not a mapping", w.file, m.Line, core.Quote(job), shapeName(m))
 	}
-	var names []string
-	var ids []int
-	var lists [][]*core.Node
+	return m, nil
+}
+
+// matrixSpec is what a matrix mapping writes: its variables in their
+// order, each with its key's id and its values, and its exclude: and
+// include: entries.
+type matrixSpec struct {
+	names            []string
+	ids              []int
+	lists            [][]*core.Node
+	exclude, include []*entry
+}
+
+// spec reads the variables and the entries of the matrix m.
+func (w *workflow) spec(job string, m *core.Node) (matrixSpec, error) {
+	var s matrixSpec
+	if err := w.variables(job, m, &s); err != nil {
+		return s, err
+	}
+	variable := make(map[int]int, len(s.ids))
+	for i, id := range s.ids {
+		variable[id] = i
+	}
+	var err error
+	if s.exclude, err = w.entries(job, m.Field["exclude"], "exclude", variable); err != nil {
+		return s, err
+	}
+	if s.include, err = w.entries(job, m.Field["include"], "include", variable); err != nil {
+		return s, err
+	}
+	if len(s.names) == 0 && len(s.include) == 0 {
+		return s, fmt.Errorf("%s:%d: the matrix of job %s has no variable and no include: entry, so it gives no job", w.file, m.Line, core.Quote(job))
+	}
+	return s, nil
+}
+
+// variables reads the matrix's variables into s: every key but include
+// and exclude, each a list of at least one value.
+func (w *workflow) variables(job string, m *core.Node, s *matrixSpec) error {
 	// Two variables whose names GitHub reads as one never get here:
 	// checkKeys refused the workflow.
 	for i, k := range m.Keys {
@@ -254,109 +304,116 @@ func (w *workflow) matrix(job string, j *core.Node) ([]combo, error) {
 		id := w.keyID(k)
 		switch {
 		case isExpression(v):
-			return nil, w.outOfReach(job, v, "the matrix variable "+core.Quote(k))
+			return w.outOfReach(job, v, "the matrix variable "+core.Quote(k))
 		case v.Shape != core.Sequence:
-			return nil, fmt.Errorf("%s:%d: the matrix variable %s is %s, not a list of values", w.file, v.Line, core.Quote(k), shapeName(v))
+			return fmt.Errorf("%s:%d: the matrix variable %s is %s, not a list of values", w.file, v.Line, core.Quote(k), shapeName(v))
 		case len(v.Items) == 0:
-			return nil, fmt.Errorf("%s:%d: the matrix variable %s holds no value, which GitHub refuses", w.file, v.Line, core.Quote(k))
+			return fmt.Errorf("%s:%d: the matrix variable %s holds no value, which GitHub refuses", w.file, v.Line, core.Quote(k))
 		}
-		names = append(names, k)
-		ids = append(ids, id)
-		lists = append(lists, v.Items)
+		s.names = append(s.names, k)
+		s.ids = append(s.ids, id)
+		s.lists = append(s.lists, v.Items)
 	}
-	variable := make(map[int]int, len(ids))
-	for i, id := range ids {
-		variable[id] = i
+	return nil
+}
+
+// tally counts a matrix's jobs as exclude: and include: decide them. A job
+// an expression may remove, or may make, is not certain to be one, so
+// GitHub's limit is decided on the certain jobs. The others are bounded
+// apart: the product's are at most maxProduct, and errata keeps no job
+// past maxJobs + 1, since a matrix of more than maxJobs that hangs on an
+// expression gives no value that names it. hangs is the first such
+// expression.
+type tally struct {
+	certain, total int
+	hangs          *core.Node
+}
+
+// add counts one job, which unsure, when it is not nil, may remove or make.
+func (t *tally) add(unsure *core.Node) {
+	t.total++
+	if unsure == nil {
+		t.certain++
+	} else if t.hangs == nil {
+		t.hangs = unsure
 	}
-	exclude, err := w.entries(job, m.Field["exclude"], "exclude", variable)
+}
+
+// build makes the combinations the spec s gives: the product, less those
+// exclude: removes, with include: applied. GitHub refuses a matrix of more
+// than maxJobs jobs.
+func (w *workflow) build(job string, m *core.Node, s matrixSpec) ([]combo, error) {
+	combos, err := w.product(job, s.names, s.ids, s.lists)
 	if err != nil {
 		return nil, err
 	}
-	include, err := w.entries(job, m.Field["include"], "include", variable)
-	if err != nil {
+	var t tally
+	if combos, err = w.exclude(&t, combos, s.exclude); err != nil {
 		return nil, err
 	}
-	if len(names) == 0 && len(include) == 0 {
-		return nil, fmt.Errorf("%s:%d: the matrix of job %s has no variable and no include: entry, so it gives no job", w.file, m.Line, core.Quote(job))
+	// include: adds jobs and removes none, so more than the limit now is
+	// more after it too.
+	if t.certain > maxJobs {
+		return nil, w.tooMany(job, m)
 	}
-	combos, err := w.product(job, names, ids, lists)
-	if err != nil {
+	if combos, err = w.include(job, m, &t, combos, s.include); err != nil {
 		return nil, err
 	}
-	// GitHub refuses a matrix of more than maxJobs jobs. A job an
-	// expression may remove, or may make, is not certain to be one, so the
-	// limit is decided on the certain jobs. The others are bounded apart:
-	// the product's are at most maxProduct, and errata keeps no job past
-	// maxJobs + 1, since a matrix of more than maxJobs that hangs on an
-	// expression gives no value that names it. hangs is the first such
-	// expression.
-	certain, total := 0, 0
-	var hangs *core.Node
+	w.held = len(combos)
+	if t.total > maxJobs {
+		return nil, &expressionError{fmt.Errorf("%s:%d: whether the matrix of job %s gives more than %d jobs, GitHub's limit, hangs on %s",
+			w.file, t.hangs.Line, core.Quote(job), maxJobs, doubt(t.hangs))}
+	}
+	if len(combos) == 0 {
+		return nil, fmt.Errorf("%s:%d: the matrix of job %s gives no job: exclude: removes every combination", w.file, m.Line, core.Quote(job))
+	}
+	return combos, nil
+}
+
+// exclude keeps the combinations no exclude: entry removes, and counts them.
+func (w *workflow) exclude(t *tally, combos []combo, exclude []*entry) ([]combo, error) {
 	kept := combos[:0]
 	for _, c := range combos {
-		out := false
-		for _, ex := range exclude {
-			v, expr, err := w.agrees(&c, ex)
-			if err != nil {
-				return nil, err
-			}
-			if v == agree {
-				out = true
-				break
-			}
-			if v == unsure && c.unsure == nil {
-				c.unsure = expr
-			}
+		out, err := w.excluded(&c, exclude)
+		if err != nil {
+			return nil, err
 		}
 		if out {
 			continue
 		}
 		kept = append(kept, c)
-		total++
-		if c.unsure == nil {
-			certain++
-		} else if hangs == nil {
-			hangs = c.unsure
+		t.add(c.unsure)
+	}
+	return kept, nil
+}
+
+// excluded reports whether an exclude: entry removes c, and marks c unsure
+// at the first expression an entry that may remove it meets.
+func (w *workflow) excluded(c *combo, exclude []*entry) (bool, error) {
+	for _, ex := range exclude {
+		v, expr, err := w.agrees(c, ex)
+		if err != nil {
+			return false, err
+		}
+		if v == agree {
+			return true, nil
+		}
+		if v == unsure && c.unsure == nil {
+			c.unsure = expr
 		}
 	}
-	combos = kept
-	// include: adds jobs and removes none, so more than the limit now is
-	// more after it too.
-	if certain > maxJobs {
-		return nil, w.tooMany(job, m)
-	}
-	// Only the combinations of the variables take an entry; one an entry
-	// makes takes no later entry, as the documented example shows.
+	return false, nil
+}
+
+// include applies each include: entry to the combinations of the
+// variables. Only those take an entry; one an entry makes takes no later
+// entry, as the documented example shows.
+func (w *workflow) include(job string, m *core.Node, t *tally, combos []combo, include []*entry) ([]combo, error) {
 	original := len(combos)
 	for _, in := range include {
-		added := false
-		var maybe *core.Node
-		for i := range original {
-			v, expr, err := w.agrees(&combos[i], in)
-			switch {
-			case err != nil:
-				return nil, err
-			case v == disagree:
-				continue
-			case v == unsure:
-				// Whether the entry joins this job is unknown, and so
-				// whether it is a job of its own.
-				if combos[i].unsure == nil {
-					combos[i].unsure = expr
-				}
-				if maybe == nil {
-					maybe = expr
-				}
-				continue
-			}
-			added = true
-			for k, key := range in.n.Keys {
-				if in.variable[k] < 0 {
-					if err := w.set(&combos[i], key, in.ids[k], in.n.Vals[k]); err != nil {
-						return nil, err
-					}
-				}
-			}
+		added, maybe, err := w.join(combos[:original], in)
+		if err != nil {
+			return nil, err
 		}
 		// An entry that joins a combination makes no job of its own. If
 		// it joins only combinations exclude: may have removed, it is a
@@ -365,32 +422,60 @@ func (w *workflow) matrix(job string, j *core.Node) ([]combo, error) {
 		if added {
 			continue
 		}
-		if maybe == nil {
-			certain++
-		} else if hangs == nil {
-			hangs = maybe
-		}
-		if certain > maxJobs {
+		t.add(maybe)
+		if t.certain > maxJobs {
 			return nil, w.tooMany(job, m)
 		}
-		total++
 		// The entry's own job needs no unsure of its own: an entry is
 		// unsure of its job only after it marked a combination before it
 		// unsure, and jobs() names the first.
-		if total <= maxJobs {
+		if t.total <= maxJobs {
 			n := len(in.n.Keys)
 			combos = append(combos, combo{keys: in.n.Keys[:n:n], ids: in.ids[:n:n], vals: in.n.Vals[:n:n]})
 		}
 	}
-	w.held = len(combos)
-	if total > maxJobs {
-		return nil, &expressionError{fmt.Errorf("%s:%d: whether the matrix of job %s gives more than %d jobs, GitHub's limit, hangs on %s",
-			w.file, hangs.Line, core.Quote(job), maxJobs, doubt(hangs))}
-	}
-	if len(combos) == 0 {
-		return nil, fmt.Errorf("%s:%d: the matrix of job %s gives no job: exclude: removes every combination", w.file, m.Line, core.Quote(job))
-	}
 	return combos, nil
+}
+
+// join adds the include: entry in to each combination it agrees with, and
+// reports whether it joined one. maybe is the first expression that leaves
+// unknown whether it joins a combination, and so whether it is a job of
+// its own; such a combination is marked unsure there.
+func (w *workflow) join(combos []combo, in *entry) (added bool, maybe *core.Node, err error) {
+	for i := range combos {
+		v, expr, err := w.agrees(&combos[i], in)
+		switch {
+		case err != nil:
+			return false, nil, err
+		case v == disagree:
+			continue
+		case v == unsure:
+			if combos[i].unsure == nil {
+				combos[i].unsure = expr
+			}
+			if maybe == nil {
+				maybe = expr
+			}
+			continue
+		}
+		added = true
+		if err := w.fill(&combos[i], in); err != nil {
+			return false, nil, err
+		}
+	}
+	return added, maybe, nil
+}
+
+// fill sets each key of the include: entry in that names no variable on c.
+func (w *workflow) fill(c *combo, in *entry) error {
+	for k, key := range in.n.Keys {
+		if in.variable[k] < 0 {
+			if err := w.set(c, key, in.ids[k], in.n.Vals[k]); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (w *workflow) tooMany(job string, m *core.Node) error {
@@ -469,23 +554,30 @@ func (w *workflow) entries(job string, list *core.Node, what string, variable ma
 		}
 		x := made[e]
 		if x == nil {
-			x = &entry{n: e, ids: make([]int, len(e.Keys)), variable: make([]int, len(e.Keys))}
-			for i, k := range e.Keys {
-				x.ids[i] = w.keyID(k)
-				v, ok := variable[x.ids[i]]
-				if !ok {
-					v = -1
-				}
-				x.variable[i] = v
-				if v >= 0 {
-					x.compared = append(x.compared, [2]int{i, v})
-				}
-			}
+			x = w.newEntry(e, variable)
 			made[e] = x
 		}
 		out = append(out, x)
 	}
 	return out, nil
+}
+
+// newEntry is the entry of the mapping e, its keys folded to ids and
+// matched to the matrix variables.
+func (w *workflow) newEntry(e *core.Node, variable map[int]int) *entry {
+	x := &entry{n: e, ids: make([]int, len(e.Keys)), variable: make([]int, len(e.Keys))}
+	for i, k := range e.Keys {
+		x.ids[i] = w.keyID(k)
+		v, ok := variable[x.ids[i]]
+		if !ok {
+			v = -1
+		}
+		x.variable[i] = v
+		if v >= 0 {
+			x.compared = append(x.compared, [2]int{i, v})
+		}
+	}
+	return x
 }
 
 // verdict is what a comparison of a combination with an entry gives:
@@ -537,6 +629,15 @@ func (w *workflow) equal(a, b *core.Node) (verdict, *core.Node, error) {
 	if a == nil || b == nil {
 		return verdictOf(a == b), nil, nil
 	}
+	if v, at, err := w.expressionIn(a, b); err != nil || at != nil {
+		return v, at, err
+	}
+	return w.equalShaped(a, b)
+}
+
+// expressionIn counts the text of a and b where they are scalars, and
+// returns unsure at the first that holds an expression, else no node.
+func (w *workflow) expressionIn(a, b *core.Node) (verdict, *core.Node, error) {
 	for _, n := range []*core.Node{a, b} {
 		if n.Shape == core.Scalar {
 			if err := w.countBytes(len(n.Text)); err != nil {
@@ -547,6 +648,11 @@ func (w *workflow) equal(a, b *core.Node) (verdict, *core.Node, error) {
 			}
 		}
 	}
+	return agree, nil, nil
+}
+
+// equalShaped compares a and b, neither an expression, by their shape.
+func (w *workflow) equalShaped(a, b *core.Node) (verdict, *core.Node, error) {
 	if a.Shape != b.Shape {
 		return disagree, nil, nil
 	}
@@ -554,38 +660,7 @@ func (w *workflow) equal(a, b *core.Node) (verdict, *core.Node, error) {
 	case core.Scalar:
 		return verdictOf(a.Text == b.Text), nil, nil
 	case core.Mapping:
-		if len(a.Keys) != len(b.Keys) {
-			return disagree, nil, nil
-		}
-		// GitHub does not document whether it compares a mapping's keys
-		// in any case, as it reads them (lookup). A key that matches only
-		// in another case pairs the values all the same, and when they
-		// agree the verdict is unsure, at b.
-		folded := false
-		v, at, err := w.equalAll(len(a.Keys), func(i int) (*core.Node, *core.Node, error) {
-			k := a.Keys[i]
-			if err := w.countBytes(len(k)); err != nil {
-				return nil, nil, err
-			}
-			if bv := b.Field[k]; bv != nil {
-				return a.Vals[i], bv, nil
-			}
-			for j, bk := range b.Keys {
-				same, err := w.eqFold(k, bk)
-				if err != nil {
-					return nil, nil, err
-				}
-				if same {
-					folded = true
-					return a.Vals[i], b.Vals[j], nil
-				}
-			}
-			return a.Vals[i], nil, nil
-		})
-		if folded && v != disagree {
-			return unsure, b, nil
-		}
-		return v, at, err
+		return w.equalMapping(a, b)
 	case core.Sequence:
 		if len(a.Items) != len(b.Items) {
 			return disagree, nil, nil
@@ -595,6 +670,47 @@ func (w *workflow) equal(a, b *core.Node) (verdict, *core.Node, error) {
 		})
 	}
 	return disagree, nil, nil
+}
+
+// equalMapping compares two mappings key by key. GitHub does not document
+// whether it compares a mapping's keys in any case, as it reads them
+// (lookup). A key that matches only in another case pairs the values all
+// the same, and when they agree the verdict is unsure, at b.
+func (w *workflow) equalMapping(a, b *core.Node) (verdict, *core.Node, error) {
+	if len(a.Keys) != len(b.Keys) {
+		return disagree, nil, nil
+	}
+	folded := false
+	v, at, err := w.equalAll(len(a.Keys), func(i int) (*core.Node, *core.Node, error) {
+		bv, fold, err := w.pairOf(a.Keys[i], b)
+		folded = folded || fold
+		return a.Vals[i], bv, err
+	})
+	if folded && v != disagree {
+		return unsure, b, nil
+	}
+	return v, at, err
+}
+
+// pairOf is the value b holds at the key k, or at a key that matches k
+// only in another case, which folded reports, or nil.
+func (w *workflow) pairOf(k string, b *core.Node) (bv *core.Node, folded bool, err error) {
+	if err := w.countBytes(len(k)); err != nil {
+		return nil, false, err
+	}
+	if bv := b.Field[k]; bv != nil {
+		return bv, false, nil
+	}
+	for j, bk := range b.Keys {
+		same, err := w.eqFold(k, bk)
+		if err != nil {
+			return nil, false, err
+		}
+		if same {
+			return b.Vals[j], true, nil
+		}
+	}
+	return nil, false, nil
 }
 
 // equalAll compares the n pairs pair gives: one that disagrees decides,
@@ -663,78 +779,117 @@ func (w *workflow) jobs(m *jobMatrix) error {
 // name to leave the values room and writes the values every combination
 // shares as "...".
 func (w *workflow) comboNames(m *jobMatrix) ([]string, error) {
-	combos := m.combos
-	if combos == nil {
+	if m.combos == nil {
 		return nil, nil
 	}
-	base, pieces, refs := m.job, []piece(nil), false
+	nm := w.newNamer(m)
+	names, long, err := nm.all(m.combos)
+	if err != nil {
+		return nil, err
+	}
+	if !long || nm.refs || len(m.combos) == 1 {
+		return names, nil
+	}
+	nm.shared = sharedValues(m.combos, len(w.ids))
+	names, _, err = nm.all(m.combos)
+	if err != nil {
+		return nil, err
+	}
+	return names, nil
+}
+
+// namer writes the names of one job's combinations. base is the job's
+// name, and pieces its matrix references when refs is set. shared, once
+// set, holds the values every combination shares, which a name then
+// writes as "...".
+type namer struct {
+	w      *workflow
+	base   string
+	pieces []piece
+	refs   bool
+	shared []*core.Node
+}
+
+// newNamer is the namer of the job m: its name:, else its id.
+func (w *workflow) newNamer(m *jobMatrix) *namer {
+	nm := &namer{w: w, base: m.job}
 	if n := m.node.Field["name"]; n != nil && n.Shape == core.Scalar && n.Text != "" {
-		base = n.Text
-		pieces, refs = w.nameTemplate(base)
+		nm.base = n.Text
+		nm.pieces, nm.refs = w.nameTemplate(nm.base)
 	}
-	var shared []*core.Node
-	write := func(c *combo, elide bool) (string, error) {
-		var b strings.Builder
-		if refs {
-			for _, p := range pieces {
-				if b.Len() > maxCondition {
-					break
-				}
-				if !p.ref {
-					clipped(&b, p.text)
-					continue
-				}
-				ref, err := w.lookup(c, p)
-				if err != nil {
-					return "", err
-				}
-				if ref != nil {
-					inline(&b, ref)
-				}
-			}
-			return clipCondition(b.String()), nil
-		}
-		var vb strings.Builder
-		vb.WriteString(" (")
-		for i := range c.keys {
-			if i > 0 {
-				vb.WriteString(", ")
-			}
-			if vb.Len() > maxCondition {
-				break
-			}
-			if elide && shared[c.ids[i]] != nil {
-				vb.WriteString("...")
-				continue
-			}
-			inline(&vb, c.vals[i])
-		}
-		vb.WriteString(")")
-		clipName(&b, base, noteBytes-vb.Len())
-		b.WriteString(vb.String())
-		return clipCondition(b.String()), nil
-	}
+	return nm
+}
+
+// all names each combination, and reports whether a name is longer than a
+// report quotes.
+func (nm *namer) all(combos []combo) ([]string, bool, error) {
 	names := make([]string, len(combos))
 	long := false
 	for i := range combos {
-		s, err := write(&combos[i], false)
+		s, err := nm.write(&combos[i])
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		names[i] = s
 		long = long || len(s) > noteBytes
 	}
-	if !long || refs || len(combos) == 1 {
-		return names, nil
+	return names, long, nil
+}
+
+// write names the combination c.
+func (nm *namer) write(c *combo) (string, error) {
+	if nm.refs {
+		return nm.fromTemplate(c)
 	}
-	shared = sharedValues(combos, len(w.ids))
-	for i := range combos {
-		var err error
-		if names[i], err = write(&combos[i], true); err != nil {
-			return nil, err
+	return nm.withValues(c), nil
+}
+
+// fromTemplate is the job's name with each matrix reference replaced by
+// its value in c.
+func (nm *namer) fromTemplate(c *combo) (string, error) {
+	var b strings.Builder
+	for _, p := range nm.pieces {
+		if b.Len() > maxCondition {
+			break
+		}
+		if !p.ref {
+			clipped(&b, p.text)
+			continue
+		}
+		ref, err := nm.w.lookup(c, p)
+		if err != nil {
+			return "", err
+		}
+		if ref != nil {
+			inline(&b, ref)
 		}
 	}
-	return names, nil
+	return clipCondition(b.String()), nil
+}
+
+// withValues is the job's name followed by c's values, such as
+// "test (18, ubuntu-latest)", the name cut to leave the values room.
+func (nm *namer) withValues(c *combo) string {
+	var vb strings.Builder
+	vb.WriteString(" (")
+	for i := range c.keys {
+		if i > 0 {
+			vb.WriteString(", ")
+		}
+		if vb.Len() > maxCondition {
+			break
+		}
+		if nm.shared != nil && nm.shared[c.ids[i]] != nil {
+			vb.WriteString("...")
+			continue
+		}
+		inline(&vb, c.vals[i])
+	}
+	vb.WriteString(")")
+	var b strings.Builder
+	clipName(&b, nm.base, noteBytes-vb.Len())
+	b.WriteString(vb.String())
+	return clipCondition(b.String())
 }
 
 // sharedValues returns, for each of the ids key ids, the scalar every
@@ -746,15 +901,7 @@ func sharedValues(combos []combo, ids int) []*core.Node {
 	seen := make([]int, ids)
 	for _, c := range combos {
 		for i, id := range c.ids {
-			v := c.vals[i]
-			switch {
-			case seen[id] == 0 && v.Shape == core.Scalar:
-				shared[id] = v
-			case seen[id] == 0, shared[id] == nil, shared[id] == v:
-			case v.Shape != core.Scalar || v.Text != shared[id].Text:
-				shared[id] = nil
-			}
-			seen[id]++
+			share(shared, seen, id, c.vals[i])
 		}
 	}
 	for id, n := range seen {
@@ -763,6 +910,19 @@ func sharedValues(combos []combo, ids int) []*core.Node {
 		}
 	}
 	return shared
+}
+
+// share meets the value v of the key id: the first scalar is the shared
+// value, and a value that differs from it, or is not a scalar, ends it.
+func share(shared []*core.Node, seen []int, id int, v *core.Node) {
+	switch {
+	case seen[id] == 0 && v.Shape == core.Scalar:
+		shared[id] = v
+	case seen[id] == 0, shared[id] == nil, shared[id] == v:
+	case v.Shape != core.Scalar || v.Text != shared[id].Text:
+		shared[id] = nil
+	}
+	seen[id]++
 }
 
 // clipName writes the job's name to b, cut to room bytes, but no fewer
@@ -804,32 +964,42 @@ func inline(b *strings.Builder, n *core.Node) {
 	case n.Shape == core.Scalar:
 		clipped(b, n.Text)
 	case n.Shape == core.Sequence:
-		b.WriteString("[")
-		for i, it := range n.Items {
-			if i > 0 {
-				b.WriteString(", ")
-			}
-			inline(b, it)
-			if b.Len() > maxCondition {
-				break
-			}
-		}
-		b.WriteString("]")
+		inlineSequence(b, n)
 	default:
-		b.WriteString("{")
-		for i, k := range n.Keys {
-			if i > 0 {
-				b.WriteString(", ")
-			}
-			clipped(b, k)
-			b.WriteString(": ")
-			inline(b, n.Vals[i])
-			if b.Len() > maxCondition {
-				break
-			}
-		}
-		b.WriteString("}")
+		inlineMapping(b, n)
 	}
+}
+
+// inlineSequence writes the sequence n in flow style, [a, b].
+func inlineSequence(b *strings.Builder, n *core.Node) {
+	b.WriteString("[")
+	for i, it := range n.Items {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		inline(b, it)
+		if b.Len() > maxCondition {
+			break
+		}
+	}
+	b.WriteString("]")
+}
+
+// inlineMapping writes the mapping n in flow style, {k: v}.
+func inlineMapping(b *strings.Builder, n *core.Node) {
+	b.WriteString("{")
+	for i, k := range n.Keys {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		clipped(b, k)
+		b.WriteString(": ")
+		inline(b, n.Vals[i])
+		if b.Len() > maxCondition {
+			break
+		}
+	}
+	b.WriteString("}")
 }
 
 // clipCondition is s cut at maxCondition bytes, on a character's start,
@@ -982,24 +1152,18 @@ func (w *workflow) expand(n *core.Node, in scope, m *jobMatrix, add func(check.V
 	if in != inJob || (m.combos == nil && m.unknown == nil) {
 		return add(check.Value{Text: n.Text, At: at, NotLiteral: true})
 	}
-	// An alias repeats a value without its bytes, so its template is made
-	// once.
-	t, ok := w.templates[n]
-	if !ok {
-		t.pieces, t.ok = w.template(n.Text)
-		w.templates[n] = t
-	}
-	pieces := t.pieces
+	t := w.templateOf(n)
 	if !t.ok {
 		return add(check.Value{Text: n.Text, At: at, NotLiteral: true})
 	}
-	if m.unknown == nil {
-		if err := w.jobs(m); err != nil {
-			return err
-		}
-	}
-	if m.unknown != nil {
-		return m.unknown
+	return w.instances(n, t.pieces, m, add)
+}
+
+// instances adds the value n once for each job of the matrix m, with the
+// job's name as its condition.
+func (w *workflow) instances(n *core.Node, pieces []piece, m *jobMatrix, add func(check.Value) error) error {
+	if err := w.jobsKnown(m); err != nil {
+		return err
 	}
 	for i := range m.combos {
 		v, err := w.instance(n, pieces, &m.combos[i])
@@ -1012,6 +1176,28 @@ func (w *workflow) expand(n *core.Node, in scope, m *jobMatrix, add func(check.V
 		}
 	}
 	return nil
+}
+
+// templateOf is the template of the value n. An alias repeats a value
+// without its bytes, so its template is made once.
+func (w *workflow) templateOf(n *core.Node) madeTemplate {
+	t, ok := w.templates[n]
+	if !ok {
+		t.pieces, t.ok = w.template(n.Text)
+		w.templates[n] = t
+	}
+	return t
+}
+
+// jobsKnown makes the jobs' names of m, unless an expression already leaves
+// the matrix unknown, and returns why the matrix is unknown, if it is.
+func (w *workflow) jobsKnown(m *jobMatrix) error {
+	if m.unknown == nil {
+		if err := w.jobs(m); err != nil {
+			return err
+		}
+	}
+	return m.unknown
 }
 
 // instance is the value the combination c gives the template n of pieces.
@@ -1036,11 +1222,7 @@ func (w *workflow) instance(n *core.Node, pieces []piece, c *combo) (check.Value
 		case ref.Shape != core.Scalar:
 			return check.Value{Text: n.Text, At: v.At, NotLiteral: true}, nil
 		default:
-			b.WriteString(ref.Text)
-			v.NotLiteral = v.NotLiteral || w.retyped(ref) || strings.Contains(ref.Text, "${{")
-			if len(pieces) == 1 {
-				v.At.Line = ref.Line
-			}
+			w.writeRef(&b, &v, ref, len(pieces) == 1)
 		}
 		if b.Len() > int(w.limit) {
 			return v, fmt.Errorf("%s: a value holds more than %d bytes, the extractor's max_bytes", w.file, w.limit)
@@ -1048,4 +1230,14 @@ func (w *workflow) instance(n *core.Node, pieces []piece, c *combo) (check.Value
 	}
 	v.Text = b.String()
 	return v, nil
+}
+
+// writeRef writes the scalar ref a reference names into the value v. A
+// value that is the reference alone is at ref's line.
+func (w *workflow) writeRef(b *strings.Builder, v *check.Value, ref *core.Node, alone bool) {
+	b.WriteString(ref.Text)
+	v.NotLiteral = v.NotLiteral || w.retyped(ref) || strings.Contains(ref.Text, "${{")
+	if alone {
+		v.At.Line = ref.Line
+	}
 }

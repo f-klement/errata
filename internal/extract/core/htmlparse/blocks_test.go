@@ -84,7 +84,8 @@ func joined(src string, ends []int, headings bool) []string {
 // and a tag, a comment, a CDATA or a raw element's text left open at a
 // block's end starts a fresh tokenizer at the next. The planted breaks: no
 // split (the text joined across blocks), no restart after an open tag (the
-// next block's first tag eaten).
+// next block's first tag eaten), no restart after a raw element's start tag
+// that ends the block (the next block read as its text).
 func TestBlocksReadAsAlone(t *testing.T) {
 	for _, blocks := range [][]string{
 		{"<div>a\n", "  <p>b</p>\n"},
@@ -113,7 +114,9 @@ func TestBlocksReadAsAlone(t *testing.T) {
 		{"x<textarea>a</textarea", "/>"},
 		{"x<textarea>a</textar", "ea>"},
 		{"x<textarea>a<", "/textarea>"},
-		{"a<", "b", "c"}, // the tokenizer splits a's text at the <, which alone ends it (FuzzScan)
+		{"a<", "b", "c"},     // the tokenizer splits a's text at the <, which alone ends it (FuzzScan)
+		{"<script>", "<p>b"}, // the block ends right after the raw element's start tag
+		{"<textarea>", "<p>b</p>"},
 	} {
 		src, ends := strings.Join(blocks, ""), []int{}
 		for i := range blocks {

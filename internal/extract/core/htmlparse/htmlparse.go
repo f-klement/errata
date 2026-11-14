@@ -171,97 +171,137 @@ func (s *Scanner) Next() bool {
 			s.err = errNoProgress
 			return false
 		}
-		if s.split[0] < s.split[1] {
-			if s.textSplit() {
-				return true
-			}
-			continue
-		}
-		for s.pos >= s.ends[s.block] {
-			if !s.nextBlock(s.raw != "") {
-				return false
-			}
-		}
-		s.z.AllowCDATA(namespace(s.active().top()) != "") // CDATA is text in foreign content
-		tt := s.z.Next()
-		if tt == html.ErrorToken {
-			if err := s.z.Err(); !errors.Is(err, io.EOF) {
-				s.err = err
-				return false
-			}
-			switch {
-			case s.limit < len(s.src):
-				s.pos = s.limit // the block is read; the next starts afresh
-			case s.block+1 == len(s.ends):
-				return false
-			default:
-				// A token left open ran to the end of the last block: the
-				// block is read again from it, as alone, or from the start
-				// tag of a raw element it is in, as for a token cut by the
-				// block's end. What the tokenizer read past the block's end
-				// counts.
-				s.charge(len(s.src)-s.ends[s.block], s.pos)
-				from := s.pos
-				if s.rawOpen != "" {
-					s.raw, s.skipTo, from = s.rawOpen, s.pos, s.rawFrom
-				}
-				s.restart(from, s.ends[s.block])
-			}
-			continue
-		}
-		raw := s.z.Raw()
-		start, end := s.pos, s.pos+len(raw)
-		s.pos = end
-		if end > len(s.src) || !bytes.Equal(raw, s.src[start:end]) {
-			s.err = errOffsets
-			return false
-		}
-		if s.tokens++; s.tokens > s.maxTokens {
-			s.err = &TooManyTokensError{At: start, Max: s.maxTokens}
-			return false
-		}
-		if end <= s.skipTo {
-			continue // read again from a raw element's start tag: given before
-		}
-		start = max(start, s.skipTo) // a raw text read again gives only its rest
-		after, dropLF := s.raw, s.dropLF
-		s.raw, s.dropLF = "", false
-		if blockEnd := s.ends[s.block]; end > blockEnd {
-			if tt != html.TextToken || after != "" || bytes.HasPrefix(raw, []byte("<![CDATA[")) {
-				// The tokenizer read this token past the block's end for
-				// nothing, a comment or a script's text to the end of the
-				// HTML at worst: those bytes count, so that blocks left open
-				// cost no more than max_bytes in all.
-				s.charge(end-blockEnd, start)
-			}
-			switch {
-			case s.rawOpen != "" && (tt != html.TextToken || after != ""):
-				// The text of a raw element, or its end tag, cut by the
-				// block's end: the block is read again from the element's
-				// start tag, which a fresh tokenizer needs to read the text
-				// raw, by one that ends with the block, as alone; what the
-				// scan gave before start it gives no more.
-				s.raw, s.dropLF, s.skipTo = s.rawOpen, dropLF, start
-				s.restart(s.rawFrom, blockEnd)
-				continue
-			case tt == html.TextToken && !bytes.HasPrefix(raw, []byte("<![CDATA[")):
-				s.split = [2]int{blockEnd, end} // plain text: the next block's own
-			default:
-				// A tag, a comment or a CDATA the block leaves open reads as
-				// the block alone reads it: the rest of the block again, by
-				// a tokenizer that ends where the block does.
-				s.raw, s.dropLF = after, dropLF
-				s.restart(start, blockEnd)
-				continue
-			}
-			end = blockEnd
-		}
-		s.start, s.end = start, end
-		if s.keep(tt, after, dropLF) {
+		give, more := s.step()
+		if give {
 			return true
+		}
+		if !more {
+			return false
 		}
 	}
 	return false
+}
+
+// cdataStart is what a CDATA section starts with.
+const cdataStart = "<![CDATA["
+
+// step makes one pass of Next's loop. It reports whether Next gives the
+// token it is at, and, when not, whether the scan goes on.
+func (s *Scanner) step() (give, more bool) {
+	if s.split[0] < s.split[1] {
+		return s.textSplit(), true
+	}
+	for s.pos >= s.ends[s.block] {
+		if !s.nextBlock(s.raw != "") {
+			return false, false
+		}
+	}
+	s.z.AllowCDATA(namespace(s.active().top()) != "") // CDATA is text in foreign content
+	tt := s.z.Next()
+	if tt == html.ErrorToken {
+		return false, s.tokenizerEnd()
+	}
+	return s.token(tt)
+}
+
+// tokenizerEnd follows the end of the tokenizer's input, or its error,
+// and reports whether the scan goes on: in the next block, or in this
+// one read again.
+func (s *Scanner) tokenizerEnd() bool {
+	if err := s.z.Err(); !errors.Is(err, io.EOF) {
+		s.err = err
+		return false
+	}
+	switch {
+	case s.limit < len(s.src):
+		s.pos = s.limit // the block is read; the next starts afresh
+	case s.block+1 == len(s.ends):
+		return false
+	default:
+		s.readLastAgain()
+	}
+	return true
+}
+
+// readLastAgain follows a token left open that ran to the end of the
+// last block: the block is read again from it, as alone, or from the
+// start tag of a raw element it is in, as for a token cut by the block's
+// end. What the tokenizer read past the block's end counts.
+func (s *Scanner) readLastAgain() {
+	s.charge(len(s.src)-s.ends[s.block], s.pos)
+	from := s.pos
+	if s.rawOpen != "" {
+		s.raw, s.skipTo, from = s.rawOpen, s.pos, s.rawFrom
+	}
+	s.restart(from, s.ends[s.block])
+}
+
+// token follows the token of type tt the tokenizer read, and reports
+// whether Next gives it and, when not, whether the scan goes on.
+func (s *Scanner) token(tt html.TokenType) (give, more bool) {
+	raw := s.z.Raw()
+	start, end := s.pos, s.pos+len(raw)
+	s.pos = end
+	if end > len(s.src) || !bytes.Equal(raw, s.src[start:end]) {
+		s.err = errOffsets
+		return false, false
+	}
+	if s.tokens++; s.tokens > s.maxTokens {
+		s.err = &TooManyTokensError{At: start, Max: s.maxTokens}
+		return false, false
+	}
+	if end <= s.skipTo {
+		return false, true // read again from a raw element's start tag: given before
+	}
+	start = max(start, s.skipTo) // a raw text read again gives only its rest
+	after, dropLF := s.raw, s.dropLF
+	s.raw, s.dropLF = "", false
+	if blockEnd := s.ends[s.block]; end > blockEnd {
+		if s.pastBlock(tt, raw, start, end, after, dropLF) {
+			return false, true
+		}
+		end = blockEnd
+	}
+	s.start, s.end = start, end
+	return s.keep(tt, after, dropLF), true
+}
+
+// pastBlock follows a token from start to end, of type tt and raw text
+// raw, after the raw element after and with dropLF, that the tokenizer
+// read past the block's end. It reports whether the block is read again;
+// else the token is cut at the block's end.
+func (s *Scanner) pastBlock(tt html.TokenType, raw []byte, start, end int, after string, dropLF bool) bool {
+	blockEnd := s.ends[s.block]
+	cdata := bytes.HasPrefix(raw, []byte(cdataStart))
+	wasted := tt != html.TextToken || after != ""
+	if wasted || cdata {
+		// The tokenizer read this token past the block's end for
+		// nothing, a comment or a script's text to the end of the
+		// HTML at worst: those bytes count, so that blocks left open
+		// cost no more than max_bytes in all.
+		s.charge(end-blockEnd, start)
+	}
+	switch {
+	case s.rawOpen != "" && wasted:
+		// The text of a raw element, or its end tag, cut by the
+		// block's end: the block is read again from the element's
+		// start tag, which a fresh tokenizer needs to read the text
+		// raw, by one that ends with the block, as alone; what the
+		// scan gave before start it gives no more.
+		s.raw, s.dropLF, s.skipTo = s.rawOpen, dropLF, start
+		s.restart(s.rawFrom, blockEnd)
+		return true
+	case tt == html.TextToken && !cdata:
+		s.split = [2]int{blockEnd, end} // plain text: the next block's own
+		return false
+	default:
+		// A tag, a comment or a CDATA the block leaves open reads as
+		// the block alone reads it: the rest of the block again, by
+		// a tokenizer that ends where the block does.
+		s.raw, s.dropLF = after, dropLF
+		s.restart(start, blockEnd)
+		return true
+	}
 }
 
 // textSplit gives the part in the block of the text the tokenizer read
@@ -374,10 +414,10 @@ func (s *Scanner) keepText(raw string, dropLF bool) bool {
 // cdata takes the markers off a CDATA section, whose text alone is the
 // token's.
 func (s *Scanner) cdata() {
-	if !bytes.HasPrefix(s.src[s.start:s.end], []byte("<![CDATA[")) {
+	if !bytes.HasPrefix(s.src[s.start:s.end], []byte(cdataStart)) {
 		return
 	}
-	s.start += len("<![CDATA[")
+	s.start += len(cdataStart)
 	if bytes.HasSuffix(s.src[s.start:s.end], []byte("]]>")) {
 		s.end -= len("]]>")
 	}
@@ -475,14 +515,7 @@ func (s *Scanner) tag(selfClosing bool) bool {
 			return kept && s.tmpl == nil
 		}
 	}
-	// The tokenizer reads the text after a raw element's start tag raw,
-	// inside a template too, and a block that ends in it needs a fresh one.
-	switch {
-	case s.closing:
-		s.rawOpen = ""
-	case s.name == "textarea" || hidden[s.name]:
-		s.raw, s.rawOpen, s.rawFrom = s.name, s.name, s.start
-	}
+	s.rawText()
 	if s.tmpl != nil {
 		return s.templateTag(selfClosing)
 	}
@@ -492,18 +525,41 @@ func (s *Scanner) tag(selfClosing bool) bool {
 		}
 		return false
 	}
-	s.kind = StartTag
 	if s.closing {
-		s.kind = EndTag
-		if err := s.nest.end(s.name); err != "" {
-			s.err = &NestError{At: s.start, msg: err}
-			return false
-		}
-		return true
+		return s.endTag()
 	}
-	// An svg or a math opens foreign content, its own element in its
-	// namespace, unless it is self closing: a browser takes any start tag
-	// in their namespace as written.
+	return s.startTag(selfClosing)
+}
+
+// rawText follows a tag for the raw text after it. The tokenizer reads
+// the text after a raw element's start tag raw, inside a template too, and
+// a block that ends in it needs a fresh one.
+func (s *Scanner) rawText() {
+	switch {
+	case s.closing:
+		s.rawOpen = ""
+	case s.name == "textarea" || hidden[s.name]:
+		s.raw, s.rawOpen, s.rawFrom = s.name, s.name, s.start
+	}
+}
+
+// endTag follows an HTML end tag in the page, and reports whether Next
+// gives it: false when the nest refuses it.
+func (s *Scanner) endTag() bool {
+	s.kind = EndTag
+	if err := s.nest.end(s.name); err != "" {
+		s.err = &NestError{At: s.start, msg: err}
+		return false
+	}
+	return true
+}
+
+// startTag follows an HTML start tag in the page, and reports whether
+// Next gives it: false when the nest refuses it. An svg or a math opens
+// foreign content, its own element in its namespace, unless it is self
+// closing: a browser takes any start tag in their namespace as written.
+func (s *Scanner) startTag(selfClosing bool) bool {
+	s.kind = StartTag
 	name, opens := s.name, !selfClosing
 	if s.name == "svg" || s.name == "math" {
 		name, s.foreign = foreignKey(s.name, s.name), true

@@ -263,7 +263,10 @@ func TestTheTokenLimitIsExact(t *testing.T) {
 // 2, the block is read again by a tokenizer of its own (1024, and its
 // comment 1), and the next block starts a fresh one (1024, and its text
 // 1): 2053. A tag left open to the end gives no token; its 2 bytes past
-// the block count 1, then the same two tokenizers and one token: 2050.
+// the block count 1, then the same two tokenizers and one token: 2050. A
+// block that ends where a token ends needs no fresh tokenizer: the first
+// reads on into the next block, so <p>a</p> then <p>b is its five tokens,
+// 5. The planted break: a restart at that block's end too (1029).
 func TestWhatBlocksCount(t *testing.T) {
 	for _, c := range []struct {
 		blocks []string
@@ -271,6 +274,7 @@ func TestWhatBlocksCount(t *testing.T) {
 	}{
 		{[]string{"<!--a", "bcdefgh"}, 2053},
 		{[]string{`<a b="x`, "yz"}, 2050},
+		{[]string{"<p>a</p>", "<p>b"}, 5},
 	} {
 		src := strings.Join(c.blocks, "")
 		s := NewScanner([]byte(src), 1<<20)
@@ -426,6 +430,26 @@ func TestXNetAdoptionKeepsTheElement(t *testing.T) {
 	}
 }
 
+// The adoption agency takes off the list the fourth and later formatting
+// elements between the formatting element and the furthest block, not the
+// third: with three between, as in <a><b><i><u><div>x</a>y, the scan
+// follows a reading x/net shares, and with four it follows the standard
+// where x/net does not (StandardOnly). The planted break: the third taken
+// off too.
+func TestTheAgencyListsThreeBelowTheBlock(t *testing.T) {
+	for src, want := range map[string]bool{
+		"<a><b><i><u><div>x</a>y":    false,
+		"<a><b><i><u><s><div>x</a>y": true,
+	} {
+		s := NewScanner([]byte(src), 1<<20)
+		for s.Next() {
+		}
+		if s.Err() != nil || s.StandardOnly() != want {
+			t.Errorf("%q: StandardOnly %t, %v; want %t", src, s.StandardOnly(), s.Err(), want)
+		}
+	}
+}
+
 // The searches of the list of active formatting elements (push's Noah's
 // Ark clause, afeLast) look no further back than the last cell: a page of
 // blocks of twelve <b>s, after 230 nested cells each holding 39
@@ -514,6 +538,12 @@ func TestDoctypeMode(t *testing.T) {
 		`<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN">`:          true,
 		`<!DOCTYPE html SYSTEM "about:legacy-compat" x>`:              true,
 		`<!DOCTYPE html PUBLIC "-/W3D/DTD HTML 4.0 Transitional/EN">`: true,
+		// An identifier needs a quote, which may run unclosed to the end, and a
+		// system identifier is not held to the public ones' legacy list.
+		`<!DOCTYPE html SYSTEM xabcx>`:                 true,
+		`<!DOCTYPE html SYSTEM "about:legacy-compat>`:  false,
+		`<!DOCTYPE html SYSTEM 'about:legacy-compat'>`: false,
+		`<!DOCTYPE html SYSTEM "html">`:                false,
 	} {
 		if got := quirks(src, false); got != want {
 			t.Errorf("%q: quirks %v, want %v", src, got, want)

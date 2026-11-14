@@ -296,18 +296,49 @@ func (r *Rule) Validate(c Check) []error {
 	if c.Timeout != 0 {
 		errs = append(errs, ErrRuleTimeout)
 	}
+	hasAgree, hasAssert := r.relations()
+	errs = append(errs, r.shapeErrors(hasAgree, hasAssert)...)
+	declared, byName, nameErrs := r.declaredExtractors()
+	errs = append(errs, nameErrs...)
+	errs = append(errs, r.dependencyErrors(declared)...)
+	a := agreeing{r: r, declared: declared, byName: byName, named: map[string]bool{}, compared: map[string]bool{}}
+	for _, name := range r.Agree {
+		a.entry(name)
+	}
+	errs = append(errs, a.errs...)
+	errs = append(errs, r.allowEmptyErrors(declared)...)
+	errs = append(errs, r.skipErrors(declared, byName)...)
+	errs = append(errs, r.coverageErrors(a.compared, hasAgree, hasAssert)...)
+	errs = append(errs, r.compareErrors(hasAssert)...)
+	errs = append(errs, r.syntaxErrors(hasAssert)...)
+	return append(errs, r.normalizeErrors()...)
+}
+
+// relations reports whether r writes an agree and an assert.
+func (r *Rule) relations() (hasAgree, hasAssert bool) {
+	return len(r.Agree) > 0, strings.TrimSpace(r.Assert) != ""
+}
+
+// shapeErrors are the problems with what r holds: no extractor, or not
+// exactly one of agree and assert.
+func (r *Rule) shapeErrors(hasAgree, hasAssert bool) []error {
+	var errs []error
 	if len(r.Extractors) == 0 {
 		errs = append(errs, errors.New("extract is required for a rule and must declare at least one extractor"))
 	}
-
-	hasAgree, hasAssert := len(r.Agree) > 0, strings.TrimSpace(r.Assert) != ""
 	switch {
 	case hasAgree && hasAssert:
 		errs = append(errs, errors.New("agree and assert are both set: a rule states one relation, so write two checks"))
 	case !hasAgree && !hasAssert:
 		errs = append(errs, errors.New("a rule needs agree or assert"))
 	}
+	return errs
+}
 
+// declaredExtractors are the names r's extract declares, its extractors
+// by name, and the problems with those names.
+func (r *Rule) declaredExtractors() (map[string]bool, map[string]NamedExtractor, []error) {
+	var errs []error
 	declared := make(map[string]bool, len(r.Extractors))
 	byName := make(map[string]NamedExtractor, len(r.Extractors))
 	for _, e := range r.Extractors {
@@ -317,114 +348,211 @@ func (r *Rule) Validate(c Check) []error {
 		declared[e.Name] = true
 		byName[e.Name] = e
 	}
-	errs = append(errs, r.dependencyErrors(declared)...)
-	named := make(map[string]bool, len(r.Agree))
-	compared := make(map[string]bool, len(r.Agree)) // the extractors agree reads
-	for _, name := range r.Agree {
-		if declared[name] && ExtractorName(name) != nil {
-			// Refused above by its name. Split as x.f it would be refused
-			// again, as an entry naming nothing and an extractor left out.
-			compared[name] = true
-			continue
-		}
-		if prefix, ends := strings.CutSuffix(name, "."); ends && declared[prefix] {
-			// AgreeOn names nothing for it, so it would be refused as an
-			// entry extract does not declare and its extractor as left out.
-			// The hint names only a form that loads for the extractor.
-			d := byName[prefix].Description
-			switch {
-			case named[name]:
-				errs = append(errs, fmt.Errorf("agree names %q twice", name))
-			case d.Fields != nil:
-				errs = append(errs, fmt.Errorf("agree names %q, which ends in a dot and so names no field; name one field, such as %s.%s", name, prefix, d.Fields[0]))
-			case d.Whole():
-				errs = append(errs, fmt.Errorf("agree names %q, which ends in a dot and so names no field; its extractor hands assert each mapping whole (as: map), so write an assert, or leave as: map out", name))
-			default:
-				errs = append(errs, fmt.Errorf("agree names %q, which ends in a dot and so names no field; write %q for the extractor, or %s.<field> for a field of its records", name, prefix, prefix))
-			}
-			named[name], compared[prefix] = true, true
-			continue
-		}
-		x, field, ok := r.AgreeOn(name)
-		if !ok {
-			errs = append(errs, fmt.Errorf("agree names %q, which extract does not declare", name))
-		}
-		if named[name] {
-			// A repeated name compares an extractor with itself, which
-			// satisfies the coverage check below without comparing anything.
-			errs = append(errs, fmt.Errorf("agree names %q twice", name))
-		}
-		switch {
-		case !ok:
-		case field != "" && x.Description.Fields == nil:
-			errs = append(errs, fmt.Errorf("agree names %q, but extractor %q returns no record, so it has no field %q", name, x.Name, field))
-		case field != "" && !slices.Contains(x.Description.Fields, field):
-			errs = append(errs, fmt.Errorf("agree names %q, but the records of extractor %q have no field %q; their fields are %s", name, x.Name, field, strings.Join(x.Description.Fields, ", ")))
-		case field == "" && x.Description.Fields != nil:
-			errs = append(errs, fmt.Errorf("agree names %q, whose extractor returns records (as: record); agree compares flat values, so name one field, such as %s.%s, or write an assert", name, name, x.Description.Fields[0]))
-		case field == "" && x.Description.Whole():
-			errs = append(errs, fmt.Errorf("agree names %q, whose extractor hands assert each mapping whole (as: map); agree compares flat values, so write an assert, or leave as: map out", name))
-		}
-		named[name] = true
-		compared[x.Name] = true
+	return declared, byName, errs
+}
+
+// agreeing is what Validate knows as it reads the entries of r's agree:
+// the extractors extract declares, by name, the entries named so far, the
+// extractors agree reads, and the problems found.
+type agreeing struct {
+	r               *Rule
+	declared        map[string]bool
+	byName          map[string]NamedExtractor
+	named, compared map[string]bool
+	errs            []error
+}
+
+// entry reads name, an entry of agree.
+func (a *agreeing) entry(name string) {
+	if a.declared[name] && ExtractorName(name) != nil {
+		// Refused above by its name. Split as x.f it would be refused
+		// again, as an entry naming nothing and an extractor left out.
+		a.compared[name] = true
+		return
 	}
+	if prefix, ends := strings.CutSuffix(name, "."); ends && a.declared[prefix] {
+		// AgreeOn names nothing for it, so it would be refused as an
+		// entry extract does not declare and its extractor as left out.
+		a.errs = append(a.errs, dotError(name, prefix, a.byName[prefix].Description, a.named[name]))
+		a.named[name], a.compared[prefix] = true, true
+		return
+	}
+	a.field(name)
+}
+
+// dotError is the problem with name, an entry of agree that ends in a dot
+// after prefix, a declared extractor whose description is d; twice when
+// agree named it before. The hint names only a form that loads for the
+// extractor.
+func dotError(name, prefix string, d Description, twice bool) error {
+	switch {
+	case twice:
+		return fmt.Errorf("agree names %q twice", name)
+	case d.Fields != nil:
+		return fmt.Errorf("agree names %q, which ends in a dot and so names no field; name one field, such as %s.%s", name, prefix, d.Fields[0])
+	case d.Whole():
+		return fmt.Errorf("agree names %q, which ends in a dot and so names no field; its extractor hands assert each mapping whole (as: map), so write an assert, or leave as: map out", name)
+	}
+	return fmt.Errorf("agree names %q, which ends in a dot and so names no field; write %q for the extractor, or %s.<field> for a field of its records", name, prefix, prefix)
+}
+
+// field reads name, an entry of agree that names an extractor or a field
+// of its records.
+func (a *agreeing) field(name string) {
+	x, field, ok := a.r.AgreeOn(name)
+	if !ok {
+		a.errs = append(a.errs, fmt.Errorf("agree names %q, which extract does not declare", name))
+	}
+	if a.named[name] {
+		// A repeated name compares an extractor with itself, which
+		// satisfies the coverage check below without comparing anything.
+		a.errs = append(a.errs, fmt.Errorf("agree names %q twice", name))
+	}
+	if ok {
+		if err := fieldError(name, x, field); err != nil {
+			a.errs = append(a.errs, err)
+		}
+	}
+	a.named[name] = true
+	a.compared[x.Name] = true
+}
+
+// fieldError is the problem with name, an entry of agree that names field
+// of the extractor x, or x itself for a field of "": a field x's values do
+// not have, or an extractor whose values are not flat; nil for none.
+func fieldError(name string, x NamedExtractor, field string) error {
+	if field != "" {
+		return namedFieldError(name, x, field)
+	}
+	return flatError(name, x)
+}
+
+// namedFieldError is the problem with name, which names field of x's
+// records: x returns none, or they have no such field.
+func namedFieldError(name string, x NamedExtractor, field string) error {
+	switch {
+	case x.Description.Fields == nil:
+		return fmt.Errorf("agree names %q, but extractor %q returns no record, so it has no field %q", name, x.Name, field)
+	case !slices.Contains(x.Description.Fields, field):
+		return fmt.Errorf("agree names %q, but the records of extractor %q have no field %q; their fields are %s", name, x.Name, field, strings.Join(x.Description.Fields, ", "))
+	}
+	return nil
+}
+
+// flatError is the problem with name, which names x itself: x returns
+// records or whole mappings, which agree does not compare.
+func flatError(name string, x NamedExtractor) error {
+	switch {
+	case x.Description.Fields != nil:
+		return fmt.Errorf("agree names %q, whose extractor returns records (as: record); agree compares flat values, so name one field, such as %s.%s, or write an assert", name, name, x.Description.Fields[0])
+	case x.Description.Whole():
+		return fmt.Errorf("agree names %q, whose extractor hands assert each mapping whole (as: map); agree compares flat values, so write an assert, or leave as: map out", name)
+	}
+	return nil
+}
+
+// listErrors are the problems with name, an extractor the key key lists:
+// one extract does not declare, or one seen before.
+func listErrors(key, name string, declared, seen map[string]bool) []error {
+	var errs []error
+	if !declared[name] {
+		errs = append(errs, fmt.Errorf("%s names %q, which extract does not declare", key, name))
+	}
+	if seen[name] {
+		errs = append(errs, fmt.Errorf("%s names %q twice", key, name))
+	}
+	return errs
+}
+
+// allowEmptyErrors are the problems with r's allow_empty.
+func (r *Rule) allowEmptyErrors(declared map[string]bool) []error {
+	var errs []error
 	listed := make(map[string]bool, len(r.AllowEmpty))
 	for _, name := range r.AllowEmpty {
-		if !declared[name] {
-			errs = append(errs, fmt.Errorf("allow_empty names %q, which extract does not declare", name))
-		}
-		if listed[name] {
-			errs = append(errs, fmt.Errorf("allow_empty names %q twice", name))
-		}
+		errs = append(errs, listErrors("allow_empty", name, declared, listed)...)
 		listed[name] = true
 	}
+	return errs
+}
+
+// skipErrors are the problems with r's skip_not_literal.
+func (r *Rule) skipErrors(declared map[string]bool, byName map[string]NamedExtractor) []error {
+	var errs []error
 	skipped := make(map[string]bool, len(r.SkipNotLiteral))
 	for _, name := range r.SkipNotLiteral {
-		if !declared[name] {
-			errs = append(errs, fmt.Errorf("skip_not_literal names %q, which extract does not declare", name))
-		}
-		if skipped[name] {
-			errs = append(errs, fmt.Errorf("skip_not_literal names %q twice", name))
-		}
-		// An extractor that did not build is reported where it failed. One
-		// whose kind returns literal values only has nothing to leave out,
-		// so the key would load and do nothing.
-		if x := byName[name]; x.Extractor != nil && !skipped[name] && !x.Description.NotLiteral {
-			whose := "whose extractor"
-			if x.Description.Label != "" {
-				whose = "whose kind of extractor, " + x.Description.Label + ","
+		errs = append(errs, listErrors("skip_not_literal", name, declared, skipped)...)
+		if !skipped[name] {
+			if err := literalOnly(name, byName[name]); err != nil {
+				errs = append(errs, err)
 			}
-			errs = append(errs, fmt.Errorf("skip_not_literal names %q, %s returns only literal values, so it has nothing to leave out", name, whose))
 		}
 		skipped[name] = true
 	}
-	if hasAgree && !hasAssert {
-		// An extractor that agree leaves out is never compared, so the rule
-		// would pass without testing the place the author added it for.
-		for _, e := range r.Extractors {
-			if !compared[e.Name] {
-				errs = append(errs, fmt.Errorf("extractor %q is declared but agree does not name it", e.Name))
-			}
+	return errs
+}
+
+// literalOnly is the problem with name, listed in skip_not_literal, when
+// its extractor x returns literal values only: it has nothing to leave
+// out, so the key would load and do nothing. An extractor that did not
+// build is reported where it failed.
+func literalOnly(name string, x NamedExtractor) error {
+	if x.Extractor == nil || x.Description.NotLiteral {
+		return nil
+	}
+	whose := "whose extractor"
+	if x.Description.Label != "" {
+		whose = "whose kind of extractor, " + x.Description.Label + ","
+	}
+	return fmt.Errorf("skip_not_literal names %q, %s returns only literal values, so it has nothing to leave out", name, whose)
+}
+
+// coverageErrors are the extractors an agree rule declares and does not
+// compare: such a rule would pass without testing the place the author
+// added it for.
+func (r *Rule) coverageErrors(compared map[string]bool, hasAgree, hasAssert bool) []error {
+	if !hasAgree || hasAssert {
+		return nil
+	}
+	var errs []error
+	for _, e := range r.Extractors {
+		if !compared[e.Name] {
+			errs = append(errs, fmt.Errorf("extractor %q is declared but agree does not name it", e.Name))
 		}
 	}
+	return errs
+}
 
-	if r.Compare != "" && hasAssert {
-		// assert compares in its expression, so compare would load and do
-		// nothing.
-		errs = append(errs, fmt.Errorf("compare %q applies to agree; assert compares in its expression, with semver() and semver_satisfies() for versions", r.Compare))
-	} else if r.Compare != "" && !slices.Contains(Compares, r.Compare) {
-		errs = append(errs, fmt.Errorf("compare %q must be one of %s", r.Compare, joinCompares()))
+// compareErrors are the problems with r's compare: one beside an assert,
+// which compares in its expression, so compare would load and do nothing,
+// or one errata does not know.
+func (r *Rule) compareErrors(hasAssert bool) []error {
+	switch {
+	case r.Compare != "" && hasAssert:
+		return []error{fmt.Errorf("compare %q applies to agree; assert compares in its expression, with semver() and semver_satisfies() for versions", r.Compare)}
+	case r.Compare != "" && !slices.Contains(Compares, r.Compare):
+		return []error{fmt.Errorf("compare %q must be one of %s", r.Compare, joinCompares())}
 	}
+	return nil
+}
+
+// syntaxErrors are the problems with r's syntax: one beside an assert, one
+// in a rule that compares no versions, or one errata does not know.
+func (r *Rule) syntaxErrors(hasAssert bool) []error {
 	switch {
 	case r.Syntax == "":
 	case hasAssert:
-		errs = append(errs, fmt.Errorf("syntax %q applies to agree with compare: semver; an assert names the syntax as the third argument of semver_satisfies", r.Syntax))
+		return []error{fmt.Errorf("syntax %q applies to agree with compare: semver; an assert names the syntax as the third argument of semver_satisfies", r.Syntax)}
 	case r.Comparison() != CompareSemver:
-		errs = append(errs, fmt.Errorf("syntax %q applies to compare: semver, and this rule compares %s", r.Syntax, r.Comparison()))
+		return []error{fmt.Errorf("syntax %q applies to compare: semver, and this rule compares %s", r.Syntax, r.Comparison())}
 	case !slices.Contains(Syntaxes, r.Syntax):
-		errs = append(errs, fmt.Errorf("syntax %q must be one of %s", r.Syntax, strings.Join(Syntaxes, ", ")))
+		return []error{fmt.Errorf("syntax %q must be one of %s", r.Syntax, strings.Join(Syntaxes, ", "))}
 	}
+	return nil
+}
 
+// normalizeErrors are the normalizations r names that errata does not know.
+func (r *Rule) normalizeErrors() []error {
+	var errs []error
 	for _, n := range r.Normalize {
 		if !slices.Contains(Normalizations, n) {
 			errs = append(errs, fmt.Errorf("normalize %q must be one of %s", n, joinNormalizations()))

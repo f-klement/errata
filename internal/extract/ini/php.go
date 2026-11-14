@@ -209,7 +209,7 @@ var (
 
 // word is the length of one of words at i, in any case, then blanks.
 func (l *phpLexer) word(i int, words ...string) int {
-	if c := lower(l.at(i)); c != 't' && c != 'o' && c != 'y' && c != 'f' && c != 'n' {
+	if !startsPHPWord(lower(l.at(i))) {
 		return 0 // no boolean word starts so; the common case, checked first
 	}
 	best := 0
@@ -222,6 +222,15 @@ func (l *phpLexer) word(i int, words ...string) int {
 		return 0
 	}
 	return best + l.blanks(i+best)
+}
+
+// startsPHPWord reports whether c, in lower case, starts a boolean word.
+func startsPHPWord(c byte) bool {
+	switch c {
+	case 't', 'o', 'y', 'f', 'n':
+		return true
+	}
+	return false
 }
 
 func (l *phpLexer) constant(i int) int {
@@ -270,25 +279,7 @@ func (l *phpLexer) number(i int) int {
 func (l *phpLexer) chars(i int, stop *[256]bool, nul, escape bool) phpMatch {
 	j := i
 	for {
-		c := l.at(j)
-		w := 0
-		switch {
-		case c == '$':
-			switch n := l.at(j + 1); {
-			case n == '\\':
-				w = 3
-			case n != '{' && n != 0:
-				w = 2
-			}
-		case c == '\\' && escape:
-			w = 2
-		case c == 0:
-			if nul {
-				w = 1
-			}
-		case !stop[c]:
-			w = 1
-		}
+		w := l.charWidth(j, stop, nul, escape)
 		if w == 0 {
 			return phpMatch{j - i, false}
 		}
@@ -296,6 +287,36 @@ func (l *phpLexer) chars(i int, stop *[256]bool, nul, escape bool) phpMatch {
 			return phpMatch{j - i, true}
 		}
 	}
+}
+
+// charWidth is how many bytes the character chars reads at j takes, or 0
+// where the run stops.
+func (l *phpLexer) charWidth(j int, stop *[256]bool, nul, escape bool) int {
+	switch c := l.at(j); {
+	case c == '$':
+		return l.dollarWidth(j)
+	case c == '\\' && escape:
+		return 2
+	case c == 0:
+		if nul {
+			return 1
+		}
+	case !stop[c]:
+		return 1
+	}
+	return 0
+}
+
+// dollarWidth is the width of a run's character at a $ at j: $, \ and any
+// byte; $ and a byte other than { or NUL; or 0, where the run stops.
+func (l *phpLexer) dollarWidth(j int) int {
+	switch n := l.at(j + 1); {
+	case n == '\\':
+		return 3
+	case n != '{' && n != 0:
+		return 2
+	}
+	return 0
 }
 
 // next reads the next token, and reports false at the end of the file.
@@ -338,70 +359,7 @@ func (l *phpLexer) lex() bool {
 	i := l.pos
 	switch l.state {
 	case phpInitial:
-		switch c := l.data[i]; {
-		case c != ' ' && isPHPLabel(c):
-			return l.lexLabel(i)
-		case c == '\n' || c == '\r':
-			l.pos = i + l.newline(i)
-			l.end, l.tok = l.pos, phpEOL
-			return true
-		case c == '=':
-			l.pos = i + 1 + l.blanks(i+1)
-			l.end, l.tok, l.state = l.pos, phpEquals, phpValue
-			return true
-		}
-		label := phpMatch{n: l.run(i, isPHPLabel)}
-		offset := phpMatch{}
-		if label.n > 0 && l.at(i+label.n) == '[' && i+label.n < len(l.data) {
-			offset.n = label.n + 1 + l.blanks(i+label.n+1)
-		}
-		eq := phpMatch{}
-		if b := l.blanks(i); l.at(i+b) == '=' && i+b < len(l.data) {
-			eq.n = b + 1 + l.blanks(i+b+1)
-		}
-		tokens := phpMatch{}
-		if phpTokens[l.at(i)] {
-			tokens.n = 1
-		}
-		blank := phpMatch{n: l.blanks(i)}
-		eol := phpMatch{}
-		if b := l.blanks(i); l.newline(i+b) > 0 {
-			eol.n = b + l.newline(i+b)
-		}
-		comment := l.comment(i)
-		section := phpMatch{}
-		if l.at(i) == '[' {
-			section.n = 1
-		}
-		rule, n, past := best(section, offset, phpMatch{n: l.word(i, phpTrue...)}, phpMatch{n: l.word(i, phpFalse...)},
-			phpMatch{n: l.word(i, phpNull)}, label, eq, tokens, blank, eol, comment)
-		// No rule matches only a NUL, which readPHP refuses before it lexes.
-		if past || rule < 0 {
-			l.pos, l.tok = len(l.data)+1, phpEnd
-			return true
-		}
-		l.pos = i + n
-		l.end = l.pos
-		switch rule {
-		case 0:
-			l.tok, l.state = phpSection, phpSectionValue
-		case 1:
-			l.tok, l.state = phpOffset, phpOffsetValue
-			l.text = bytes.TrimRight(trimPHPSpace(l.data[i:i+n]), "[ \t\r\n")
-		case 2, 3, 4:
-			l.tok = phpBool
-		case 5:
-			l.tok, l.text = phpLabel, trimPHPSpace(l.data[i:i+n])
-		case 6:
-			l.tok, l.state = phpEquals, phpValue
-		case 7:
-			l.tok = phpChar
-		case 8:
-			return false
-		case 9, 10:
-			l.tok = phpEOL
-		}
-		return true
+		return l.lexInitial(i)
 	case phpValue:
 		return l.lexValue(i)
 	case phpDoubleQuotes:
@@ -411,6 +369,102 @@ func (l *phpLexer) lex() bool {
 	default: // section, offset and fallback values
 		return l.lexSectionValue(i)
 	}
+}
+
+// lexInitial is lex in the initial state: a byte only one rule can start
+// at, or the longest of the initial state's rules.
+func (l *phpLexer) lexInitial(i int) bool {
+	if l.lexInitialByte(i) {
+		return true
+	}
+	ms := l.initialMatches(i)
+	rule, n, past := best(ms[:]...)
+	// No rule matches only a NUL, which readPHP refuses before it lexes.
+	if past || rule < 0 {
+		l.pos, l.tok = len(l.data)+1, phpEnd
+		return true
+	}
+	l.pos = i + n
+	l.end = l.pos
+	return phpInitialRules[rule](l, i, n)
+}
+
+// lexInitialByte is lexInitial at a label byte, a line break or =, which
+// decide the token on their own. It reports false at any other byte.
+func (l *phpLexer) lexInitialByte(i int) bool {
+	switch c := l.data[i]; {
+	case c != ' ' && isPHPLabel(c):
+		return l.lexLabel(i)
+	case c == '\n' || c == '\r':
+		l.pos = i + l.newline(i)
+		l.end, l.tok = l.pos, phpEOL
+		return true
+	case c == '=':
+		l.pos = i + 1 + l.blanks(i+1)
+		l.end, l.tok, l.state = l.pos, phpEquals, phpValue
+		return true
+	}
+	return false
+}
+
+// initialMatches are the matches of the initial state's rules at i, in the
+// order phpInitialRules takes them.
+func (l *phpLexer) initialMatches(i int) [11]phpMatch {
+	label := phpMatch{n: l.run(i, isPHPLabel)}
+	tokens := phpMatch{}
+	if phpTokens[l.at(i)] {
+		tokens.n = 1
+	}
+	section := phpMatch{}
+	if l.at(i) == '[' {
+		section.n = 1
+	}
+	return [...]phpMatch{section, {n: l.offsetAfter(i, label.n)}, {n: l.word(i, phpTrue...)}, {n: l.word(i, phpFalse...)},
+		{n: l.word(i, phpNull)}, label, l.equalsAfterBlanks(i), tokens, {n: l.blanks(i)}, l.eolAfterBlanks(i), l.comment(i)}
+}
+
+// offsetAfter is the length of a label of n bytes at i, its [ and the blanks
+// after it, or 0 where no [ follows the label.
+func (l *phpLexer) offsetAfter(i, n int) int {
+	if n > 0 && l.at(i+n) == '[' && i+n < len(l.data) {
+		return n + 1 + l.blanks(i+n+1)
+	}
+	return 0
+}
+
+// equalsAfterBlanks is [ \t]*=[ \t]*.
+func (l *phpLexer) equalsAfterBlanks(i int) phpMatch {
+	if b := l.blanks(i); l.at(i+b) == '=' && i+b < len(l.data) {
+		return phpMatch{n: b + 1 + l.blanks(i+b+1)}
+	}
+	return phpMatch{}
+}
+
+// phpInitialRules are the initial state's rules, by initialMatches' order.
+// Each reports false for blanks lex skips.
+var phpInitialRules = [...]func(l *phpLexer, i, n int) bool{
+	func(l *phpLexer, _, _ int) bool { l.tok, l.state = phpSection, phpSectionValue; return true },
+	func(l *phpLexer, i, n int) bool { l.takeOffset(i, n); return true },
+	phpInitialBool, phpInitialBool, phpInitialBool,
+	func(l *phpLexer, i, n int) bool { l.tok, l.text = phpLabel, trimPHPSpace(l.data[i:i+n]); return true },
+	func(l *phpLexer, _, _ int) bool { l.tok, l.state = phpEquals, phpValue; return true },
+	func(l *phpLexer, _, _ int) bool { l.tok = phpChar; return true },
+	func(*phpLexer, int, int) bool { return false },
+	phpInitialEOL,
+	phpInitialEOL,
+}
+
+// phpInitialBool is a boolean word outside a value, which only a key can be.
+func phpInitialBool(l *phpLexer, _, _ int) bool { l.tok = phpBool; return true }
+
+// phpInitialEOL is the end of a line or a comment outside a value.
+func phpInitialEOL(l *phpLexer, _, _ int) bool { l.tok = phpEOL; return true }
+
+// takeOffset is the token of a key and its [, n bytes at i, which starts
+// the offset's value.
+func (l *phpLexer) takeOffset(i, n int) {
+	l.tok, l.state = phpOffset, phpOffsetValue
+	l.text = bytes.TrimRight(trimPHPSpace(l.data[i:i+n]), "[ \t\r\n")
 }
 
 // lexLabel is lex in the initial state at a label byte other than a space,
@@ -424,17 +478,14 @@ func (l *phpLexer) lexLabel(i int) bool {
 	if b := l.word(i, phpWords...); b >= n {
 		n, rule = b, 2
 	}
-	if label.n > 0 && l.at(i+label.n) == '[' && i+label.n < len(l.data) {
-		if o := label.n + 1 + l.blanks(i+label.n+1); o > n {
-			n, rule = o, 1
-		}
+	if o := l.offsetAfter(i, label.n); o > n {
+		n, rule = o, 1
 	}
 	l.pos = i + n
 	l.end = l.pos
 	switch rule {
 	case 1:
-		l.tok, l.state = phpOffset, phpOffsetValue
-		l.text = bytes.TrimRight(trimPHPSpace(l.data[i:i+n]), "[ \t\r\n")
+		l.takeOffset(i, n)
 	case 2:
 		l.tok = phpBool
 	default:
@@ -523,33 +574,65 @@ func (l *phpLexer) dollar(i int) phpMatch {
 	return phpMatch{}
 }
 
+// lexValue is lex in a value: a run of value bytes, a word or a number, a
+// line break, or the longest of the value's other rules.
 func (l *phpLexer) lexValue(i int) bool {
-	if c := l.data[i]; !phpValueStop[c] && c != 0 && c != '-' && c != '.' && !isDigit(c) && !isAlpha(c) && c != '_' {
-		// A value byte no other rule starts with: a run of them, or $.
-		m := l.chars(i, &phpValueStop, false, false)
-		if m.past {
-			l.pos, l.tok = len(l.data)+1, phpEnd
-			return true
-		}
-		if m.n > 0 {
-			l.pos = i + m.n
-			l.end, l.tok, l.text = l.pos, phpString, l.data[i:l.pos]
-			return true
-		}
+	if l.lexValueRun(i) {
+		return true
 	}
 	switch c := l.data[i]; {
-	case isAlpha(c) || isDigit(c) || c == '_' || c == '-' || c == '.':
+	case isPHPWordByte(c):
 		return l.lexWord(i)
 	case c == '\n' || c == '\r':
 		l.pos = i + l.newline(i)
 		l.end, l.tok, l.state = l.pos, phpEOL, phpInitial
 		return true
 	}
-	single := l.single(i)
-	eol := phpMatch{}
-	if b := l.blanks(i); l.newline(i+b) > 0 {
-		eol.n = b + l.newline(i+b)
+	ms := l.valueMatches(i)
+	rule, n, past := best(ms[:]...)
+	if past {
+		l.pos, l.tok = len(l.data)+1, phpEnd
+		return true
 	}
+	l.pos = i + n
+	l.end = l.pos
+	phpValueRules[rule](l, i, n)
+	return true
+}
+
+// isPHPWordByte reports whether c is a byte lexWord reads in a value: a
+// letter, a digit, _, - or .
+func isPHPWordByte(c byte) bool {
+	return isAlpha(c) || isDigit(c) || c == '_' || c == '-' || c == '.'
+}
+
+// lexValueRun is lexValue at a value byte no other rule starts with: a run
+// of them, or $. It reports false at any other byte, and where the run is
+// empty.
+func (l *phpLexer) lexValueRun(i int) bool {
+	if c := l.data[i]; phpValueStop[c] || c == 0 || isPHPWordByte(c) {
+		return false
+	}
+	m := l.chars(i, &phpValueStop, false, false)
+	if m.past {
+		l.pos, l.tok = len(l.data)+1, phpEnd
+		return true
+	}
+	if m.n == 0 {
+		return false
+	}
+	l.pos = i + m.n
+	l.end, l.tok, l.text = l.pos, phpString, l.data[i:l.pos]
+	return true
+}
+
+// valueMatches are the matches of a value's rules at i, in the order
+// phpValueRules takes them, which is PHP's order. The boolean words (2 to
+// 4), a constant (6) and a number (7) start only at a byte isPHPWordByte
+// takes, where lexValue hands the value to lexWord before it builds these
+// matches; so here they never win, and their rules never run. They stay
+// so the table keeps PHP's rule order.
+func (l *phpLexer) valueMatches(i int) [15]phpMatch {
 	op := phpMatch{}
 	if phpOperators[l.at(i)] {
 		op.n = 1 + l.blanks(i+1)
@@ -558,109 +641,128 @@ func (l *phpLexer) lexValue(i int) bool {
 	if l.at(i) == '=' {
 		eq.n = 1
 	}
-	chars := l.chars(i, &phpValueStop, false, false)
-	any := phpMatch{n: 1}
-	rule, n, past := best(single, l.dollar(i), phpMatch{n: l.word(i, phpTrue...)}, phpMatch{n: l.word(i, phpFalse...)},
-		phpMatch{n: l.word(i, phpNull)}, eol, phpMatch{n: l.constant(i)}, phpMatch{n: l.number(i)}, op, eq, chars, l.quoteStart(i),
-		phpMatch{n: l.blanks(i)}, l.comment(i), any)
-	if past {
-		l.pos, l.tok = len(l.data)+1, phpEnd
-		return true
+	return [...]phpMatch{l.single(i), l.dollar(i), {n: l.word(i, phpTrue...)}, {n: l.word(i, phpFalse...)},
+		{n: l.word(i, phpNull)}, l.eolAfterBlanks(i), {n: l.constant(i)}, {n: l.number(i)}, op, eq,
+		l.chars(i, &phpValueStop, false, false), l.quoteStart(i), {n: l.blanks(i)}, l.comment(i), {n: 1}}
+}
+
+// eolAfterBlanks is [ \t]*{NEWLINE}.
+func (l *phpLexer) eolAfterBlanks(i int) phpMatch {
+	if b := l.blanks(i); l.newline(i+b) > 0 {
+		return phpMatch{n: b + l.newline(i+b)}
 	}
-	l.pos = i + n
-	l.end = l.pos
-	switch rule {
-	case 0:
-		l.tok, l.text = phpRaw, l.data[i+1:i+n-1]
-	case 1:
-		l.tok = phpDollar
-		l.push(phpVarName)
-	case 2, 3, 4:
-		l.tok, l.text = phpBool, bytes.TrimRight(l.data[i:i+n], " \t")
-	case 5, 13:
-		l.tok, l.state = phpEOL, phpInitial
-	case 6:
-		l.tok, l.text = phpConstant, l.data[i:i+n]
-	case 7:
-		l.tok, l.text = phpNumber, l.data[i:i+n]
-	case 8:
-		l.tok, l.text = phpOperator, l.data[i:i+1]
-	case 9:
+	return phpMatch{}
+}
+
+// phpRule takes the token a rule matched, n bytes at i, once lex has moved
+// past it.
+type phpRule func(l *phpLexer, i, n int)
+
+// phpEndValue ends the value: the token is an end of line, and the lexer
+// is back in its initial state.
+func phpEndValue(l *phpLexer, _, _ int) { l.tok, l.state = phpEOL, phpInitial }
+
+// phpValueRules are lexValue's rules, by valueMatches' order. The last, any
+// byte no other rule takes, ends the value.
+var phpValueRules = [...]phpRule{
+	func(l *phpLexer, i, n int) { l.tok, l.text = phpRaw, l.data[i+1:i+n-1] },
+	func(l *phpLexer, _, _ int) { l.tok = phpDollar; l.push(phpVarName) },
+	phpValueBool, phpValueBool, phpValueBool,
+	phpEndValue,
+	func(l *phpLexer, i, n int) { l.tok, l.text = phpConstant, l.data[i:i+n] },
+	func(l *phpLexer, i, n int) { l.tok, l.text = phpNumber, l.data[i:i+n] },
+	func(l *phpLexer, i, _ int) { l.tok, l.text = phpOperator, l.data[i:i+1] },
+	func(l *phpLexer, i, _ int) {
 		// = ends the value without being read: the next statement starts at it.
 		l.pos, l.end = i, i
 		l.tok, l.state = phpEOL, phpInitial
-	case 10:
-		l.tok, l.text = phpString, l.data[i:i+n]
-	case 11:
-		l.tok = phpQuote
-		l.push(phpDoubleQuotes)
-	case 12:
-		l.tok, l.text = phpBlank, l.data[i:i+n]
-	default: // a byte no other rule takes ends the value
-		l.tok, l.state = phpEOL, phpInitial
-	}
-	return true
+	},
+	func(l *phpLexer, i, n int) { l.tok, l.text = phpString, l.data[i:i+n] },
+	func(l *phpLexer, _, _ int) { l.tok = phpQuote; l.push(phpDoubleQuotes) },
+	func(l *phpLexer, i, n int) { l.tok, l.text = phpBlank, l.data[i:i+n] },
+	phpEndValue,
+	phpEndValue,
 }
 
+// phpValueBool is a boolean word, with the blanks after it dropped.
+func phpValueBool(l *phpLexer, i, n int) {
+	l.tok, l.text = phpBool, bytes.TrimRight(l.data[i:i+n], " \t")
+}
+
+// lexSectionValue is lex in a section's name, an offset or a fallback: the
+// longest of their rules, the first among equals.
 func (l *phpLexer) lexSectionValue(i int) bool {
-	var ms []phpMatch
-	switch l.state {
-	case phpVarFallback:
-		ms = []phpMatch{{}, l.dollar(i), {}, {n: l.constant(i)}, {n: l.number(i)}, l.chars(i, &phpFallbackStop, true, true), l.quoteStart(i), {n: l.blanks(i)}}
-		if l.at(i) == '}' && i < len(l.data) {
-			ms[0] = phpMatch{n: 1}
-		}
-	default:
-		end := phpMatch{}
-		if l.at(i) == ']' && i < len(l.data) {
-			if l.state == phpSectionValue {
-				end.n = 1 + l.blanks(i+1)
-				end.n += l.newline(i + end.n)
-			} else {
-				end.n = 1
-			}
-		} else if l.state == phpOffsetValue {
-			if b := l.blanks(i); l.at(i+b) == ']' && i+b < len(l.data) {
-				end.n = b + 1
-			}
-		}
-		ms = []phpMatch{end, l.dollar(i), l.single(i), {n: l.constant(i)}, {n: l.number(i)}, l.chars(i, &phpSectionStop, true, true), l.quoteStart(i), {n: l.blanks(i)}}
-	}
-	rule, n, past := best(ms...)
+	ms := l.sectionMatches(i)
+	rule, n, past := best(ms[:]...)
 	if past || n == 0 {
 		l.pos, l.tok = len(l.data)+1, phpEnd
 		return true
 	}
 	l.pos = i + n
 	l.end = l.pos
-	switch rule {
-	case 0:
-		if l.state == phpVarFallback {
-			l.tok = phpRBrace
-			l.pop()
-		} else {
-			l.tok, l.state = phpRBracket, phpInitial
-		}
-	case 1:
-		l.tok = phpDollar
-		l.push(phpVarName)
-	case 2:
-		l.tok, l.text = phpRaw, l.data[i+1:i+n-1]
-	case 3:
-		l.tok, l.text = phpConstant, l.data[i:i+n]
-	case 4:
-		l.tok, l.text = phpNumber, l.data[i:i+n]
-	case 5:
-		l.tok, l.text = phpString, l.data[i:i+n]
-	case 6:
-		l.tok = phpQuote
-		l.push(phpDoubleQuotes)
-	default:
-		l.tok, l.text = phpBlank, l.data[i:i+n]
-	}
+	phpSectionRules[rule](l, i, n)
 	return true
 }
 
+// sectionMatches are the matches of the rules of a section's name, an
+// offset or a fallback at i, in the order phpSectionRules takes them. A
+// fallback has no ' string, and ends at its }.
+func (l *phpLexer) sectionMatches(i int) [8]phpMatch {
+	if l.state == phpVarFallback {
+		ms := [8]phpMatch{{}, l.dollar(i), {}, {n: l.constant(i)}, {n: l.number(i)}, l.chars(i, &phpFallbackStop, true, true), l.quoteStart(i), {n: l.blanks(i)}}
+		if l.at(i) == '}' && i < len(l.data) {
+			ms[0] = phpMatch{n: 1}
+		}
+		return ms
+	}
+	return [8]phpMatch{l.sectionEnd(i), l.dollar(i), l.single(i), {n: l.constant(i)}, {n: l.number(i)}, l.chars(i, &phpSectionStop, true, true), l.quoteStart(i), {n: l.blanks(i)}}
+}
+
+// sectionEnd is the ] that ends a section's name, with the blanks and the
+// line break after it, or the ] that ends an offset, with the blanks
+// before it.
+func (l *phpLexer) sectionEnd(i int) phpMatch {
+	if l.at(i) == ']' && i < len(l.data) {
+		if l.state == phpSectionValue {
+			n := 1 + l.blanks(i+1)
+			return phpMatch{n: n + l.newline(i+n)}
+		}
+		return phpMatch{n: 1}
+	}
+	if l.state == phpOffsetValue {
+		if b := l.blanks(i); l.at(i+b) == ']' && i+b < len(l.data) {
+			return phpMatch{n: b + 1}
+		}
+	}
+	return phpMatch{}
+}
+
+// closeSectionValue is the } that ends a fallback, or the ] that ends a
+// section's name or an offset.
+func (l *phpLexer) closeSectionValue(_, _ int) {
+	if l.state == phpVarFallback {
+		l.tok = phpRBrace
+		l.pop()
+	} else {
+		l.tok, l.state = phpRBracket, phpInitial
+	}
+}
+
+// phpSectionRules are the rules of a section's name, an offset and a
+// fallback, by sectionMatches' order.
+var phpSectionRules = [...]phpRule{
+	(*phpLexer).closeSectionValue,
+	func(l *phpLexer, _, _ int) { l.tok = phpDollar; l.push(phpVarName) },
+	func(l *phpLexer, i, n int) { l.tok, l.text = phpRaw, l.data[i+1:i+n-1] },
+	func(l *phpLexer, i, n int) { l.tok, l.text = phpConstant, l.data[i:i+n] },
+	func(l *phpLexer, i, n int) { l.tok, l.text = phpNumber, l.data[i:i+n] },
+	func(l *phpLexer, i, n int) { l.tok, l.text = phpString, l.data[i:i+n] },
+	func(l *phpLexer, _, _ int) { l.tok = phpQuote; l.push(phpDoubleQuotes) },
+	func(l *phpLexer, i, n int) { l.tok, l.text = phpBlank, l.data[i:i+n] },
+}
+
+// lexDoubleQuotes is lex inside a double quoted string: ${, the closing "
+// and the blanks after it, or the text up to either.
 func (l *phpLexer) lexDoubleQuotes(i int) bool {
 	switch {
 	case l.dollar(i).n > 0:
@@ -673,37 +775,45 @@ func (l *phpLexer) lexDoubleQuotes(i int) bool {
 		l.pop()
 		return true
 	}
-	s := i
-	for s < len(l.data) {
-		c := l.data[s]
-		s++
-		switch c {
-		case '"':
-		case '$':
-			if s < len(l.data) && l.data[s] == '{' {
-				break
-			}
-			continue
-		case '\\':
-			if s < len(l.data) {
-				escaped := l.data[s]
-				s++
-				// key="C:\path\" ends at that ", as PHP reads a Windows path.
-				if escaped == '"' && (s >= len(l.data) || l.data[s] == '\n' || l.data[s] == '\r') {
-					break
-				}
-			}
-			continue
-		default:
-			continue
-		}
-		s--
-		break
-	}
+	s := l.quotedEnd(i)
 	l.pos, l.end, l.tok = s, s, phpQuoted
 	l.buf = phpUnescape(l.buf[:0], l.data[i:s])
 	l.text = l.buf
 	return true
+}
+
+// quotedEnd is where the text of a double quoted string from i ends: at a
+// ", at a ${, at a \" that ends its line, which closes the string, or at
+// the end of the file. A \ takes the byte after it.
+func (l *phpLexer) quotedEnd(i int) int {
+	for s := i; s < len(l.data); s++ {
+		switch l.data[s] {
+		case '"':
+			return s
+		case '$':
+			if s+1 < len(l.data) && l.data[s+1] == '{' {
+				return s
+			}
+		case '\\':
+			if l.pathQuoteAt(s + 1) {
+				return s + 1
+			}
+			s++ // the byte after the \
+		}
+	}
+	return len(l.data)
+}
+
+// pathQuoteAt reports whether a " at j, after a \, ends its line, and so
+// closes the string: key="C:\path\" ends at that ", as PHP reads a
+// Windows path.
+func (l *phpLexer) pathQuoteAt(j int) bool {
+	return l.at(j) == '"' && j < len(l.data) && l.endsLine(j+1)
+}
+
+// endsLine reports whether j is the end of the file or of a line.
+func (l *phpLexer) endsLine(j int) bool {
+	return j >= len(l.data) || l.data[j] == '\n' || l.data[j] == '\r'
 }
 
 // phpUnescape is zend_ini_escape_string for a double quoted string: \" \\
@@ -728,12 +838,12 @@ func phpUnescape(out, in []byte) []byte {
 	return out
 }
 
+// lexVarName is lex in a reference's name: :- that starts its fallback,
+// the } that ends it, or the name.
 func (l *phpLexer) lexVarName(i int) bool {
 	switch {
-	case l.at(i) == ':' && l.at(i+1) == '-' && i+1 < len(l.data):
-		l.pos, l.end, l.tok = i+2, i+2, phpFallback
-		l.pop()
-		l.push(phpVarFallback)
+	case l.fallbackAt(i):
+		l.startFallback(i + 2)
 		return true
 	case l.at(i) == '}':
 		l.pos, l.end, l.tok = i+1, i+1, phpRBrace
@@ -745,28 +855,45 @@ func (l *phpLexer) lexVarName(i int) bool {
 	}
 	// PHP checks for :- only after the name's first byte, and then skips the
 	// : and starts the fallback at the -, with no name: ${a:-x} is refused.
-	if l.at(i+1) == ':' && l.at(i+2) == '-' && i+2 < len(l.data) {
-		l.pos, l.end, l.tok = i+2, i+2, phpFallback
-		l.pop()
-		l.push(phpVarFallback)
+	if l.fallbackAt(i + 1) {
+		l.startFallback(i + 2)
 		return true
 	}
-	j := i + 1
-	for ; j < len(l.data); j++ {
-		c := l.data[j]
-		if c == ':' && j+1 < len(l.data) && l.data[j+1] == '-' {
-			break
-		}
-		if c != ':' && c != 0 && !isPHPLabel(c) {
-			break
-		}
-	}
+	j := l.varNameEnd(i)
 	name := l.data[i:j]
 	if j == len(l.data) {
 		name = l.data[i : i+1] // PHP's name stays one byte when it runs to the end
 	}
 	l.pos, l.end, l.tok, l.text = j, j, phpVarname, trimPHPSpace(name)
 	return true
+}
+
+// fallbackAt reports whether :- is at j.
+func (l *phpLexer) fallbackAt(j int) bool {
+	return l.at(j) == ':' && l.at(j+1) == '-' && j+1 < len(l.data)
+}
+
+// startFallback is the token :-, which ends at end and starts the
+// reference's fallback.
+func (l *phpLexer) startFallback(end int) {
+	l.pos, l.end, l.tok = end, end, phpFallback
+	l.pop()
+	l.push(phpVarFallback)
+}
+
+// varNameEnd is where a reference's name that starts at i ends: at :-, or
+// at a byte other than :, NUL or a label byte.
+func (l *phpLexer) varNameEnd(i int) int {
+	j := i + 1
+	for ; j < len(l.data); j++ {
+		if l.fallbackAt(j) {
+			break
+		}
+		if c := l.data[j]; c != ':' && c != 0 && !isPHPLabel(c) {
+			break
+		}
+	}
+	return j
 }
 
 // trimPHPSpace is EAT_LEADING_WHITESPACE and EAT_TRAILING_WHITESPACE.
@@ -834,57 +961,92 @@ func readPHPWith(data []byte, m *core.Meter, defined func([]byte) bool, visit fu
 	var e core.Entry
 	for {
 		tok := p.read()
-		line := p.lines.At(min(l.start, len(data)))
-		var err error
-		switch tok {
-		case phpEnd:
+		if tok == phpEnd {
 			return p.err
-		case phpEOL:
-			continue
-		case phpSection:
-			var name []byte
-			if name, err = p.list(p.name[:0], true); err == nil && p.read() != phpRBracket {
-				err = errPHPSyntax
-			}
-			p.name = name
-			if err == nil {
-				p.section = append(p.section[:0], name...)
-				p.seq++
-				continue
-			}
-		case phpLabel, phpOffset:
-			e.Key = append(e.Key[:0], l.text...)
-			key := e.Key
-			if tok == phpOffset {
-				if p.scratch, err = p.list(p.scratch[:0], false); err == nil && (p.read() != phpRBracket || p.read() != phpEquals) {
-					err = errPHPSyntax
-				}
-			} else if p.read() != phpEquals {
-				p.back = true // a key with no value: PHP ignores it
-				continue
-			}
-			if err == nil {
-				if err = p.valueOf(); err == nil {
-					e = core.Entry{Section: p.section, SectionSeq: p.seq, Key: key, Value: p.value, Line: line, Computed: p.computed}
-					if err := visit(&e); err != nil {
-						return err
-					}
-					continue
-				}
-			}
-		default:
-			err = errPHPSyntax
 		}
-		switch {
-		case p.err != nil: // the work budget ran out inside the line
-			return p.err
-		case errors.Is(err, errPHPSyntax):
-			return core.LineError(line, "PHP refuses this line: %s", core.Quote(string(phpLine(data, l.start))))
-		case errors.Is(err, errPHPDeep):
-			return core.TooDeep(line)
+		if err := p.statement(tok, &e, visit); err != nil {
+			return err
 		}
-		return err
 	}
+}
+
+// statement reads the statement tok starts: a line break, a section, or a
+// key and its value, which it visits. It returns nil to read on, and
+// otherwise the error that ends the read.
+func (p *phpParser) statement(tok phpTok, e *core.Entry, visit func(*core.Entry) error) error {
+	line := p.lines.At(min(p.l.start, len(p.l.data)))
+	switch tok {
+	case phpEOL:
+		return nil
+	case phpSection:
+		return p.refusal(p.sectionName(), line)
+	case phpLabel, phpOffset:
+		return p.entry(tok, line, e, visit)
+	default: // no statement starts with any other token
+		return p.refusal(errPHPSyntax, line)
+	}
+}
+
+// sectionName reads a section's name and its ], and starts the section.
+func (p *phpParser) sectionName() error {
+	name, err := p.list(p.name[:0], true)
+	if err == nil && p.read() != phpRBracket {
+		err = errPHPSyntax
+	}
+	p.name = name
+	if err == nil {
+		p.section = append(p.section[:0], name...)
+		p.seq++
+	}
+	return err
+}
+
+// entry reads a key, its offset if it has one, its = and its value, and
+// visits the entry. A key with no = is ignored, as PHP ignores it.
+func (p *phpParser) entry(tok phpTok, line int, e *core.Entry, visit func(*core.Entry) error) error {
+	e.Key = append(e.Key[:0], p.l.text...)
+	key := e.Key
+	if tok == phpOffset {
+		if err := p.offset(); err != nil {
+			return p.refusal(err, line)
+		}
+	} else if p.read() != phpEquals {
+		p.back = true // a key with no value: PHP ignores it
+		return nil
+	}
+	if err := p.valueOf(); err != nil {
+		return p.refusal(err, line)
+	}
+	*e = core.Entry{Section: p.section, SectionSeq: p.seq, Key: key, Value: p.value, Line: line, Computed: p.computed}
+	return visit(e)
+}
+
+// offset reads the rest of a key's offset, its ] and the = after it. errata
+// drops the offset's text.
+func (p *phpParser) offset() error {
+	var err error
+	if p.scratch, err = p.list(p.scratch[:0], false); err == nil && (p.read() != phpRBracket || p.read() != phpEquals) {
+		err = errPHPSyntax
+	}
+	return err
+}
+
+// refusal is the error that ends the read for err, the error of the
+// statement that starts at line: nil for none, the meter's once the work
+// budget ran out inside the line, and the line PHP refuses or nests too
+// deeply.
+func (p *phpParser) refusal(err error, line int) error {
+	switch {
+	case err == nil:
+		return nil
+	case p.err != nil: // the work budget ran out inside the line
+		return p.err
+	case errors.Is(err, errPHPSyntax):
+		return core.LineError(line, "PHP refuses this line: %s", core.Quote(string(phpLine(p.l.data, p.l.start))))
+	case errors.Is(err, errPHPDeep):
+		return core.TooDeep(line)
+	}
+	return err
 }
 
 // phpLine is the line of data that holds offset i, for a message.
@@ -939,31 +1101,10 @@ func (p *phpParser) expr() (bool, error) {
 	}
 }
 
+// unary reads an operator and what it applies to, or a list.
 func (p *phpParser) unary() (bool, error) {
 	if p.read() == phpOperator {
-		// PHP's parser stops near 10000 levels (9993 parentheses, measured);
-		// errata stops sooner, at the depth every format has, and refuses
-		// what lies between.
-		if p.depth++; p.depth > core.MaxDepth {
-			return false, errPHPDeep
-		}
-		defer func() { p.depth-- }()
-		p.took()
-		switch p.l.text[0] {
-		case '~', '!':
-			_, err := p.unary()
-			return true, err
-		case '(':
-			if _, err := p.expr(); err != nil {
-				return false, err
-			}
-			if p.read() != phpOperator || p.l.text[0] != ')' {
-				return false, errPHPSyntax
-			}
-			p.took()
-			return true, nil
-		}
-		return false, errPHPSyntax
+		return p.operator()
 	}
 	p.back = true
 	var err error
@@ -976,62 +1117,108 @@ func (p *phpParser) unary() (bool, error) {
 	return false, nil
 }
 
+// operator reads what the operator just read applies to: ~ and ! a unary,
+// ( an expression and its ). Any other operator is refused here.
+func (p *phpParser) operator() (bool, error) {
+	// PHP's parser stops near 10000 levels (9993 parentheses, measured);
+	// errata stops sooner, at the depth every format has, and refuses
+	// what lies between.
+	if p.depth++; p.depth > core.MaxDepth {
+		return false, errPHPDeep
+	}
+	defer func() { p.depth-- }()
+	p.took()
+	switch p.l.text[0] {
+	case '~', '!':
+		_, err := p.unary()
+		return true, err
+	case '(':
+		if _, err := p.expr(); err != nil {
+			return false, err
+		}
+		if p.read() != phpOperator || p.l.text[0] != ')' {
+			return false, errPHPSyntax
+		}
+		p.took()
+		return true, nil
+	}
+	return false, errPHPSyntax
+}
+
 // list reads a var_string_list, or with section a var_string_list_section,
 // and returns its text. listed reports whether it read an item.
 func (p *phpParser) list(out []byte, section bool) ([]byte, error) {
 	p.listed = false
 	for {
+		var err error
 		switch p.read() {
 		case phpConstant:
-			if !section && p.defined(p.l.text) {
-				p.computed = true
-			}
-			if !p.discard {
-				out = append(out, p.l.text...)
-			}
+			out = p.constant(out, section)
 		case phpRaw, phpNumber, phpString, phpBlank:
-			if !p.discard {
-				out = append(out, p.l.text...)
-			}
+			out = p.keep(out, p.l.text)
 		case phpDollar:
-			start := p.l.start
-			if err := p.ref(); err != nil {
-				return nil, err
-			}
-			if !p.discard {
-				out = append(out, p.l.data[start:p.l.end]...)
-			}
-			p.computed = true
+			out, err = p.reference(out)
 		case phpQuote:
-			for {
-				t := p.read()
-				if t == phpQuote {
-					break
-				}
-				switch t {
-				case phpQuoted:
-					if !p.discard {
-						out = append(out, p.l.text...)
-					}
-				case phpDollar:
-					start := p.l.start
-					if err := p.ref(); err != nil {
-						return nil, err
-					}
-					if !p.discard {
-						out = append(out, p.l.data[start:p.l.end]...)
-					}
-					p.computed = true
-				default:
-					return nil, errPHPSyntax
-				}
-			}
+			out, err = p.quoted(out)
 		default:
 			p.back = true
 			return out, nil
 		}
+		if err != nil {
+			return nil, err
+		}
 		p.listed = true
 		p.took()
+	}
+}
+
+// keep appends text to out, unless the list is a fallback's, whose text
+// errata drops.
+func (p *phpParser) keep(out, text []byte) []byte {
+	if p.discard {
+		return out
+	}
+	return append(out, text...)
+}
+
+// constant is a word in a list: a constant PHP replaces with its value
+// marks the value computed, outside a section's name.
+func (p *phpParser) constant(out []byte, section bool) []byte {
+	if !section && p.defined(p.l.text) {
+		p.computed = true
+	}
+	return p.keep(out, p.l.text)
+}
+
+// reference reads a reference after its ${, and keeps its source text.
+func (p *phpParser) reference(out []byte) ([]byte, error) {
+	start := p.l.start
+	if err := p.ref(); err != nil {
+		return nil, err
+	}
+	out = p.keep(out, p.l.data[start:p.l.end])
+	p.computed = true
+	return out, nil
+}
+
+// quoted reads a double quoted string after its opening ", up to its
+// closing ": its text and the references in it.
+func (p *phpParser) quoted(out []byte) ([]byte, error) {
+	for {
+		var err error
+		switch p.read() {
+		case phpQuote:
+			return out, nil
+		case phpQuoted:
+			out = p.keep(out, p.l.text)
+		case phpDollar:
+			out, err = p.reference(out)
+		default:
+			return nil, errPHPSyntax
+		}
+		if err != nil {
+			return nil, err
+		}
 	}
 }
 
@@ -1083,16 +1270,20 @@ func isConstantName(b []byte) bool {
 	}
 	under := false
 	for _, c := range b {
-		switch {
-		case c == '_':
+		if c == '_' {
 			under = true
-		case 'A' <= c && c <= 'Z', '0' <= c && c <= '9':
-		case under && 'a' <= c && c <= 'z':
-		default:
+		} else if !isConstantByte(c, under) {
 			return false
 		}
 	}
 	return under
+}
+
+// isConstantByte reports whether c, other than _, can be in a constant's
+// name: a capital letter or a digit, and after a _ (under) a small letter
+// too.
+func isConstantByte(c byte, under bool) bool {
+	return 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' || under && 'a' <= c && c <= 'z'
 }
 
 // isStartupConstant reports whether b names a constant PHP has defined when

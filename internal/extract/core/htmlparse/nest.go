@@ -215,55 +215,56 @@ func (n *nest) start(name string, opens bool) string {
 	if n.ignored {
 		return ""
 	}
-	if closesP[name] && (name != "table" || !n.quirks) { // in quirks mode a table opens in a p
-		if i := n.last(n.posOf("p")); i > n.last(n.buttons) {
-			n.popThrough(i)
-		}
-	}
-	switch name {
-	case "h1", "h2", "h3", "h4", "h5", "h6":
-		if isHeading(n.top()) {
-			n.pop()
-		} else if n.headings && len(n.heading) > 0 {
-			return "a heading opens inside a heading still open, which errata does not read; end the heading first; " + core.OtherWay
-		}
-	case "a":
-		// A link ends a link open, as the adoption agency does. One out of
-		// scope, past a table, the agency leaves, and a browser then takes
-		// it off the list and the stack, whatever it holds.
-		if j := n.afeLast("a"); j >= 0 {
-			if at := n.afe[j].at; at >= 0 && n.last(n.bounds) > at {
-				n.afeRemove(j)
-				n.remove(at)
-			} else if err := n.formattingEnd("a", j); err != "" {
-				return err
-			}
-		}
-	case "li", "dd", "dt":
-		if i := n.last(n.notADP); i >= 0 && sameItem(n.stack[i], name) {
-			n.popThrough(i)
-		}
-	case "table":
-		n.closeTable()
-	case "td", "th", "tr", "tbody", "thead", "tfoot", "caption", "col", "colgroup":
-		if !n.tablePart(name) {
-			n.ignored = true // outside a table a browser ignores it
-			return ""
-		}
-	case "option", "optgroup", "hr":
-		n.closeOption(name)
-	case "button":
-		n.closeButton()
-	case "select", "input":
-		if n.closeSelect(name) {
-			return "" // a select in a select: ignored, once the first is closed
-		}
+	n.closeP(name)
+	if err, ignored := n.closeFor(name); err != "" || ignored {
+		return err
 	}
 	if reconstructs(name) {
 		if err := n.reconstruct(); err != "" {
 			return err
 		}
 	}
+	return n.openElement(name, opens)
+}
+
+// closeP follows a start tag of name that closes a p open in its scope,
+// as closesP lists them; in quirks mode a table opens in a p.
+func (n *nest) closeP(name string) {
+	if closesP[name] && (name != "table" || !n.quirks) {
+		if i := n.last(n.posOf("p")); i > n.last(n.buttons) {
+			n.popThrough(i)
+		}
+	}
+}
+
+// closeFor closes what the start tag of name ends before it opens, one
+// helper for each group of tags. It returns a refusal, or "", and whether
+// a browser ignores the tag.
+func (n *nest) closeFor(name string) (string, bool) {
+	switch name {
+	case "h1", "h2", "h3", "h4", "h5", "h6":
+		return n.startHeading(), false
+	case "a":
+		return n.startLink(), false
+	case "li", "dd", "dt":
+		n.closeItem(name)
+	case "table":
+		n.closeTable()
+	case "td", "th", "tr", "tbody", "thead", "tfoot", "caption", "col", "colgroup":
+		return "", n.ignoresTablePart(name)
+	case "option", "optgroup", "hr":
+		n.closeOption(name)
+	case "button":
+		n.closeButton()
+	case "select", "input":
+		return "", n.closeSelect(name) // a select in a select: ignored, once the first is closed
+	}
+	return "", false
+}
+
+// openElement opens an element of name, unless opens is false, and refuses one
+// past core.MaxDepth.
+func (n *nest) openElement(name string, opens bool) string {
 	switch {
 	case !opens:
 	case len(n.stack) >= core.MaxDepth:
@@ -272,6 +273,52 @@ func (n *nest) start(name string, opens bool) string {
 		n.push(name)
 	}
 	return ""
+}
+
+// startHeading follows a heading's start tag, which ends a heading on top.
+// It refuses one that opens inside a heading still open further down.
+func (n *nest) startHeading() string {
+	if isHeading(n.top()) {
+		n.pop()
+	} else if n.headings && len(n.heading) > 0 {
+		return "a heading opens inside a heading still open, which errata does not read; end the heading first; " + core.OtherWay
+	}
+	return ""
+}
+
+// startLink follows a link's start tag. A link ends a link open, as the
+// adoption agency does. One out of scope, past a table, the agency
+// leaves, and a browser then takes it off the list and the stack,
+// whatever it holds. It returns a refusal, or "".
+func (n *nest) startLink() string {
+	j := n.afeLast("a")
+	if j < 0 {
+		return ""
+	}
+	if at := n.afe[j].at; at >= 0 && n.last(n.bounds) > at {
+		n.afeRemove(j)
+		n.remove(at)
+		return ""
+	}
+	return n.formattingEnd("a", j)
+}
+
+// closeItem follows the start tag of a list item of name, which ends an
+// item of its kind open outside an address, a div or a p.
+func (n *nest) closeItem(name string) {
+	if i := n.last(n.notADP); i >= 0 && sameItem(n.stack[i], name) {
+		n.popThrough(i)
+	}
+}
+
+// ignoresTablePart follows the start tag of a table part (tablePart), and
+// reports whether a browser ignores it, as it does outside a table.
+func (n *nest) ignoresTablePart(name string) bool {
+	if !n.tablePart(name) {
+		n.ignored = true
+		return true
+	}
+	return false
 }
 
 // tablePart clears what a table part's start tag closes, as a browser's
@@ -290,7 +337,17 @@ func (n *nest) tablePart(name string) bool {
 	if i := n.last(n.tabular); n.stack[i] != "table" {
 		n.popThrough(i) // the cell or caption open in this table
 	}
-	keep := t // the element the part goes in
+	keep := n.partParent(name, t)
+	n.popThrough(keep + 1)
+	n.openImplied(name, keep == t)
+	return true
+}
+
+// partParent is the index of the element a table part of name goes in,
+// in the table at index t: the row open for a cell, the section open for
+// a row, which first ends a row open, and the table for the rest.
+func (n *nest) partParent(name string, t int) int {
+	keep := t
 	switch name {
 	case "td", "th":
 		if r := n.last(n.posOf("tr")); r > t {
@@ -304,16 +361,21 @@ func (n *nest) tablePart(name string) bool {
 			keep = sec
 		}
 	}
-	n.popThrough(keep + 1)
-	// A row goes in a section and a cell in a row: a browser opens the
-	// tbody and the tr a page leaves out, which </tbody> and </tr> close.
-	if (name == "tr" || name == "td" || name == "th") && keep == t {
+	return keep
+}
+
+// openImplied opens what a table part of name needs around it: a row
+// goes in a section and a cell in a row, so a browser opens the tbody,
+// when the part goes in the table itself (inTable), and the tr a page
+// leaves out, which </tbody> and </tr> close.
+func (n *nest) openImplied(name string, inTable bool) {
+	cell := name == "td" || name == "th"
+	if (name == "tr" || cell) && inTable {
 		n.push("tbody")
 	}
-	if (name == "td" || name == "th") && n.top() != "tr" {
+	if cell && n.top() != "tr" {
 		n.push("tr")
 	}
-	return true
 }
 
 // closeOption follows the start tag of an option, an optgroup or an hr,
@@ -377,39 +439,59 @@ func (n *nest) end(name string) string {
 	if isHeading(name) {
 		i = n.last(n.heading)
 	}
+	return n.endAt(name, i)
+}
+
+// endAt follows an end tag of name whose last element open, or heading
+// for a heading's, is at index i, or -1. It returns a refusal, or "".
+func (n *nest) endAt(name string, i int) string {
 	switch {
 	case i >= 0 && !special[name] && !isHeading(name):
 		if n.last(n.specials) <= i {
 			n.popThrough(i)
 		}
 	case i >= 0:
-		blocks := n.bounds
-		switch {
-		case name == "p":
-			blocks = n.buttons
-		case tableParts[name]:
-			// A table's parts close in table scope, which only a table
-			// ends: </table> closes the cell and the row open in it.
-			blocks = n.posOf("table")
-			if name == "table" {
-				blocks = nil
-			}
+		n.endScoped(name, i)
+	default:
+		return n.endOutside(name)
+	}
+	return ""
+}
+
+// endScoped follows the end tag of name, a special element or a heading,
+// open at index i: it closes the element when no element that ends its
+// scope is open above it.
+func (n *nest) endScoped(name string, i int) {
+	blocks := n.bounds
+	switch {
+	case name == "p":
+		blocks = n.buttons
+	case tableParts[name]:
+		// A table's parts close in table scope, which only a table
+		// ends: </table> closes the cell and the row open in it.
+		blocks = n.posOf("table")
+		if name == "table" {
+			blocks = nil
 		}
-		bound := n.last(blocks)
-		if name == "li" { // list item scope: a list ends it too
-			bound = max(bound, n.last(n.posOf("ul")), n.last(n.posOf("ol")))
-		}
-		if bound <= i {
-			n.popThrough(i)
-		}
+	}
+	bound := n.last(blocks)
+	if name == "li" { // list item scope: a list ends it too
+		bound = max(bound, n.last(n.posOf("ul")), n.last(n.posOf("ol")))
+	}
+	if bound <= i {
+		n.popThrough(i)
+	}
+}
+
+// endOutside follows an end tag of name when no element of the name is
+// open in the block. It refuses one that may end a pre or a heading open
+// inside the block through an element opened before it.
+func (n *nest) endOutside(name string) string {
+	switch {
 	case !n.outside || n.pre == 0 && (!n.headings || n.heads == 0):
 		// No element of the name is open in the file, and a browser
 		// ignores the tag; or none is open that the tag might end.
-	case name == "p" || alwaysOpen[name] || !special[name] && !isHeading(name) || len(n.bounds) > 0 || holdsNoElement(name):
-		// A browser ignores it, or inserts an empty p for </p>, whatever
-		// is open outside the block: an element of no special kind never
-		// closes a special one, a scope's end hides what lies beyond it,
-		// and an element that holds text alone or nothing is no ancestor.
+	case n.ignoresOutside(name):
 	default:
 		what := "pre"
 		if n.pre == 0 {
@@ -419,6 +501,15 @@ func (n *nest) end(name string) string {
 			name, what, what, core.OtherWay)
 	}
 	return ""
+}
+
+// ignoresOutside reports whether a browser ignores an end tag of name, or
+// inserts an empty p for </p>, whatever is open outside the block: an
+// element of no special kind never closes a special one, a scope's end
+// hides what lies beyond it, and an element that holds text alone or
+// nothing is no ancestor.
+func (n *nest) ignoresOutside(name string) bool {
+	return name == "p" || alwaysOpen[name] || !special[name] && !isHeading(name) || len(n.bounds) > 0 || holdsNoElement(name)
 }
 
 // top is the element on top, or "".
@@ -535,25 +626,37 @@ func (n *nest) remove(i int) {
 	n.afeAt = append(n.afeAt[:i], n.afeAt[i+1:]...)
 	n.drawn = append(n.drawn[:i], n.drawn[i+1:]...) // a link's: it veils nothing
 	for j := i; j < len(n.stack); j++ {
-		o := n.open[j]
-		for m := len(o.at) - 1; m >= 0; m-- {
-			if o.at[m] == j+1 {
-				o.at[m] = j
-				break
-			}
-		}
-		if a := n.afeAt[j]; a >= 0 {
-			n.afe[a].at = j
-		}
+		n.moveDown(j)
 	}
 	for _, k := range []*[]int{&n.bounds, &n.buttons, &n.specials, &n.notADP, &n.heading, &n.tabular, &n.sections, &n.htmls} {
-		m := len(*k) - 1
-		for ; m >= 0 && (*k)[m] > i; m-- {
-			(*k)[m]--
+		dropIndex(k, i)
+	}
+}
+
+// moveDown moves the element now at index j, which was at j+1, in the
+// index of its name and in the list of active formatting elements.
+func (n *nest) moveDown(j int) {
+	o := n.open[j]
+	for m := len(o.at) - 1; m >= 0; m-- {
+		if o.at[m] == j+1 {
+			o.at[m] = j
+			break
 		}
-		if m >= 0 && (*k)[m] == i {
-			*k = append((*k)[:m], (*k)[m+1:]...) // the link itself, an HTML element
-		}
+	}
+	if a := n.afeAt[j]; a >= 0 {
+		n.afe[a].at = j
+	}
+}
+
+// dropIndex takes the index i, a link removed, off the stack of a kind
+// k, and moves each index above it down one.
+func dropIndex(k *[]int, i int) {
+	m := len(*k) - 1
+	for ; m >= 0 && (*k)[m] > i; m-- {
+		(*k)[m]--
+	}
+	if m >= 0 && (*k)[m] == i {
+		*k = append((*k)[:m], (*k)[m+1:]...) // the link itself, an HTML element
 	}
 }
 
@@ -566,25 +669,11 @@ func (n *nest) popThrough(i int) {
 
 // kinds are the index stacks an element of name is on.
 func (n *nest) kinds(name string) []*[]int {
-	var out []*[]int
-	if scopeEnds[name] {
-		out = append(out, &n.bounds, &n.buttons)
-	} else if name == "button" {
-		out = append(out, &n.buttons)
-	}
-	if special[name] || isHeading(name) {
-		out = append(out, &n.specials)
-	}
-	if (special[name] || isHeading(name)) && name != "address" && name != "div" && name != "p" {
-		out = append(out, &n.notADP)
-	}
-	if isHeading(name) {
-		out = append(out, &n.heading)
-	}
-	if name == "table" || name == "td" || name == "th" || name == "caption" {
+	out := n.blockKinds(name)
+	if tabular[name] {
 		out = append(out, &n.tabular)
 	}
-	if name == "tbody" || name == "thead" || name == "tfoot" {
+	if sections[name] {
 		out = append(out, &n.sections)
 	}
 	if namespace(name) == "" {
@@ -592,6 +681,39 @@ func (n *nest) kinds(name string) []*[]int {
 	}
 	return out
 }
+
+// blockKinds are the stacks of kinds an element of name is on for the
+// scopes it ends and the start tags that close it: bounds, buttons,
+// specials, notADP and heading, in that order.
+func (n *nest) blockKinds(name string) []*[]int {
+	var out []*[]int
+	if scopeEnds[name] {
+		out = append(out, &n.bounds, &n.buttons)
+	} else if name == "button" {
+		out = append(out, &n.buttons)
+	}
+	sp := special[name] || isHeading(name)
+	if sp {
+		out = append(out, &n.specials)
+	}
+	if sp && !addressDivP[name] {
+		out = append(out, &n.notADP)
+	}
+	if isHeading(name) {
+		out = append(out, &n.heading)
+	}
+	return out
+}
+
+// tabular are the elements on the stack tabular: a table, and the cells
+// and caption that hold a table's content.
+var tabular = set(`table td th caption`)
+
+// sections are the elements on the stack sections: a table's sections.
+var sections = set(`tbody thead tfoot`)
+
+// addressDivP are the special elements left off the stack notADP.
+var addressDivP = set(`address div p`)
 
 // count moves the counts of pre elements and headings by d for name.
 func (n *nest) count(name string, d int) {

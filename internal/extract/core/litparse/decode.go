@@ -17,19 +17,11 @@ func (p *parser) strings(pre *core.Prefix) *core.Node {
 	p.advance()
 	var b strings.Builder // the strings after the first, joined once
 	joined := false
-run:
 	for p.syn.Adjacent {
-		var pre *core.Prefix
-		switch n := p.peek(); {
-		case p.tok.kind == tString:
-		case p.tok.kind == tIdent && n.kind == tString && n.glued && p.prefix(p.tok) != nil:
-			pre = p.prefix(p.tok)
-			p.advance()
-		default:
-			break run
+		more, lit, found := p.adjacent()
+		if !found {
+			break
 		}
-		more, lit := p.str(p.tok, pre)
-		p.advance()
 		if !joined {
 			b.WriteString(first)
 			joined = true
@@ -46,6 +38,30 @@ run:
 	return p.scalar(core.TypeString, first, t.start)
 }
 
+// adjacent reads the string at tok, with a prefix before it or not, and
+// moves past it: its text and whether it is literal; found is false when
+// no string stands there.
+func (p *parser) adjacent() (text string, lit, found bool) {
+	var pre *core.Prefix
+	switch n := p.peek(); {
+	case p.tok.kind == tString:
+	case p.prefixedAt(n):
+		pre = p.prefix(p.tok)
+		p.advance()
+	default:
+		return "", false, false
+	}
+	text, lit = p.str(p.tok, pre)
+	p.advance()
+	return text, lit, true
+}
+
+// prefixedAt reports whether tok is a word of the row's Prefixes that n, a
+// string, follows glued.
+func (p *parser) prefixedAt(n token) bool {
+	return p.tok.kind == tIdent && n.kind == tString && n.glued && p.prefix(p.tok) != nil
+}
+
 // str is the text of the string t, written after pre (nil for none), and
 // whether it is literal: a form that computes, a sigil that is no string,
 // code inside the body, or an escape errata does not decode make it
@@ -56,56 +72,91 @@ func (p *parser) str(t token, pre *core.Prefix) (string, bool) {
 	if f.Computed || !s.Closed {
 		return "", false
 	}
-	raw, interp := f.Escape == 0, f.Interp
+	raw, interp := decoding(f, s, pre)
+	body, ok := p.strBody(f, s)
+	if !ok {
+		return "", false
+	}
+	if f.TrimLast {
+		body = strings.TrimSuffix(body, "\n")
+	}
+	return p.decode(body, f, pre, raw, interp)
+}
+
+// decoding is how the string s of form f, written after pre, decodes: raw
+// when no escape is decoded, and the marker that opens code in it, "" for
+// none. A heredoc whose tag is in single quotes is raw text.
+func decoding(f core.SpanForm, s core.Span, pre *core.Prefix) (raw bool, interp string) {
+	raw, interp = f.Escape == 0, f.Interp
 	if pre != nil {
 		raw = raw || pre.Raw
 		if pre.Interp != "" {
 			interp = pre.Interp
 		}
 	}
-	var body string
-	switch {
-	case f.Heredoc:
-		switch s.Here.Quote {
-		case '\'':
-			raw, interp = true, ""
-		case '`':
-			return "", false // a command
-		}
-		tag := s.End - s.Start - len(f.Open)
-		if s.Here.Quote != 0 {
-			tag -= 2
-		}
-		indent := p.src[s.Here.End : s.Here.Close-tag]
-		body = lineFeeds(p.src[s.Here.Start:s.Here.End])
-		switch f.Dedent {
-		case core.DedentCloser:
-			body = dedent(body, indent)
-		case core.DedentCommon:
-			body = dedentCommon(body)
-		case core.DedentNone:
-		}
-	default:
-		if f.Tag != "" {
-			tag := p.src[s.Start+len(f.Open) : s.BodyStart-len(f.Inner)]
-			if len(tag) != 1 || !strings.Contains(p.syn.Sigils, tag) {
-				return "", false // a sigil that is no string, such as ~r
-			}
-		}
-		body = lineFeeds(p.src[s.BodyStart:s.BodyEnd])
-		if f.TrimFirst {
-			body = strings.TrimPrefix(body, "\n")
-		}
-		if f.Dedent == core.DedentCloser {
-			last := strings.LastIndexByte(body, '\n')
-			if indent := body[last+1:]; strings.Trim(indent, " \t") == "" {
-				body = dedent(body[:last+1], indent)
-			}
+	if f.Heredoc && s.Here.Quote == '\'' {
+		return true, ""
+	}
+	return raw, interp
+}
+
+// strBody is the body of s, a string of form f, with its line ends line
+// feeds and the indentation f takes off taken off; false when s is no
+// string.
+func (p *parser) strBody(f core.SpanForm, s core.Span) (string, bool) {
+	if f.Heredoc {
+		return p.hereBody(f, s)
+	}
+	return p.spanBody(f, s)
+}
+
+// hereBody is the body of s, a heredoc of form f; false for one whose tag
+// is in backquotes, a command.
+func (p *parser) hereBody(f core.SpanForm, s core.Span) (string, bool) {
+	if s.Here.Quote == '`' {
+		return "", false // a command
+	}
+	tag := s.End - s.Start - len(f.Open)
+	if s.Here.Quote != 0 {
+		tag -= 2
+	}
+	indent := p.src[s.Here.End : s.Here.Close-tag]
+	body := lineFeeds(p.src[s.Here.Start:s.Here.End])
+	switch f.Dedent {
+	case core.DedentCloser:
+		body = dedent(body, indent)
+	case core.DedentCommon:
+		body = dedentCommon(body)
+	case core.DedentNone:
+	}
+	return body, true
+}
+
+// spanBody is the body of s, a string of form f other than a heredoc;
+// false for a sigil that is no string, such as ~r.
+func (p *parser) spanBody(f core.SpanForm, s core.Span) (string, bool) {
+	if f.Tag != "" {
+		tag := p.src[s.Start+len(f.Open) : s.BodyStart-len(f.Inner)]
+		if len(tag) != 1 || !strings.Contains(p.syn.Sigils, tag) {
+			return "", false
 		}
 	}
-	if f.TrimLast {
-		body = strings.TrimSuffix(body, "\n")
+	body := lineFeeds(p.src[s.BodyStart:s.BodyEnd])
+	if f.TrimFirst {
+		body = strings.TrimPrefix(body, "\n")
 	}
+	if f.Dedent == core.DedentCloser {
+		last := strings.LastIndexByte(body, '\n')
+		if indent := body[last+1:]; strings.Trim(indent, " \t") == "" {
+			body = dedent(body[:last+1], indent)
+		}
+	}
+	return body, true
+}
+
+// decode is body, a string of form f written after pre, decoded: as it
+// stands when raw, and computed when it opens code with interp.
+func (p *parser) decode(body string, f core.SpanForm, pre *core.Prefix, raw bool, interp string) (string, bool) {
 	esc := f.Escape
 	if raw {
 		esc = 0
@@ -168,22 +219,24 @@ func dedentCommon(body string) string {
 }
 
 // hasInterp reports whether body opens code with marker outside an escape
-// esc (0 for none). A $ opens code only before a letter, _ or {.
+// esc (0 for none).
 func hasInterp(body, marker string, esc byte) bool {
 	for i := 0; i < len(body); i++ {
-		if strings.HasPrefix(body[i:], marker) {
-			if marker != "$" {
-				return true
-			}
-			if j := i + 1; j < len(body) && (identStart(body[j]) && body[j] != '$' || body[j] == '{') {
-				return true
-			}
+		if strings.HasPrefix(body[i:], marker) && opensCode(body, i, marker) {
+			return true
 		}
 		if esc != 0 && body[i] == esc {
 			i++
 		}
 	}
 	return false
+}
+
+// opensCode reports whether marker, at i in body, opens code: a $ does so
+// only before a letter, _ or {, and any other marker always.
+func opensCode(body string, i int, marker string) bool {
+	j := i + 1
+	return marker != "$" || j < len(body) && (identStart(body[j]) && body[j] != '$' || body[j] == '{')
 }
 
 // unescape decodes the escapes of body, a string of form f, by known, the
@@ -198,62 +251,125 @@ func unescape(body string, f core.SpanForm, known string, noUnicode bool) (strin
 	if strings.IndexByte(body, esc) < 0 {
 		return body, true
 	}
-	var b strings.Builder
+	u := unescaper{body: body, f: f, known: known, noUnicode: noUnicode}
 	for i := 0; i < len(body); i++ {
-		c := body[i]
-		if c != esc || i+1 == len(body) {
-			b.WriteByte(c)
+		if c := body[i]; c != esc || i+1 == len(body) {
+			u.b.WriteByte(c)
 			continue
 		}
-		n := body[i+1]
-		if f.QuoteEscapes {
-			if n == esc || f.Close != "" && n == f.Close[0] {
-				b.WriteByte(n)
-				i++
-			} else {
-				b.WriteByte(c)
-			}
-			continue
-		}
-		i++
-		if n != esc && strings.IndexByte(known, n) < 0 && (n != 'u' || strings.IndexByte(known, '{') < 0) ||
-			noUnicode && (n == 'u' || n == 'U') {
+		k, ok := u.escape(i)
+		if !ok {
 			return "", false
 		}
-		if r, ok := simple[n]; ok {
-			b.WriteString(r)
-			continue
-		}
-		switch n {
-		case '0':
-			if i+1 < len(body) && body[i+1] >= '0' && body[i+1] <= '9' {
-				return "", false // an octal escape
-			}
-			b.WriteByte(0)
-		case 'z':
-			// Lua's \z skips the blanks after it, on its line.
-			for i+1 < len(body) && (body[i+1] == ' ' || body[i+1] == '\t') {
-				i++
-			}
-		case 'x':
-			// Past ASCII, \x is a character in Python and JavaScript and a
-			// byte in Ruby and PHP, so it is read only below 0x80.
-			r, k, ok := hexRune(body[i+1:], 2, 2)
-			if !ok || r >= 0x80 {
-				return "", false
-			}
-			b.WriteRune(r)
-			i += k
-		case 'u', 'U':
-			r, k, ok := codePoint(body[i+1:], n, known)
-			if !ok {
-				return "", false
-			}
-			b.WriteRune(r)
-			i += k
-		}
+		i = k
 	}
-	return b.String(), true
+	return u.b.String(), true
+}
+
+// unescaper is what unescape reads and writes: the text decoded so far,
+// the body, its form, the escapes the language knows, and whether \u and
+// \U are left out.
+type unescaper struct {
+	b         strings.Builder
+	body      string
+	f         core.SpanForm
+	known     string
+	noUnicode bool
+}
+
+// escape decodes the escape at i, before the body's last byte, and returns
+// the last byte it read; false for one the language does not decode.
+func (u *unescaper) escape(i int) (int, bool) {
+	n := u.body[i+1]
+	if u.f.QuoteEscapes {
+		return u.quoteEscape(i, n), true
+	}
+	i++
+	if u.refuses(n) {
+		return 0, false
+	}
+	if r, ok := simple[n]; ok {
+		u.b.WriteString(r)
+		return i, true
+	}
+	return u.special(i, n)
+}
+
+// quoteEscape decodes the escape at i, followed by n, of a QuoteEscapes
+// form: an escaped escape or closer is that byte, and any other backslash
+// stays. It returns the last byte it read.
+func (u *unescaper) quoteEscape(i int, n byte) int {
+	if n == u.f.Escape || u.f.Close != "" && n == u.f.Close[0] {
+		u.b.WriteByte(n)
+		return i + 1
+	}
+	u.b.WriteByte(u.body[i])
+	return i
+}
+
+// refuses reports whether the escape \n is one the language does not
+// decode: not the escape itself, not one of known, nor a \u in braces
+// where known holds {; and with noUnicode any \u or \U.
+func (u *unescaper) refuses(n byte) bool {
+	return n != u.f.Escape && strings.IndexByte(u.known, n) < 0 && (n != 'u' || strings.IndexByte(u.known, '{') < 0) ||
+		u.noUnicode && (n == 'u' || n == 'U')
+}
+
+// special decodes the escape n at i, the escape's letter, that stands for
+// no fixed text: \0, Lua's \z, \x and \u or \U. It returns the last byte
+// it read; false for one it does not decode.
+func (u *unescaper) special(i int, n byte) (int, bool) {
+	switch n {
+	case '0':
+		return u.nul(i)
+	case 'z':
+		return u.blanks(i), true
+	case 'x':
+		return u.hexByte(i)
+	case 'u', 'U':
+		return u.codePointEscape(i, n)
+	}
+	return i, true
+}
+
+// nul decodes \0 at i, its 0; a digit after it makes an octal escape,
+// which is not decoded.
+func (u *unescaper) nul(i int) (int, bool) {
+	if i+1 < len(u.body) && u.body[i+1] >= '0' && u.body[i+1] <= '9' {
+		return 0, false // an octal escape
+	}
+	u.b.WriteByte(0)
+	return i, true
+}
+
+// blanks decodes Lua's \z at i, which skips the blanks after it on its
+// line, and returns the last of them.
+func (u *unescaper) blanks(i int) int {
+	for i+1 < len(u.body) && (u.body[i+1] == ' ' || u.body[i+1] == '\t') {
+		i++
+	}
+	return i
+}
+
+// hexByte decodes \x at i. Past ASCII, \x is a character in Python and
+// JavaScript and a byte in Ruby and PHP, so it is read only below 0x80.
+func (u *unescaper) hexByte(i int) (int, bool) {
+	r, k, ok := hexRune(u.body[i+1:], 2, 2)
+	if !ok || r >= 0x80 {
+		return 0, false
+	}
+	u.b.WriteRune(r)
+	return i + k, true
+}
+
+// codePointEscape decodes the \u or \U (n) at i.
+func (u *unescaper) codePointEscape(i int, n byte) (int, bool) {
+	r, k, ok := codePoint(u.body[i+1:], n, u.known)
+	if !ok {
+		return 0, false
+	}
+	u.b.WriteRune(r)
+	return i + k, true
 }
 
 // simple are the escapes that stand for one fixed text: the control
@@ -269,12 +385,7 @@ var simple = map[byte]string{
 // where it holds {, and eight after \U. It returns the bytes it read.
 func codePoint(s string, n byte, known string) (rune, int, bool) {
 	if n == 'u' && strings.HasPrefix(s, "{") {
-		end := strings.IndexByte(s, '}')
-		r, k, ok := hexRune(s[1:], 1, 6)
-		if strings.IndexByte(known, '{') < 0 || end < 0 || !ok || k != end-1 {
-			return 0, 0, false
-		}
-		return r, end + 1, true
+		return bracedPoint(s, known)
 	}
 	if n == 'u' && strings.IndexByte(known, 'u') < 0 {
 		return 0, 0, false // Swift writes \u only with braces
@@ -288,6 +399,17 @@ func codePoint(s string, n byte, known string) (rune, int, bool) {
 		return 0, 0, false
 	}
 	return r, k, true
+}
+
+// bracedPoint reads the code point of a \u{...} escape at the start of s,
+// one to six digits in braces, where known holds {.
+func bracedPoint(s, known string) (rune, int, bool) {
+	end := strings.IndexByte(s, '}')
+	r, k, ok := hexRune(s[1:], 1, 6)
+	if strings.IndexByte(known, '{') < 0 || end < 0 || !ok || k != end-1 {
+		return 0, 0, false
+	}
+	return r, end + 1, true
 }
 
 // hexRune reads least to most hex digits at the start of s.

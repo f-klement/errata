@@ -229,40 +229,57 @@ func eachTextLine(data []byte, m *core.Meter, f func(n int, line []byte) error) 
 func eachPyLine(data []byte, m *core.Meter, f func(n int, line []byte) error) error {
 	n, start := 1, 0
 	for i := 0; i < len(data); {
-		c := data[i]
-		w := 1
-		brk := false
-		switch {
-		case c == '\n' || c == '\v' || c == '\f' || c == 0x1c || c == 0x1d || c == 0x1e:
-			brk = true
-		case c == '\r':
-			brk = true
-			if i+1 < len(data) && data[i+1] == '\n' {
-				w = 2
-			}
-		case c >= utf8.RuneSelf:
-			r, size := utf8.DecodeRune(data[i:])
-			w = size
-			brk = r == 0x85 || r == 0x2028 || r == 0x2029
-		}
+		w, brk := pyLineBreak(data, i)
 		if brk {
-			if err := m.Charge(core.LineWork + i + w - start); err != nil {
+			if err := chargedLine(m, f, n, data[start:i], i+w-start); err != nil {
 				return err
 			}
-			if err := f(n, data[start:i]); err != nil {
-				return err
-			}
-			if c == '\n' || c == '\r' {
+			if c := data[i]; c == '\n' || c == '\r' {
 				n++
 			}
 			start = i + w
 		}
 		i += w
 	}
-	if err := m.Charge(core.LineWork + len(data) - start); err != nil {
+	return chargedLine(m, f, n, data[start:], len(data)-start)
+}
+
+// pyLineBreak is the width of the character at data[i], and whether
+// str.splitlines ends a line at it.
+func pyLineBreak(data []byte, i int) (int, bool) {
+	switch data[i] {
+	case '\n', '\v', '\f', 0x1c, 0x1d, 0x1e:
+		return 1, true
+	case '\r':
+		if i+1 < len(data) && data[i+1] == '\n' {
+			return 2, true
+		}
+		return 1, true
+	}
+	if data[i] < utf8.RuneSelf {
+		return 1, false
+	}
+	r, size := utf8.DecodeRune(data[i:])
+	return size, isPyRuneBreak(r)
+}
+
+// isPyRuneBreak reports whether r, a character that is not ASCII, ends a
+// line to str.splitlines: NEL, LS or PS.
+func isPyRuneBreak(r rune) bool {
+	switch r {
+	case 0x85, 0x2028, 0x2029:
+		return true
+	}
+	return false
+}
+
+// chargedLine charges m for a line of width bytes, its break included, and
+// calls f with its number n and its text.
+func chargedLine(m *core.Meter, f func(n int, line []byte) error, n int, line []byte, width int) error {
+	if err := m.Charge(core.LineWork + width); err != nil {
 		return err
 	}
-	return f(n, data[start:])
+	return f(n, line)
 }
 
 // notUTF8 refuses data that is not UTF-8 for a dialect whose tool decodes it

@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -111,14 +113,33 @@ func TestThePoolRunsAtMostItsWidth(t *testing.T) {
 	}
 }
 
-// width is GOMAXPROCS unless a test sets workers. Planted break: width
-// always 1, which kept the run on one core.
-func TestThePoolIsGOMAXPROCSWide(t *testing.T) {
+// width reads the quota under hostRoot unless a test sets workers: a
+// quota of one CPU is one worker, and no quota is GOMAXPROCS. Planted
+// breaks: width always 1, which kept the run on one core; width taking
+// GOMAXPROCS as it stands, which ran two workers on the one CPU; width
+// reading no env, which lowered the GOMAXPROCS the user set to the quota.
+func TestThePoolIsAsWideAsTheQuotaAllows(t *testing.T) {
+	t.Setenv("GOMAXPROCS", "")
+	defer func(was fs.FS) { hostRoot = was }(hostRoot)
+	hostRoot = host("0::/\n", map[string]string{"": "100000 100000"})
+	if got := (&Engine{}).width(); got != 1 {
+		t.Errorf("width %d under a quota of one CPU, want 1", got)
+	}
+	hostRoot = host("0::/\n", map[string]string{"": "max 100000"})
 	if got, want := (&Engine{}).width(), runtime.GOMAXPROCS(0); got != want {
-		t.Errorf("width %d, want GOMAXPROCS %d", got, want)
+		t.Errorf("width %d with no quota, want GOMAXPROCS %d", got, want)
 	}
 	if got := (&Engine{workers: 5}).width(); got != 5 {
 		t.Errorf("width %d with 5 workers, want 5", got)
+	}
+	procs := runtime.GOMAXPROCS(0)
+	if procs == 1 {
+		t.Skip("GOMAXPROCS 1 cannot tell the user's GOMAXPROCS from the quota")
+	}
+	hostRoot = host("0::/\n", map[string]string{"": "100000 100000"})
+	t.Setenv("GOMAXPROCS", strconv.Itoa(procs))
+	if got := (&Engine{}).width(); got != procs {
+		t.Errorf("width %d with GOMAXPROCS=%d in env, want %d", got, procs, procs)
 	}
 }
 

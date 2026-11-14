@@ -20,73 +20,110 @@ import "strings"
 // identifier alone. Here quirks mode changes only whether a table opens
 // inside a p (nest.start).
 func doctypeQuirks(s string) bool {
-	const whitespace = " \t\r\n\f"
-	quirks := false
-	space := strings.IndexAny(s, whitespace)
+	name, rest := doctypeName(s)
+	quirks := !strings.EqualFold(name, "html") // the standard's tokenizer lowercases the name; x/net's does not
+	if len(rest) < 6 {
+		return quirks || rest != ""
+	}
+	// Whole identifiers are at least one: doctypeIDs reads one before its
+	// keyword can be "".
+	keys, ids, whole := doctypeIDs(rest)
+	if !whole {
+		return true
+	}
+	return quirks || quirkyPublic(keys, ids) || quirkySystem(keys, ids)
+}
+
+// doctypeWhitespace is the whitespace a doctype's parts are apart by.
+const doctypeWhitespace = " \t\r\n\f"
+
+// doctypeName splits a doctype's data into its name and the rest, with
+// the whitespace before the rest trimmed.
+func doctypeName(s string) (string, string) {
+	space := strings.IndexAny(s, doctypeWhitespace)
 	if space == -1 {
 		space = len(s)
 	}
-	if !strings.EqualFold(s[:space], "html") { // the standard's tokenizer lowercases the name; x/net's does not
-		quirks = true
-	}
-	s = strings.TrimLeft(s[space:], whitespace)
-	if len(s) < 6 {
-		return quirks || s != ""
-	}
+	return s[:space], strings.TrimLeft(s[space:], doctypeWhitespace)
+}
+
+// doctypeIDs reads the identifiers after a doctype's name, s: a public
+// identifier, a system identifier after it, or a system identifier alone,
+// each quoted. It is the keyword of each and the identifiers, and whether
+// they are all of s: false for a keyword with no quoted identifier, and
+// for anything after them.
+func doctypeIDs(s string) ([]string, []string, bool) {
 	key := strings.ToLower(s[:6])
 	s = s[6:]
 	var keys, ids []string
 	for key == "public" || key == "system" {
-		s = strings.TrimLeft(s, whitespace)
-		if s == "" {
-			break
+		id, rest, ok := quotedID(s)
+		if !ok {
+			return nil, nil, false
 		}
-		quote := s[0]
-		if quote != '"' && quote != '\'' {
-			break
-		}
-		s = s[1:]
-		var id string
-		if q := strings.IndexByte(s, quote); q == -1 {
-			id, s = s, ""
-		} else {
-			id, s = s[:q], s[q+1:]
-		}
+		s = rest
 		keys, ids = append(keys, key), append(ids, id)
-		if key == "public" {
+		key = ""
+		if keys[len(keys)-1] == "public" {
 			key = "system"
-		} else {
-			key = ""
 		}
 	}
-	if key != "" || s != "" {
+	return keys, ids, key == "" && s == ""
+}
+
+// quotedID reads the identifier s starts with after whitespace, in single
+// or double quotes, which may run to the end of s unclosed, and is the
+// rest of s after it. It reports false when s holds no quote there.
+func quotedID(s string) (string, string, bool) {
+	s = strings.TrimLeft(s, doctypeWhitespace)
+	if s == "" {
+		return "", "", false
+	}
+	quote := s[0]
+	if quote != '"' && quote != '\'' {
+		return "", "", false
+	}
+	s = s[1:]
+	if q := strings.IndexByte(s, quote); q != -1 {
+		return s[:q], s[q+1:], true
+	}
+	return s, "", true
+}
+
+// quirkyPublic reports whether the identifiers start with a public one
+// that makes a page quirky: one on the legacy list, or an HTML 4.01
+// frameset or transitional one with no system identifier after it.
+func quirkyPublic(keys, ids []string) bool {
+	if keys[0] != "public" {
+		return false
+	}
+	public := strings.ToLower(ids[0])
+	if legacyPublic(public) {
 		return true
 	}
-	if len(ids) == 0 {
-		return quirks
+	return len(ids) == 1 && (strings.HasPrefix(public, "-//w3c//dtd html 4.01 frameset//") ||
+		strings.HasPrefix(public, "-//w3c//dtd html 4.01 transitional//"))
+}
+
+// legacyPublic reports whether the lowercased public identifier public is
+// one of x/net's legacy identifiers, whole or as a prefix (quirkyIDs).
+func legacyPublic(public string) bool {
+	switch public {
+	case "-//w3o//dtd w3 html strict 3.0//en//", "-/w3d/dtd html 4.0 transitional/en", "html":
+		return true
 	}
-	if keys[0] == "public" {
-		public := strings.ToLower(ids[0])
-		switch public {
-		case "-//w3o//dtd w3 html strict 3.0//en//", "-/w3d/dtd html 4.0 transitional/en", "html":
-			quirks = true
-		default:
-			for _, q := range quirkyIDs {
-				if strings.HasPrefix(public, q) {
-					quirks = true
-					break
-				}
-			}
-		}
-		if len(ids) == 1 && (strings.HasPrefix(public, "-//w3c//dtd html 4.01 frameset//") ||
-			strings.HasPrefix(public, "-//w3c//dtd html 4.01 transitional//")) {
-			quirks = true
+	for _, q := range quirkyIDs {
+		if strings.HasPrefix(public, q) {
+			return true
 		}
 	}
-	if keys[len(keys)-1] == "system" && strings.EqualFold(ids[len(ids)-1], "http://www.ibm.com/data/dtd/v11/ibmxhtml1-transitional.dtd") {
-		quirks = true
-	}
-	return quirks
+	return false
+}
+
+// quirkySystem reports whether the identifiers end with IBM's XHTML
+// system identifier.
+func quirkySystem(keys, ids []string) bool {
+	return keys[len(keys)-1] == "system" && strings.EqualFold(ids[len(ids)-1], "http://www.ibm.com/data/dtd/v11/ibmxhtml1-transitional.dtd")
 }
 
 // quirkyIDs are the public identifiers that put a page in quirks mode,

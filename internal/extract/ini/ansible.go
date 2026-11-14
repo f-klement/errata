@@ -72,22 +72,41 @@ func ansibleQuery(i Spec) (core.Query, error) {
 		return core.Query{}, errors.New("section is required: a group's name, group:vars or group:children, and ungrouped for the hosts before the first header")
 	}
 	name, tag, ok := ansibleSection([]byte(i.Section))
-	if !ok || (tag != "" && tag != "hosts" && tag != "vars" && tag != "children") {
+	if !ok || !knownAnsibleTag(tag) {
 		return core.Query{}, fmt.Errorf("section %s is no group's name, group:vars or group:children; a group's name holds no :, ] or white space", core.Quote(i.Section))
 	}
-	q := core.Query{Section: ansibleSectionName(nil, name, tag), Key: []byte(i.Key), HasKey: i.Key != ""}
-	switch {
-	case tag == "vars" && i.Key == "":
-		return core.Query{}, errors.New("key is required in a vars section")
-	case (tag == "vars" || tag == "children") && i.Host != "":
-		return core.Query{}, fmt.Errorf("host selects a host line, and section %s holds none", core.Quote(i.Section))
-	case tag == "children" && i.Key != "":
-		return core.Query{}, fmt.Errorf("section %s lists groups and sets no key; leave key out to select the groups", core.Quote(i.Section))
+	if err := ansibleSpecFits(i, tag); err != nil {
+		return core.Query{}, err
 	}
+	q := core.Query{Section: ansibleSectionName(nil, name, tag), Key: []byte(i.Key), HasKey: i.Key != ""}
 	if i.Host != "" {
 		q.Host, q.HasHost, q.MatchHost = []byte(i.Host), true, hostMatches
 	}
 	return q, nil
+}
+
+// knownAnsibleTag reports whether tag is a section type ansible knows: none,
+// hosts, vars or children.
+func knownAnsibleTag(tag string) bool {
+	switch tag {
+	case "", "hosts", "vars", "children":
+		return true
+	}
+	return false
+}
+
+// ansibleSpecFits refuses a key or a host that a section of type tag does
+// not hold: vars need a key and hold no host, and children hold neither.
+func ansibleSpecFits(i Spec, tag string) error {
+	switch {
+	case tag == "vars" && i.Key == "":
+		return errors.New("key is required in a vars section")
+	case (tag == "vars" || tag == "children") && i.Host != "":
+		return fmt.Errorf("host selects a host line, and section %s holds none", core.Quote(i.Section))
+	case tag == "children" && i.Key != "":
+		return fmt.Errorf("section %s lists groups and sets no key; leave key out to select the groups", core.Quote(i.Section))
+	}
+	return nil
 }
 
 // ansibleSectionName is the name an entry's section is compared by: the
@@ -169,60 +188,91 @@ func ansibleGroupLine(line []byte) ([]byte, bool) {
 }
 
 func readAnsible(data []byte, m *core.Meter, visit func(*core.Entry) error) error {
-	var (
-		section = []byte("ungrouped")
-		tag     string
-		words   shellWords
-		e       core.Entry // one entry, visited again for each value, so a value costs no allocation
-		seq     struct{ section, host int }
-	)
-	visitHost := func(e *core.Entry) error {
-		e.SectionSeq, e.HostSeq = seq.section, seq.host
-		return visit(e)
+	r := &ansibleReader{section: []byte("ungrouped"), m: m, visit: visit}
+	return eachPyLine(data, m, r.line)
+}
+
+// ansibleReader is readAnsible's state between lines.
+type ansibleReader struct {
+	section []byte
+	tag     string
+	words   shellWords
+	e       core.Entry // one entry, visited again for each value, so a value costs no allocation
+	seq     struct{ section, host int }
+	m       *core.Meter
+	visit   func(*core.Entry) error
+}
+
+// line reads line n of the inventory.
+func (r *ansibleReader) line(n int, raw []byte) error {
+	line := pyStrip(raw)
+	if ansibleBlank(line) {
+		return nil
 	}
-	return eachPyLine(data, m, func(n int, raw []byte) error {
-		line := pyStrip(raw)
-		if len(line) == 0 || line[0] == '#' || line[0] == ';' {
-			return nil
-		}
-		if name, t, ok := ansibleHeader(line); ok {
-			if t != "" && t != "hosts" && t != "vars" && t != "children" {
-				return core.LineError(n, "section [%s] has the type %s, which ansible does not know; write hosts, vars or children", core.Clip(string(name)), core.Quote(t))
-			}
-			section, tag = ansibleSectionName(section, name, t), t
-			seq.section++
-			return nil
-		}
-		if line[0] == '[' && line[len(line)-1] == ']' {
-			return core.LineError(n, "%s is no section header: a group's name holds no :, ] or white space, and a type after : is a word", core.Quote(string(line)))
-		}
-		switch tag {
-		case "vars":
-			at := bytes.IndexByte(line, '=')
-			if at < 0 {
-				return core.LineError(n, "expected key=value in a vars section, got %s", core.Quote(string(line)))
-			}
-			if err := m.Charge(len(line)); err != nil { // pyValue reads the value once
-				return err
-			}
-			value, computed, err := pyValue(pyStrip(line[at+1:]))
-			if err != nil {
-				return core.LineError(n, "%v", err)
-			}
-			e = core.Entry{Section: section, SectionSeq: seq.section, Key: pyStrip(line[:at]), Value: value, Line: n, Computed: computed}
-			return visit(&e)
-		case "children":
-			group, ok := ansibleGroupLine(line)
-			if !ok {
-				return core.LineError(n, "expected a group's name in a children section, got %s", core.Quote(string(line)))
-			}
-			e = core.Entry{Section: section, SectionSeq: seq.section, Kind: core.EntryName, Value: group, Line: n}
-			return visit(&e)
-		default:
-			seq.host++
-			return hostLine(n, line, section, &words, &e, m, visitHost)
-		}
-	})
+	if name, t, ok := ansibleHeader(line); ok {
+		return r.header(n, name, t)
+	}
+	if line[0] == '[' && line[len(line)-1] == ']' {
+		return core.LineError(n, "%s is no section header: a group's name holds no :, ] or white space, and a type after : is a word", core.Quote(string(line)))
+	}
+	switch r.tag {
+	case "vars":
+		return r.vars(n, line)
+	case "children":
+		return r.child(n, line)
+	default:
+		r.seq.host++
+		return hostLine(n, line, r.section, &r.words, &r.e, r.m, r.visitHost)
+	}
+}
+
+// ansibleBlank reports whether line, stripped, is blank or a comment.
+func ansibleBlank(line []byte) bool {
+	return len(line) == 0 || line[0] == '#' || line[0] == ';'
+}
+
+// header starts the section of a header's name and type t.
+func (r *ansibleReader) header(n int, name []byte, t string) error {
+	if !knownAnsibleTag(t) {
+		return core.LineError(n, "section [%s] has the type %s, which ansible does not know; write hosts, vars or children", core.Clip(string(name)), core.Quote(t))
+	}
+	r.section, r.tag = ansibleSectionName(r.section, name, t), t
+	r.seq.section++
+	return nil
+}
+
+// vars visits a key=value line of a vars section.
+func (r *ansibleReader) vars(n int, line []byte) error {
+	at := bytes.IndexByte(line, '=')
+	if at < 0 {
+		return core.LineError(n, "expected key=value in a vars section, got %s", core.Quote(string(line)))
+	}
+	if err := r.m.Charge(len(line)); err != nil { // pyValue reads the value once
+		return err
+	}
+	value, computed, err := pyValue(pyStrip(line[at+1:]))
+	if err != nil {
+		return core.LineError(n, "%v", err)
+	}
+	r.e = core.Entry{Section: r.section, SectionSeq: r.seq.section, Key: pyStrip(line[:at]), Value: value, Line: n, Computed: computed}
+	return r.visit(&r.e)
+}
+
+// child visits a group's line of a children section.
+func (r *ansibleReader) child(n int, line []byte) error {
+	group, ok := ansibleGroupLine(line)
+	if !ok {
+		return core.LineError(n, "expected a group's name in a children section, got %s", core.Quote(string(line)))
+	}
+	r.e = core.Entry{Section: r.section, SectionSeq: r.seq.section, Kind: core.EntryName, Value: group, Line: n}
+	return r.visit(&r.e)
+}
+
+// visitHost visits an entry of a host line, numbered by its section and
+// host.
+func (r *ansibleReader) visitHost(e *core.Entry) error {
+	e.SectionSeq, e.HostSeq = r.seq.section, r.seq.host
+	return r.visit(e)
 }
 
 // hostLine visits the host of a line in a group's hosts, and then each of its
@@ -236,39 +286,56 @@ func hostLine(n int, line, section []byte, words *shellWords, e *core.Entry, m *
 		return core.LineError(n, "the host line does not split as shell words: %v", err)
 	}
 	host := words.word(0)
-	empty, err := checkHost(host, m)
-	switch {
-	case errors.Is(err, core.ErrWork):
+	empty, err := lineHost(n, host, m)
+	if err != nil {
 		return err
-	case err != nil:
-		return core.LineError(n, "the host %s %v", core.Quote(string(host)), err)
 	}
 	if empty {
 		// ansible reads no host from the line, but still checks its words.
-		for i := 1; i < words.count(); i++ {
-			if w := words.word(i); bytes.IndexByte(w, '=') < 0 {
-				return core.LineError(n, "expected key=value after the host, got %s", core.Quote(string(w)))
-			}
-		}
-		return nil
+		return words.keyValues(n)
 	}
 	// ansible reads a host with a range as the hosts it expands to, and one
 	// with a port it takes off as the host without it.
-	computed := bytes.IndexByte(host, '[') >= 0
-	if !computed {
-		if computed, err = portTaken(host, m); err != nil {
-			return err
-		}
+	computed, err := hostComputed(host, m)
+	if err != nil {
+		return err
 	}
 	*e = core.Entry{Section: section, Host: host, Kind: core.EntryName, Value: host, Line: n, Computed: computed}
 	if err := visit(e); err != nil {
 		return err
 	}
+	return hostVars(n, section, host, words, e, visit)
+}
+
+// lineHost checks the host of line n (checkHost), and reports whether its
+// range expands to no host.
+func lineHost(n int, host []byte, m *core.Meter) (bool, error) {
+	empty, err := checkHost(host, m)
+	switch {
+	case errors.Is(err, core.ErrWork):
+		return false, err
+	case err != nil:
+		return false, core.LineError(n, "the host %s %v", core.Quote(string(host)), err)
+	}
+	return empty, nil
+}
+
+// hostComputed reports whether ansible reads host as a name other than
+// its text: one with a range, or one it takes a port off.
+func hostComputed(host []byte, m *core.Meter) (bool, error) {
+	if bytes.IndexByte(host, '[') >= 0 {
+		return true, nil
+	}
+	return portTaken(host, m)
+}
+
+// hostVars visits each key=value word after the host of line n.
+func hostVars(n int, section, host []byte, words *shellWords, e *core.Entry, visit func(*core.Entry) error) error {
 	for i := 1; i < words.count(); i++ {
 		w := words.word(i)
 		at := bytes.IndexByte(w, '=')
 		if at < 0 {
-			return core.LineError(n, "expected key=value after the host, got %s", core.Quote(string(w)))
+			return keyValueError(n, w)
 		}
 		value, computed, err := pyValue(w[at+1:])
 		if err != nil {
@@ -282,6 +349,12 @@ func hostLine(n int, line, section []byte, words *shellWords, e *core.Entry, m *
 	return nil
 }
 
+// keyValueError refuses w, a word after the host of line n that is no
+// key=value.
+func keyValueError(n int, w []byte) error {
+	return core.LineError(n, "expected key=value after the host, got %s", core.Quote(string(w)))
+}
+
 // shellWords splits a line as Python's shlex.split(line, comments=True)
 // does, in POSIX mode: words between blanks (space, tab, CR, LF), '...'
 // literal, "..." with \ escaping only " and \, \ outside quotes escaping any
@@ -291,6 +364,7 @@ func hostLine(n int, line, section []byte, words *shellWords, e *core.Entry, m *
 type shellWords struct {
 	buf  []byte
 	ends []int // where each word ends in buf
+	in   bool  // inside a word, quoted or not
 }
 
 var (
@@ -310,37 +384,57 @@ func (w *shellWords) word(i int) []byte {
 }
 
 func (w *shellWords) split(line []byte) error {
-	w.buf, w.ends = w.buf[:0], w.ends[:0]
-	in := false // inside a word, quoted or not
+	w.buf, w.ends, w.in = w.buf[:0], w.ends[:0], false
 	for i := 0; i < len(line); i++ {
-		switch c := line[i]; c {
-		case ' ', '\t', '\r', '\n':
-			if in {
-				w.ends, in = append(w.ends, len(w.buf)), false
-			}
-		case '#':
-			i = len(line)
-		case '\\':
-			if i+1 == len(line) {
-				return errEndEscape
-			}
-			i++
-			w.buf, in = append(w.buf, line[i]), true
-		case '\'', '"':
-			end, err := w.quoted(line, i)
-			if err != nil {
-				return err
-			}
-			i, in = end, true
-		default:
-			w.buf, in = append(w.buf, c), true
+		var err error
+		if i, err = w.step(line, i); err != nil {
+			return err
 		}
 	}
-	if in {
-		w.ends = append(w.ends, len(w.buf))
-	}
+	w.endWord()
 	if len(w.ends) == 0 {
 		return errNoHostWord
+	}
+	return nil
+}
+
+// step reads the line at i, and returns where it stopped reading: the end
+// of a quote, the byte after a \, or past the line at a comment.
+func (w *shellWords) step(line []byte, i int) (int, error) {
+	switch c := line[i]; c {
+	case ' ', '\t', '\r', '\n':
+		w.endWord()
+	case '#':
+		return len(line), nil
+	case '\\':
+		if i+1 == len(line) {
+			return 0, errEndEscape
+		}
+		w.buf, w.in = append(w.buf, line[i+1]), true
+		return i + 1, nil
+	case '\'', '"':
+		w.in = true
+		return w.quoted(line, i)
+	default:
+		w.buf, w.in = append(w.buf, c), true
+	}
+	return i, nil
+}
+
+// endWord ends the word being read, if any.
+func (w *shellWords) endWord() {
+	if w.in {
+		w.ends, w.in = append(w.ends, len(w.buf)), false
+	}
+}
+
+// keyValues refuses the first word after the host of line n that is no
+// key=value.
+func (w *shellWords) keyValues(n int) error {
+	for i := 1; i < w.count(); i++ {
+		if word := w.word(i); bytes.IndexByte(word, '=') < 0 {
+			return keyValueError(n, word)
+		}
 	}
 	return nil
 }

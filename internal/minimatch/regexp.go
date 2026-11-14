@@ -202,51 +202,94 @@ func sequence(terms []matcher) matcher {
 	}
 }
 
+// The reasons of the refusals the parser gives more than once.
+const (
+	failNothingToRepeat = "nothing to repeat"
+	failPropertyName    = "invalid property name"
+	failUnicodeEscape   = "invalid unicode escape"
+)
+
 func (p *parser) term() (matcher, error) {
-	c := p.peek()
-	switch c {
-	case '^':
-		p.pos++
-		return func(_ *machine, pos int, k func(int) bool) bool { return pos == 0 && k(pos) }, nil
-	case '$':
-		p.pos++
-		return func(m *machine, pos int, k func(int) bool) bool { return pos == len(m.in) && k(pos) }, nil
-	case '\\':
-		if p.at(`\b`) || p.at(`\B`) {
-			p.pos += 2
-			want := p.src[p.pos-1] == 'b'
-			return func(m *machine, pos int, k func(int) bool) bool {
-				return m.wordBoundary(pos) == want && k(pos)
-			}, nil
-		}
-	case '(':
-		if p.at("(?=") || p.at("(?!") {
-			negate := p.src[p.pos+2] == '!'
-			p.pos += 3
-			body, err := p.disjunction()
-			if err != nil {
-				return nil, err
-			}
-			if p.peek() != ')' {
-				return nil, p.fail("unterminated group")
-			}
-			p.pos++
-			look := lookahead(body, negate)
-			if !p.uflag {
-				// Annex B lets a lookahead take a quantifier without u.
-				return p.quantified(look)
-			}
-			if q := p.peek(); q == '*' || q == '+' || q == '?' || (q == '{' && p.braceQuantifier()) {
-				return nil, p.fail("nothing to repeat")
-			}
-			return look, nil
-		}
+	if m, ok, err := p.assertion(); ok || err != nil {
+		return m, err
 	}
 	atom, err := p.atom()
 	if err != nil {
 		return nil, err
 	}
 	return p.quantified(atom)
+}
+
+// assertion reads ^, $, \b, \B or a lookahead, or reports false for none.
+func (p *parser) assertion() (matcher, bool, error) {
+	switch {
+	case p.peek() == '^':
+		p.pos++
+		return atStart, true, nil
+	case p.peek() == '$':
+		p.pos++
+		return atEnd, true, nil
+	case p.at(`\b`) || p.at(`\B`):
+		return p.boundary(), true, nil
+	case p.at("(?=") || p.at("(?!"):
+		m, err := p.lookaheadTerm()
+		return m, true, err
+	}
+	return nil, false, nil
+}
+
+// atStart is ^, which holds before the first character.
+func atStart(_ *machine, pos int, k func(int) bool) bool { return pos == 0 && k(pos) }
+
+// atEnd is $, which holds after the last character.
+func atEnd(m *machine, pos int, k func(int) bool) bool { return pos == len(m.in) && k(pos) }
+
+// boundary reads \b or \B.
+func (p *parser) boundary() matcher {
+	p.pos += 2
+	want := p.src[p.pos-1] == 'b'
+	return func(m *machine, pos int, k func(int) bool) bool {
+		return m.wordBoundary(pos) == want && k(pos)
+	}
+}
+
+// lookaheadTerm reads (?=..) or (?!..). Annex B lets a lookahead take a
+// quantifier without u; with u one is refused.
+func (p *parser) lookaheadTerm() (matcher, error) {
+	negate := p.src[p.pos+2] == '!'
+	p.pos += 3
+	body, err := p.groupBody()
+	if err != nil {
+		return nil, err
+	}
+	look := lookahead(body, negate)
+	if !p.uflag {
+		return p.quantified(look)
+	}
+	if p.quantifierNext() {
+		return nil, p.fail(failNothingToRepeat)
+	}
+	return look, nil
+}
+
+// groupBody reads a group's alternatives up to the ) that closes it.
+func (p *parser) groupBody() (matcher, error) {
+	body, err := p.disjunction()
+	if err != nil {
+		return nil, err
+	}
+	if p.peek() != ')' {
+		return nil, p.fail("unterminated group")
+	}
+	p.pos++
+	return body, nil
+}
+
+// quantifierNext reports whether a quantifier starts at the parser's
+// place.
+func (p *parser) quantifierNext() bool {
+	q := p.peek()
+	return q == '*' || q == '+' || q == '?' || (q == '{' && p.braceQuantifier())
 }
 
 // lookahead is (?=body) or, with negate, (?!body). Neither is tried again
@@ -318,28 +361,11 @@ func (p *parser) digits() (int, bool) {
 
 // quantified reads a quantifier after atom, if one follows.
 func (p *parser) quantified(atom matcher) (matcher, error) {
-	lo, hi := 0, 0
-	switch p.peek() {
-	case '*':
-		p.pos++
-		lo, hi = 0, -1
-	case '+':
-		p.pos++
-		lo, hi = 1, -1
-	case '?':
-		p.pos++
-		lo, hi = 0, 1
-	case '{':
-		var ok bool
-		save := p.pos
-		if lo, hi, ok = p.readBraces(); !ok {
-			p.pos = save
-			return atom, nil
-		}
-		if hi >= 0 && hi < lo {
-			return nil, p.fail("numbers out of order in {} quantifier")
-		}
-	default:
+	lo, hi, ok, err := p.bounds()
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
 		return atom, nil
 	}
 	greedy := true
@@ -350,38 +376,90 @@ func (p *parser) quantified(atom matcher) (matcher, error) {
 	return repeat(atom, lo, hi, greedy), nil
 }
 
+// bounds reads a quantifier's bounds, hi -1 for none, or reports false
+// when no quantifier follows.
+func (p *parser) bounds() (lo, hi int, ok bool, err error) {
+	switch p.peek() {
+	case '*':
+		p.pos++
+		return 0, -1, true, nil
+	case '+':
+		p.pos++
+		return 1, -1, true, nil
+	case '?':
+		p.pos++
+		return 0, 1, true, nil
+	case '{':
+		return p.braceBounds()
+	}
+	return 0, 0, false, nil
+}
+
+// braceBounds reads {n}, {n,} or {n,m} as a quantifier, or leaves the
+// parser where it was when none starts there.
+func (p *parser) braceBounds() (lo, hi int, ok bool, err error) {
+	save := p.pos
+	if lo, hi, ok = p.readBraces(); !ok {
+		p.pos = save
+		return 0, 0, false, nil
+	}
+	if hi >= 0 && hi < lo {
+		return 0, 0, false, p.fail("numbers out of order in {} quantifier")
+	}
+	return lo, hi, true, nil
+}
+
 // repeat is atom between lo and hi times (hi -1 for no bound), as
 // RepeatMatcher has it: an iteration past the minimum that matches nothing
 // fails.
 func repeat(atom matcher, lo, hi int, greedy bool) matcher {
-	var try func(m *machine, pos, count int, k func(int) bool) bool
-	try = func(m *machine, pos, count int, k func(int) bool) bool {
-		if !m.steps.step() {
-			return false
-		}
-		if count >= lo && !greedy && k(pos) {
-			return true
-		}
-		if m.steps.err != nil {
-			return false
-		}
-		if hi < 0 || count < hi {
-			more := atom(m, pos, func(p int) bool {
-				if p == pos && count >= lo {
-					return false
-				}
-				return try(m, p, count+1, k)
-			})
-			if more {
-				return true
-			}
-			if m.steps.err != nil {
-				return false
-			}
-		}
-		return count >= lo && greedy && k(pos)
+	r := &repeater{atom: atom, lo: lo, hi: hi, greedy: greedy}
+	return func(m *machine, pos int, k func(int) bool) bool { return r.try(m, pos, 0, k) }
+}
+
+// repeater is a quantified atom: between lo and hi times, greedy or lazy.
+type repeater struct {
+	atom   matcher
+	lo, hi int
+	greedy bool
+}
+
+// try matches the atom's iterations from count on, at pos, then k.
+func (r *repeater) try(m *machine, pos, count int, k func(int) bool) bool {
+	if !m.steps.step() {
+		return false
 	}
-	return func(m *machine, pos int, k func(int) bool) bool { return try(m, pos, 0, k) }
+	if r.lazyHit(pos, count, k) {
+		return true
+	}
+	if m.steps.err != nil {
+		return false
+	}
+	if matched, stop := r.again(m, pos, count, k); stop {
+		return matched
+	}
+	return count >= r.lo && r.greedy && k(pos)
+}
+
+// lazyHit reports whether a lazy repeat past its minimum ends here.
+func (r *repeater) lazyHit(pos, count int, k func(int) bool) bool {
+	return count >= r.lo && !r.greedy && k(pos)
+}
+
+// again tries one more iteration while hi allows one. An iteration past
+// the minimum that matches nothing fails. stop is set when the answer is
+// decided: a match, or the steps ran out.
+func (r *repeater) again(m *machine, pos, count int, k func(int) bool) (matched, stop bool) {
+	if r.hi >= 0 && count >= r.hi {
+		return false, false
+	}
+	more := r.atom(m, pos, func(p int) bool {
+		if p == pos && count >= r.lo {
+			return false
+		}
+		return r.try(m, p, count+1, k)
+	})
+	return more, more || m.steps.err != nil
 }
 
 func (p *parser) atom() (matcher, error) {
@@ -389,47 +467,59 @@ func (p *parser) atom() (matcher, error) {
 	switch c {
 	case '.':
 		p.pos++
-		return func(m *machine, pos int, k func(int) bool) bool {
-			if pos >= len(m.in) || !m.steps.step() {
-				return false
-			}
-			r, w := m.char(pos)
-			return !lineTerminator(r) && k(pos+w)
-		}, nil
+		return anyChar, nil
 	case '(':
-		p.pos++
-		if p.at("?:") {
-			p.pos += 2
-		} else if p.peek() == '?' {
-			return nil, p.fail("invalid group")
-		}
-		body, err := p.disjunction()
-		if err != nil {
-			return nil, err
-		}
-		if p.peek() != ')' {
-			return nil, p.fail("unterminated group")
-		}
-		p.pos++
-		return body, nil
+		return p.parenAtom()
 	case '[':
 		p.pos++
 		return p.class()
 	case '\\':
 		p.pos++
 		return p.atomEscape()
+	}
+	if err := p.lone(c); err != nil {
+		return nil, err
+	}
+	return literal(p.next()), nil
+}
+
+// anyChar is ., any character but a line terminator.
+func anyChar(m *machine, pos int, k func(int) bool) bool {
+	if pos >= len(m.in) || !m.steps.step() {
+		return false
+	}
+	r, w := m.char(pos)
+	return !lineTerminator(r) && k(pos+w)
+}
+
+// parenAtom reads a group, ( or (?:, and refuses any other (?.
+func (p *parser) parenAtom() (matcher, error) {
+	p.pos++
+	if p.at("?:") {
+		p.pos += 2
+	} else if p.peek() == '?' {
+		return nil, p.fail("invalid group")
+	}
+	return p.groupBody()
+}
+
+// lone refuses c, a quantifier or a bracket, where it stands as an atom.
+// Without u, Annex B reads a { that starts no quantifier, a ] and a } as
+// themselves.
+func (p *parser) lone(c rune) error {
+	switch c {
 	case '*', '+', '?':
-		return nil, p.fail("nothing to repeat")
+		return p.fail(failNothingToRepeat)
 	case '{':
 		if p.uflag || p.braceQuantifier() {
-			return nil, p.fail("nothing to repeat")
+			return p.fail(failNothingToRepeat)
 		}
 	case ']', '}':
 		if p.uflag {
-			return nil, p.fail("lone quantifier brackets")
+			return p.fail("lone quantifier brackets")
 		}
 	}
-	return literal(p.next()), nil
+	return nil
 }
 
 // literal matches the character c, in either case under the i flag.
@@ -615,34 +705,49 @@ func (p *parser) class() (matcher, error) {
 			s.merge()
 			return s.matcher(), nil
 		}
-		lo, loSet, err := p.classAtom()
-		if err != nil {
+		if err := p.classMember(s); err != nil {
 			return nil, err
 		}
-		if p.peek() == '-' && p.pos+1 < len(p.src) && p.src[p.pos+1] != ']' {
-			p.pos++
-			hi, hiSet, err := p.classAtom()
-			if err != nil {
-				return nil, err
-			}
-			if loSet != nil || hiSet != nil {
-				if p.uflag {
-					return nil, p.fail("invalid character class")
-				}
-				// Annex B: a class escape at either end makes the - literal.
-				s.add(lo, loSet)
-				s.ranges = append(s.ranges, [2]rune{'-', '-'})
-				s.add(hi, hiSet)
-				continue
-			}
-			if hi < lo {
-				return nil, p.fail("range out of order in character class")
-			}
-			s.ranges = append(s.ranges, [2]rune{lo, hi})
-			continue
-		}
-		s.add(lo, loSet)
 	}
+}
+
+// classMember reads a member of a class into s: a character, a class
+// escape, or a range.
+func (p *parser) classMember(s *set) error {
+	lo, loSet, err := p.classAtom()
+	if err != nil {
+		return err
+	}
+	if p.peek() == '-' && p.pos+1 < len(p.src) && p.src[p.pos+1] != ']' {
+		p.pos++
+		return p.classRange(s, lo, loSet)
+	}
+	s.add(lo, loSet)
+	return nil
+}
+
+// classRange reads the end of a range that starts at lo, or loSet, after
+// its -.
+func (p *parser) classRange(s *set, lo rune, loSet *set) error {
+	hi, hiSet, err := p.classAtom()
+	if err != nil {
+		return err
+	}
+	if loSet != nil || hiSet != nil {
+		if p.uflag {
+			return p.fail("invalid character class")
+		}
+		// Annex B: a class escape at either end makes the - literal.
+		s.add(lo, loSet)
+		s.ranges = append(s.ranges, [2]rune{'-', '-'})
+		s.add(hi, hiSet)
+		return nil
+	}
+	if hi < lo {
+		return p.fail("range out of order in character class")
+	}
+	s.ranges = append(s.ranges, [2]rune{lo, hi})
+	return nil
 }
 
 // add adds the character c, or the class escape named, to s: an escape
@@ -696,22 +801,27 @@ func (p *parser) atomEscape() (matcher, error) {
 		return nil, p.fail("backreferences are not read")
 	}
 	if s, err := p.classEscape(); s != nil || err != nil {
-		if err != nil {
-			return nil, err
-		}
-		if s.property != "" && s.negate {
-			// \P{..} is the complement first, and the i flag then folds
-			// into it: under i and u, a is in \P{Ll} because A is. A
-			// class holds the escape as a member, which does that.
-			return (&set{named: []*set{s}}).matcher(), nil
-		}
-		return s.matcher(), nil
+		return escapeMatcher(s, err)
 	}
 	c, err := p.characterEscape(false)
 	if err != nil {
 		return nil, err
 	}
 	return literal(c), nil
+}
+
+// escapeMatcher is the matcher of the class escape s, outside a class.
+func escapeMatcher(s *set, err error) (matcher, error) {
+	if err != nil {
+		return nil, err
+	}
+	if s.property != "" && s.negate {
+		// \P{..} is the complement first, and the i flag then folds
+		// into it: under i and u, a is in \P{Ll} because A is. A
+		// class holds the escape as a member, which does that.
+		return (&set{named: []*set{s}}).matcher(), nil
+	}
+	return s.matcher(), nil
 }
 
 // classEscape reads \d, \D, \s, \S, \w, \W, and under u \p{..} and \P{..},
@@ -728,23 +838,7 @@ func (p *parser) classEscape() (*set, error) {
 		s = &set{ranges: [][2]rune{{'\t', '\r'}, {' ', ' '}, {0xA0, 0xA0}, {0x1680, 0x1680}, {0x2000, 0x200A},
 			{0x2028, 0x2029}, {0x202F, 0x202F}, {0x205F, 0x205F}, {0x3000, 0x3000}, {0xFEFF, 0xFEFF}}}
 	case 'p', 'P':
-		if !p.uflag {
-			return nil, nil
-		}
-		p.pos++
-		if p.peek() != '{' {
-			return nil, p.fail("invalid property name")
-		}
-		end := slices.Index(p.src[p.pos:], '}')
-		if end < 0 {
-			return nil, p.fail("invalid property name")
-		}
-		name := string(p.src[p.pos+1 : p.pos+end])
-		p.pos += end + 1
-		if !knownProperty(name) {
-			return nil, p.fail("invalid property name")
-		}
-		return &set{property: name, negate: c == 'P', key: string(c) + name}, nil
+		return p.propertyEscape(c)
 	default:
 		return nil, nil
 	}
@@ -752,6 +846,28 @@ func (p *parser) classEscape() (*set, error) {
 	s.negate = c == 'D' || c == 'W' || c == 'S'
 	s.key = string(c)
 	return s, nil
+}
+
+// propertyEscape reads \p{..} or \P{..}, c its letter, under u; without
+// u it is no class escape.
+func (p *parser) propertyEscape(c rune) (*set, error) {
+	if !p.uflag {
+		return nil, nil
+	}
+	p.pos++
+	if p.peek() != '{' {
+		return nil, p.fail(failPropertyName)
+	}
+	end := slices.Index(p.src[p.pos:], '}')
+	if end < 0 {
+		return nil, p.fail(failPropertyName)
+	}
+	name := string(p.src[p.pos+1 : p.pos+end])
+	p.pos += end + 1
+	if !knownProperty(name) {
+		return nil, p.fail(failPropertyName)
+	}
+	return &set{property: name, negate: c == 'P', key: string(c) + name}, nil
 }
 
 // knownProperty is whether name is one of the general categories the port
@@ -769,82 +885,128 @@ func knownProperty(name string) bool {
 // allows only for the syntax characters and /.
 func (p *parser) characterEscape(inClass bool) (rune, error) {
 	c := p.next()
+	if r, ok := controlEscapes[c]; ok {
+		return r, nil
+	}
 	switch c {
-	case 'f':
-		return '\f', nil
-	case 'n':
-		return '\n', nil
-	case 'r':
-		return '\r', nil
-	case 't':
-		return '\t', nil
-	case 'v':
-		return '\v', nil
 	case 'c':
-		if l := p.peek(); (l >= 'a' && l <= 'z') || (l >= 'A' && l <= 'Z') {
-			p.pos++
-			return l % 32, nil
-		}
-		if l := p.peek(); !p.uflag && inClass && ((l >= '0' && l <= '9') || l == '_') {
-			p.pos++
-			return l % 32, nil
-		}
-		if p.uflag {
-			return 0, p.fail("invalid unicode escape")
-		}
-		// Annex B: \c without a letter is a backslash, and c is read next.
-		p.pos--
-		return '\\', nil
+		return p.controlLetter(inClass)
 	case '0':
-		if d := p.peek(); d >= '0' && d <= '9' {
-			return 0, p.fail("octal escapes are not read")
-		}
-		return 0, nil
+		return p.nulEscape()
 	case 'x':
-		if v, ok := p.hex(2); ok {
-			return v, nil
-		}
-		if p.uflag {
-			return 0, p.fail("invalid escape")
-		}
-		return 'x', nil
+		return p.hexEscape()
 	case 'u':
-		if p.uflag && p.peek() == '{' {
-			end := slices.Index(p.src[p.pos:], '}')
-			if end < 2 {
-				return 0, p.fail("invalid unicode escape")
-			}
-			v, err := strconv.ParseUint(string(p.src[p.pos+1:p.pos+end]), 16, 32)
-			if err != nil || v > 0x10FFFF {
-				return 0, p.fail("invalid unicode escape")
-			}
-			p.pos += end + 1
-			return rune(v), nil
-		}
-		if v, ok := p.hex(4); ok {
-			if p.uflag && v >= 0xD800 && v < 0xDC00 && p.at(`\u`) {
-				save := p.pos
-				p.pos += 2
-				if lo, ok := p.hex(4); ok && lo >= 0xDC00 && lo <= 0xDFFF {
-					return 0x10000 + (v-0xD800)<<10 + (lo - 0xDC00), nil
-				}
-				p.pos = save
-			}
-			return v, nil
-		}
-		if p.uflag {
-			return 0, p.fail("invalid unicode escape")
-		}
-		return 'u', nil
+		return p.unicodeEscape()
+	}
+	return p.identityEscape(c)
+}
+
+// controlEscapes are the control escapes, \f, \n, \r, \t and \v.
+var controlEscapes = map[rune]rune{'f': '\f', 'n': '\n', 'r': '\r', 't': '\t', 'v': '\v'}
+
+// controlLetter reads \cX after its c. Annex B reads a digit or _ in a
+// class too, and \c without a letter as a backslash, with c read next.
+func (p *parser) controlLetter(inClass bool) (rune, error) {
+	if l := p.peek(); asciiLetter(l) {
+		p.pos++
+		return l % 32, nil
+	}
+	if l := p.peek(); !p.uflag && inClass && digitOrUnderscore(l) {
+		p.pos++
+		return l % 32, nil
 	}
 	if p.uflag {
-		switch c {
-		case '^', '$', '\\', '.', '*', '+', '?', '(', ')', '[', ']', '{', '}', '|', '/':
-			return c, nil
-		}
+		return 0, p.fail(failUnicodeEscape)
+	}
+	p.pos--
+	return '\\', nil
+}
+
+// asciiLetter reports whether c is an ASCII letter.
+func asciiLetter(c rune) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
+
+// digitOrUnderscore reports whether c is an ASCII digit or _.
+func digitOrUnderscore(c rune) bool {
+	return (c >= '0' && c <= '9') || c == '_'
+}
+
+// nulEscape reads \0, which a digit may not follow.
+func (p *parser) nulEscape() (rune, error) {
+	if d := p.peek(); d >= '0' && d <= '9' {
+		return 0, p.fail("octal escapes are not read")
+	}
+	return 0, nil
+}
+
+// hexEscape reads \xHH after its x; without u, an x with no two digits is
+// itself.
+func (p *parser) hexEscape() (rune, error) {
+	if v, ok := p.hex(2); ok {
+		return v, nil
+	}
+	if p.uflag {
 		return 0, p.fail("invalid escape")
 	}
-	return c, nil
+	return 'x', nil
+}
+
+// unicodeEscape reads \uHHHH, a surrogate pair of them under u, or \u{..}
+// under u, after its u; without u, a u with no four digits is itself.
+func (p *parser) unicodeEscape() (rune, error) {
+	if p.uflag && p.peek() == '{' {
+		return p.codePointEscape()
+	}
+	if v, ok := p.hex(4); ok {
+		return p.surrogates(v), nil
+	}
+	if p.uflag {
+		return 0, p.fail(failUnicodeEscape)
+	}
+	return 'u', nil
+}
+
+// codePointEscape reads {..}, a code point in hexadecimal, after \u.
+func (p *parser) codePointEscape() (rune, error) {
+	end := slices.Index(p.src[p.pos:], '}')
+	if end < 2 {
+		return 0, p.fail(failUnicodeEscape)
+	}
+	v, err := strconv.ParseUint(string(p.src[p.pos+1:p.pos+end]), 16, 32)
+	if err != nil || v > 0x10FFFF {
+		return 0, p.fail(failUnicodeEscape)
+	}
+	p.pos += end + 1
+	return rune(v), nil
+}
+
+// surrogates is v, or under u the code point of the pair v makes with a
+// \uHHHH low surrogate after it, which it then reads.
+func (p *parser) surrogates(v rune) rune {
+	if !p.uflag || v < 0xD800 || v >= 0xDC00 || !p.at(`\u`) {
+		return v
+	}
+	save := p.pos
+	p.pos += 2
+	if lo, ok := p.hex(4); ok && lo >= 0xDC00 && lo <= 0xDFFF {
+		return 0x10000 + (v-0xD800)<<10 + (lo - 0xDC00)
+	}
+	p.pos = save
+	return v
+}
+
+// identityEscape reads an identity escape, which u allows only for the
+// syntax characters and /.
+func (p *parser) identityEscape(c rune) (rune, error) {
+	if !p.uflag {
+		return c, nil
+	}
+	switch c {
+	case '^', '$', '\\', '.', '*', '+', '?', '(', ')', '[', ']', '{', '}', '|', '/':
+		return c, nil
+	}
+	return 0, p.fail("invalid escape")
 }
 
 // hex reads n hexadecimal digits, or leaves the parser where it was.

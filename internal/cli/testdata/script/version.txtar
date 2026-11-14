@@ -1,8 +1,17 @@
 exec errata version
 stdout '^dev$'
+cp stdout version.txt
+
+# errata --version prints what errata version prints, and takes no -v.
+exec errata --version
+cmp stdout version.txt
+! stderr .
+! exec errata -v
+stderr 'unknown shorthand flag: ''v'''
 
 exec errata --help
 stdout '^errata checks the claims a repository makes about itself'
+stdout '--version +print the errata version'
 
 ! exec errata nonsense
 stderr 'unknown command'

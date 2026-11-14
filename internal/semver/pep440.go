@@ -74,28 +74,64 @@ func (p *pep440Scan) number() num {
 // zeros.
 func parsePEP440(t string) (Version, error) {
 	p := pep440Scan{s: t}
+	p.dropV()
+	v := Version{epoch: "0", syn: codePEP440}
+	if !p.release(&v) {
+		return Version{}, errPEP440
+	}
+	p.suffixes(&v)
+	if p.s == "" {
+		return v, nil
+	}
+	local, ok := strings.CutPrefix(p.s, "+")
+	if !ok {
+		return Version{}, errPEP440
+	}
+	if v.build, ok = pep440Local(local); !ok {
+		return Version{}, errPEP440
+	}
+	return v, nil
+}
+
+// dropV takes the v a version may start with.
+func (p *pep440Scan) dropV() {
 	if p.s != "" && (p.s[0] == 'v' || p.s[0] == 'V') {
 		p.s = p.s[1:]
 	}
-	v := Version{epoch: "0", syn: codePEP440}
+}
+
+// release takes the epoch, when there is one, and the release numbers
+// into v, and reports false when no number is there to take.
+func (p *pep440Scan) release(v *Version) bool {
 	first := p.digits()
 	if first == "" {
-		return Version{}, errPEP440
+		return false
 	}
 	if p.s != "" && p.s[0] == '!' {
 		v.epoch, _ = parseNum(first)
 		p.s = p.s[1:]
 		if first = p.digits(); first == "" {
-			return Version{}, errPEP440
+			return false
 		}
 	}
 	n, _ := parseNum(first)
 	v.release = []num{n}
+	p.moreNumbers(v)
+	return true
+}
+
+// moreNumbers takes each .N after the first release number into v.
+func (p *pep440Scan) moreNumbers(v *Version) {
 	for len(p.s) >= 2 && p.s[0] == '.' && isDigit(p.s[1]) {
 		p.s = p.s[1:]
 		n, _ := parseNum(p.digits())
 		v.release = append(v.release, n)
 	}
+}
+
+// suffixes takes the pre-release, the post release and the development
+// release into v, each when it is there.
+func (p *pep440Scan) suffixes(v *Version) {
 	if i := p.word(func(i int) string { return pep440Pre[i].word }, len(pep440Pre)); i >= 0 {
 		v.pre = []ident{{text: pep440Pre[i].normal}, {numeric: true, text: string(p.number())}}
 	}
@@ -108,31 +144,44 @@ func parsePEP440(t string) (Version, error) {
 	if p.word(func(int) string { return "dev" }, 1) >= 0 {
 		v.hasDev, v.dev = true, p.number()
 	}
-	if p.s == "" {
-		return v, nil
-	}
-	local, ok := strings.CutPrefix(p.s, "+")
-	if !ok {
-		return Version{}, errPEP440
-	}
-	parts := strings.FieldsFunc(local, func(r rune) bool { return r == '-' || r == '_' || r == '.' })
+}
+
+// pep440Local is the local version local, the text after a +, in its
+// normal form: in lower case with its parts joined by dots, each number
+// without leading zeros. It reports false for an empty part, a separator
+// at either end, and a character other than a letter, a digit or a
+// separator.
+func pep440Local(local string) (string, bool) {
+	parts := strings.FieldsFunc(local, localSep)
 	if len(parts) == 0 || isSep(local[0]) || isSep(local[len(local)-1]) || strings.Count(local, ".")+strings.Count(local, "-")+strings.Count(local, "_") != len(parts)-1 {
-		return Version{}, errPEP440
+		return "", false
 	}
 	for i, part := range parts {
-		for k := range len(part) {
-			if c := part[k]; !isDigit(c) && !isLetter(c) {
-				return Version{}, errPEP440
-			}
+		normal, ok := localPart(part)
+		if !ok {
+			return "", false
 		}
-		if n, ok := parseNum(part); ok {
-			parts[i] = string(n)
-		} else {
-			parts[i] = strings.ToLower(part)
+		parts[i] = normal
+	}
+	return strings.Join(parts, "."), true
+}
+
+// localSep reports whether r separates the parts of a local version.
+func localSep(r rune) bool { return r == '-' || r == '_' || r == '.' }
+
+// localPart is a part of a local version in its normal form: a number
+// without leading zeros, or the part in lower case. It reports false for
+// a character other than a letter or a digit.
+func localPart(part string) (string, bool) {
+	for k := range len(part) {
+		if c := part[k]; !isDigit(c) && !isLetter(c) {
+			return "", false
 		}
 	}
-	v.build = strings.Join(parts, ".")
-	return v, nil
+	if n, ok := parseNum(part); ok {
+		return string(n), true
+	}
+	return strings.ToLower(part), true
 }
 
 // publicOf is v without a local version or the bound above them.
@@ -153,6 +202,14 @@ func numOrZero(s string) num {
 // bound above the post releases of a version is written .post* after it.
 func (v Version) pep440String() string {
 	var b strings.Builder
+	v.pep440Release(&b)
+	v.pep440Suffixes(&b)
+	return b.String()
+}
+
+// pep440Release writes v's epoch, when it is not 0, its release numbers,
+// and a floor's -0.
+func (v Version) pep440Release(b *strings.Builder) {
 	if v.epoch != "0" && v.epoch != "" {
 		b.WriteString(string(v.epoch) + "!")
 	}
@@ -165,6 +222,12 @@ func (v Version) pep440String() string {
 	if v.floor {
 		b.WriteString("-0")
 	}
+}
+
+// pep440Suffixes writes what follows v's release numbers: the
+// pre-release, the bound above the post releases, the post and the
+// development release, and the local version or the bound above them.
+func (v Version) pep440Suffixes(b *strings.Builder) {
 	for _, id := range v.pre {
 		b.WriteString(id.text)
 	}
@@ -183,7 +246,6 @@ func (v Version) pep440String() string {
 	if v.localTop {
 		b.WriteString("+*")
 	}
-	return b.String()
 }
 
 var pep440Operators = []string{"===", "~=", "==", "!=", "<=", ">=", "<", ">"}
@@ -205,70 +267,119 @@ var pep440Operators = []string{"===", "~=", "==", "!=", "<=", ">=", "<", ">"}
 // names one, as packaging 25.0's Specifier.prereleases decides and the
 // specification's own <V.rc1 example asks.
 func pep440Clause(t string) (clause, error) {
-	op, rest, err := cutOperator(t, pep440Operators)
-	switch {
-	case err != nil:
+	op, rest, err := pep440Operator(t)
+	if err != nil {
 		return clause{}, err
-	case op == "":
-		return clause{}, fmt.Errorf("%s: PEP 440 writes an operator before every version", quoteToken(t))
-	case op == "===":
-		return clause{}, fmt.Errorf("%s: === compares text, which errata does not read as a version", quoteToken(t))
 	}
+	eq := op == "==" || op == "!="
 	wild := false
-	if op == "==" || op == "!=" {
+	if eq {
 		rest, wild = strings.CutSuffix(rest, ".*")
 	}
 	v, err := parsePEP440(rest)
+	if err != nil {
+		return clause{}, fmt.Errorf("%s is not a version: %w", quoteToken(rest), err)
+	}
+	if err := pep440Operand(t, op, v, eq, wild); err != nil {
+		return clause{}, err
+	}
+	c := pep440Range(op, v, wild)
+	c.pre = !wild && v.prerelease() && op != "!="
+	return c, nil
+}
+
+// pep440Operator cuts the operator off the clause t, and refuses a clause
+// with none and ===.
+func pep440Operator(t string) (string, string, error) {
+	op, rest, err := cutOperator(t, pep440Operators)
 	switch {
 	case err != nil:
-		return clause{}, fmt.Errorf("%s is not a version: %w", quoteToken(rest), err)
-	case wild && (v.suffixed() || v.build != ""):
-		return clause{}, fmt.Errorf("%s: .* follows the release numbers only", quoteToken(t))
-	case v.build != "" && op != "==" && op != "!=":
-		return clause{}, fmt.Errorf("%s: only == and != take a local version", quoteToken(t))
-	case op == "~=" && len(v.release) < 2:
-		return clause{}, fmt.Errorf("%s: ~= needs a version of at least two numbers", quoteToken(t))
+		return "", "", err
+	case op == "":
+		return "", "", fmt.Errorf("%s: PEP 440 writes an operator before every version", quoteToken(t))
+	case op == "===":
+		return "", "", fmt.Errorf("%s: === compares text, which errata does not read as a version", quoteToken(t))
 	}
-	c := clause{pre: !wild && v.prerelease() && op != "!="}
+	return op, rest, nil
+}
+
+// pep440Operand refuses the version v that the operator op of the clause
+// t takes, eq for == and !=, wild for a version that ended in .*, when
+// the operator does not take it.
+func pep440Operand(t, op string, v Version, eq, wild bool) error {
+	switch {
+	case wild && (v.suffixed() || v.build != ""):
+		return fmt.Errorf("%s: .* follows the release numbers only", quoteToken(t))
+	case v.build != "" && !eq:
+		return fmt.Errorf("%s: only == and != take a local version", quoteToken(t))
+	case op == "~=" && len(v.release) < 2:
+		return fmt.Errorf("%s: ~= needs a version of at least two numbers", quoteToken(t))
+	}
+	return nil
+}
+
+// pep440Range is the interval, and the hole in it, of the clause of the
+// operator op and the version v, wild when it ended in .*.
+func pep440Range(op string, v Version, wild bool) clause {
 	at := bound{v: v, inc: true}
 	// A public version matches itself with any local version: up to top,
 	// above them all. A version with a local version matches only itself.
 	top := v
 	top.localTop = true
-	same := interval{lo: at, hi: bound{v: top, inc: true}}
-	if v.build != "" {
-		same.hi = at
-	}
-	prefix := interval{lo: bound{v: atFloor(v), inc: true}, hi: bound{v: atFloor(bump(v, len(v.release)-1))}}
-	if wild {
-		same = prefix
-	}
+	same := pep440Same(v, top, wild)
 	switch op {
 	case "==":
-		c.iv = same
+		return clause{iv: same}
 	case "!=":
-		c.iv, c.hole, c.holed = everything, same, true
+		return clause{iv: everything, hole: same, holed: true}
 	case ">=":
-		c.iv = interval{lo: at, hi: bound{inf: true}}
+		return clause{iv: interval{lo: at, hi: bound{inf: true}}}
 	case "<=":
-		c.iv = interval{lo: bound{inf: true}, hi: bound{v: top, inc: true}}
+		return clause{iv: interval{lo: bound{inf: true}, hi: bound{v: top, inc: true}}}
 	case ">":
-		lo := bound{v: ceilOf(v)}
-		if v.hasPost || v.hasDev {
-			lo = bound{v: top}
-		}
-		c.iv = interval{lo: lo, hi: bound{inf: true}}
+		return clause{iv: interval{lo: pep440Above(v, top), hi: bound{inf: true}}}
 	case "<":
-		c.iv = interval{lo: bound{inf: true}, hi: bound{v: v}}
-		switch {
-		case v.prerelease():
-		case v.hasPost:
-			c.hole, c.holed = interval{lo: bound{v: atFloor(v), inc: true}, hi: bound{v: releaseOf(v)}}, true
-		default:
-			c.iv.hi = bound{v: atFloor(v)}
-		}
+		return pep440Below(v)
 	default: // ~=
-		c.iv = interval{lo: at, hi: bound{v: atFloor(bump(v, len(v.release)-2))}}
+		return clause{iv: interval{lo: at, hi: bound{v: atFloor(bump(v, len(v.release)-2))}}}
 	}
-	return c, nil
+}
+
+// pep440Same is what ==V matches of the version v, whose bound above its
+// local versions is top: v and its local versions, v alone when it has
+// one, or every version V.* starts when wild.
+func pep440Same(v, top Version, wild bool) interval {
+	if wild {
+		return interval{lo: bound{v: atFloor(v), inc: true}, hi: bound{v: atFloor(bump(v, len(v.release)-1))}}
+	}
+	at := bound{v: v, inc: true}
+	if v.build != "" {
+		return interval{lo: at, hi: at}
+	}
+	return interval{lo: at, hi: bound{v: top, inc: true}}
+}
+
+// pep440Above is the lower bound of >V: above V's post releases unless V
+// is a post or development release, and above its local versions, whose
+// bound is top.
+func pep440Above(v, top Version) bound {
+	if v.hasPost || v.hasDev {
+		return bound{v: top}
+	}
+	return bound{v: ceilOf(v)}
+}
+
+// pep440Below is the clause <V, which admits no pre-release of V unless
+// V is one: below V's floor, or, for a post release, below V with a hole
+// over the pre-releases of its release.
+func pep440Below(v Version) clause {
+	c := clause{iv: interval{lo: bound{inf: true}, hi: bound{v: v}}}
+	switch {
+	case v.prerelease():
+	case v.hasPost:
+		c.hole, c.holed = interval{lo: bound{v: atFloor(v), inc: true}, hi: bound{v: releaseOf(v)}}, true
+	default:
+		c.iv.hi = bound{v: atFloor(v)}
+	}
+	return c
 }

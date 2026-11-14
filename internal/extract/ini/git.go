@@ -63,21 +63,37 @@ func gitQuery(i Spec) (core.Query, error) {
 	if i.Subsection != nil {
 		name += "." + *i.Subsection
 	}
-	name += "." + i.Key
+	out, last, err := gitConfigKey(name + "." + i.Key)
+	if err != nil {
+		return core.Query{}, err
+	}
+	return core.Query{Section: out[:last], Key: out[last+1:], HasKey: true}, nil
+}
+
+// gitConfigKey checks name, a key as git config takes it on its command
+// line, and returns it with its section and key lower-cased, and where its
+// last dot is.
+func gitConfigKey(name string) ([]byte, int, error) {
 	first, last := strings.IndexByte(name, '.'), strings.LastIndexByte(name, '.')
 	out := []byte(name)
 	for j := range out {
 		c := out[j]
 		if j < first || j > last {
-			if !isKeyChar(c) || (j == last+1 && !isAlpha(c)) {
-				return core.Query{}, fmt.Errorf("%s is no name git config reads: a section and a key are letters, digits and -, and a key starts with a letter", core.Quote(name))
+			if !isGitNameByte(c, j == last+1) {
+				return nil, 0, fmt.Errorf("%s is no name git config reads: a section and a key are letters, digits and -, and a key starts with a letter", core.Quote(name))
 			}
 			out[j] = lower(c)
 		} else if c == '\n' || c == 0 {
-			return core.Query{}, fmt.Errorf("%s is no name git config reads: a subsection holds no newline and no NUL", core.Quote(name))
+			return nil, 0, fmt.Errorf("%s is no name git config reads: a subsection holds no newline and no NUL", core.Quote(name))
 		}
 	}
-	return core.Query{Section: out[:last], Key: out[last+1:], HasKey: true}, nil
+	return out, last, nil
+}
+
+// isGitNameByte reports whether c can be in a section or a key: a letter,
+// a digit or -, and a letter where it starts the key (keyStart).
+func isGitNameByte(c byte, keyStart bool) bool {
+	return isKeyChar(c) && (!keyStart || isAlpha(c))
 }
 
 func isAlpha(c byte) bool   { return ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z') }
@@ -131,83 +147,137 @@ func readGit(data []byte, m *core.Meter, visit func(*core.Entry) error) error {
 	if i := bytes.IndexByte(data, 0); i >= 0 {
 		return core.LineError(core.LineOf(data, i), "a NUL byte, which git reads as the end of a name or a value")
 	}
-	// git skips a byte order mark, and refuses a part of one.
-	if bytes.HasPrefix(data, []byte(core.BOM[:1])) {
-		if !bytes.HasPrefix(data, []byte(core.BOM)) {
-			return core.LineError(1, "a part of a UTF-8 byte order mark")
-		}
-		s.pos = len(core.BOM)
+	if err := s.skipBOM(); err != nil {
+		return err
 	}
-	var (
-		section []byte // the section and subsection, as git names them
-		seq     int    // the headers read
-		e       core.Entry
-		value   []byte
-	)
-	bad := func() error { return core.LineError(s.errorLine(), "this is no line git config reads") }
-	last := 0 // where the bytes not yet charged start
-	comment := false
+	r := &gitReader{s: s, m: m, visit: visit}
 	for {
-		c := s.next()
-		switch {
-		case c == '\n':
-			// A line of no entry, blank, a comment or a header, is charged
-			// at its end; an entry's line at its entry.
-			if err := m.Charge(core.LineWork + s.pos - last); err != nil {
-				return err
-			}
-			last = s.pos
-			if s.eof {
-				return nil
-			}
-			comment = false
-			continue
-		case comment || gitSpace(c):
-			continue
-		case c == '#' || c == ';':
-			comment = true
-			continue
-		case c == '[':
-			var ok bool
-			if section, ok = s.header(section[:0]); !ok || len(section) == 0 {
-				return core.LineError(s.errorLine(), "this is no section header git config reads")
-			}
-			seq++
-			continue
-		case !isAlpha(c):
-			return bad()
-		}
-		e = core.Entry{Section: section, SectionSeq: seq, Line: s.line, Key: append(e.Key[:0], lower(c))}
-		for {
-			c = s.next()
-			if s.eof || !isKeyChar(c) {
-				break
-			}
-			e.Key = append(e.Key, lower(c))
-		}
-		for c == ' ' || c == '\t' {
-			c = s.next()
-		}
-		switch {
-		case c == '\n':
-			e.Value, e.NoValue = gitTrue, true
-		case c != '=':
-			return bad()
-		default:
-			var ok bool
-			if value, ok = s.value(value[:0]); !ok {
-				return core.LineError(s.errorLine(), "the value has an unknown escape or an unclosed double quote")
-			}
-			e.Value = value
-		}
-		if err := m.Charge(core.LineWork + s.pos - last); err != nil {
-			return err
-		}
-		last = s.pos
-		if err := visit(&e); err != nil {
+		if done, err := r.read(s.next()); done || err != nil {
 			return err
 		}
 	}
+}
+
+// skipBOM skips a byte order mark, as git does, and refuses a part of one.
+func (s *gitScanner) skipBOM() error {
+	if !bytes.HasPrefix(s.data, []byte(core.BOM[:1])) {
+		return nil
+	}
+	if !bytes.HasPrefix(s.data, []byte(core.BOM)) {
+		return core.LineError(1, "a part of a UTF-8 byte order mark")
+	}
+	s.pos = len(core.BOM)
+	return nil
+}
+
+// gitReader is readGit's state between the bytes of the file.
+type gitReader struct {
+	s       *gitScanner
+	m       *core.Meter
+	section []byte // the section and subsection, as git names them
+	seq     int    // the headers read
+	e       core.Entry
+	value   []byte
+	last    int // where the bytes not yet charged start
+	comment bool
+	visit   func(*core.Entry) error
+}
+
+// read reads the file at c, the next byte outside an entry, and reports
+// true at the end of the file.
+func (r *gitReader) read(c byte) (bool, error) {
+	switch {
+	case c == '\n':
+		return r.endLine()
+	case r.comment || gitSpace(c):
+		return false, nil
+	case c == '#' || c == ';':
+		r.comment = true
+		return false, nil
+	case c == '[':
+		return false, r.header()
+	case !isAlpha(c):
+		return false, r.bad()
+	}
+	return false, r.entry(c)
+}
+
+// bad is the error of a line git config does not read.
+func (r *gitReader) bad() error {
+	return core.LineError(r.s.errorLine(), "this is no line git config reads")
+}
+
+// charge charges the bytes read since the last charge, and their line.
+func (r *gitReader) charge() error {
+	if err := r.m.Charge(core.LineWork + r.s.pos - r.last); err != nil {
+		return err
+	}
+	r.last = r.s.pos
+	return nil
+}
+
+// endLine ends a line of no entry, blank, a comment or a header, which is
+// charged at its end, and reports true at the end of the file.
+func (r *gitReader) endLine() (bool, error) {
+	if err := r.charge(); err != nil {
+		return false, err
+	}
+	if r.s.eof {
+		return true, nil
+	}
+	r.comment = false
+	return false, nil
+}
+
+// header reads a section header after its [.
+func (r *gitReader) header() error {
+	var ok bool
+	if r.section, ok = r.s.header(r.section[:0]); !ok || len(r.section) == 0 {
+		return core.LineError(r.s.errorLine(), "this is no section header git config reads")
+	}
+	r.seq++
+	return nil
+}
+
+// entry reads an entry whose key starts with c, charges its line, and
+// visits it.
+func (r *gitReader) entry(c byte) error {
+	s := r.s
+	r.e = core.Entry{Section: r.section, SectionSeq: r.seq, Line: s.line, Key: append(r.e.Key[:0], lower(c))}
+	switch c = r.key(); {
+	case c == '\n':
+		r.e.Value, r.e.NoValue = gitTrue, true
+	case c != '=':
+		return r.bad()
+	default:
+		var ok bool
+		if r.value, ok = s.value(r.value[:0]); !ok {
+			return core.LineError(s.errorLine(), "the value has an unknown escape or an unclosed double quote")
+		}
+		r.e.Value = r.value
+	}
+	if err := r.charge(); err != nil {
+		return err
+	}
+	return r.visit(&r.e)
+}
+
+// key reads the rest of an entry's key into it, and the blanks after it,
+// and returns the byte after them.
+func (r *gitReader) key() byte {
+	s := r.s
+	var c byte
+	for {
+		c = s.next()
+		if s.eof || !isKeyChar(c) {
+			break
+		}
+		r.e.Key = append(r.e.Key, lower(c))
+	}
+	for c == ' ' || c == '\t' {
+		c = s.next()
+	}
+	return c
 }
 
 var gitTrue = []byte("true")
@@ -231,6 +301,8 @@ func (s *gitScanner) header(name []byte) ([]byte, bool) {
 	}
 }
 
+// subsection reads the blanks after a section's name, from c, and the
+// quoted subsection after them, into name after a dot.
 func (s *gitScanner) subsection(name []byte, c byte) ([]byte, bool) {
 	for {
 		if c == '\n' {
@@ -243,7 +315,12 @@ func (s *gitScanner) subsection(name []byte, c byte) ([]byte, bool) {
 	if c != '"' {
 		return name, false
 	}
-	name = append(name, '.')
+	return s.quotedSubsection(append(name, '.'))
+}
+
+// quotedSubsection reads a subsection after its opening " into name, and
+// the ] after its closing ". A \ takes the byte after it.
+func (s *gitScanner) quotedSubsection(name []byte) ([]byte, bool) {
 	for {
 		c := s.next()
 		switch c {
@@ -260,57 +337,100 @@ func (s *gitScanner) subsection(name []byte, c byte) ([]byte, bool) {
 	}
 }
 
-// value reads a value after its = into v, as git's parse_value does. trim
-// is where white space at the end of the value starts, 0 while there is
-// none; white space at the start is never added.
+// value reads a value after its = into v, as git's parse_value does.
 func (s *gitScanner) value(v []byte) ([]byte, bool) {
-	quote, comment := false, false
-	trim := 0
+	g := gitValue{v: v}
 	for {
-		c := s.next()
-		switch {
+		switch c := s.next(); {
 		case c == '\n':
-			if quote {
-				return v, false
-			}
-			if trim > 0 {
-				v = v[:trim]
-			}
-			return v, true
-		case comment:
-			continue
-		case gitSpace(c) && !quote:
-			if trim == 0 {
-				trim = len(v)
-			}
-			if len(v) > 0 {
-				v = append(v, c)
-			}
-			continue
-		case !quote && (c == ';' || c == '#'):
-			comment = true
-			continue
+			return g.end()
+		case g.skip(c):
+		case !g.char(s, c):
+			return g.v, false
 		}
-		trim = 0
-		switch c {
-		case '\\':
-			switch c = s.next(); c {
-			case '\n':
-				continue
-			case 't':
-				c = '\t'
-			case 'b':
-				c = '\b'
-			case 'n':
-				c = '\n'
-			case '\\', '"':
-			default:
-				return v, false
-			}
-		case '"':
-			quote = !quote
-			continue
-		}
-		v = append(v, c)
 	}
+}
+
+// gitValue is a value as gitScanner.value reads it. trim is where white
+// space at the end of the value starts, 0 while there is none; white space
+// at the start is never added.
+type gitValue struct {
+	v              []byte
+	quote, comment bool
+	trim           int
+}
+
+// end is the value at the end of its line, without the white space at its
+// end, and false inside double quotes.
+func (g *gitValue) end() ([]byte, bool) {
+	if g.quote {
+		return g.v, false
+	}
+	if g.trim > 0 {
+		g.v = g.v[:g.trim]
+	}
+	return g.v, true
+}
+
+// skip reads c where it is a comment's byte, white space outside double
+// quotes, or the # or ; that starts a comment, and reports whether it was.
+func (g *gitValue) skip(c byte) bool {
+	switch {
+	case g.comment:
+	case gitSpace(c) && !g.quote:
+		g.space(c)
+	case !g.quote && (c == ';' || c == '#'):
+		g.comment = true
+	default:
+		return false
+	}
+	return true
+}
+
+// space adds white space c, which may end the value.
+func (g *gitValue) space(c byte) {
+	if g.trim == 0 {
+		g.trim = len(g.v)
+	}
+	if len(g.v) > 0 {
+		g.v = append(g.v, c)
+	}
+}
+
+// char adds c, a byte of the value other than white space outside double
+// quotes: a ", which opens or closes them, an escape, read from s, or the
+// byte itself. It reports false for an unknown escape.
+func (g *gitValue) char(s *gitScanner, c byte) bool {
+	g.trim = 0
+	switch c {
+	case '\\':
+		var cont, ok bool
+		if c, cont, ok = s.escape(); !ok || cont {
+			return ok
+		}
+	case '"':
+		g.quote = !g.quote
+		return true
+	}
+	g.v = append(g.v, c)
+	return true
+}
+
+// escape reads the byte after a \ and returns the byte the escape stands
+// for, or cont true for a \ at the end of a line, which continues the
+// value. It reports false for an unknown escape.
+func (s *gitScanner) escape() (c byte, cont, ok bool) {
+	switch c = s.next(); c {
+	case '\n':
+		return 0, true, true
+	case '\\', '"':
+		return c, false, true
+	case 't':
+		return '\t', false, true
+	case 'b':
+		return '\b', false, true
+	case 'n':
+		return '\n', false, true
+	}
+	return 0, false, false
 }

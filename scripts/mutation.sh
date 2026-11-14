@@ -1042,7 +1042,7 @@ build_reach() {
 # reach_line <package>: after a pass, how its mutants ran, from testreach's log, which the next
 # pass starts afresh.
 reach_line() {
-    reach_bad=""
+    reach_bad="" reach_unbuilt=""
     if [ -z "$reach_ok" ]; then
         no_list "$1" "the package has no index of its tests, for the reason above"
         return 0
@@ -1057,6 +1057,17 @@ reach_line() {
     # to go unchecked: the package fails (judge_pass).
     reach_bad=$(grep -c '^- 0/0 - - - - limits unreadable' "$pw/reach/log" || true)
     [ "$reach_bad" != 0 ] || reach_bad=""
+    # A mutant whose build fails counts as killed, since go exits 1 as for a failing test. When
+    # every mutant testreach ran failed to build, no test ran against any, and a pass at 100%
+    # judges nothing: the package fails (judge_pass). A pass of scripts/crap, in a copy whose
+    # scope admitted scripts/, went green that way (crapclos review, finding 3). A pass that is
+    # not narrowed writes no log, and go's exit status cannot tell a failed build from a failed
+    # test, so that pass goes unchecked. A pass is not narrowed under `--narrow off`, which only a
+    # manual run sets, or when the test index fails to build and the pass falls back to a whole
+    # one. Gremlins' own "Not viable" count is no substitute: it printed 0 while all 124 mutants
+    # of that scripts/crap pass failed to build. The weekly pass is the backstop, since a broken
+    # build path there fails the narrowed packages too.
+    reach_unbuilt=$(awk '{ why = $7; for (i = 8; i <= NF; i++) why = why " " $i } why == "the build failed" { n++ } END { if (n == NR) print n }' "$pw/reach/log")
     awk -v p="$1" '
         # A timeout, which holds the worker past the planned limit until the limit gremlins has: counted
         # with that time, and the line kept whole, so a later comparison can tell the load from
@@ -1212,6 +1223,9 @@ judge_pass() {
         figures="No mutants."
     elif ! grep -q 'Killed: [0-9]' "$pw/out"; then
         verdict="FAILED, gremlins printed no counts"
+        rc=1
+    elif [ -n "${reach_unbuilt:-}" ]; then
+        verdict="FAILED, none of its $reach_unbuilt mutants built, so no test ran against any and its figures judge nothing"
         rc=1
     elif [ -n "$diff" ] && [ "$ran" -eq 0 ] && [ "$uncovered" -gt 0 ]; then
         lines=$(sed -n 's/.*NOT COVERED .* at \([^ ]*\):[0-9]*$/\1/p' "$pw/out" | sort -u | head -n 10 | tr '\n' ' ' | sed 's/ $//; s/ /, /g')

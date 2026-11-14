@@ -45,6 +45,8 @@ func TestAgreeSemverBlamesTheValueItIsFalseFor(t *testing.T) {
 		{"ranges apart", []string{">=21", "~> 20.1"}, "v.txt:2"},
 		{"ranges apart at the third", []string{">=20", "<22", ">=23"}, "v.txt:3"},
 		{"holds", []string{"20", "20.11.1"}, "none"},
+		// Overlapping ranges hold too, and blame nothing.
+		{"ranges that overlap", []string{">=20", "<22"}, "none"},
 		{"unknown", []string{"20", "latest"}, "none"},
 	} {
 		t.Run(c.name, func(t *testing.T) {

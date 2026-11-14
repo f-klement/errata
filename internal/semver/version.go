@@ -97,23 +97,26 @@ func newIdent(s string) ident {
 // prefix of another below it.
 func cmpIdents(a, b []ident) int {
 	for i := 0; i < len(a) && i < len(b); i++ {
-		x, y := a[i], b[i]
-		switch {
-		case x.numeric && y.numeric:
-			if c := cmpNum(num(x.text), num(y.text)); c != 0 {
-				return c
-			}
-		case x.numeric:
-			return -1
-		case y.numeric:
-			return 1
-		default:
-			if c := strings.Compare(x.text, y.text); c != 0 {
-				return c
-			}
+		if c := cmpIdent(a[i], b[i]); c != 0 {
+			return c
 		}
 	}
 	return cmpInt(len(a), len(b))
+}
+
+// cmpIdent orders two identifiers of a pre-release: a number below text,
+// numbers by value, text by its bytes.
+func cmpIdent(x, y ident) int {
+	switch {
+	case x.numeric && y.numeric:
+		return cmpNum(num(x.text), num(y.text))
+	case x.numeric:
+		return -1
+	case y.numeric:
+		return 1
+	default:
+		return strings.Compare(x.text, y.text)
+	}
 }
 
 // Version is one version, as any of the five ecosystems writes it.
@@ -202,6 +205,15 @@ func (v Version) String() string {
 		return v.rubyString()
 	}
 	var b strings.Builder
+	v.writeRelease(&b)
+	v.writePre(&b)
+	v.writeSuffix(&b)
+	return b.String()
+}
+
+// writeRelease writes v's v of a Go module, its epoch when it is not 0,
+// its numbers, and a floor's -0.
+func (v Version) writeRelease(b *strings.Builder) {
 	if v.module {
 		b.WriteByte('v')
 	}
@@ -217,23 +229,35 @@ func (v Version) String() string {
 	if v.floor && !v.lang {
 		b.WriteString("-0")
 	}
+}
+
+// writePre writes v's pre-release: glued to the numbers as written, or
+// after - (after . beside a post or dev release), its parts after dots.
+func (v Version) writePre(b *strings.Builder) {
 	if v.glued {
 		for _, id := range v.pre {
 			b.WriteString(id.text)
 		}
-	} else if v.pre != nil {
-		// A pre-release beside a post or dev release came from the PEP 440
-		// form, and is written in it, so the string reads back the same.
-		sep := byte('-')
-		if v.hasPost || v.hasDev {
-			sep = '.'
-		}
-		for _, id := range v.pre {
-			b.WriteByte(sep)
-			b.WriteString(id.text)
-			sep = '.'
-		}
+		return
 	}
+	if v.pre == nil {
+		return
+	}
+	// A pre-release beside a post or dev release came from the PEP 440
+	// form, and is written in it, so the string reads back the same.
+	sep := byte('-')
+	if v.hasPost || v.hasDev {
+		sep = '.'
+	}
+	for _, id := range v.pre {
+		b.WriteByte(sep)
+		b.WriteString(id.text)
+		sep = '.'
+	}
+}
+
+// writeSuffix writes v's post and dev releases and its build.
+func (v Version) writeSuffix(b *strings.Builder) {
 	if v.hasPost {
 		b.WriteString(".post" + string(v.post))
 	}
@@ -243,7 +267,6 @@ func (v Version) String() string {
 	if v.build != "" {
 		b.WriteString("+" + v.build)
 	}
-	return b.String()
 }
 
 // Compare orders a and b: -1, 0 or 1. Missing numbers count as 0, so 20 and
@@ -254,24 +277,21 @@ func Compare(a, b Version) int {
 	if c := cmpRelease(a, b); c != 0 {
 		return c
 	}
-	switch {
-	case a.floor && b.floor:
-		return 0
-	case a.floor:
-		return -1
-	case b.floor:
-		return 1
+	if a.floor || b.floor {
+		return cmpFlags(b.floor, a.floor) // a floor is below every version of its release
 	}
 	if c := cmpPre(a, b); c != 0 {
 		return c
 	}
-	switch {
-	case a.ceil && b.ceil:
-		return 0
-	case a.ceil:
-		return 1
-	case b.ceil:
-		return -1
+	return cmpAfterPre(a, b)
+}
+
+// cmpAfterPre orders a and b of one release and pre-release: a ceiling
+// above the rest, then by the post release, the dev release, and of PEP
+// 440 versions the local version.
+func cmpAfterPre(a, b Version) int {
+	if a.ceil || b.ceil {
+		return cmpFlags(a.ceil, b.ceil)
 	}
 	if c := cmpOptional(a.hasPost, a.post, b.hasPost, b.post, -1); c != 0 {
 		return c
@@ -285,6 +305,17 @@ func Compare(a, b Version) int {
 	return cmpLocal(a, b)
 }
 
+// cmpFlags orders two flags: equal ones alike, and x set above y unset.
+func cmpFlags(x, y bool) int {
+	switch {
+	case x == y:
+		return 0
+	case x:
+		return 1
+	}
+	return -1
+}
+
 // cmpLocal orders two PEP 440 versions of one public version by their
 // local versions, as the specification orders them: none first, then part
 // by part, a number above text, numbers by value and text by its bytes
@@ -292,39 +323,37 @@ func Compare(a, b Version) int {
 // starts with below it, and localTop above every one.
 func cmpLocal(a, b Version) int {
 	switch {
-	case a.localTop && b.localTop:
-		return 0
-	case a.localTop:
-		return 1
-	case b.localTop:
-		return -1
+	case a.localTop || b.localTop:
+		return cmpFlags(a.localTop, b.localTop)
 	case a.build == b.build:
 		return 0
-	case a.build == "":
-		return -1
-	case b.build == "":
-		return 1
+	case a.build == "" || b.build == "":
+		return cmpFlags(a.build != "", b.build != "")
 	}
 	x, y := strings.Split(a.build, "."), strings.Split(b.build, ".")
 	for i := 0; i < len(x) && i < len(y); i++ {
-		nx, isX := parseNum(x[i])
-		ny, isY := parseNum(y[i])
-		switch {
-		case isX && isY:
-			if c := cmpNum(nx, ny); c != 0 {
-				return c
-			}
-		case isX:
-			return 1
-		case isY:
-			return -1
-		default:
-			if c := strings.Compare(x[i], y[i]); c != 0 {
-				return c
-			}
+		if c := cmpLocalPart(x[i], y[i]); c != 0 {
+			return c
 		}
 	}
 	return cmpInt(len(x), len(y))
+}
+
+// cmpLocalPart orders two parts of local versions: a number above text,
+// numbers by value and text by its bytes.
+func cmpLocalPart(x, y string) int {
+	nx, isX := parseNum(x)
+	ny, isY := parseNum(y)
+	switch {
+	case isX && isY:
+		return cmpNum(nx, ny)
+	case isX:
+		return 1
+	case isY:
+		return -1
+	default:
+		return strings.Compare(x, y)
+	}
 }
 
 // cmpRelease orders the epochs, then the numbers, a missing number as 0.
@@ -443,25 +472,14 @@ func ParseVersion(s string) (Version, error) {
 // parseAny is ParseVersion of a value already trimmed, not empty and within
 // MaxLength.
 func parseAny(rest string) (Version, error) {
-	switch {
-	case strings.HasPrefix(rest, "go") && len(rest) > 2 && isDigit(rest[2]):
-		rest = rest[2:]
-	case strings.HasPrefix(rest, "v") && len(rest) > 1 && isDigit(rest[1]):
-		rest = rest[1:]
-	}
+	rest = dropPrefix(rest)
 	v := Version{epoch: "0"}
-	if i := strings.IndexByte(rest, '!'); i >= 0 {
-		e, ok := parseNum(rest[:i])
-		if !ok {
-			return Version{}, errors.New("the epoch before ! is not a number")
-		}
-		v.epoch, rest = e, rest[i+1:]
+	rest, err := v.cutEpoch(rest)
+	if err != nil {
+		return Version{}, err
 	}
-	if i := strings.IndexByte(rest, '+'); i >= 0 {
-		v.build, rest = rest[i+1:], rest[:i]
-		if err := checkBuild(v.build); err != nil {
-			return Version{}, err
-		}
+	if rest, err = v.cutBuild(rest); err != nil {
+		return Version{}, err
 	}
 	end := releaseEnd(rest)
 	if end == 0 {
@@ -471,16 +489,60 @@ func parseAny(rest string) (Version, error) {
 		n, _ := parseNum(part) // releaseEnd took digits and dots only
 		v.release = append(v.release, n)
 	}
-	rest = rest[end:]
+	err = v.suffix(rest[end:])
+	return v, err
+}
+
+// dropPrefix drops the go of a Go toolchain's version or the v before a
+// version's numbers.
+func dropPrefix(s string) string {
 	switch {
-	case rest == "":
-		return v, nil
-	case rest[0] == '-':
-		pre, err := semverPre(rest[1:])
-		v.pre = pre
-		return v, err
+	case strings.HasPrefix(s, "go") && len(s) > 2 && isDigit(s[2]):
+		return s[2:]
+	case strings.HasPrefix(s, "v") && len(s) > 1 && isDigit(s[1]):
+		return s[1:]
 	}
-	return v, wordSuffix(&v, rest)
+	return s
+}
+
+// cutEpoch takes a PEP 440 epoch, N!, off the start of s into v, and is
+// the rest.
+func (v *Version) cutEpoch(s string) (string, error) {
+	i := strings.IndexByte(s, '!')
+	if i < 0 {
+		return s, nil
+	}
+	e, ok := parseNum(s[:i])
+	if !ok {
+		return "", errors.New("the epoch before ! is not a number")
+	}
+	v.epoch = e
+	return s[i+1:], nil
+}
+
+// cutBuild takes the build after a + off the end of s into v, and is the
+// rest.
+func (v *Version) cutBuild(s string) (string, error) {
+	i := strings.IndexByte(s, '+')
+	if i < 0 {
+		return s, nil
+	}
+	v.build = s[i+1:]
+	return s[:i], checkBuild(v.build)
+}
+
+// suffix reads what follows v's numbers, s: nothing, a SemVer pre-release
+// after -, or the words PEP 440 and RubyGems write.
+func (v *Version) suffix(s string) error {
+	switch {
+	case s == "":
+		return nil
+	case s[0] == '-':
+		pre, err := semverPre(s[1:])
+		v.pre = pre
+		return err
+	}
+	return wordSuffix(v, s)
 }
 
 // releaseEnd is the length of the numbers at the start of s: digits, each
@@ -545,39 +607,66 @@ func wordSuffix(v *Version, s string) error {
 	if err != nil {
 		return err
 	}
-	i := 0
-	for i < len(tokens) && !isPostWord(tokens[i]) && !isDevWord(tokens[i]) {
-		if t := tokens[i]; t == "x" || t == "X" {
-			return fmt.Errorf("%s stands for a number, as in a range, so this is not one version", t)
-		}
-		if isDigit(tokens[i][0]) && v.pre == nil {
-			return fmt.Errorf("%s follows the numbers, which a version does not allow", quoteToken(tokens[i]))
-		}
-		if v.pre == nil && !slices.Contains(preWords, strings.ToLower(tokens[i])) {
-			// So 10ms, 1st, 1e10 and 20H2 are not versions.
-			return fmt.Errorf("%s after the numbers is not a pre-release, post or dev word (%s)", quoteToken(tokens[i]), strings.Join(append(slices.Clip(preWords), "post", "rev", "r", "dev"), ", "))
-		}
-		v.pre = append(v.pre, newIdent(tokens[i]))
-		i++
+	i, err := v.preTokens(tokens)
+	if err != nil {
+		return err
 	}
-	if i < len(tokens) && isPostWord(tokens[i]) {
-		v.hasPost, v.post, i = true, "0", i+1
-		if i < len(tokens) && isDigit(tokens[i][0]) {
-			v.post, _ = parseNum(tokens[i])
-			i++
-		}
+	if found, n, next := numberedWord(tokens, i, isPostWord); found {
+		v.hasPost, v.post, i = true, n, next
 	}
-	if i < len(tokens) && isDevWord(tokens[i]) {
-		v.hasDev, v.dev, i = true, "0", i+1
-		if i < len(tokens) && isDigit(tokens[i][0]) {
-			v.dev, _ = parseNum(tokens[i])
-			i++
-		}
+	if found, n, next := numberedWord(tokens, i, isDevWord); found {
+		v.hasDev, v.dev, i = true, n, next
 	}
 	if i < len(tokens) {
 		return fmt.Errorf("%s comes after the post or dev release, which a version does not allow", quoteToken(tokens[i]))
 	}
 	return nil
+}
+
+// preTokens takes the tokens before a post or dev word into v's
+// pre-release, and is the index of the first token after them.
+func (v *Version) preTokens(tokens []string) (int, error) {
+	i := 0
+	for i < len(tokens) && !isPostWord(tokens[i]) && !isDevWord(tokens[i]) {
+		if err := preToken(tokens[i], v.pre == nil); err != nil {
+			return 0, err
+		}
+		v.pre = append(v.pre, newIdent(tokens[i]))
+		i++
+	}
+	return i, nil
+}
+
+// preToken refuses t as a token of a pre-release, first when it would be
+// the first: an x, which stands for a number in a range, and a first
+// token that is a number or no pre-release word.
+func preToken(t string, first bool) error {
+	if t == "x" || t == "X" {
+		return fmt.Errorf("%s stands for a number, as in a range, so this is not one version", t)
+	}
+	if isDigit(t[0]) && first {
+		return fmt.Errorf("%s follows the numbers, which a version does not allow", quoteToken(t))
+	}
+	if first && !slices.Contains(preWords, strings.ToLower(t)) {
+		// So 10ms, 1st, 1e10 and 20H2 are not versions.
+		return fmt.Errorf("%s after the numbers is not a pre-release, post or dev word (%s)", quoteToken(t), strings.Join(append(slices.Clip(preWords), "post", "rev", "r", "dev"), ", "))
+	}
+	return nil
+}
+
+// numberedWord reads the token i of tokens when word takes it, and the
+// number after it, 0 when none follows. It reports whether word took the
+// token, and is the number and the index of the token after them.
+func numberedWord(tokens []string, i int, word func(string) bool) (bool, num, int) {
+	if i == len(tokens) || !word(tokens[i]) {
+		return false, "", i
+	}
+	i++
+	if i < len(tokens) && isDigit(tokens[i][0]) {
+		n, _ := parseNum(tokens[i])
+		return true, n, i + 1
+	}
+	return true, "0", i
 }
 
 // preWords are the words that may start a pre-release written without a
@@ -616,31 +705,51 @@ func isDevWord(t string) bool { return strings.EqualFold(t, "dev") }
 // run after another separator, or end s.
 func splitWords(s string) ([]string, error) {
 	var tokens []string
-	i := 0
-	for i < len(s) {
-		if c := s[i]; c == '.' || c == '_' || c == '-' {
-			if i+1 == len(s) || !isDigit(s[i+1]) && !isLetter(s[i+1]) {
-				return nil, fmt.Errorf("the separator %q after the numbers is not followed by a word or a number", c)
-			}
-			i++
+	for i := 0; i < len(s); {
+		start, err := afterSep(s, i)
+		if err != nil {
+			return nil, err
 		}
-		j := i
-		switch {
-		case isDigit(s[i]):
-			for j < len(s) && isDigit(s[j]) {
-				j++
-			}
-		case isLetter(s[i]):
-			for j < len(s) && isLetter(s[j]) {
-				j++
-			}
-		default:
-			return nil, fmt.Errorf("it holds %q, which a version does not", s[i])
+		end, err := runEnd(s, start)
+		if err != nil {
+			return nil, err
 		}
-		tokens = append(tokens, s[i:j])
-		i = j
+		tokens = append(tokens, s[start:end])
+		i = end
 	}
 	return tokens, nil
+}
+
+// afterSep is i past the separator at i of s, if any, which must be
+// followed by a word or a number.
+func afterSep(s string, i int) (int, error) {
+	if c := s[i]; isSep(c) {
+		if i+1 == len(s) || !isDigit(s[i+1]) && !isLetter(s[i+1]) {
+			return 0, fmt.Errorf("the separator %q after the numbers is not followed by a word or a number", c)
+		}
+		i++
+	}
+	return i, nil
+}
+
+// runEnd is the end of the run of digits or of letters at i of s.
+func runEnd(s string, i int) (int, error) {
+	switch {
+	case isDigit(s[i]):
+		return runOf(s, i, isDigit), nil
+	case isLetter(s[i]):
+		return runOf(s, i, isLetter), nil
+	default:
+		return 0, fmt.Errorf("it holds %q, which a version does not", s[i])
+	}
+}
+
+// runOf is the end of the run of bytes from i of s that in takes.
+func runOf(s string, i int, in func(byte) bool) int {
+	for i < len(s) && in(s[i]) {
+		i++
+	}
+	return i
 }
 
 // bump is v's first i+1 numbers with the last of them one higher, and no

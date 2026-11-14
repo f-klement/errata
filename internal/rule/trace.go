@@ -124,32 +124,65 @@ func (t *tracer) key(e celast.Expr) string {
 	if k, ok := t.keys[e.ID()]; ok {
 		return k
 	}
-	k := "#" + strconv.FormatInt(e.ID(), 10)
+	k := t.pathKey(e)
+	t.keys[e.ID()] = k
+	return k
+}
+
+// pathKey is the key of e, which key keeps.
+func (t *tracer) pathKey(e celast.Expr) string {
 	switch e.Kind() {
 	case celast.IdentKind:
-		if c, ok := binder(t.nodes[e.ID()], e.AsIdent()); !ok {
-			k = "$" + e.AsIdent()
-		} else if c.IterVar() == e.AsIdent() {
-			k = t.rangeKey(c)
-		}
+		return t.identKey(e)
 	case celast.SelectKind:
 		if sel := e.AsSelect(); !sel.IsTestOnly() {
-			k = t.key(t.unbound(sel.Operand())) + "." + sel.FieldName()
+			return t.key(t.unbound(sel.Operand())) + "." + sel.FieldName()
 		}
 	case celast.CallKind:
-		call := e.AsCall()
-		if call.FunctionName() == operators.Index && len(call.Args()) == 2 && call.Args()[1].Kind() == celast.LiteralKind {
-			switch v := call.Args()[1].AsLiteral().(type) {
-			case types.String:
-				k = t.key(t.unbound(call.Args()[0])) + "[" + strconv.Quote(string(v)) + "]"
-			case types.Int:
-				k = t.key(t.unbound(call.Args()[0])) + "[" + strconv.FormatInt(int64(v), 10) + "]"
-			}
+		if k, ok := t.indexKey(e.AsCall()); ok {
+			return k
 		}
 	default:
 	}
-	t.keys[e.ID()] = k
-	return k
+	return nodeKey(e)
+}
+
+// nodeKey is the key of an expression that is no access path: its node.
+func nodeKey(e celast.Expr) string {
+	return "#" + strconv.FormatInt(e.ID(), 10)
+}
+
+// identKey is the key of the name e: a free name by itself, and a
+// comprehension variable by its range.
+func (t *tracer) identKey(e celast.Expr) string {
+	c, ok := binder(t.nodes[e.ID()], e.AsIdent())
+	if !ok {
+		return "$" + e.AsIdent()
+	}
+	if c.IterVar() == e.AsIdent() {
+		return t.rangeKey(c)
+	}
+	return nodeKey(e)
+}
+
+// indexKey is the key of the index call, when its index is a string or
+// int literal: its operand's path and the index.
+func (t *tracer) indexKey(call celast.CallExpr) (string, bool) {
+	if !literalIndex(call) {
+		return "", false
+	}
+	switch v := call.Args()[1].AsLiteral().(type) {
+	case types.String:
+		return t.key(t.unbound(call.Args()[0])) + "[" + strconv.Quote(string(v)) + "]", true
+	case types.Int:
+		return t.key(t.unbound(call.Args()[0])) + "[" + strconv.FormatInt(int64(v), 10) + "]", true
+	}
+	return "", false
+}
+
+// literalIndex reports whether call is an index whose index is a literal.
+func literalIndex(call celast.CallExpr) bool {
+	return call.FunctionName() == operators.Index && len(call.Args()) == 2 && call.Args()[1].Kind() == celast.LiteralKind
 }
 
 func (t *tracer) trace(e celast.Expr) []source {
@@ -157,28 +190,13 @@ func (t *tracer) trace(e celast.Expr) []source {
 	case celast.ListKind, celast.MapKind:
 		return []source{{kind: literalSource, e: e}}
 	case celast.IdentKind:
-		name := e.AsIdent()
-		c, ok := binder(t.nodes[e.ID()], name)
-		switch {
-		case !ok && t.checked.GetType(e.ID()).Kind() == types.ListKind:
-			return []source{{kind: listSource, e: e}}
-		case ok && c.AccuVar() == name:
-			return t.sources(c.AccuInit())
-		case ok && c.IterVar() == name:
-			return t.member(c)
-		}
+		return t.traceIdent(e)
 	case celast.SelectKind:
 		if sel := e.AsSelect(); !sel.IsTestOnly() {
 			return t.selected(sel.Operand(), types.String(sel.FieldName()), false)
 		}
 	case celast.CallKind:
-		if call := e.AsCall(); call.FunctionName() == operators.Index && len(call.Args()) == 2 {
-			var key ref.Val
-			if k := call.Args()[1]; k.Kind() == celast.LiteralKind {
-				key = k.AsLiteral()
-			}
-			return t.selected(call.Args()[0], key, true)
-		}
+		return t.traceIndex(e.AsCall())
 	case celast.ComprehensionKind:
 		if keeps(e.AsComprehension()) {
 			return []source{{kind: subsetSource, e: e}}
@@ -187,6 +205,36 @@ func (t *tracer) trace(e celast.Expr) []source {
 		// A literal or a message stands for no value the tracer follows.
 	}
 	return opaque
+}
+
+// traceIdent is the sources of the name e: a free list is an extractor's
+// list, a cel.bind name the value it binds, a comprehension variable a
+// member of its range.
+func (t *tracer) traceIdent(e celast.Expr) []source {
+	name := e.AsIdent()
+	c, ok := binder(t.nodes[e.ID()], name)
+	switch {
+	case !ok && t.checked.GetType(e.ID()).Kind() == types.ListKind:
+		return []source{{kind: listSource, e: e}}
+	case ok && c.AccuVar() == name:
+		return t.sources(c.AccuInit())
+	case ok && c.IterVar() == name:
+		return t.member(c)
+	}
+	return opaque
+}
+
+// traceIndex is the sources of the member an index call selects, and
+// opaque for any other call.
+func (t *tracer) traceIndex(call celast.CallExpr) []source {
+	if call.FunctionName() != operators.Index || len(call.Args()) != 2 {
+		return opaque
+	}
+	var key ref.Val
+	if k := call.Args()[1]; k.Kind() == celast.LiteralKind {
+		key = k.AsLiteral()
+	}
+	return t.selected(call.Args()[0], key, true)
 }
 
 // member is the sources of one member of c's range, expanded once for each
@@ -204,21 +252,26 @@ func (t *tracer) member(c celast.ComprehensionExpr) []source {
 	t.members[id] = opaque
 	out := sourceSet{t: t}
 	for _, s := range t.sources(c.IterRange()) {
-		switch {
-		case s.kind == literalSource && s.e.Kind() == celast.ListKind:
-			for _, el := range s.e.AsList().Elements() {
-				out.add(t.sources(el)...)
-			}
-		case s.kind == listSource:
-			out.add(source{kind: memberSource, e: s.e})
-		case s.kind == subsetSource:
-			out.add(t.kept(s.e.AsComprehension())...)
-		default:
-			out.add(opaque...)
-		}
+		t.addMembers(&out, s)
 	}
 	t.members[id] = out.list
 	return out.list
+}
+
+// addMembers adds to out the sources of one member of the range source s.
+func (t *tracer) addMembers(out *sourceSet, s source) {
+	switch {
+	case s.kind == literalSource && s.e.Kind() == celast.ListKind:
+		for _, el := range s.e.AsList().Elements() {
+			out.add(t.sources(el)...)
+		}
+	case s.kind == listSource:
+		out.add(source{kind: memberSource, e: s.e})
+	case s.kind == subsetSource:
+		out.add(t.kept(s.e.AsComprehension())...)
+	default:
+		out.add(opaque...)
+	}
 }
 
 // rangeKey is the key of a member of c's range: @ and the range's path, so
@@ -249,28 +302,38 @@ func (t *tracer) kept(c celast.ComprehensionExpr) []source {
 // map(x, x) and map(x, p, x) as cel-go writes them, matched by shape rather
 // than by the macro's name.
 func keeps(c celast.ComprehensionExpr) bool {
-	init, result := c.AccuInit(), c.Result()
-	if c.IterVar2() != "" || init.Kind() != celast.ListKind || len(init.AsList().Elements()) != 0 ||
-		result.Kind() != celast.IdentKind || result.AsIdent() != c.AccuVar() {
+	if !startsEmpty(c) {
 		return false
 	}
-	accu := func(e celast.Expr) bool { return e.Kind() == celast.IdentKind && e.AsIdent() == c.AccuVar() }
 	step := c.LoopStep()
-	if step.Kind() == celast.CallKind && step.AsCall().FunctionName() == operators.Conditional && len(step.AsCall().Args()) == 3 {
-		if !accu(step.AsCall().Args()[2]) {
+	if isCall(step, operators.Conditional, 3) {
+		if !isIdent(step.AsCall().Args()[2], c.AccuVar()) {
 			return false
 		}
 		step = step.AsCall().Args()[1]
 	}
-	if step.Kind() != celast.CallKind || step.AsCall().FunctionName() != operators.Add || len(step.AsCall().Args()) != 2 {
+	return addsVariable(c, step)
+}
+
+// startsEmpty reports whether c has one variable, starts from an empty
+// list and returns it.
+func startsEmpty(c celast.ComprehensionExpr) bool {
+	init := c.AccuInit()
+	return c.IterVar2() == "" && init.Kind() == celast.ListKind && len(init.AsList().Elements()) == 0 &&
+		isIdent(c.Result(), c.AccuVar())
+}
+
+// addsVariable reports whether step adds a list of c's variable alone to
+// c's list.
+func addsVariable(c celast.ComprehensionExpr, step celast.Expr) bool {
+	if !isCall(step, operators.Add, 2) {
 		return false
 	}
 	added := step.AsCall().Args()[1]
-	if !accu(step.AsCall().Args()[0]) || added.Kind() != celast.ListKind || len(added.AsList().Elements()) != 1 {
+	if !isIdent(step.AsCall().Args()[0], c.AccuVar()) || added.Kind() != celast.ListKind || len(added.AsList().Elements()) != 1 {
 		return false
 	}
-	el := added.AsList().Elements()[0]
-	return el.Kind() == celast.IdentKind && el.AsIdent() == c.IterVar()
+	return isIdent(added.AsList().Elements()[0], c.IterVar())
 }
 
 // selected is the sources of the member key selects from operand, a field
@@ -281,24 +344,37 @@ func keeps(c celast.ComprehensionExpr) bool {
 func (t *tracer) selected(operand celast.Expr, key ref.Val, index bool) []source {
 	out := sourceSet{t: t}
 	for _, s := range t.sources(operand) {
-		switch {
-		case s.kind == literalSource:
-			member, found, known := lookup(s.e, key)
-			switch {
-			case !known:
-				out.add(opaque...)
-			case found:
-				out.add(t.sources(member)...)
-			}
-		case s.kind == listSource && index:
-			out.add(source{kind: memberSource, e: s.e})
-		case s.kind == subsetSource && index:
-			out.add(t.kept(s.e.AsComprehension())...)
-		default:
-			out.add(opaque...)
-		}
+		t.addSelected(&out, s, key, index)
 	}
 	return out.list
+}
+
+// addSelected adds to out the sources of the member key selects from the
+// operand's source s.
+func (t *tracer) addSelected(out *sourceSet, s source, key ref.Val, index bool) {
+	switch {
+	case s.kind == literalSource:
+		t.addLookup(out, s.e, key)
+	case s.kind == listSource && index:
+		out.add(source{kind: memberSource, e: s.e})
+	case s.kind == subsetSource && index:
+		out.add(t.kept(s.e.AsComprehension())...)
+	default:
+		out.add(opaque...)
+	}
+}
+
+// addLookup adds to out the sources of the member key selects from the
+// literal lit: opaque when the literal cannot say, and nothing when it
+// has no such member.
+func (t *tracer) addLookup(out *sourceSet, lit celast.Expr, key ref.Val) {
+	member, found, known := lookup(lit, key)
+	switch {
+	case !known:
+		out.add(opaque...)
+	case found:
+		out.add(t.sources(member)...)
+	}
 }
 
 // lookup is the member key selects from lit, a list or map literal. known
@@ -341,59 +417,87 @@ func lookup(lit celast.Expr, key ref.Val) (member celast.Expr, found, known bool
 // is false when e is none of these, or when some value e may stand for is
 // not such a literal.
 func (t *tracer) targets(e celast.Expr) ([]celast.Expr, bool) {
-	var (
-		over []source
-		key  ref.Val
-		elem bool // over's list literals give their elements
-	)
-	switch e.Kind() {
-	case celast.IdentKind:
-		c, ok := binder(t.nodes[e.ID()], e.AsIdent())
-		switch {
-		case ok && c.AccuVar() == e.AsIdent():
-			return []celast.Expr{c.AccuInit()}, true
-		case ok && c.IterVar() == e.AsIdent():
-			over, elem = t.sources(c.IterRange()), true
-		default:
-			return nil, false
-		}
-	case celast.SelectKind:
-		sel := e.AsSelect()
-		if sel.IsTestOnly() {
-			return nil, false
-		}
-		over, key = t.sources(sel.Operand()), types.String(sel.FieldName())
-	case celast.CallKind:
-		call := e.AsCall()
-		if call.FunctionName() != operators.Index || len(call.Args()) != 2 || call.Args()[1].Kind() != celast.LiteralKind {
-			return nil, false
-		}
-		over, key = t.sources(call.Args()[0]), call.Args()[1].AsLiteral()
-	default:
+	if c, ok := t.bound(e); ok {
+		return []celast.Expr{c.AccuInit()}, true
+	}
+	r, ok := t.reaching(e)
+	if !ok {
 		return nil, false
 	}
 	var to []celast.Expr
-	for _, s := range over {
+	for _, s := range r.over {
 		t.work++
 		if t.exceeded() || s.kind != literalSource {
 			return nil, false
 		}
-		if elem {
-			if s.e.Kind() != celast.ListKind {
-				return nil, false
-			}
-			to = append(to, s.e.AsList().Elements()...)
-			continue
-		}
-		member, found, known := lookup(s.e, key)
-		if !known {
+		more, ok := r.from(s.e)
+		if !ok {
 			return nil, false
 		}
-		if found {
-			to = append(to, member)
-		}
+		to = append(to, more...)
 	}
 	return to, true
+}
+
+// bound is the cel.bind that binds the name e, if e is one.
+func (t *tracer) bound(e celast.Expr) (celast.ComprehensionExpr, bool) {
+	if e.Kind() != celast.IdentKind {
+		return nil, false
+	}
+	c, ok := binder(t.nodes[e.ID()], e.AsIdent())
+	return c, ok && c.AccuVar() == e.AsIdent()
+}
+
+// reach is how targets steps on from e: over the sources of a range or an
+// operand, to their elements when elem is set, else to the member key
+// selects.
+type reach struct {
+	over []source
+	key  ref.Val
+	elem bool
+}
+
+// reaching is the reach of a comprehension variable, a field or a literal
+// index e, and false for any other e.
+func (t *tracer) reaching(e celast.Expr) (reach, bool) {
+	switch e.Kind() {
+	case celast.IdentKind:
+		c, ok := binder(t.nodes[e.ID()], e.AsIdent())
+		if !ok || c.IterVar() != e.AsIdent() {
+			return reach{}, false
+		}
+		return reach{over: t.sources(c.IterRange()), elem: true}, true
+	case celast.SelectKind:
+		if sel := e.AsSelect(); !sel.IsTestOnly() {
+			return reach{over: t.sources(sel.Operand()), key: types.String(sel.FieldName())}, true
+		}
+	case celast.CallKind:
+		if call := e.AsCall(); literalIndex(call) {
+			return reach{over: t.sources(call.Args()[0]), key: call.Args()[1].AsLiteral()}, true
+		}
+	default:
+	}
+	return reach{}, false
+}
+
+// from is what r reaches in the literal lit: a list's elements, or the
+// member its key selects, or none. It is false when lit cannot say, or is
+// no list where r wants elements.
+func (r reach) from(lit celast.Expr) ([]celast.Expr, bool) {
+	if r.elem {
+		if lit.Kind() != celast.ListKind {
+			return nil, false
+		}
+		return lit.AsList().Elements(), true
+	}
+	member, found, known := lookup(lit, r.key)
+	if !known {
+		return nil, false
+	}
+	if found {
+		return []celast.Expr{member}, true
+	}
+	return nil, true
 }
 
 // sourceSet is a list of sources, each once, built for t, whose work it

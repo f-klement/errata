@@ -170,32 +170,59 @@ func (r reader) read(data []byte, m *core.Meter, visit func(*core.Entry) error) 
 		return core.LineError(s.withEnv.line, "withEnv sets %s for the steps inside it, which errata does not read", r.variable)
 	}
 	if r.staged {
-		if err := r.checkStage(s); err != nil {
+		rec, found, err := r.stageRecord(data, s, target, m)
+		if err != nil {
 			return err
 		}
-		second := newScan(data, []byte(r.variable), target, m)
-		second.chain, second.cell = map[int]bool{}, map[int]bool{}
-		for _, id := range s.around {
-			second.chain[id] = true
-		}
-		for _, id := range s.aroundCell {
-			second.cell[id] = true
-		}
-		if err := second.run(); err != nil {
-			return err
-		}
-		// A matrix sets its axes in each cell, over every environment
-		// block around the matrix.
-		if second.cellAxis != nil {
-			return core.LineError(second.cellAxis.line, "%s is %s, and stage %s is in that matrix", r.variable, second.cellAxis.what, core.Quote(r.stage))
-		}
-		// Innermost first: a stage's environment over the stages around it.
-		for _, id := range s.around {
-			if rec, ok := second.stageEnv[id]; ok {
-				return r.environment(data, rec, visit)
-			}
+		if found {
+			return r.environment(data, rec, visit)
 		}
 	}
+	return r.fileValues(data, s, visit)
+}
+
+// stageRecord runs the second pass over data, for the stage target the
+// first pass found: the value of the innermost stage around the target
+// whose environment sets the variable, if one does.
+func (r reader) stageRecord(data []byte, first *scan, target []byte, m *core.Meter) (record, bool, error) {
+	if err := r.checkStage(first); err != nil {
+		return record{}, false, err
+	}
+	second := newScan(data, []byte(r.variable), target, m)
+	second.chain, second.cell = setOf(first.around), setOf(first.aroundCell)
+	if err := second.run(); err != nil {
+		return record{}, false, err
+	}
+	// A matrix sets its axes in each cell, over every environment
+	// block around the matrix.
+	if second.cellAxis != nil {
+		return record{}, false, core.LineError(second.cellAxis.line, "%s is %s, and stage %s is in that matrix", r.variable, second.cellAxis.what, core.Quote(r.stage))
+	}
+	// Innermost first: a stage's environment over the stages around it.
+	for _, id := range first.around {
+		if rec, ok := second.stageEnv[id]; ok {
+			return rec, true, nil
+		}
+	}
+	return record{}, false, nil
+}
+
+// setOf is the set of ids, empty and not nil when there are none.
+func setOf(ids []int) map[int]bool {
+	set := map[int]bool{}
+	for _, id := range ids {
+		set[id] = true
+	}
+	return set
+}
+
+// fileValues visits the values the file gives the variable other than a
+// stage's environment block: the pipeline's environment block, else its
+// env.X = or def X = assignments, wherever they stand. It refuses a
+// variable something errata does not read may set (unknown), and a def
+// X = whose value the file changes after. With no value it is a NoValue
+// that says where errata looked.
+func (r reader) fileValues(data []byte, s *scan, visit func(*core.Entry) error) error {
 	if s.pipelineEnv != nil {
 		return r.environment(data, *s.pipelineEnv, visit)
 	}

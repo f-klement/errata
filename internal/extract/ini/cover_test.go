@@ -88,6 +88,32 @@ func TestPHPLexerEndsAtAByteNoRuleMatches(t *testing.T) {
 	}
 }
 
+// chars reads a run of the bytes its caller's state takes: a \ and the byte
+// after it where escape is set, as a section's name and a fallback read
+// them; a NUL where nul is set, which past the end of the file is a byte
+// the run takes and so reads past the end; and $ and \ and a byte. Where
+// escape or nul is not set, the \ or the NUL ends the run. The planted
+// break is a NUL taken whether or not nul is set.
+func TestPHPCharsTakesEscapesAndNULsOnlyWhereSet(t *testing.T) {
+	for _, c := range []struct {
+		data        string
+		stop        *[256]bool
+		nul, escape bool
+		want        phpMatch
+	}{
+		{"a\\]b", &phpSectionStop, true, true, phpMatch{5, true}},
+		{"a\\]b", &phpSectionStop, true, false, phpMatch{1, false}},
+		{"a\x00b", &phpFallbackStop, true, false, phpMatch{4, true}},
+		{"a\x00b", &phpValueStop, false, false, phpMatch{1, false}},
+		{"$\\x", &phpValueStop, false, false, phpMatch{3, false}},
+	} {
+		l := &phpLexer{data: []byte(c.data)}
+		if got := l.chars(0, c.stop, c.nul, c.escape); got != c.want {
+			t.Errorf("chars over %q, nul %v, escape %v: %+v, want %+v", c.data, c.nul, c.escape, got, c.want)
+		}
+	}
+}
+
 // Python's configparser reads a last line with no line break after it as it
 // reads any other, so an entry there is found. The planted break is the
 // line reader stopping, with no error, at the last line's charge.

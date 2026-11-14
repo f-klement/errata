@@ -479,3 +479,143 @@ func TestOnlyScoresThePackagesNamedAndHoldsTheirRows(t *testing.T) {
 		}
 	}
 }
+
+// lits holds function literals in package level vars: rules.func1 of
+// complexity 1, rules.func2 of complexity 10 (nine ifs), once.func1 of
+// complexity 2 through the closure it holds, and a.func1 and b.func1, empty.
+var lits = `package r
+
+var rules = []func(int) int{
+	func(n int) int { return n },
+	func(n int) int {
+` + strings.Repeat("\t\tif n == 1 {\n\t\t\treturn 1\n\t\t}\n", 9) + `		return 0
+	},
+}
+
+var once = func() int {
+	f := func(b bool) int {
+		if b {
+			return 1
+		}
+		return 0
+	}
+	return f(true)
+}
+
+var a, b = func() {}, func() {}
+`
+
+// litBodies is the span of each function literal's body in src, in source
+// order, nested ones included, as a profile line writes it.
+func litBodies(t *testing.T, src string) []string {
+	t.Helper()
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "x.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	ast.Inspect(f, func(n ast.Node) bool {
+		if lit, ok := n.(*ast.FuncLit); ok {
+			l, r := fset.Position(lit.Body.Lbrace), fset.Position(lit.Body.Rbrace)
+			out = append(out, fmt.Sprintf("%d.%d,%d.%d", l.Line, l.Column+1, r.Line, r.Column))
+		}
+		return true
+	})
+	return out
+}
+
+// litsProfile covers rules whole and once's own two statements, and leaves
+// the two statements of the closure once holds unrun.
+func litsProfile(t *testing.T, src string) string {
+	t.Helper()
+	b := litBodies(t, src)
+	return strings.Join([]string{
+		"mode: set",
+		"example.com/m/r/r.go:" + b[0] + " 1 1",
+		"example.com/m/r/r.go:" + b[1] + " 19 1",
+		"example.com/m/r/r.go:" + b[2] + " 2 1",
+		"example.com/m/r/r.go:" + b[3] + " 2 0",
+	}, "\n") + "\n"
+}
+
+// A function literal that no function holds is a row of its own, named for
+// its var and its place there. The closure inside once counts toward once,
+// in complexity and in coverage, and has no row.
+func TestALiteralOutsideAFunctionIsScored(t *testing.T) {
+	root := tree(t, "example.com/m", map[string]string{"r/r.go": lits})
+	got := scores(t, root, litsProfile(t, lits))
+	want := map[string]string{
+		"example.com/m/r rules.func1": "1.00\t1\t1.000\t1\texample.com/m/r rules.func1\tr/r.go:4",
+		"example.com/m/r rules.func2": "10.00\t10\t1.000\t19\texample.com/m/r rules.func2\tr/r.go:5",
+		// 4 * (1/2)^3 + 2.
+		"example.com/m/r once.func1": "2.50\t2\t0.500\t4\texample.com/m/r once.func1\tr/r.go:37",
+		"example.com/m/r a.func1":    "1.00\t1\t1.000\t0\texample.com/m/r a.func1\tr/r.go:47",
+		"example.com/m/r b.func1":    "1.00\t1\t1.000\t0\texample.com/m/r b.func1\tr/r.go:47",
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("scores =\n%q\nwant\n%q", got, want)
+	}
+}
+
+// A literal at 10 or more needs its row, as a function does; one below 10
+// needs none.
+func TestALiteralOverTheLimitFailsAndOneUnderPasses(t *testing.T) {
+	root := tree(t, "example.com/m", map[string]string{"r/r.go": lits})
+	rc, out, _ := crap(t, root, litsProfile(t, lits), "-baseline", writeFile(t, ""))
+	want := "example.com/m/r rules.func2 scores 10.00 (r/r.go:5, complexity 10, coverage 100.0%), and a function with no row in the baseline scores below 10\ncrap: FAILED: 1 problems\n"
+	if rc != 1 || out != want {
+		t.Errorf("exit %d, stdout %q; want 1 and %q", rc, out, want)
+	}
+	rc, out, _ = crap(t, root, litsProfile(t, lits), "-baseline", writeFile(t, "example.com/m/r rules.func2 10.00\n"))
+	if rc != 0 || !strings.Contains(out, "crap: 5 functions scored; 1 at 10 or more") {
+		t.Errorf("with its row: exit %d, stdout %q; want 0", rc, out)
+	}
+}
+
+// A literal statement with no block in the profile is refused, as a
+// function's is.
+func TestALiteralWithStatementsAndNoBlockIsRefused(t *testing.T) {
+	root := tree(t, "example.com/m", map[string]string{"r/r.go": lits})
+	prof := strings.Replace(litsProfile(t, lits), "example.com/m/r/r.go:"+litBodies(t, lits)[0]+" 1 1\n", "", 1)
+	rc, _, errb := crap(t, root, prof)
+	if want := "example.com/m/r rules.func1 at r/r.go:4 has statements and no block"; rc != 2 || !strings.Contains(errb, want) {
+		t.Errorf("exit %d, stderr %q; want a refusal naming %q", rc, errb, want)
+	}
+}
+
+// Lines that move above a literal, or inside its var, leave its name as it is.
+func TestALiteralsNameStaysWhenLinesMove(t *testing.T) {
+	moved := strings.Replace(lits, "package r\n", "package r\n\n// A comment that moves every line.\nvar pad = 1\n", 1)
+	moved = strings.Replace(moved, "\tfunc(n int) int { return n },\n", "\n\tfunc(n int) int {\n\t\treturn n\n\t},\n", 1)
+	root := tree(t, "example.com/m", map[string]string{"r/r.go": moved})
+	got := scores(t, root, litsProfile(t, moved))
+	for k, where := range map[string]string{
+		"example.com/m/r rules.func1": "r/r.go:8",
+		"example.com/m/r rules.func2": "r/r.go:11",
+		"example.com/m/r once.func1":  "r/r.go:43",
+	} {
+		if !strings.HasSuffix(got[k], "\t"+k+"\t"+where) {
+			t.Errorf("%s = %q, want it at %s", k, got[k], where)
+		}
+	}
+	if len(got) != 5 {
+		t.Errorf("scored %d rows, want 5: %q", len(got), got)
+	}
+}
+
+// Vars named _ in two files of one package share the name _.func1, and the
+// worse score is kept, so no literal over the limit hides behind the other.
+func TestBlankVarsShareANameAndKeepTheWorseScore(t *testing.T) {
+	worse := "package r\n\nvar _ = func(b bool) int {\n\tif b {\n\t\treturn 1\n\t}\n\treturn 0\n}\n"
+	better := "package r\n\nvar _ = func() int {\n\treturn 1\n}\n"
+	root := tree(t, "example.com/m", map[string]string{"r/a.go": better, "r/b.go": worse})
+	prof := "mode: set\n" +
+		"example.com/m/r/a.go:" + litBodies(t, better)[0] + " 1 1\n" +
+		"example.com/m/r/b.go:" + litBodies(t, worse)[0] + " 3 1\n"
+	got := scores(t, root, prof)
+	want := map[string]string{"example.com/m/r _.func1": "2.00\t2\t1.000\t3\texample.com/m/r _.func1\tr/b.go:3"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("scores = %q, want %q", got, want)
+	}
+}

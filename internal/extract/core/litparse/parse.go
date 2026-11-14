@@ -200,19 +200,7 @@ func (p *parser) advance() {
 	if t.line {
 		p.pendingDo = false
 	}
-	switch t.kind {
-	case tOpen:
-		p.open = append(p.open, opened{close: closer(p.src[t.start]), at: t.start})
-	case tClose:
-		if n := len(p.open); n == 0 || p.open[n-1].close != p.src[t.start] {
-			p.fail(p.t.lost(t.start, "a "+p.src[t.start:t.end]+" closes no bracket open"))
-		} else {
-			p.open = p.open[:n-1]
-		}
-	case tIdent:
-		p.block(t)
-	default: // a value or a punctuation mark opens and closes nothing
-	}
+	p.brackets(t)
 	p.observe(t)
 	p.prev = t
 	if len(p.next) > 0 {
@@ -222,6 +210,30 @@ func (p *parser) advance() {
 	}
 	if p.err != nil {
 		p.tok = token{kind: tEOF, start: len(p.src), end: len(p.src)}
+	}
+}
+
+// brackets keeps the brackets and keyword blocks open as t opens or closes
+// one.
+func (p *parser) brackets(t token) {
+	switch t.kind {
+	case tOpen:
+		p.open = append(p.open, opened{close: closer(p.src[t.start]), at: t.start})
+	case tClose:
+		p.closeBracket(t)
+	case tIdent:
+		p.block(t)
+	default: // a value or a punctuation mark opens and closes nothing
+	}
+}
+
+// closeBracket closes the bracket t closes, the innermost open; a closer of
+// another bracket, or of none, fails the parse.
+func (p *parser) closeBracket(t token) {
+	if n := len(p.open); n == 0 || p.open[n-1].close != p.src[t.start] {
+		p.fail(p.t.lost(t.start, "a "+p.src[t.start:t.end]+" closes no bracket open"))
+	} else {
+		p.open = p.open[:n-1]
 	}
 }
 
@@ -248,28 +260,52 @@ func closer(b byte) byte {
 // block keeps the keyword blocks open as t, a word, opens or ends one.
 func (p *parser) block(t token) {
 	s := p.syn
-	if s.End == "" {
-		return // Until closes a block End closes too
-	}
-	if p.member(p.prev) {
-		return // a method named end or do
-	}
-	if n := p.peek(); n.glued && p.t.is(n, ":") {
-		return // a key or a keyword argument named do or if
+	if !p.blockWord() {
+		return
 	}
 	switch {
-	case p.t.is(t, s.End) || s.Until != "" && p.t.is(t, s.Until):
-		if len(p.blocks) == 0 {
-			p.fail(p.t.lost(t.start, p.t.text(t)+" ends no block open"))
-			return
-		}
-		p.blocks = p.blocks[:len(p.blocks)-1]
+	case p.endsBlock(t):
+		p.endBlock(t)
 	case s.Do != "" && p.pendingDo && p.t.is(t, s.Do):
 		p.pendingDo = false
-	case p.t.oneOf(t, s.Blocks) || s.Repeat != "" && p.t.is(t, s.Repeat) || p.t.oneOf(t, s.Lead) && p.lead(t):
+	case p.opensBlock(t):
 		p.blocks = append(p.blocks, t.start)
 		p.pendingDo = p.t.oneOf(t, s.Loops)
 	}
+}
+
+// blockWord reports whether tok may open or end a block: the row has an
+// End, which an Until's block ends too, and the word is no method's name,
+// as a method named end or do, nor a key or a keyword argument, as one
+// named do or if.
+func (p *parser) blockWord() bool {
+	if p.syn.End == "" || p.member(p.prev) {
+		return false
+	}
+	n := p.peek()
+	return !n.glued || !p.t.is(n, ":")
+}
+
+// endsBlock reports whether t is the row's End or Until.
+func (p *parser) endsBlock(t token) bool {
+	return p.t.is(t, p.syn.End) || p.syn.Until != "" && p.t.is(t, p.syn.Until)
+}
+
+// endBlock ends the innermost block open; with none open it fails the
+// parse.
+func (p *parser) endBlock(t token) {
+	if len(p.blocks) == 0 {
+		p.fail(p.t.lost(t.start, p.t.text(t)+" ends no block open"))
+		return
+	}
+	p.blocks = p.blocks[:len(p.blocks)-1]
+}
+
+// opensBlock reports whether t opens a block: one of Blocks, Repeat, or a
+// word of Lead where a statement or an expression starts.
+func (p *parser) opensBlock(t token) bool {
+	s := p.syn
+	return p.t.oneOf(t, s.Blocks) || s.Repeat != "" && p.t.is(t, s.Repeat) || p.t.oneOf(t, s.Lead) && p.lead(t)
 }
 
 // member reports whether t reaches a member of what is before it, so the
@@ -317,9 +353,12 @@ func (p *parser) atEnd() bool {
 	if p.t.is(t, ";") || p.closes(t) {
 		return true
 	}
-	if !t.line {
-		return false
-	}
+	return t.line && p.lineEnds(t)
+}
+
+// lineEnds reports whether t, first on its line, ends the statement before
+// it, with no bracket or block open.
+func (p *parser) lineEnds(t token) bool {
 	if p.syn.Semicolons {
 		// A function's or a class's body ends its statement with no ;.
 		return p.prev.kind == tClose && p.src[p.prev.start] == '}'
@@ -376,54 +415,141 @@ func (p *parser) endStatement() {
 // observer see it.
 func (p *parser) statement() {
 	p.stmt++
-	s := p.syn
 	first := p.tok
 	p.first = first.start
-	if p.t.is(first, ";") {
-		p.advance()
-		return
-	}
-	if s.Indent && first.first && first.col > p.sc.col || !p.top() {
-		p.endStatement()
+	if p.skipped(first) {
 		return
 	}
 	if p.members {
 		p.annotations()
 	}
-	if s.Return != "" && p.t.is(first, s.Return) && !p.name() {
-		p.advance()
-		p.define([]string{s.Return}, first, p.statementValue())
-		p.endStatement()
+	if p.returns(first) {
 		return
 	}
-	declared, constant := false, false
+	declared, constant := p.declares()
+	if p.defaults(first, declared) {
+		return
+	}
+	if p.classHead() {
+		p.class(first)
+		return
+	}
+	if p.typedHead(p.tok) {
+		p.typed(first, constant)
+		return
+	}
+	p.assignment(first, declared, constant)
+}
+
+// skipped moves past a statement that is a lone ;, or one inside a bracket
+// or block, or indented further than the body's statements, and reports
+// whether it did.
+func (p *parser) skipped(first token) bool {
+	if p.t.is(first, ";") {
+		p.advance()
+		return true
+	}
+	if p.syn.Indent && first.first && first.col > p.sc.col || !p.top() {
+		p.endStatement()
+		return true
+	}
+	return false
+}
+
+// returns reads a statement of the row's Return word, as PHP's return
+// [...], into the root under the word, and reports whether it did.
+func (p *parser) returns(first token) bool {
+	s := p.syn
+	if s.Return == "" || !p.t.is(first, s.Return) || p.name() {
+		return false
+	}
+	p.advance()
+	p.define([]string{s.Return}, first, p.statementValue())
+	p.endStatement()
+	return true
+}
+
+// declares moves past the words of Declare, and in a class's members those
+// of Modifiers, that start the statement; declared reports one, and
+// constant one of Constants.
+func (p *parser) declares() (declared, constant bool) {
+	s := p.syn
 	for (p.t.oneOf(p.tok, s.Declare) || p.members && p.t.oneOf(p.tok, s.Modifiers)) && !p.name() {
 		constant = constant || p.t.oneOf(p.tok, s.Constants)
 		p.advance()
 		declared = true
 	}
-	if declared && s.Default != "" && p.t.is(p.tok, s.Default) && p.members && p.t.oneOf(p.peek(), s.Classes) {
-		p.advance() // export default class C reads as export class C
+	return declared, constant
+}
+
+// defaults reads the value of a declared statement of the row's Default
+// word into the root under the word, as JavaScript's export default {...},
+// and reports whether it did. export default class C reads as export class
+// C.
+func (p *parser) defaults(first token, declared bool) bool {
+	s := p.syn
+	if !declared || s.Default == "" {
+		return false
 	}
-	if declared && s.Default != "" && p.t.is(p.tok, s.Default) {
+	if p.t.is(p.tok, s.Default) && p.members && p.t.oneOf(p.peek(), s.Classes) {
 		p.advance()
-		p.define([]string{s.Default}, first, p.statementValue())
-		p.endStatement()
-		return
 	}
-	if p.members && p.t.oneOf(p.tok, s.Classes) && !p.name() {
-		p.class(first)
-		return
+	if !p.t.is(p.tok, s.Default) {
+		return false
 	}
+	p.advance()
+	p.define([]string{s.Default}, first, p.statementValue())
+	p.endStatement()
+	return true
+}
+
+// classHead reports whether tok opens a class whose members are read.
+func (p *parser) classHead() bool {
+	return p.members && p.t.oneOf(p.tok, p.syn.Classes) && !p.name()
+}
+
+// typedHead reports whether head starts a member of a Typed row's class
+// with its type: no keyword, and no name an assignment follows.
+func (p *parser) typedHead(head token) bool {
+	return p.members && p.syn.Typed && p.sc.depth > 0 && !p.keyword(head) && (head.kind != tIdent || !p.assign(p.peek()))
+}
+
+// assignment reads a statement that starts with a name, dotted or not: an
+// assignment of it, or a call of it at the top, and skips any other.
+func (p *parser) assignment(first token, declared, constant bool) {
 	head := p.tok
-	if p.members && s.Typed && p.sc.depth > 0 && !p.keyword(head) && (head.kind != tIdent || !p.assign(p.peek())) {
-		p.typed(first, constant)
-		return
-	}
 	if head.kind != tIdent || p.keyword(head) && !p.name() {
 		p.endStatement()
 		return
 	}
+	names, ok := p.dotted(head)
+	if !ok {
+		return
+	}
+	p.annotation()
+	switch {
+	case p.assign(p.tok):
+		p.assigned(first, names, constant)
+	case p.method(declared, names):
+		// A call in a class's body is a method's head, not a call.
+	default:
+		p.callStatement(names[0], head)
+	}
+	p.endStatement()
+}
+
+// assigned reads the value assigned to names, tok being the assignment,
+// into the root, and keeps whether the statement declared it constant.
+func (p *parser) assigned(first token, names []string, constant bool) {
+	p.advance()
+	p.define(names, first, p.statementValue())
+	p.consts[strings.Join(names, ".")] = constant || p.sc.constant
+}
+
+// dotted moves past the name head starts, with each part after a dot,
+// and returns its parts; false when it nests past core.MaxDepth, which
+// fails the parse.
+func (p *parser) dotted(head token) ([]string, bool) {
 	names := []string{p.key(head)}
 	p.advance()
 	for p.t.is(p.tok, ".") && p.peek().kind == tIdent && !p.keyword(p.peek()) {
@@ -431,30 +557,43 @@ func (p *parser) statement() {
 		if len(names) == core.MaxDepth {
 			// Each part nests a mapping one level deeper.
 			p.fail(fmt.Errorf("%s: %w", p.t.file, core.TooDeep(p.t.line(p.tok.start))))
-			return
+			return nil, false
 		}
 		names = append(names, p.key(p.tok))
 		p.advance()
 	}
-	if s.Annotate && p.t.is(p.tok, ":") {
-		for !p.atEnd() && !p.assign(p.tok) {
-			p.advance()
-		}
+	return names, true
+}
+
+// annotation moves past a type annotation after a name, in a row that
+// writes one after a :, up to its assignment or the statement's end.
+func (p *parser) annotation() {
+	if !p.syn.Annotate || !p.t.is(p.tok, ":") {
+		return
 	}
-	switch {
-	case p.assign(p.tok):
+	for !p.atEnd() && !p.assign(p.tok) {
 		p.advance()
-		p.define(names, first, p.statementValue())
-		p.consts[strings.Join(names, ".")] = constant || p.sc.constant
-	case declared || len(names) > 1 || p.sc.depth > 0:
-		// A call in a class's body is a method's head, not a call.
-	case p.tok.kind == tOpen && p.src[p.tok.start] == '(' && !p.tok.line:
-		v := p.finish(head, p.call(head, 1), ctx{top: true}, 0, 0)
-		p.called(names[0], head, v)
-	case s.Command && !p.tok.line && !p.tok.glued && p.valueStart(p.tok):
-		p.called(names[0], head, p.command(head))
 	}
-	p.endStatement()
+}
+
+// method reports whether a name that no assignment follows is a method's
+// head rather than a call: it was declared, is dotted, or stands in a
+// class's body.
+func (p *parser) method(declared bool, names []string) bool {
+	return declared || len(names) > 1 || p.sc.depth > 0
+}
+
+// callStatement reads a statement that calls name, head, at the top: with
+// its arguments in brackets, or as a command with them after a blank.
+func (p *parser) callStatement(name string, head token) {
+	s := p.syn
+	switch {
+	case p.callOpens():
+		v := p.finish(head, p.call(head, 1), ctx{top: true}, 0, 0)
+		p.called(name, head, v)
+	case s.Command && !p.tok.line && !p.tok.glued && p.valueStart(p.tok):
+		p.called(name, head, p.command(head))
+	}
 }
 
 // name reports whether tok, a word of the language, is used as a name
@@ -677,15 +816,10 @@ func (p *parser) finish(start token, n *core.Node, c ctx, depth, blocks int) *co
 	if n != nil && p.stop(c, depth, blocks) {
 		return n
 	}
-	if n != nil && start.kind == tString && !n.NotLiteral && p.syn.Frozen != "" && p.t.is(p.tok, ".") &&
-		p.peek().kind == tIdent && p.t.is(p.peek(), p.syn.Frozen) {
-		p.advance() // "1.2".freeze is the string 1.2
-		p.advance()
-		if p.stop(c, depth, blocks) {
-			return n
-		}
+	if n != nil && p.frozen(start, n, c, depth, blocks) {
+		return n
 	}
-	cast := n != nil && !n.NotLiteral && p.t.oneOf(p.tok, p.syn.Casts)
+	cast := p.cast(n)
 	for !p.stop(c, depth, blocks) {
 		p.advance()
 	}
@@ -695,12 +829,29 @@ func (p *parser) finish(start token, n *core.Node, c ctx, depth, blocks int) *co
 	return p.notLiteral(start.start, p.prev.end)
 }
 
+// frozen moves past the row's Frozen call after n, a string literal read
+// from start, as Ruby's "1.2".freeze, which is the string 1.2, and reports
+// whether the value ends after it.
+func (p *parser) frozen(start token, n *core.Node, c ctx, depth, blocks int) bool {
+	if start.kind != tString || n.NotLiteral || p.syn.Frozen == "" || !p.t.is(p.tok, ".") ||
+		p.peek().kind != tIdent || !p.t.is(p.peek(), p.syn.Frozen) {
+		return false
+	}
+	p.advance()
+	p.advance()
+	return p.stop(c, depth, blocks)
+}
+
+// cast reports whether tok is a cast, one of the row's Casts, after n, a
+// literal.
+func (p *parser) cast(n *core.Node) bool {
+	return n != nil && !n.NotLiteral && p.t.oneOf(p.tok, p.syn.Casts)
+}
+
 // literal reads the literal that starts at tok, or nil when none does; it
 // does not read past the literal.
 func (p *parser) literal(c ctx) *core.Node {
-	s := p.syn
 	t := p.tok
-	inner := ctx{level: c.level + 1}
 	switch t.kind {
 	case tString:
 		return p.strings(nil)
@@ -712,62 +863,129 @@ func (p *parser) literal(c ctx) *core.Node {
 		return p.scalar(core.TypeString, p.src[t.start+1:t.end], t.start)
 	case tOpen:
 		if b, ok := p.bracket(p.src[t.start], 0); ok {
-			return p.list(b, t, inner)
+			return p.list(b, t, ctx{level: c.level + 1})
 		}
 	case tPunct:
-		n := p.peek()
-		switch {
-		case (p.t.is(t, "-") || p.t.is(t, "+")) && n.kind == tNumber && n.glued:
-			p.advance()
-			p.advance()
-			return p.scalar(core.TypeNumber, p.src[t.start:n.end], t.start)
-		case s.Members && p.t.is(t, ".") && n.kind == tIdent && n.glued:
-			p.advance()
-			p.advance()
-			if p.tok.kind == tOpen && p.src[p.tok.start] == '(' && p.tok.glued {
-				return p.call(t, c.level+1)
-			}
-			return p.scalar(core.TypeString, p.src[t.start:n.end], t.start)
-		case n.kind == tOpen && n.glued:
-			if b, ok := p.bracket(p.src[n.start], p.src[t.start]); ok && b.Pre != 0 && t.end-t.start == 1 {
-				p.advance()
-				return p.list(b, t, inner)
-			}
-		}
+		return p.punctLiteral(t, c)
 	case tIdent:
-		switch {
-		case p.t.fold(t, s.True, s.FoldWords) || p.t.fold(t, s.False, s.FoldWords):
-			p.advance()
-			return p.scalar(core.TypeBool, p.t.text(t), t.start)
-		case p.t.fold(t, s.Null, s.FoldWords):
-			p.advance()
-			return p.scalar(core.TypeNull, p.t.text(t), t.start)
-		case p.peek().kind == tString && p.peek().glued:
-			pre := p.prefix(t)
-			if pre == nil {
-				return nil // a tagged template or an interpolator errata does not know
-			}
-			p.advance()
-			return p.strings(pre)
-		case s.ArrayCall != "" && strings.EqualFold(p.t.text(t), s.ArrayCall) && p.peek().kind == tOpen && p.src[p.peek().start] == '(':
-			p.advance()
-			b := s.Brackets[0]
-			b.Open, b.Close = '(', ')'
-			return p.list(b, t, inner)
-		}
-		chain := p.callee()
-		if chain == "" {
-			return nil
-		}
-		if p.tok.kind == tOpen && p.src[p.tok.start] == '(' && !p.tok.line {
-			return p.call(t, c.level+1)
-		}
-		if s.Aliases && alias(chain) {
-			return p.scalar(core.TypeString, chain, t.start)
-		}
+		return p.wordLiteral(t, c)
 	default: // the end of the file, or a closer where a value should be
 	}
 	return nil
+}
+
+// punctLiteral reads the literal that starts at t, a punctuation mark: a
+// signed number, a member's name such as Swift's .red, or a list with a
+// prefix, as PHP's or Groovy's; nil for none.
+func (p *parser) punctLiteral(t token, c ctx) *core.Node {
+	n := p.peek()
+	switch {
+	case p.signed(t, n):
+		p.advance()
+		p.advance()
+		return p.scalar(core.TypeNumber, p.src[t.start:n.end], t.start)
+	case p.memberAt(t, n):
+		return p.memberLiteral(t, n, c)
+	case n.kind == tOpen && n.glued:
+		return p.prefixedList(t, n, c)
+	}
+	return nil
+}
+
+// signed reports whether t is a sign that n, a number, follows glued.
+func (p *parser) signed(t, n token) bool {
+	return (p.t.is(t, "-") || p.t.is(t, "+")) && n.kind == tNumber && n.glued
+}
+
+// memberAt reports whether t is the . of a member's name n, glued to it,
+// in a row with Members.
+func (p *parser) memberAt(t, n token) bool {
+	return p.syn.Members && p.t.is(t, ".") && n.kind == tIdent && n.glued
+}
+
+// memberLiteral reads the member .n that t starts: a call when a ( follows
+// it glued, else the string of its text.
+func (p *parser) memberLiteral(t, n token, c ctx) *core.Node {
+	p.advance()
+	p.advance()
+	if p.tok.kind == tOpen && p.src[p.tok.start] == '(' && p.tok.glued {
+		return p.call(t, c.level+1)
+	}
+	return p.scalar(core.TypeString, p.src[t.start:n.end], t.start)
+}
+
+// prefixedList reads the list that n, a bracket, opens after t, a prefix
+// of one byte the row lists with that bracket; nil when it lists none.
+func (p *parser) prefixedList(t, n token, c ctx) *core.Node {
+	if b, ok := p.bracket(p.src[n.start], p.src[t.start]); ok && b.Pre != 0 && t.end-t.start == 1 {
+		p.advance()
+		return p.list(b, t, ctx{level: c.level + 1})
+	}
+	return nil
+}
+
+// wordLiteral reads the literal that starts at t, a word: a boolean, a
+// null, a string with a prefix, the row's ArrayCall, or what named reads.
+func (p *parser) wordLiteral(t token, c ctx) *core.Node {
+	s := p.syn
+	switch {
+	case p.t.fold(t, s.True, s.FoldWords) || p.t.fold(t, s.False, s.FoldWords):
+		p.advance()
+		return p.scalar(core.TypeBool, p.t.text(t), t.start)
+	case p.t.fold(t, s.Null, s.FoldWords):
+		p.advance()
+		return p.scalar(core.TypeNull, p.t.text(t), t.start)
+	case p.peek().kind == tString && p.peek().glued:
+		return p.prefixed(t)
+	case p.arrayCall(t):
+		p.advance()
+		// The ( reads as the row's first pair, so one value in it is a
+		// list of one, never a value in parentheses.
+		return p.list(s.Brackets[0], t, ctx{level: c.level + 1})
+	}
+	return p.named(t, c)
+}
+
+// prefixed reads the string that t, a word of the row's Prefixes, stands
+// glued before; nil for a tagged template or an interpolator errata does
+// not know.
+func (p *parser) prefixed(t token) *core.Node {
+	pre := p.prefix(t)
+	if pre == nil {
+		return nil
+	}
+	p.advance()
+	return p.strings(pre)
+}
+
+// arrayCall reports whether t is the row's ArrayCall, in any case, before
+// its (, as PHP's array(...).
+func (p *parser) arrayCall(t token) bool {
+	s := p.syn
+	return s.ArrayCall != "" && strings.EqualFold(p.t.text(t), s.ArrayCall) && p.peek().kind == tOpen && p.src[p.peek().start] == '('
+}
+
+// named reads the dotted name at t: a call when its ( follows on its line,
+// or in a row with Aliases an Elixir alias, the string of its text; nil
+// for any other name.
+func (p *parser) named(t token, c ctx) *core.Node {
+	chain := p.callee()
+	if chain == "" {
+		return nil
+	}
+	if p.callOpens() {
+		return p.call(t, c.level+1)
+	}
+	if p.syn.Aliases && alias(chain) {
+		return p.scalar(core.TypeString, chain, t.start)
+	}
+	return nil
+}
+
+// callOpens reports whether tok is the ( of a call, on the line of the name
+// before it.
+func (p *parser) callOpens() bool {
+	return p.tok.kind == tOpen && p.src[p.tok.start] == '(' && !p.tok.line
 }
 
 // alias reports whether chain is an Elixir alias: dotted names that each
@@ -832,52 +1050,88 @@ func (p *parser) list(b core.Bracket, start token, c ctx) *core.Node {
 	line := p.t.line(start.start)
 	p.advance() // the opener
 	depth := len(p.open)
-	var (
-		items         []*core.Node
-		m             = core.NewMapping(line)
-		comma         bool // a comma stands between two values
-		bad           bool
-		entries, vals int
-	)
+	l := listed{m: core.NewMapping(line)}
 	if p.t.is(p.tok, ":") && p.peek().kind == tClose {
 		p.advance() // [:], an empty mapping
-		entries = -1
+		l.entries = -1
 	}
-	for p.err == nil && (p.tok.kind != tClose || len(p.open) != depth) && p.tok.kind != tEOF {
-		key, isEntry, ok := p.entryKey()
-		v := p.value(ctx{level: c.level})
-		switch {
-		case isEntry && !ok:
-			bad = true
-		case isEntry:
-			entries++
-			if _, dup := m.Field[key]; dup {
-				bad = true // and setting it again would search the keys
-			} else {
-				m.Set(key, v)
-			}
-		default:
-			vals++
-			items = append(items, v)
-		}
-		if p.t.is(p.tok, ",") && len(p.open) == depth {
-			comma = true
-			p.advance()
-		}
+	for p.inside(depth) {
+		p.item(&l, c, depth)
 	}
 	p.advance() // the closer
+	return p.listNode(&l, b, start, line)
+}
+
+// listNode is the value of l, the list or mapping b opened at start, on
+// line: computed, a mapping, the one value in parentheses, or a list.
+func (p *parser) listNode(l *listed, b core.Bracket, start token, line int) *core.Node {
 	parens := b.Open == '('
 	switch {
-	case bad || entries > 0 && vals > 0 || entries > 0 && !b.Entries || vals > 0 && !b.Items && !parens:
+	case l.refused(b, parens):
 		return p.notLiteral(start.start, p.prev.end)
-	case entries != 0:
-		return m
-	case parens && vals == 1 && !comma:
-		return items[0] // parentheses around one value
-	case vals == 0 && b.Map:
-		return m
+	case l.entries != 0:
+		return l.m
+	case parens && l.vals == 1 && !l.comma:
+		return l.items[0] // parentheses around one value
+	case l.vals == 0 && b.Map:
+		return l.m
 	}
-	return &core.Node{Shape: core.Sequence, Line: line, Items: items}
+	return &core.Node{Shape: core.Sequence, Line: line, Items: l.items}
+}
+
+// listed is what list has read of a list or a mapping: its items, its
+// entries, whether a comma stands between two values, and whether it is
+// computed.
+type listed struct {
+	items         []*core.Node
+	m             *core.Node
+	comma, bad    bool
+	entries, vals int
+}
+
+// refused reports whether the list l read, which b opened, is computed: it
+// is bad, holds both entries and items, or holds what b does not.
+func (l *listed) refused(b core.Bracket, parens bool) bool {
+	return l.bad || l.entries > 0 && l.vals > 0 || l.entries > 0 && !b.Entries || l.vals > 0 && !b.Items && !parens
+}
+
+// inside reports whether tok is still inside the bracket opened at depth,
+// with no error.
+func (p *parser) inside(depth int) bool {
+	return p.err == nil && (p.tok.kind != tClose || len(p.open) != depth) && p.tok.kind != tEOF
+}
+
+// item reads one item or entry of the list l, opened at depth, and the
+// comma after it.
+func (p *parser) item(l *listed, c ctx, depth int) {
+	key, isEntry, ok := p.entryKey()
+	v := p.value(ctx{level: c.level})
+	switch {
+	case isEntry && !ok:
+		l.bad = true
+	case isEntry:
+		l.entries++
+		if !setOnce(l.m, key, v) {
+			l.bad = true
+		}
+	default:
+		l.vals++
+		l.items = append(l.items, v)
+	}
+	if p.t.is(p.tok, ",") && len(p.open) == depth {
+		l.comma = true
+		p.advance()
+	}
+}
+
+// setOnce sets key of m to v and reports whether no value was set for it
+// before; setting one again would search the keys.
+func setOnce(m *core.Node, key string, v *core.Node) bool {
+	if _, dup := m.Field[key]; dup {
+		return false
+	}
+	m.Set(key, v)
+	return true
 }
 
 // entryKey reads the key and the separator of a mapping entry at tok, if
@@ -886,33 +1140,39 @@ func (p *parser) list(b core.Bracket, start token, c ctx) *core.Node {
 // is literal.
 func (p *parser) entryKey() (key string, isEntry, ok bool) {
 	s := p.syn
-	t, n := p.tok, p.peek()
-	sep := n.kind == tPunct && (p.t.oneOf(n, s.Entry) || p.t.oneOf(n, s.NameKeys))
-	if !sep {
+	n := p.peek()
+	if n.kind != tPunct || !p.t.oneOf(n, s.Entry) && !p.t.oneOf(n, s.NameKeys) {
 		return "", false, false
 	}
+	if key, isEntry, ok = p.keyOf(p.tok, n); ok {
+		p.advance()
+		p.advance()
+	}
+	return key, isEntry, ok
+}
+
+// keyOf is the key t writes before n, a separator: isEntry when t may be a
+// key, and ok when it is literal. A bare name is a key only before a
+// separator of NameKeys; elsewhere it is a variable.
+func (p *parser) keyOf(t, n token) (key string, isEntry, ok bool) {
 	switch t.kind {
 	case tString:
-		text, lit := p.str(t, nil)
-		if !lit {
-			return "", true, false
+		if text, lit := p.str(t, nil); lit {
+			return text, true, true
 		}
-		key = text
+		return "", true, false
 	case tNumber:
-		key = p.t.text(t)
+		return p.t.text(t), true, true
 	case tSymbol:
-		key = p.src[t.start+1 : t.end]
+		return p.src[t.start+1 : t.end], true, true
 	case tIdent:
-		if !p.t.oneOf(n, s.NameKeys) {
+		if !p.t.oneOf(n, p.syn.NameKeys) {
 			return "", true, false // a variable as the key
 		}
-		key = p.t.text(t)
+		return p.t.text(t), true, true
 	default:
 		return "", false, false
 	}
-	p.advance()
-	p.advance()
-	return key, true, true
 }
 
 // call reads the arguments of the call whose callee starts at start; tok
@@ -921,66 +1181,62 @@ func (p *parser) entryKey() (key string, isEntry, ok bool) {
 // call with an argument that is not literal, or a keyword twice, is
 // computed: it is the call's data, never what the call returns.
 func (p *parser) call(start token, level int) *core.Node {
-	m := core.NewMapping(p.t.line(start.start))
+	a := args{m: core.NewMapping(p.t.line(start.start))}
 	p.advance() // the (
 	depth := len(p.open)
-	bad, place := false, 0
-	for p.err == nil && (p.tok.kind != tClose || len(p.open) != depth) && p.tok.kind != tEOF {
-		name, ok := p.keywordArg()
-		v := p.value(ctx{level: level})
-		if v.NotLiteral {
-			bad = true
-		}
-		if ok {
-			if _, dup := m.Field[name]; dup {
-				bad = true // and setting it again would search the keys
-			} else {
-				m.Set(name, v)
-			}
-		} else {
-			m.Set(strconv.Itoa(place), v)
-			place++
-		}
+	for p.inside(depth) {
+		p.argument(&a, ctx{level: level})
 		if p.t.is(p.tok, ",") && len(p.open) == depth {
 			p.advance()
 		}
 	}
 	p.advance()
-	if bad {
+	if a.bad {
 		return p.notLiteral(start.start, p.prev.end)
 	}
-	return m
+	return a.m
 }
 
 // command reads the arguments of a call written without parentheses, to
 // the end of its statement: Ruby's gem "rails", "~> 7.1", require: false.
 func (p *parser) command(head token) *core.Node {
-	m := core.NewMapping(p.t.line(head.start))
-	bad, place := false, 0
+	a := args{m: core.NewMapping(p.t.line(head.start))}
 	for p.err == nil && !p.atEnd() {
-		name, ok := p.keywordArg()
-		v := p.value(ctx{top: true, comma: true, level: 1})
-		if v.NotLiteral {
-			bad = true
-		}
-		if ok {
-			if _, dup := m.Field[name]; dup {
-				bad = true // and setting it again would search the keys
-			} else {
-				m.Set(name, v)
-			}
-		} else {
-			m.Set(strconv.Itoa(place), v)
-			place++
-		}
+		p.argument(&a, ctx{top: true, comma: true, level: 1})
 		if p.t.is(p.tok, ",") {
 			p.advance()
 		}
 	}
-	if bad {
+	if a.bad {
 		return p.notLiteral(head.start, p.prev.end)
 	}
-	return m
+	return a.m
+}
+
+// args are the arguments of a call read so far: the mapping, whether one
+// is computed, and the place of the next positional one.
+type args struct {
+	m     *core.Node
+	bad   bool
+	place int
+}
+
+// argument reads one argument of a call into a, read in c: a keyword's
+// under its name, any other under its place.
+func (p *parser) argument(a *args, c ctx) {
+	name, ok := p.keywordArg()
+	v := p.value(c)
+	if v.NotLiteral {
+		a.bad = true
+	}
+	if !ok {
+		a.m.Set(strconv.Itoa(a.place), v)
+		a.place++
+		return
+	}
+	if !setOnce(a.m, name, v) {
+		a.bad = true // and setting it again would search the keys
+	}
 }
 
 // keywordArg reads a keyword argument's name and separator at tok, if one

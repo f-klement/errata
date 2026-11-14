@@ -93,13 +93,8 @@ func Build(s Spec, parse Parser) (check.Extractor, error) {
 	if err != nil {
 		return nil, err
 	}
-	for _, f := range []struct{ what, v string }{{"job", s.Job}, {"step", s.Step}} {
-		if len(f.v) > maxName {
-			return nil, fmt.Errorf("github-actions: %s %s is %d bytes long, over the limit of %d", f.what, core.Quote(f.v), len(f.v), maxName)
-		}
-	}
-	if s.Job == "" {
-		return nil, errors.New("github-actions: job is required; write the job's id, its key under jobs")
+	if err := checkNames(s); err != nil {
+		return nil, err
 	}
 	x := extractor{Source: src, job: s.Job, step: s.Step, variable: s.Variable, parse: parse}
 	switch {
@@ -115,6 +110,20 @@ func Build(s Spec, parse Parser) (check.Extractor, error) {
 		}
 	}
 	return x, nil
+}
+
+// checkNames refuses a job or a step name over maxName bytes, and a spec
+// with no job.
+func checkNames(s Spec) error {
+	for _, f := range []struct{ what, v string }{{"job", s.Job}, {"step", s.Step}} {
+		if len(f.v) > maxName {
+			return fmt.Errorf("github-actions: %s %s is %d bytes long, over the limit of %d", f.what, core.Quote(f.v), len(f.v), maxName)
+		}
+	}
+	if s.Job == "" {
+		return errors.New("github-actions: job is required; write the job's id, its key under jobs")
+	}
+	return nil
 }
 
 // Every builds the extractor of the environment variable variable across

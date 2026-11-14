@@ -72,31 +72,54 @@ func (c *config) everyJob(name string, limit int) ([]check.Value, error) {
 	out := []check.Value{}
 	var total int64
 	for _, job := range c.top.Keys {
-		if reserved[job] || strings.HasPrefix(job, ".") {
+		if runsNoJob(job) {
 			continue
 		}
-		cands, err := c.variable(job, name)
+		vs, err := c.jobValues(job, name)
 		if err != nil {
 			return nil, err
 		}
-		vs, err := c.values(cands, true, true, name)
-		var none *check.NoValue
-		if errors.As(err, &none) {
-			continue
-		}
-		if err != nil {
+		if out, err = c.appendJob(out, &total, vs, job, limit); err != nil {
 			return nil, err
 		}
-		for _, v := range vs {
-			if len(out) == limit {
-				return nil, core.TooManyValues(c.main)
-			}
-			if total += int64(len(v.Text)); total > c.limit {
-				return nil, fmt.Errorf("%s: the values of every job hold more than %d bytes in all, the extractor's max_bytes; a job repeats each value it inherits, so set max_bytes: higher", c.main, c.limit)
-			}
-			v.Origin = "job " + core.Quote(job)
-			out = append(out, v)
+	}
+	return out, nil
+}
+
+// runsNoJob reports whether the top level key k names no job that runs: a
+// keyword, or a hidden job, whose name starts with a dot.
+func runsNoJob(k string) bool {
+	return reserved[k] || strings.HasPrefix(k, ".")
+}
+
+// jobValues is the values job sees of the variable name, none when no file
+// gives it one.
+func (c *config) jobValues(job, name string) ([]check.Value, error) {
+	cands, err := c.variable(job, name)
+	if err != nil {
+		return nil, err
+	}
+	vs, err := c.values(cands, true, true, name)
+	var none *check.NoValue
+	if errors.As(err, &none) {
+		return nil, nil
+	}
+	return vs, err
+}
+
+// appendJob appends vs, the values of job, to out, each with its job as
+// its origin, within limit values and max_bytes in all, which total
+// counts.
+func (c *config) appendJob(out []check.Value, total *int64, vs []check.Value, job string, limit int) ([]check.Value, error) {
+	for _, v := range vs {
+		if len(out) == limit {
+			return nil, core.TooManyValues(c.main)
 		}
+		if *total += int64(len(v.Text)); *total > c.limit {
+			return nil, fmt.Errorf("%s: the values of every job hold more than %d bytes in all, the extractor's max_bytes; a job repeats each value it inherits, so set max_bytes: higher", c.main, c.limit)
+		}
+		v.Origin = "job " + core.Quote(job)
+		out = append(out, v)
 	}
 	return out, nil
 }
@@ -193,19 +216,31 @@ func (c *config) job(name string, ext, ref int) (*core.Node, int, error) {
 	if own.Shape != core.Mapping {
 		return nil, 0, fmt.Errorf("%s: job %s is %s, not a mapping of keywords", c.at(own), core.Quote(name), shapeName(own))
 	}
-	parentsNode := own.Field["extends"]
-	if parentsNode == nil {
+	if own.Field["extends"] == nil {
 		c.jobs[name] = resolvedJob{n: own, ref: levels}
 		return own, levels, nil
 	}
-	if own != raw {
-		return nil, 0, fmt.Errorf("%s: job %s is a !reference to a job that extends another; GitLab merges extends before it follows !reference, so it never merges this one", c.at(parentsNode), core.Quote(name))
-	}
-	if err := c.depths(name, parentsNode, ext+1, ref); err != nil {
+	merged, err := c.extend(name, raw, own, ext, ref)
+	if err != nil {
 		return nil, 0, err
 	}
+	return merged, 0, nil
+}
+
+// extend is the job name, whose own keys own hold, with the parents its
+// extends: names merged in, each in its order, and its own keys last. raw
+// is the job as the file writes it, which must be own: a !reference to a
+// job that extends another is never merged.
+func (c *config) extend(name string, raw, own *core.Node, ext, ref int) (*core.Node, error) {
+	parentsNode := own.Field["extends"]
+	if own != raw {
+		return nil, fmt.Errorf("%s: job %s is a !reference to a job that extends another; GitLab merges extends before it follows !reference, so it never merges this one", c.at(parentsNode), core.Quote(name))
+	}
+	if err := c.depths(name, parentsNode, ext+1, ref); err != nil {
+		return nil, err
+	}
 	if c.resolving[name] {
-		return nil, 0, fmt.Errorf("%s: job %s extends itself, through its parents", c.at(parentsNode), core.Quote(name))
+		return nil, fmt.Errorf("%s: job %s extends itself, through its parents", c.at(parentsNode), core.Quote(name))
 	}
 	c.resolving[name] = true
 	defer delete(c.resolving, name)
@@ -214,32 +249,51 @@ func (c *config) job(name string, ext, ref int) (*core.Node, int, error) {
 		parents = parentsNode.Items
 	}
 	merged := newTarget(own.Line)
+	height, err := c.mergeParents(name, merged, parents, ext)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.merge(merged, merged.root, own); err != nil {
+		return nil, err
+	}
+	c.jobs[name] = resolvedJob{n: merged.root, ext: height}
+	return merged.root, nil
+}
+
+// mergeParents merges each of parents, the jobs name extends, into merged,
+// and is the levels of extends below name.
+func (c *config) mergeParents(name string, merged *target, parents []*core.Node, ext int) (int, error) {
 	height := 0
 	for _, p := range parents {
-		if p.Shape != core.Scalar {
-			return nil, 0, fmt.Errorf("%s: extends names a job by a string, not %s", c.at(p), shapeName(p))
-		}
-		pv := c.top.Field[p.Text]
-		switch {
-		case pv == nil:
-			return nil, 0, fmt.Errorf("%s: job %s extends %s, which no file defines", c.at(p), core.Quote(name), core.Quote(p.Text))
-		case c.isReference(pv):
-			return nil, 0, fmt.Errorf("%s: job %s extends %s, a !reference; GitLab merges extends before it follows !reference, so a parent is a mapping", c.at(p), core.Quote(name), core.Quote(p.Text))
+		if err := c.parentJob(name, p); err != nil {
+			return 0, err
 		}
 		base, _, err := c.job(p.Text, ext+1, 0)
 		if err != nil {
-			return nil, 0, err
+			return 0, err
 		}
 		height = max(height, c.jobs[p.Text].ext+1)
 		if err := c.merge(merged, merged.root, base); err != nil {
-			return nil, 0, err
+			return 0, err
 		}
 	}
-	if err := c.merge(merged, merged.root, own); err != nil {
-		return nil, 0, err
+	return height, nil
+}
+
+// parentJob refuses p, a parent the job name extends, unless it names a
+// job the files define as a mapping.
+func (c *config) parentJob(name string, p *core.Node) error {
+	if p.Shape != core.Scalar {
+		return fmt.Errorf("%s: extends names a job by a string, not %s", c.at(p), shapeName(p))
 	}
-	c.jobs[name] = resolvedJob{n: merged.root, ext: height}
-	return merged.root, 0, nil
+	pv := c.top.Field[p.Text]
+	switch {
+	case pv == nil:
+		return fmt.Errorf("%s: job %s extends %s, which no file defines", c.at(p), core.Quote(name), core.Quote(p.Text))
+	case c.isReference(pv):
+		return fmt.Errorf("%s: job %s extends %s, a !reference; GitLab merges extends before it follows !reference, so a parent is a mapping", c.at(p), core.Quote(name), core.Quote(p.Text))
+	}
+	return nil
 }
 
 // depths refuses a job reached through more levels of extends or of
@@ -309,15 +363,9 @@ func (c *config) deref(n *core.Node, depth int) (*core.Node, int, error) {
 // counted: "valid if it is a non-empty array of strings" (GitLab's
 // Reference tag), so [job] alone selects the job.
 func (c *config) reference(n *core.Node, depth int) (*core.Node, int, error) {
-	if len(n.Items) == 0 {
-		return nil, 0, fmt.Errorf("%s: !reference takes a sequence of a job and the keys below it, such as [.setup, script]", c.at(n))
-	}
-	var names []string
-	for _, it := range n.Items {
-		if it.Shape != core.Scalar {
-			return nil, 0, fmt.Errorf("%s: !reference names a key by a string, not %s", c.at(it), shapeName(it))
-		}
-		names = append(names, it.Text)
+	names, err := c.referenceNames(n)
+	if err != nil {
+		return nil, 0, err
 	}
 	if c.top.Field[names[0]] == nil {
 		return nil, 0, fmt.Errorf("%s: !reference names %s, which no file defines", c.at(n), core.Quote(names[0]))
@@ -326,8 +374,36 @@ func (c *config) reference(n *core.Node, depth int) (*core.Node, int, error) {
 	if err != nil {
 		return nil, 0, err
 	}
+	cur, deepest, err = c.selectKeys(n, names, cur, deepest, depth)
+	if err != nil {
+		return nil, 0, err
+	}
+	return cur, 1 + deepest, nil
+}
+
+// referenceNames is the job and the keys the !reference tag n names.
+func (c *config) referenceNames(n *core.Node) ([]string, error) {
+	if len(n.Items) == 0 {
+		return nil, fmt.Errorf("%s: !reference takes a sequence of a job and the keys below it, such as [.setup, script]", c.at(n))
+	}
+	var names []string
+	for _, it := range n.Items {
+		if it.Shape != core.Scalar {
+			return nil, fmt.Errorf("%s: !reference names a key by a string, not %s", c.at(it), shapeName(it))
+		}
+		names = append(names, it.Text)
+	}
+	return names, nil
+}
+
+// selectKeys follows the keys of names after the job from cur, the job,
+// where depth levels of !reference are already followed, and is what they
+// select with the most levels of !reference a value on the way took, at
+// least deepest.
+func (c *config) selectKeys(n *core.Node, names []string, cur *core.Node, deepest, depth int) (*core.Node, int, error) {
 	for _, k := range names[1:] {
 		var l int
+		var err error
 		if cur, l, err = c.deref(cur, depth+1); err != nil {
 			return nil, 0, err
 		}
@@ -338,7 +414,7 @@ func (c *config) reference(n *core.Node, depth int) (*core.Node, int, error) {
 		}
 		cur = next
 	}
-	return cur, 1 + deepest, nil
+	return cur, deepest, nil
 }
 
 // field is the value of key k in mapping n, with its !reference followed,
@@ -378,23 +454,40 @@ func (c *config) inherits(job *core.Node, kind, name string) (bool, error) {
 	}
 	switch v.Shape {
 	case core.Scalar:
-		if isPsychBool(v.Text) && c.retyped(v, v.Text) {
-			return psychTrue(v.Text), nil
-		}
-		if isPsychBool(v.Text) {
-			return false, fmt.Errorf("%s: inherit:%s is %s as a string, quoted or tagged, which GitLab refuses: it takes a boolean or a list of names", c.at(v), kind, core.Quote(v.Text))
-		}
+		return c.inheritBool(v, kind)
 	case core.Sequence:
-		for _, it := range v.Items {
-			if it.Shape == core.Scalar && it.Text == name {
-				return true, nil
-			}
-		}
-		return false, nil
+		return listsName(v, name), nil
 	case core.Mapping:
 		return false, fmt.Errorf("%s: inherit:%s is true, false or a list of names, not a mapping", c.at(v), kind)
 	}
-	return false, fmt.Errorf("%s: inherit:%s is true, false or a list of names, not %s", c.at(v), kind, core.Quote(v.Text))
+	return false, c.notInherit(v, kind)
+}
+
+// inheritBool is the boolean of inherit:kind's scalar v. A boolean as a
+// string, quoted or tagged, is refused, as is any other text.
+func (c *config) inheritBool(v *core.Node, kind string) (bool, error) {
+	if isPsychBool(v.Text) && c.retyped(v, v.Text) {
+		return psychTrue(v.Text), nil
+	}
+	if isPsychBool(v.Text) {
+		return false, fmt.Errorf("%s: inherit:%s is %s as a string, quoted or tagged, which GitLab refuses: it takes a boolean or a list of names", c.at(v), kind, core.Quote(v.Text))
+	}
+	return false, c.notInherit(v, kind)
+}
+
+// notInherit refuses v, inherit:kind's value, as no value it takes.
+func (c *config) notInherit(v *core.Node, kind string) error {
+	return fmt.Errorf("%s: inherit:%s is true, false or a list of names, not %s", c.at(v), kind, core.Quote(v.Text))
+}
+
+// listsName reports whether the list v names name.
+func listsName(v *core.Node, name string) bool {
+	for _, it := range v.Items {
+		if it.Shape == core.Scalar && it.Text == name {
+			return true
+		}
+	}
+	return false
 }
 
 // variable returns the values variable name may have in job, by the order
@@ -412,36 +505,50 @@ func (c *config) variable(jobName, name string) ([]candidate, error) {
 	if err != nil {
 		return nil, err
 	}
-	t, err := c.field(job, "trigger")
-	if err != nil {
-		return nil, err
-	}
-	if t != nil && !c.every {
-		return nil, fmt.Errorf("%s: job %s is a trigger job: it passes its variables to a downstream pipeline, which errata does not read", c.at(t), core.Quote(jobName))
-	}
-	if t != nil {
-		forwards, err := c.forwards(t)
-		if err != nil || !forwards {
-			return []candidate{}, err
-		}
+	if cands, stop, err := c.trigger(jobName, job); stop {
+		return cands, err
 	}
 	if err := c.dotenv(jobName, job, name); err != nil {
 		return nil, err
 	}
+	return c.precedence(jobName, job, name)
+}
+
+// trigger reads the job's trigger:, and reports whether variable stops
+// there. A trigger job's variables go to the downstream pipeline. A spec
+// that names such a job is refused. Every reads the job's variables only
+// when the trigger forwards them; when it does not, the job has no
+// candidate.
+func (c *config) trigger(jobName string, job *core.Node) ([]candidate, bool, error) {
+	t, err := c.field(job, "trigger")
+	if err != nil {
+		return nil, true, err
+	}
+	if t == nil {
+		return nil, false, nil
+	}
+	if !c.every {
+		return nil, true, fmt.Errorf("%s: job %s is a trigger job: it passes its variables to a downstream pipeline, which errata does not read", c.at(t), core.Quote(jobName))
+	}
+	forwards, err := c.forwards(t)
+	if err != nil || !forwards {
+		return []candidate{}, true, err
+	}
+	return nil, false, nil
+}
+
+// precedence is the candidates of the variable name in job, from the
+// lowest precedence up: the top level's variables and workflow:rules,
+// when the job inherits them, then the job's variables, its matrix and its
+// rules.
+func (c *config) precedence(jobName string, job *core.Node, name string) ([]candidate, error) {
 	inherit, err := c.inherits(job, "variables", name)
 	if err != nil {
 		return nil, err
 	}
 	cands := []candidate{{}}
 	if inherit {
-		if cands, err = c.varIn(c.top, name, cands, fromTop); err != nil {
-			return nil, err
-		}
-		wf, err := c.field(c.top, "workflow")
-		if err != nil {
-			return nil, err
-		}
-		if cands, err = c.rules(wf, name, cands, "workflow "); err != nil {
+		if cands, err = c.inherited(name, cands); err != nil {
 			return nil, err
 		}
 	}
@@ -452,6 +559,20 @@ func (c *config) variable(jobName, name string) ([]candidate, error) {
 		return nil, err
 	}
 	return c.rules(job, name, cands, "")
+}
+
+// inherited is the candidates of the variable name the top level gives a
+// job: its variables, under workflow:rules, over below.
+func (c *config) inherited(name string, below []candidate) ([]candidate, error) {
+	cands, err := c.varIn(c.top, name, below, fromTop)
+	if err != nil {
+		return nil, err
+	}
+	wf, err := c.field(c.top, "workflow")
+	if err != nil {
+		return nil, err
+	}
+	return c.rules(wf, name, cands, "workflow ")
 }
 
 // forwards reports whether the trigger t passes the job's variables
@@ -510,72 +631,133 @@ func (c *config) varIn(n *core.Node, name string, below []candidate, from varFro
 // into each key's values, so an entry of many keys costs its keys once, and
 // a name is written once an instance, to maxCondition bytes.
 func (c *config) matrix(jobName string, job *core.Node, name string, below []candidate) ([]candidate, error) {
-	par, err := c.field(job, "parallel")
-	if err != nil || par == nil || par.Shape != core.Mapping {
-		return below, err
-	}
-	mat, err := c.field(par, "matrix")
-	if err != nil || mat == nil {
-		return below, err
-	}
-	if mat.Shape != core.Sequence {
-		return nil, fmt.Errorf("%s: parallel:matrix is %s, not a list of mappings", c.at(mat), shapeName(mat))
-	}
-	entries, err := c.flatten(mat, 0)
+	mat, entries, err := c.matrixEntries(job)
 	if err != nil {
 		return nil, err
 	}
-	var es []matrixEntry
-	total := 0
-	sets := false
-	for _, e := range entries {
-		if e.Shape != core.Mapping {
-			return nil, fmt.Errorf("%s: a parallel:matrix entry is a mapping of variables, not %s", c.at(e), shapeName(e))
-		}
-		en := matrixEntry{keys: e.Keys, lists: make([][]*core.Node, len(e.Keys)), setKey: -1, count: 1}
-		for i, k := range e.Keys {
-			if err := c.count(1, e.Line); err != nil {
-				return nil, err
-			}
-			v, _, err := c.deref(e.Vals[i], 0)
-			if err != nil {
-				return nil, err
-			}
-			vals := []*core.Node{v}
-			if v.Shape == core.Sequence {
-				if vals, err = c.flatten(v, 0); err != nil {
-					return nil, err
-				}
-			}
-			for _, val := range vals {
-				if val.Shape != core.Scalar {
-					return nil, fmt.Errorf("%s: a parallel:matrix value is a string, not %s", c.at(val), shapeName(val))
-				}
-				if c.psychBoolOrNull(val) {
-					return nil, fmt.Errorf("%s: parallel:matrix variable %s is %s, which GitLab's loader reads as a boolean or a null, and GitLab refuses; quote it, without a tag, to give the text", c.at(val), core.Quote(k), core.Quote(val.Text))
-				}
-			}
-			if len(vals) > 1 {
-				en.multi = append(en.multi, i)
-			}
-			if len(vals) > 0 && en.count > maxInstances/len(vals) {
-				return nil, fmt.Errorf("%s: parallel:matrix makes more than %d jobs, GitLab's limit", c.at(mat), maxInstances)
-			}
-			en.count *= len(vals)
-			if k == name {
-				en.setKey = i
-			}
-			en.lists[i] = vals
-		}
-		if total += en.count; total > maxInstances {
-			return nil, fmt.Errorf("%s: parallel:matrix makes more than %d jobs, GitLab's limit", c.at(mat), maxInstances)
-		}
-		sets = sets || (en.setKey >= 0 && en.count > 0)
-		es = append(es, en)
+	if mat == nil {
+		return below, nil
+	}
+	es, total, sets, err := c.entriesOf(mat, entries, name)
+	if err != nil {
+		return nil, err
 	}
 	if !sets {
 		return below, nil
 	}
+	names := c.instanceNames(jobName, es, total)
+	apart(names)
+	return c.matrixCands(es, names, below)
+}
+
+// matrixEntries is the job's parallel:matrix and its entries, each
+// !reference followed, or a nil matrix when the job has none.
+func (c *config) matrixEntries(job *core.Node) (*core.Node, []*core.Node, error) {
+	par, err := c.field(job, "parallel")
+	if err != nil || par == nil || par.Shape != core.Mapping {
+		return nil, nil, err
+	}
+	mat, err := c.field(par, "matrix")
+	if err != nil || mat == nil {
+		return nil, nil, err
+	}
+	if mat.Shape != core.Sequence {
+		return nil, nil, fmt.Errorf("%s: parallel:matrix is %s, not a list of mappings", c.at(mat), shapeName(mat))
+	}
+	entries, err := c.flatten(mat, 0)
+	if err != nil {
+		return nil, nil, err
+	}
+	return mat, entries, nil
+}
+
+// entriesOf reads the entries of the matrix mat, within GitLab's limit on
+// its instances, and is them, how many instances they make, and whether
+// an instance sets name.
+func (c *config) entriesOf(mat *core.Node, entries []*core.Node, name string) ([]matrixEntry, int, bool, error) {
+	var es []matrixEntry
+	total := 0
+	sets := false
+	for _, e := range entries {
+		en, err := c.matrixEntry(mat, e, name)
+		if err != nil {
+			return nil, 0, false, err
+		}
+		if total += en.count; total > maxInstances {
+			return nil, 0, false, fmt.Errorf("%s: parallel:matrix makes more than %d jobs, GitLab's limit", c.at(mat), maxInstances)
+		}
+		sets = sets || (en.setKey >= 0 && en.count > 0)
+		es = append(es, en)
+	}
+	return es, total, sets, nil
+}
+
+// matrixEntry reads the entry e of the matrix mat: each key's values, the
+// keys that vary, the instances they make, and the key that sets name.
+func (c *config) matrixEntry(mat, e *core.Node, name string) (matrixEntry, error) {
+	if e.Shape != core.Mapping {
+		return matrixEntry{}, fmt.Errorf("%s: a parallel:matrix entry is a mapping of variables, not %s", c.at(e), shapeName(e))
+	}
+	en := matrixEntry{keys: e.Keys, lists: make([][]*core.Node, len(e.Keys)), setKey: -1, count: 1}
+	for i, k := range e.Keys {
+		vals, err := c.matrixValues(e, i)
+		if err != nil {
+			return matrixEntry{}, err
+		}
+		if len(vals) > 1 {
+			en.multi = append(en.multi, i)
+		}
+		if len(vals) > 0 && en.count > maxInstances/len(vals) {
+			return matrixEntry{}, fmt.Errorf("%s: parallel:matrix makes more than %d jobs, GitLab's limit", c.at(mat), maxInstances)
+		}
+		en.count *= len(vals)
+		if k == name {
+			en.setKey = i
+		}
+		en.lists[i] = vals
+	}
+	return en, nil
+}
+
+// matrixValues is the values of the entry e's key i: one, or the items
+// of a list, each a string.
+func (c *config) matrixValues(e *core.Node, i int) ([]*core.Node, error) {
+	if err := c.count(1, e.Line); err != nil {
+		return nil, err
+	}
+	v, _, err := c.deref(e.Vals[i], 0)
+	if err != nil {
+		return nil, err
+	}
+	vals := []*core.Node{v}
+	if v.Shape == core.Sequence {
+		if vals, err = c.flatten(v, 0); err != nil {
+			return nil, err
+		}
+	}
+	for _, val := range vals {
+		if err := c.matrixValue(val, e.Keys[i]); err != nil {
+			return nil, err
+		}
+	}
+	return vals, nil
+}
+
+// matrixValue refuses val, a value of the matrix variable k, unless it is
+// a string GitLab's loader reads as one.
+func (c *config) matrixValue(val *core.Node, k string) error {
+	if val.Shape != core.Scalar {
+		return fmt.Errorf("%s: a parallel:matrix value is a string, not %s", c.at(val), shapeName(val))
+	}
+	if c.psychBoolOrNull(val) {
+		return fmt.Errorf("%s: parallel:matrix variable %s is %s, which GitLab's loader reads as a boolean or a null, and GitLab refuses; quote it, without a tag, to give the text", c.at(val), core.Quote(k), core.Quote(val.Text))
+	}
+	return nil
+}
+
+// instanceNames is the name of each instance of es, total in all, in
+// order.
+func (c *config) instanceNames(jobName string, es []matrixEntry, total int) []string {
 	var same map[string]bool // with one instance, none to tell apart
 	if total > 1 {
 		same = c.sameInEvery(es)
@@ -588,26 +770,38 @@ func (c *config) matrix(jobName string, job *core.Node, name string, below []can
 			en.next(at)
 		}
 	}
-	apart(names)
+	return names
+}
+
+// matrixCands is the candidates of every instance of es, under its name.
+func (c *config) matrixCands(es []matrixEntry, names []string, below []candidate) ([]candidate, error) {
 	var out []candidate
 	i := 0
 	for _, en := range es {
 		at := make([]int, len(en.lists))
 		for range en.count {
-			cond := names[i]
-			i++
-			if en.setKey >= 0 {
-				if out, err = c.add(out, candidate{n: en.lists[en.setKey][at[en.setKey]], cond: cond, from: fromMatrix}); err != nil {
-					return nil, err
-				}
-			} else {
-				for _, b := range below {
-					if out, err = c.add(out, candidate{n: b.n, cond: joinCond(cond, b.cond), from: b.from}); err != nil {
-						return nil, err
-					}
-				}
+			var err error
+			if out, err = c.instanceCands(out, en, at, names[i], below); err != nil {
+				return nil, err
 			}
+			i++
 			en.next(at)
+		}
+	}
+	return out, nil
+}
+
+// instanceCands adds to out the candidates of the instance at of en, named
+// cond: its own value when it sets the variable, else below under its
+// name.
+func (c *config) instanceCands(out []candidate, en matrixEntry, at []int, cond string, below []candidate) ([]candidate, error) {
+	if en.setKey >= 0 {
+		return c.add(out, candidate{n: en.lists[en.setKey][at[en.setKey]], cond: cond, from: fromMatrix})
+	}
+	var err error
+	for _, b := range below {
+		if out, err = c.add(out, candidate{n: b.n, cond: joinCond(cond, b.cond), from: b.from}); err != nil {
+			return nil, err
 		}
 	}
 	return out, nil
@@ -640,37 +834,51 @@ func (en matrixEntry) next(at []int) {
 // instances.
 func apart(names []string) {
 	written := slices.Clone(names) // GitLab's names, as instanceName wrote them
+	first := firstPlaces(written)
+	suffixed := make([]bool, len(names))
+	// Each round suffixes one name more at least, so the rounds end.
+	for {
+		if !apartRound(names, written, first, suffixed) {
+			return
+		}
+	}
+}
+
+// firstPlaces is the place of the first instance of each name of written.
+func firstPlaces(written []string) map[string]int {
 	first := map[string]int{}
 	for i, n := range written {
 		if _, ok := first[n]; !ok {
 			first[n] = i
 		}
 	}
-	suffixed := make([]bool, len(names))
-	for {
-		at := map[string][]int{}
-		for i, n := range names {
-			k := noteOf(n)
-			at[k] = append(at[k], i)
+	return first
+}
+
+// apartRound is one round of apart: it suffixes each name not suffixed
+// yet whose note another name of a different written name shares, and
+// reports whether it changed one.
+func apartRound(names, written []string, first map[string]int, suffixed []bool) bool {
+	at := map[string][]int{}
+	for i, n := range names {
+		k := noteOf(n)
+		at[k] = append(at[k], i)
+	}
+	changed := false
+	for _, is := range at {
+		if !severalNames(written, is) {
+			continue
 		}
-		changed := false
-		for _, is := range at {
-			if !severalNames(written, is) {
+		for _, i := range is {
+			if suffixed[i] {
 				continue
 			}
-			for _, i := range is {
-				if suffixed[i] {
-					continue
-				}
-				suffix := fmt.Sprintf(" #%d", first[written[i]]+1)
-				names[i] = names[i][:cutAt(names[i], noteBytes-len(suffix))] + suffix
-				suffixed[i], changed = true, true
-			}
-		}
-		if !changed {
-			return
+			suffix := fmt.Sprintf(" #%d", first[written[i]]+1)
+			names[i] = names[i][:cutAt(names[i], noteBytes-len(suffix))] + suffix
+			suffixed[i], changed = true, true
 		}
 	}
+	return changed
 }
 
 // severalNames reports whether the instances at the indices in is hold more
@@ -723,16 +931,7 @@ func (c *config) sameInEvery(es []matrixEntry) map[string]bool {
 	for _, en := range es {
 		for j, k := range en.keys {
 			setIn[k]++
-			was, seen := same[k]
-			switch {
-			case seen && !was:
-			case len(en.lists[j]) != 1:
-				same[k] = false
-			case !seen:
-				text[k], same[k] = c.psychText(en.lists[j][0]), true
-			default:
-				same[k] = text[k] == c.psychText(en.lists[j][0])
-			}
+			c.sameKey(text, same, k, en.lists[j])
 		}
 	}
 	for k, n := range setIn {
@@ -741,6 +940,21 @@ func (c *config) sameInEvery(es []matrixEntry) map[string]bool {
 		}
 	}
 	return same
+}
+
+// sameKey moves same[k], whether key k holds one value, text[k], in every
+// entry so far, on by the values list an entry gives it.
+func (c *config) sameKey(text map[string]string, same map[string]bool, k string, list []*core.Node) {
+	was, seen := same[k]
+	switch {
+	case seen && !was:
+	case len(list) != 1:
+		same[k] = false
+	case !seen:
+		text[k], same[k] = c.psychText(list[0]), true
+	default:
+		same[k] = text[k] == c.psychText(list[0])
+	}
 }
 
 // noteBytes is the most bytes of a condition a report quotes
@@ -834,54 +1048,102 @@ func joinCond(a, b string) string {
 // the rules after it never apply. When no rule matches, the job does not
 // run either. prefix names whose rules they are in a condition.
 func (c *config) rules(n *core.Node, name string, below []candidate, prefix string) ([]candidate, error) {
-	rs, err := c.field(n, "rules")
-	if err != nil || rs == nil {
-		return below, err
-	}
-	if rs.Shape != core.Sequence {
-		return nil, fmt.Errorf("%s: rules is %s, not a list of rules", c.at(rs), shapeName(rs))
-	}
-	var out []candidate
-	addBelow := false
-	items, err := c.flatten(rs, 0)
+	items, ok, err := c.ruleItems(n)
 	if err != nil {
 		return nil, err
 	}
+	if !ok {
+		return below, nil
+	}
+	out, addBelow, err := c.ruleCands(items, name, prefix)
+	if err != nil {
+		return nil, err
+	}
+	if addBelow {
+		return c.addAll(out, below)
+	}
+	return out, nil
+}
+
+// ruleItems is the rules of n, each !reference followed, and false when n
+// has no rules:.
+func (c *config) ruleItems(n *core.Node) ([]*core.Node, bool, error) {
+	rs, err := c.field(n, "rules")
+	if err != nil || rs == nil {
+		return nil, false, err
+	}
+	if rs.Shape != core.Sequence {
+		return nil, false, fmt.Errorf("%s: rules is %s, not a list of rules", c.at(rs), shapeName(rs))
+	}
+	items, err := c.flatten(rs, 0)
+	if err != nil {
+		return nil, false, err
+	}
+	return items, true, nil
+}
+
+// ruleCands is the candidates of the rules items, up to the first that
+// always matches, and whether a rule that can match sets no value, so the
+// candidates below apply under it.
+func (c *config) ruleCands(items []*core.Node, name, prefix string) ([]candidate, bool, error) {
+	var out []candidate
+	addBelow := false
 	for _, r := range items {
 		if r.Shape != core.Mapping {
-			return nil, fmt.Errorf("%s: a rule is a mapping, not %s", c.at(r), shapeName(r))
+			return nil, false, fmt.Errorf("%s: a rule is a mapping, not %s", c.at(r), shapeName(r))
 		}
-		when, err := c.field(r, "when")
+		got, below, err := c.ruleCand(r, name, prefix)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
-		if when == nil || when.Text != "never" {
-			got, err := c.varIn(r, name, nil, fromRule)
-			if err != nil {
-				return nil, err
-			}
-			if got == nil {
-				addBelow = true
-			}
-			if len(got) > 0 {
-				g := got[0]
-				if g.cond, err = c.ruleCondition(r, prefix); err != nil {
-					return nil, err
-				}
-				if out, err = c.add(out, g); err != nil {
-					return nil, err
-				}
-			}
+		addBelow = addBelow || below
+		if out, err = c.addAll(out, got); err != nil {
+			return nil, false, err
 		}
-		if r.Field["if"] == nil && r.Field["changes"] == nil && r.Field["exists"] == nil {
+		if alwaysMatches(r) {
 			break
 		}
 	}
-	if addBelow {
-		for _, b := range below {
-			if out, err = c.add(out, b); err != nil {
-				return nil, err
-			}
+	return out, addBelow, nil
+}
+
+// ruleCand is the candidate of the rule r, under its condition, and
+// whether r can match and sets no value. A rule with when: never gives
+// neither.
+func (c *config) ruleCand(r *core.Node, name, prefix string) ([]candidate, bool, error) {
+	when, err := c.field(r, "when")
+	if err != nil {
+		return nil, false, err
+	}
+	if when != nil && when.Text == "never" {
+		return nil, false, nil
+	}
+	got, err := c.varIn(r, name, nil, fromRule)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(got) == 0 {
+		return nil, got == nil, nil
+	}
+	g := got[0]
+	if g.cond, err = c.ruleCondition(r, prefix); err != nil {
+		return nil, false, err
+	}
+	return []candidate{g}, false, nil
+}
+
+// alwaysMatches reports whether the rule r tests nothing, so the rules
+// after it never apply.
+func alwaysMatches(r *core.Node) bool {
+	return r.Field["if"] == nil && r.Field["changes"] == nil && r.Field["exists"] == nil
+}
+
+// addAll adds each of cands to out (add).
+func (c *config) addAll(out, cands []candidate) ([]candidate, error) {
+	var err error
+	for _, cd := range cands {
+		if out, err = c.add(out, cd); err != nil {
+			return nil, err
 		}
 	}
 	return out, nil
@@ -946,16 +1208,28 @@ func (c *config) dotenv(jobName string, job *core.Node, name string) error {
 	}
 	switch {
 	case earlier && c.every:
-		src, d, err := c.earlierReport(job)
-		if err != nil || d == nil {
-			return err
-		}
-		return c.dotenvError(d, jobName, src, name)
+		return c.everyEarlier(jobName, job, name)
 	case earlier:
 		if sources, err = c.earlierJobs(job); err != nil {
 			return err
 		}
 	}
+	return c.sourceReports(jobName, sources, name)
+}
+
+// everyEarlier refuses, for Every, a job that gets the dotenv report of a
+// job of an earlier stage.
+func (c *config) everyEarlier(jobName string, job *core.Node, name string) error {
+	src, d, err := c.earlierReport(job)
+	if err != nil || d == nil {
+		return err
+	}
+	return c.dotenvError(d, jobName, src, name)
+}
+
+// sourceReports refuses a job that gets the dotenv report of one of
+// sources.
+func (c *config) sourceReports(jobName string, sources []string, name string) error {
 	for _, s := range sources {
 		if d, err := c.report(s); err != nil || d != nil {
 			if err == nil {
@@ -998,55 +1272,86 @@ func (c *config) artifactSources(jobName string, job *core.Node) (sources []stri
 		return nil, false, err
 	}
 	if needs != nil {
-		items, err := c.listOf(needs)
-		if err != nil {
-			return nil, false, err
-		}
-		var out []string
-		for _, it := range items {
-			if it.Shape == core.Scalar {
-				out = append(out, it.Text)
-				continue
-			}
-			if it.Field["project"] != nil || it.Field["pipeline"] != nil {
-				return nil, false, fmt.Errorf("%s: job %s needs a job of another pipeline, whose dotenv report errata cannot read", c.at(it), core.Quote(jobName))
-			}
-			j, err := c.field(it, "job")
-			if err != nil || j == nil || j.Shape != core.Scalar {
-				if err == nil {
-					err = fmt.Errorf("%s: a needs: entry names a job: or a job by a string", c.at(it))
-				}
-				return nil, false, err
-			}
-			if a, err := c.field(it, "artifacts"); err != nil || (a != nil && a.Text == "false") {
-				if err != nil {
-					return nil, false, err
-				}
-				continue
-			}
-			out = append(out, j.Text)
-		}
-		return out, false, nil
+		sources, err := c.needsSources(jobName, needs)
+		return sources, false, err
 	}
 	deps, err := c.field(job, "dependencies")
 	if err != nil {
 		return nil, false, err
 	}
 	if deps != nil {
-		items, err := c.listOf(deps)
-		if err != nil {
-			return nil, false, err
-		}
-		var out []string
-		for _, it := range items {
-			if it.Shape != core.Scalar {
-				return nil, false, fmt.Errorf("%s: dependencies names a job by a string, not %s", c.at(it), shapeName(it))
-			}
-			out = append(out, it.Text)
-		}
-		return out, false, nil
+		sources, err := c.dependencySources(deps)
+		return sources, false, err
 	}
 	return nil, true, nil
+}
+
+// needsSources is the jobs the needs: of job jobName names with their
+// artifacts.
+func (c *config) needsSources(jobName string, needs *core.Node) ([]string, error) {
+	items, err := c.listOf(needs)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, it := range items {
+		if it.Shape == core.Scalar {
+			out = append(out, it.Text)
+			continue
+		}
+		j, ok, err := c.neededJob(jobName, it)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			out = append(out, j)
+		}
+	}
+	return out, nil
+}
+
+// neededJob is the job the needs: entry it names as a mapping, and false
+// when it takes none of its artifacts. A job of another pipeline is
+// refused.
+func (c *config) neededJob(jobName string, it *core.Node) (string, bool, error) {
+	if it.Field["project"] != nil || it.Field["pipeline"] != nil {
+		return "", false, fmt.Errorf("%s: job %s needs a job of another pipeline, whose dotenv report errata cannot read", c.at(it), core.Quote(jobName))
+	}
+	j, err := c.field(it, "job")
+	if err != nil {
+		return "", false, err
+	}
+	if j == nil || j.Shape != core.Scalar {
+		return "", false, fmt.Errorf("%s: a needs: entry names a job: or a job by a string", c.at(it))
+	}
+	takes, err := c.takesArtifacts(it)
+	return j.Text, takes, err
+}
+
+// takesArtifacts reports whether the needs: entry it takes its job's
+// artifacts: all but artifacts: false.
+func (c *config) takesArtifacts(it *core.Node) (bool, error) {
+	a, err := c.field(it, "artifacts")
+	if err != nil {
+		return false, err
+	}
+	return a == nil || a.Text != "false", nil
+}
+
+// dependencySources is the jobs dependencies: deps names.
+func (c *config) dependencySources(deps *core.Node) ([]string, error) {
+	items, err := c.listOf(deps)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, it := range items {
+		if it.Shape != core.Scalar {
+			return nil, fmt.Errorf("%s: dependencies names a job by a string, not %s", c.at(it), shapeName(it))
+		}
+		out = append(out, it.Text)
+	}
+	return out, nil
 }
 
 // listOf is the items of a list, each !reference followed.
@@ -1175,23 +1480,8 @@ func (c *config) stageReports() (*stagedReports, error) {
 	for v := range firstIn {
 		firstIn[v] = noJob
 	}
-	for _, k := range c.top.Keys {
-		if reserved[k] || strings.HasPrefix(k, ".") {
-			continue
-		}
-		j, err := c.jobToRun(k)
-		if err != nil {
-			return nil, err
-		}
-		v, err := c.stageOf(order, j)
-		if err != nil {
-			return nil, err
-		}
-		d, err := c.report(k)
-		if err != nil || d != nil {
-			firstIn[v] = min(firstIn[v], len(st.jobs))
-		}
-		st.jobs = append(st.jobs, stagedJob{name: k, report: d, err: err})
+	if err := c.stagedJobs(st, firstIn); err != nil {
+		return nil, err
 	}
 	st.first = make([]int, last+1)
 	best := noJob
@@ -1200,6 +1490,30 @@ func (c *config) stageReports() (*stagedReports, error) {
 		best = min(best, firstIn[v])
 	}
 	return st, nil
+}
+
+// stagedJobs reads every job's stage and report into st, and the first
+// job of each stage that stops a job of a later stage into firstIn.
+func (c *config) stagedJobs(st *stagedReports, firstIn []int) error {
+	for _, k := range c.top.Keys {
+		if runsNoJob(k) {
+			continue
+		}
+		j, err := c.jobToRun(k)
+		if err != nil {
+			return err
+		}
+		v, err := c.stageOf(st.order, j)
+		if err != nil {
+			return err
+		}
+		d, err := c.report(k)
+		if err != nil || d != nil {
+			firstIn[v] = min(firstIn[v], len(st.jobs))
+		}
+		st.jobs = append(st.jobs, stagedJob{name: k, report: d, err: err})
+	}
+	return nil
 }
 
 // noJob is the index of no job, past every one.
@@ -1320,53 +1634,75 @@ func (c *config) flatten(s *core.Node, depth int) ([]*core.Node, error) {
 // value names a variable GitLab or the runner expands, and variable
 // whether the values are a variable's.
 func (c *config) values(cands []candidate, variable, expands bool, name string) ([]check.Value, error) {
-	type key struct {
-		n    *core.Node
-		cond string
-	}
-	seen := map[key]bool{}
-	var kept []candidate
-	unset := false
-	for _, cd := range cands {
-		switch {
-		case cd.n == nil:
-			unset = true
-		case !seen[key{cd.n, cd.cond}]:
-			// A set, since one job's rules can give hundreds of
-			// thousands of candidates.
-			seen[key{cd.n, cd.cond}] = true
-			kept = append(kept, cd)
-		}
-	}
+	kept, unset := distinctCands(cands)
 	switch {
 	case unset && len(kept) > 0:
 		return nil, fmt.Errorf("%s: the value is set only when some rules or matrix instances match; when another matches, the job gets no value from the files", c.at(kept[0].n))
 	case unset && variable:
 		return nil, &check.NoValue{Reason: fmt.Sprintf("no file gives the job %s; it may come from the project's, group's or instance's settings, which errata cannot read", name)}
 	}
-	var out []check.Value
-	var total int64
+	s := valueSink{c: c}
 	for _, cd := range kept {
 		add := func(n *core.Node, line int, text string, expand bool) error {
-			if len(out) == core.MaxValues {
-				return core.TooManyValues(c.main)
-			}
-			if total += int64(len(text)); total > c.limit {
-				return fmt.Errorf("%s: the values hold more than %d bytes in all, the extractor's max_bytes; !reference tags can repeat a value, so set max_bytes: higher", c.main, c.limit)
-			}
-			out = append(out, check.Value{
-				Text:       text,
-				At:         check.Location{File: c.fileOf(n), Line: line},
-				NotLiteral: c.retyped(n, text) || (expand && references(text)),
-				Condition:  cd.cond,
-			})
-			return nil
+			return s.add(cd.cond, n, line, text, expand)
 		}
 		if err := c.value(cd, variable, expands, add); err != nil {
 			return nil, err
 		}
 	}
-	return out, nil
+	return s.out, nil
+}
+
+// candKey is a candidate's node and condition, which distinctCands keeps
+// one candidate of.
+type candKey struct {
+	n    *core.Node
+	cond string
+}
+
+// distinctCands is cands that set a value, each node under each condition
+// once, and whether one sets none.
+func distinctCands(cands []candidate) (kept []candidate, unset bool) {
+	seen := map[candKey]bool{}
+	for _, cd := range cands {
+		switch {
+		case cd.n == nil:
+			unset = true
+		case !seen[candKey{cd.n, cd.cond}]:
+			// A set, since one job's rules can give hundreds of
+			// thousands of candidates.
+			seen[candKey{cd.n, cd.cond}] = true
+			kept = append(kept, cd)
+		}
+	}
+	return kept, unset
+}
+
+// valueSink is the values values keeps, and their bytes in all.
+type valueSink struct {
+	c     *config
+	out   []check.Value
+	total int64
+}
+
+// add keeps the value text of node n at line, under the condition cond,
+// within core.MaxValues values and max_bytes in all. expand is whether a
+// $ in it names a variable GitLab or the runner expands.
+func (s *valueSink) add(cond string, n *core.Node, line int, text string, expand bool) error {
+	c := s.c
+	if len(s.out) == core.MaxValues {
+		return core.TooManyValues(c.main)
+	}
+	if s.total += int64(len(text)); s.total > c.limit {
+		return fmt.Errorf("%s: the values hold more than %d bytes in all, the extractor's max_bytes; !reference tags can repeat a value, so set max_bytes: higher", c.main, c.limit)
+	}
+	s.out = append(s.out, check.Value{
+		Text:       text,
+		At:         check.Location{File: c.fileOf(n), Line: line},
+		NotLiteral: c.retyped(n, text) || (expand && references(text)),
+		Condition:  cond,
+	})
+	return nil
 }
 
 // retyped reports whether GitLab's YAML loader, Psych, gives the job a
@@ -1399,45 +1735,44 @@ func (c *config) value(cd candidate, variable, expands bool, add func(n *core.No
 	case variable && n.Shape == core.Sequence:
 		return fmt.Errorf("%s: a variable's value is a string, not a sequence", c.at(n))
 	case n.Shape == core.Sequence:
-		items, err := c.flatten(n, 0)
-		if err != nil {
-			return err
-		}
-		for _, it := range items {
-			if it.Shape != core.Scalar {
-				return fmt.Errorf("%s: the list holds %s; name a key below it", c.at(it), shapeName(it))
-			}
-			if err := add(it, it.Line, it.Text, expands); err != nil {
-				return err
-			}
-		}
-		return nil
+		return c.listValues(n, expands, add)
 	}
 	if !variable {
 		return fmt.Errorf("%s: selects a mapping, not a value; name a key below it, such as image.name", c.at(n))
 	}
-	// A mapping is a variable's long form.
-	allowed := map[varFrom][]string{fromTop: {"value", "description", "options", "expand"}, fromJob: {"value", "expand"}}[cd.from]
-	for _, k := range n.Keys {
-		ok := false
-		for _, a := range allowed {
-			ok = ok || a == k
+	return c.longForm(cd, expands, add)
+}
+
+// listValues adds each item of the list n, each a scalar.
+func (c *config) listValues(n *core.Node, expands bool, add func(n *core.Node, line int, text string, expand bool) error) error {
+	items, err := c.flatten(n, 0)
+	if err != nil {
+		return err
+	}
+	for _, it := range items {
+		if it.Shape != core.Scalar {
+			return fmt.Errorf("%s: the list holds %s; name a key below it", c.at(it), shapeName(it))
 		}
-		if !ok {
-			return fmt.Errorf("%s: a variable here takes no key %s, which GitLab refuses; it takes %s", c.at(n), core.Quote(k), takes(allowed))
+		if err := add(it, it.Line, it.Text, expands); err != nil {
+			return err
 		}
+	}
+	return nil
+}
+
+// longForm adds the value of a variable's long form, the mapping cd.n,
+// with the keys GitLab takes where cd was set.
+func (c *config) longForm(cd candidate, expands bool, add func(n *core.Node, line int, text string, expand bool) error) error {
+	n := cd.n
+	if err := c.longKeys(n, cd.from); err != nil {
+		return err
 	}
 	val, err := c.field(n, "value")
 	if err != nil {
 		return err
 	}
-	if expand := n.Field["expand"]; expand != nil {
-		if expand.Shape != core.Scalar || !c.info[expand].plain || (expand.Text != "true" && expand.Text != "false") {
-			return fmt.Errorf("%s: expand is true or false, which GitLab requires as a boolean", c.at(expand))
-		}
-		if expand.Text == "false" {
-			expands = false
-		}
+	if expands, err = c.expandOf(n, expands); err != nil {
+		return err
 	}
 	// A long form with no value is a variable no file sets, reported at
 	// its key: the mapping starts at its first subkey. A mapping no key
@@ -1449,6 +1784,32 @@ func (c *config) value(cd candidate, variable, expands bool, add func(n *core.No
 		return fmt.Errorf("%s: a variable's value is a string, not %s", c.at(val), shapeName(val))
 	}
 	return add(val, val.Line, val.Text, expands)
+}
+
+// longKeys refuses a key of the long form n that GitLab does not take
+// where it was set, from.
+func (c *config) longKeys(n *core.Node, from varFrom) error {
+	allowed := map[varFrom][]string{fromTop: {"value", "description", "options", "expand"}, fromJob: {"value", "expand"}}[from]
+	for _, k := range n.Keys {
+		if !slices.Contains(allowed, k) {
+			return fmt.Errorf("%s: a variable here takes no key %s, which GitLab refuses; it takes %s", c.at(n), core.Quote(k), takes(allowed))
+		}
+	}
+	return nil
+}
+
+// expandOf is whether a $ in the long form n's value is expanded: expands,
+// unless its expand: is false. An expand: that is no plain boolean is
+// refused.
+func (c *config) expandOf(n *core.Node, expands bool) (bool, error) {
+	expand := n.Field["expand"]
+	if expand == nil {
+		return expands, nil
+	}
+	if expand.Shape != core.Scalar || !c.info[expand].plain || (expand.Text != "true" && expand.Text != "false") {
+		return false, fmt.Errorf("%s: expand is true or false, which GitLab requires as a boolean", c.at(expand))
+	}
+	return expands && expand.Text != "false", nil
 }
 
 // takes lists the keys a long form takes, for a message.

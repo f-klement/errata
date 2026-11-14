@@ -147,86 +147,155 @@ func (l *lexer) lexError(off int, format string, args ...any) error {
 // the rest. regexOK is the code's state of whether a / starts a slashy
 // string, which read updates for the token it reads.
 func (l *lexer) read(regexOK *bool) (token, error) {
-	d := l.data
 	for {
 		if err := l.m.Charge(1); err != nil {
 			return token{}, err
 		}
-		if l.pos >= len(d) {
-			return token{kind: tokEOF, start: len(d), end: len(d), line: l.lineOf(len(d))}, nil
+		if l.pos >= len(l.data) {
+			return token{kind: tokEOF, start: len(l.data), end: len(l.data), line: l.lineOf(len(l.data))}, nil
 		}
-		c := d[l.pos]
-		switch {
-		case c == ' ' || c == '\t' || c == '\f':
-			l.pos++
-			continue
-		case c == '\\' && lineEndAt(d, l.pos+1):
-			// A backslash before a line end, a LF, a CRLF or a lone CR as
-			// Groovy's ONE_NL reads them, joins the two lines.
-			l.pos = core.NextLine(d, l.pos+1)
-			continue
-		case c == '#' && l.pos == 0 && len(d) > 1 && d[1] == '!':
-			l.pos = lineEnd(d, 0)
-			continue
-		case c == '/' && l.pos+1 < len(d) && d[l.pos+1] == '/':
-			l.pos = lineEnd(d, l.pos)
-			continue
-		case c == '/' && l.pos+1 < len(d) && d[l.pos+1] == '*':
-			end := bytes.Index(d[l.pos+2:], []byte("*/"))
-			if end < 0 {
-				return token{}, l.lexError(l.pos, "a /* comment is not closed")
-			}
-			l.pos += 2 + end + 2
+		if l.blank() {
 			continue
 		}
-		start := l.pos
-		t := token{start: start, line: l.lineOf(start)}
-		switch {
-		case c == '\n' || c == '\r': // a CRLF is one, and so is a lone CR, the Macintosh newline of groovy.g's ONE_NL
-			l.pos = core.NextLine(d, l.pos)
-			t.kind = tokNewline
-			if l.parens[len(l.parens)-1] == 0 {
-				*regexOK = true
-			}
-		case c == '\'' || c == '"':
-			t.kind, t.quote = tokString, single
-			if c == '"' {
-				t.quote = double
-			}
-			if bytes.HasPrefix(d[start:], []byte{c, c, c}) {
-				t.quote += tripleSingle - single
-			}
-			l.pos += len(opening[t.quote])
-			*regexOK = false
-		case c == '/' && *regexOK:
-			t.kind, t.quote = tokString, slashy
-			l.pos++
-			*regexOK = false
-		case c == '$' && *regexOK && start+1 < len(d) && d[start+1] == '/':
-			t.kind, t.quote = tokString, dollarSlashy
-			l.pos += 2
-			*regexOK = false
-		case isNameStart(c):
-			l.pos = nameEnd(d, start)
-			t.kind = tokName
-			*regexOK = regexAfterName[string(d[start:l.pos])]
-		case '0' <= c && c <= '9':
-			l.pos = numberEnd(d, start)
-			t.kind, *regexOK = tokNumber, false
-		case c == '@':
-			l.pos++
-			t.kind, *regexOK = tokAt, true
-		default:
-			t.kind, t.op = tokOp, operator(d[start:])
-			l.pos += len(t.op)
-			*regexOK = !valueEnds[t.op]
-			if err := l.bracket(t); err != nil {
-				return token{}, err
-			}
+		skipped, err := l.comment()
+		if err != nil {
+			return token{}, err
 		}
-		t.end = l.pos
-		return t, nil
+		if !skipped {
+			return l.token(regexOK)
+		}
 	}
+}
+
+// blank moves past the blank at pos, or the backslash that joins its line
+// to the next, and reports whether there was one.
+func (l *lexer) blank() bool {
+	d := l.data
+	switch c := d[l.pos]; {
+	case c == ' ' || c == '\t' || c == '\f':
+		l.pos++
+	case c == '\\' && lineEndAt(d, l.pos+1):
+		// A backslash before a line end, a LF, a CRLF or a lone CR as
+		// Groovy's ONE_NL reads them, joins the two lines.
+		l.pos = core.NextLine(d, l.pos+1)
+	default:
+		return false
+	}
+	return true
+}
+
+// comment moves past the comment at pos, a #! line at the file's start, a
+// // line or a /* */ block, and reports whether there was one.
+func (l *lexer) comment() (bool, error) {
+	d := l.data
+	at := d[l.pos:]
+	switch {
+	case l.pos == 0 && bytes.HasPrefix(at, []byte("#!")):
+		l.pos = lineEnd(d, 0)
+	case bytes.HasPrefix(at, []byte("//")):
+		l.pos = lineEnd(d, l.pos)
+	case bytes.HasPrefix(at, []byte("/*")):
+		end := bytes.Index(at[2:], []byte("*/"))
+		if end < 0 {
+			return false, l.lexError(l.pos, "a /* comment is not closed")
+		}
+		l.pos += 2 + end + 2
+	default:
+		return false, nil
+	}
+	return true, nil
+}
+
+// token reads the token that starts at pos, which is neither a blank nor a
+// comment.
+func (l *lexer) token(regexOK *bool) (token, error) {
+	start := l.pos
+	t := token{start: start, line: l.lineOf(start)}
+	switch c := l.data[start]; {
+	case c == '\n' || c == '\r':
+		l.newline(&t, regexOK)
+	case l.stringStart(&t, *regexOK):
+		*regexOK = false
+	case isNameStart(c) || isDigit(c):
+		l.word(&t, regexOK)
+	default:
+		if err := l.punct(&t, regexOK); err != nil {
+			return token{}, err
+		}
+	}
+	t.end = l.pos
+	return t, nil
+}
+
+// newline reads a line end into t: a CRLF is one, and so is a lone CR, the
+// Macintosh newline of groovy.g's ONE_NL. Outside ( and [ a / after it
+// starts a slashy string.
+func (l *lexer) newline(t *token, regexOK *bool) {
+	l.pos = core.NextLine(l.data, l.pos)
+	t.kind = tokNewline
+	if l.parens[len(l.parens)-1] == 0 {
+		*regexOK = true
+	}
+}
+
+// stringStart reads the opening delimiter of a string at t's start into t,
+// and reports whether one is there. A / or $/ opens one only where regexOK
+// says a / starts a slashy string.
+func (l *lexer) stringStart(t *token, regexOK bool) bool {
+	d, start := l.data, t.start
+	switch c := d[start]; {
+	case c == '\'' || c == '"':
+		t.quote = quoteAt(d, start)
+	case c == '/' && regexOK:
+		t.quote = slashy
+	case regexOK && bytes.HasPrefix(d[start:], []byte("$/")):
+		t.quote = dollarSlashy
+	default:
+		return false
+	}
+	t.kind = tokString
+	l.pos += len(opening[t.quote])
+	return true
+}
+
+// quoteAt is the form of the string whose ' or " is at off: single or
+// double, or the triple form of either.
+func quoteAt(d []byte, off int) quote {
+	c, q := d[off], single
+	if c == '"' {
+		q = double
+	}
+	if bytes.HasPrefix(d[off:], []byte{c, c, c}) {
+		q += tripleSingle - single
+	}
+	return q
+}
+
+// word reads the name or the number at t's start into t.
+func (l *lexer) word(t *token, regexOK *bool) {
+	d, start := l.data, t.start
+	if isNameStart(d[start]) {
+		l.pos = nameEnd(d, start)
+		t.kind = tokName
+		*regexOK = regexAfterName[string(d[start:l.pos])]
+		return
+	}
+	l.pos = numberEnd(d, start)
+	t.kind, *regexOK = tokNumber, false
+}
+
+// punct reads the @ or the operator at t's start into t, and keeps the
+// count of brackets for it.
+func (l *lexer) punct(t *token, regexOK *bool) error {
+	if l.data[t.start] == '@' {
+		l.pos++
+		t.kind, *regexOK = tokAt, true
+		return nil
+	}
+	t.kind, t.op = tokOp, operator(l.data[t.start:])
+	l.pos += len(t.op)
+	*regexOK = !valueEnds[t.op]
+	return l.bracket(*t)
 }
 
 // bracket keeps the count of ( and [ for the bracket t: a { starts a level
@@ -267,65 +336,102 @@ func (l *lexer) enter(off int) error {
 // has read, to its closing delimiter, with the code of each ${ } inside it
 // and the strings inside that code.
 func (l *lexer) inside() error {
-	d := l.data
 	for len(l.stack) > 0 {
 		if len(l.stack) > core.MaxDepth {
 			return core.TooDeep(l.lineOf(l.pos))
 		}
 		top := &l.stack[len(l.stack)-1]
+		var err error
 		if top.q == 0 {
-			if err := l.interpolated(top); err != nil {
-				return err
-			}
+			err = l.interpolated(top)
+		} else {
+			err = l.text(top)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// text reads the text of the string of frame top, to its closing
+// delimiter or to a ${ that opens code inside it.
+func (l *lexer) text(top *frame) error {
+	d, q, start := l.data, top.q, l.pos
+	for {
+		if err := l.textByte(q, start); err != nil {
+			return err
+		}
+		// An escape comes before the end, so \" and $/ do not close.
+		if n := escape(d, l.pos, q); n > 0 {
+			l.pos += n
 			continue
 		}
-		q := top.q
-		start := l.pos
-		for {
-			if l.pos >= len(d) {
-				return l.lexError(start, "a string is not closed: errata looked for its closing %s to the end of the file", closing[q])
-			}
-			if err := l.m.Charge(1); err != nil {
-				return err
-			}
-			c := d[l.pos]
-			if (c == '\n' || c == '\r') && (q == single || q == double) {
-				return l.lexError(l.pos, "a string in %s ends at the line's end; Groovy reads a string over several lines only in ''' or \"\"\"", opening[q])
-			}
-			// An escape comes before the end, so \" and $/ do not close.
-			if n := escape(d, l.pos, q); n > 0 {
-				l.pos += n
-				continue
-			}
-			if bytes.HasPrefix(d[l.pos:], []byte(closing[q])) {
-				l.pos += len(closing[q])
-				t := top.tok
-				l.stack = l.stack[:len(l.stack)-1]
-				if len(l.stack) > 0 && l.code != nil {
-					t.end = l.pos
-					l.code.codeToken(t)
-				}
-				break
-			}
-			if c == '$' && interpolates(q) && l.pos+1 < len(d) {
-				if d[l.pos+1] == '{' {
-					if err := l.enter(l.pos); err != nil {
-						return err
-					}
-					l.pos += 2
-					l.stack = append(l.stack, frame{regexOK: true})
-					if l.code != nil {
-						l.code.enterCode()
-					}
-					break
-				}
-				if isNameStart(d[l.pos+1]) && d[l.pos+1] != '$' {
-					l.pos = dottedEnd(d, l.pos+1)
-					continue
-				}
-			}
-			l.pos++
+		if bytes.HasPrefix(d[l.pos:], []byte(closing[q])) {
+			l.closeString(top)
+			return nil
 		}
+		if entered, err := l.plain(q); entered || err != nil {
+			return err
+		}
+	}
+}
+
+// textByte refuses the string of form q that starts at offset start when
+// the file ends in it, or a line ends in it and its form is one line long,
+// and charges the meter for the byte at pos.
+func (l *lexer) textByte(q quote, start int) error {
+	if l.pos >= len(l.data) {
+		return l.lexError(start, "a string is not closed: errata looked for its closing %s to the end of the file", closing[q])
+	}
+	if err := l.m.Charge(1); err != nil {
+		return err
+	}
+	if c := l.data[l.pos]; (c == '\n' || c == '\r') && (q == single || q == double) {
+		return l.lexError(l.pos, "a string in %s ends at the line's end; Groovy reads a string over several lines only in ''' or \"\"\"", opening[q])
+	}
+	return nil
+}
+
+// closeString moves past the closing delimiter of the string of frame top
+// and leaves it. A string in the code of a ${ } goes to the code watcher.
+func (l *lexer) closeString(top *frame) {
+	l.pos += len(closing[top.q])
+	t := top.tok
+	l.stack = l.stack[:len(l.stack)-1]
+	if len(l.stack) > 0 {
+		t.end = l.pos
+		l.watch(t)
+	}
+}
+
+// plain moves past the text at pos in a string of form q: a $name the
+// string interpolates, or one byte. At a ${ it opens the code inside and
+// reports true.
+func (l *lexer) plain(q quote) (bool, error) {
+	d, p := l.data, l.pos
+	if d[p] == '$' && interpolates(q) && p+1 < len(d) {
+		if d[p+1] == '{' {
+			return true, l.openCode()
+		}
+		if isNameStart(d[p+1]) && d[p+1] != '$' {
+			l.pos = dottedEnd(d, p+1)
+			return false, nil
+		}
+	}
+	l.pos++
+	return false, nil
+}
+
+// openCode moves past the ${ at pos and enters the code inside it.
+func (l *lexer) openCode() error {
+	if err := l.enter(l.pos); err != nil {
+		return err
+	}
+	l.pos += 2
+	l.stack = append(l.stack, frame{regexOK: true})
+	if l.code != nil {
+		l.code.enterCode()
 	}
 	return nil
 }
@@ -347,18 +453,28 @@ func (l *lexer) interpolated(top *frame) error {
 	case t.is("{"):
 		top.braces++
 	case t.is("}") && top.braces == 0:
-		l.stack = l.stack[:len(l.stack)-1]
-		if l.code != nil {
-			l.code.leaveCode()
-		}
+		l.leaveCode()
 		return nil
 	case t.is("}"):
 		top.braces--
 	}
+	l.watch(t)
+	return nil
+}
+
+// leaveCode leaves the code of the ${ } on top of the stack.
+func (l *lexer) leaveCode() {
+	l.stack = l.stack[:len(l.stack)-1]
+	if l.code != nil {
+		l.code.leaveCode()
+	}
+}
+
+// watch hands t to the code watcher, if there is one.
+func (l *lexer) watch(t token) {
 	if l.code != nil {
 		l.code.codeToken(t)
 	}
-	return nil
 }
 
 // escape is the length of an escape at off in a string of form q, which
@@ -378,18 +494,32 @@ func escape(d []byte, off int, q quote) int {
 			return 2
 		}
 	case dollarSlashy:
-		if c == '$' && (next == '$' || next == '/') {
+		if dollarEscape(c, next) {
 			return 2
 		}
 	default:
-		if c == '\\' && next == '\r' && off+2 < len(d) && d[off+2] == '\n' {
-			return 3
-		}
-		if c == '\\' {
-			return 2
-		}
+		return backslashEscape(d, off)
 	}
 	return 0
+}
+
+// dollarEscape reports whether the bytes c and next are an escape in a
+// dollar slashy string: $$ or $/.
+func dollarEscape(c, next byte) bool {
+	return c == '$' && (next == '$' || next == '/')
+}
+
+// backslashEscape is the length of the escape at off, which a byte
+// follows, in a ' or " string or a triple form of either: a backslash and
+// a CR LF, a backslash and the byte after it, or 0.
+func backslashEscape(d []byte, off int) int {
+	if d[off] != '\\' {
+		return 0
+	}
+	if d[off+1] == '\r' && off+2 < len(d) && d[off+2] == '\n' {
+		return 3
+	}
+	return 2
 }
 
 // interpolates reports whether a string of form q reads ${ } and $name.
@@ -438,20 +568,29 @@ func dottedEnd(d []byte, off int) int {
 // letters and underscores, a fraction when a digit follows its point, and
 // an exponent's sign.
 func numberEnd(d []byte, off int) int {
-	word := func(off int) int {
-		for off < len(d) && (isNameStart(d[off]) && d[off] != '$' || '0' <= d[off] && d[off] <= '9') {
-			if (d[off] == 'e' || d[off] == 'E') && off+2 < len(d) && (d[off+1] == '+' || d[off+1] == '-') && '0' <= d[off+2] && d[off+2] <= '9' {
-				off += 2
-			}
-			off++
-		}
-		return off
-	}
-	off = word(off)
-	if off+1 < len(d) && d[off] == '.' && '0' <= d[off+1] && d[off+1] <= '9' {
-		off = word(off + 1)
+	off = numberWord(d, off)
+	if off+1 < len(d) && d[off] == '.' && isDigit(d[off+1]) {
+		off = numberWord(d, off+1)
 	}
 	return off
+}
+
+// numberWord is the end of the digits, letters and underscores of a number
+// from off, with the sign of an exponent among them.
+func numberWord(d []byte, off int) int {
+	for off < len(d) && (isNameStart(d[off]) && d[off] != '$' || isDigit(d[off])) {
+		if signedExponent(d, off) {
+			off += 2
+		}
+		off++
+	}
+	return off
+}
+
+// signedExponent reports whether an exponent with a sign and a digit, such
+// as e+1, starts at off.
+func signedExponent(d []byte, off int) bool {
+	return (d[off] == 'e' || d[off] == 'E') && off+2 < len(d) && (d[off+1] == '+' || d[off+1] == '-') && isDigit(d[off+2])
 }
 
 // operators are Groovy's operators of more than one byte, longest first,
@@ -484,3 +623,6 @@ var valueEnds = map[string]bool{")": true, "]": true, "}": true, "++": true, "--
 var regexAfterName = map[string]bool{
 	"abstract": true, "const": true, "do": true, "final": true, "goto": true, "strictfp": true,
 }
+
+// isDigit reports whether c is an ASCII digit.
+func isDigit(c byte) bool { return '0' <= c && c <= '9' }

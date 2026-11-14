@@ -171,6 +171,11 @@ func TestStepByIdOrName(t *testing.T) {
 	want(t, see(t, body, "test", "inner", "V"), "in-group@12")
 	extracttest.WantError(t, refused(t, body, "test", "twice", "V"), `lines 8 and 9: job "test" has two steps named "twice"; give the step an id`)
 	extracttest.WantError(t, refused(t, body, "test", "none", "V"), `job "test" has no step whose id or name is "none"`)
+	// The first of two steps of one name is the job's first step, at
+	// index 0. Planted break: byName <= 0, which took the second as the
+	// first.
+	extracttest.WantError(t, refused(t, "jobs:\n  test:\n    steps:\n      - name: twice\n      - name: twice\n", "test", "twice", "V"),
+		`lines 4 and 5: job "test" has two steps named "twice"`)
 	// A name that holds an expression matches only as written, and the
 	// refusal says so. Planted break: the hint dropped.
 	body = "jobs:\n  test:\n    steps:\n      - name: Build ${{ matrix.os }}\n        env: {V: v}\n"

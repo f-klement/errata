@@ -82,7 +82,9 @@ func TestMatrixInstances(t *testing.T) {
 // later stage. Planted breaks: dotenv not read, which gave "one"; the
 // default stage build, which put deploy beside mk; .post left out of the
 // order, which put it first; the check of a needs: entry's job: negated,
-// which read an entry with none as no source.
+// which read an entry with none as no source; the check of artifacts:'s
+// error in takesArtifacts negated, which read every mapping entry as one
+// without artifacts.
 func TestDotenvReportsAreOutOfReach(t *testing.T) {
 	mk := "mk:\n  stage: build\n  script: [x]\n  artifacts: {reports: {dotenv: b.env}}\n"
 	for _, c := range []struct{ name, deploy, want string }{
@@ -91,6 +93,10 @@ func TestDotenvReportsAreOutOfReach(t *testing.T) {
 		{"earlier stage", "  stage: deploy\n", `gets the dotenv report of job "mk"`},
 		// "If stage is not defined, the job uses the test stage by default."
 		{"no stage is test", "", `gets the dotenv report of job "mk"`},
+		// A mapping that names its job takes its artifacts unless it says
+		// artifacts: false.
+		{"needs entry as a mapping", "  needs: [{job: mk}]\n", `job "deploy" gets the dotenv report of job "mk"`},
+		{"needs entry with its artifacts", "  needs: [{job: mk, artifacts: true}]\n", `job "deploy" gets the dotenv report of job "mk"`},
 		{"needs in another pipeline", "  needs: [{pipeline: $UP, job: mk}]\n", "needs a job of another pipeline"},
 		// An entry that names no job by a string is refused, not read as no job.
 		{"needs entry without job", "  needs: [{artifacts: true}]\n", "a needs: entry names a job: or a job by a string"},

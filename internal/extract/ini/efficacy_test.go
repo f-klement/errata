@@ -143,6 +143,7 @@ func TestPythonWhiteSpaceIsWhatStrStripTakes(t *testing.T) {
 
 // A host is in a range as Python's range(begin, end+1, step) holds it,
 // which ansible expands: h[b:d] is hb to hd, h[a:e:2] ha, hc and he,
+// h[b:h:3] hb, he and hh, counted from b,
 // h[10:1:-4] h10 and h6, h[1:9:4] h1, h5 and h9, and a range of 20 digit
 // bounds stepping down by 3 its begin, begin-3 and begin-6. The planted
 // breaks are each bound of each kind of range taken one off, in or out.
@@ -151,6 +152,7 @@ func TestHostInHoldsWhatPythonsRangeHolds(t *testing.T) {
 	for pattern, names := range map[string]map[string]bool{
 		"h[b:d]":     {"hb": true, "hc": true, "hd": true, "ha": false, "he": false},
 		"h[a:e:2]":   {"ha": true, "hc": true, "he": true, "hb": false, "hd": false, "hf": false},
+		"h[b:h:3]":   {"hb": true, "he": true, "hh": true, "ha": false, "hc": false, "hd": false, "hf": false, "hi": false},
 		"h[10:1:-4]": {"h10": true, "h6": true, "h2": false, "h3": false, "h11": false, "h9": false, "h14": false},
 		"h[1:9:4]":   {"h1": true, "h5": true, "h9": true, "h0": false, "h3": false, "h13": false},
 		big: {"h99999999999999999999": true, "h99999999999999999996": true, "h99999999999999999993": true,

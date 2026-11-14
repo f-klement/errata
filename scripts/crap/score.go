@@ -235,8 +235,8 @@ func scoreFile(abs, pkg, rel string, blocks map[span]block, fns map[string]fn) e
 	if err != nil || file == nil {
 		return err
 	}
-	for _, fd := range funcs(file) {
-		f, err := score(fset, fd, pkg, rel, blocks)
+	for _, u := range units(pkg, file) {
+		f, err := score(fset, u, rel, blocks)
 		if err != nil {
 			return err
 		}
@@ -270,6 +270,68 @@ func funcs(file *ast.File) []*ast.FuncDecl {
 	return out
 }
 
+// unit is what one row scores: a function with a body, or a function literal
+// that no function holds.
+type unit struct {
+	key  string
+	node ast.Node // what the complexity counts, closures included
+	body *ast.BlockStmt
+}
+
+// units is each function and method of a file that has a body, then each
+// function literal of its package level declarations.
+func units(pkg string, file *ast.File) []unit {
+	var out []unit
+	for _, fd := range funcs(file) {
+		out = append(out, unit{key(pkg, fd), fd, fd.Body})
+	}
+	return append(out, literals(pkg, file)...)
+}
+
+// literals is each function literal that a package level var holds, keyed by
+// the var's name and the literal's place among that var's literals, from 1:
+// `pkg gitDialect.func1` is the first literal in gitDialect's value.
+// A literal inside another counts toward the outer one, as a closure counts
+// toward its function. The name does not change when lines move, only when
+// a literal before it in the same var comes or goes. Two vars named _ in one
+// package share their names, in one file or in two, and keep keeps the worse
+// score, as for init.
+func literals(pkg string, file *ast.File) []unit {
+	var out []unit
+	for _, d := range file.Decls {
+		gd, ok := d.(*ast.GenDecl)
+		if !ok {
+			continue
+		}
+		for _, s := range gd.Specs {
+			if vs, ok := s.(*ast.ValueSpec); ok {
+				out = append(out, specLiterals(pkg, vs)...)
+			}
+		}
+	}
+	return out
+}
+
+// specLiterals is the outermost function literals of one var spec's values,
+// each named for the var it is the value of.
+func specLiterals(pkg string, vs *ast.ValueSpec) []unit {
+	var out []unit
+	n := map[string]int{}
+	for i, v := range vs.Values {
+		name := vs.Names[i].Name
+		ast.Inspect(v, func(x ast.Node) bool {
+			lit, ok := x.(*ast.FuncLit)
+			if !ok {
+				return true
+			}
+			n[name]++
+			out = append(out, unit{fmt.Sprintf("%s %s.func%d", pkg, name, n[name]), lit, lit.Body})
+			return false
+		})
+	}
+	return out
+}
+
 // keep puts f in fns. Two functions with one key, such as two init
 // functions of a package, keep the worse score.
 func keep(fns map[string]fn, f fn) {
@@ -280,10 +342,10 @@ func keep(fns map[string]fn, f fn) {
 
 // score is one function's complexity and coverage. It refuses a function
 // with statements and no block in the profile.
-func score(fset *token.FileSet, fd *ast.FuncDecl, pkg, rel string, blocks map[span]block) (fn, error) {
-	line := fset.PositionFor(fd.Pos(), false).Line
-	f := fn{key: key(pkg, fd), where: fmt.Sprintf("%s:%d", rel, line), comp: complexity(fd)}
-	body := span{at(fset, fd.Body.Lbrace), at(fset, fd.End())}
+func score(fset *token.FileSet, u unit, rel string, blocks map[span]block) (fn, error) {
+	line := fset.PositionFor(u.node.Pos(), false).Line
+	f := fn{key: u.key, where: fmt.Sprintf("%s:%d", rel, line), comp: complexity(u.node)}
+	body := span{at(fset, u.body.Lbrace), at(fset, u.body.End())}
 	found := false
 	for s, b := range blocks {
 		if s.start.before(body.start) || body.end.before(s.end) {
@@ -295,7 +357,7 @@ func score(fset *token.FileSet, fd *ast.FuncDecl, pkg, rel string, blocks map[sp
 			f.covered += b.stmts
 		}
 	}
-	if !found && len(fd.Body.List) > 0 {
+	if !found && len(u.body.List) > 0 {
 		return f, fmt.Errorf("%s at %s has statements and no block in the profile: the run did not instrument its package", f.key, f.where)
 	}
 	return f, nil
@@ -333,7 +395,7 @@ func receiver(t ast.Expr) string {
 }
 
 // complexity is 1 plus each decision in the function, its closures' included.
-func complexity(fd *ast.FuncDecl) int {
+func complexity(fd ast.Node) int {
 	n := 1
 	ast.Inspect(fd, func(x ast.Node) bool {
 		if decision(x) {

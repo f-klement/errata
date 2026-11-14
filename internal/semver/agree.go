@@ -122,50 +122,96 @@ type Outcome struct {
 // the values' length, but for the sort in Overlapping. A Reader bounds the
 // intervals it is given.
 func Agree(values []Value) Outcome {
-	// The first version stated in full and the longest partial one, by
-	// index, with the version itself.
-	full, partial := -1, -1
-	var fullV, partialV *Version
-	fail := func(a, b int) Outcome { return Outcome{First: min(a, b), Second: max(a, b)} }
+	a := anchors{full: -1, partial: -1}
+	if out, failed := a.versions(values); failed {
+		return out
+	}
+	if a.full < 0 && a.partial < 0 {
+		return rangesAgree(values)
+	}
+	if out, failed := a.ranges(values); failed {
+		return out
+	}
+	return Outcome{Holds: true, First: -1, Second: -1}
+}
+
+// anchors are the versions Agree compares every value with: the first
+// version stated in full and the longest partial one, by index, -1 for
+// none, with the version itself.
+type anchors struct {
+	full, partial   int
+	fullV, partialV *Version
+}
+
+// failAt is the outcome of the values at a and b not agreeing.
+func failAt(a, b int) Outcome { return Outcome{First: min(a, b), Second: max(a, b)} }
+
+// versions compares each version of values with the anchors found before
+// it, and takes it as an anchor when it is the first in full or the
+// longest partial one. It reports the outcome of the first two that do
+// not agree, and whether there are such.
+func (a *anchors) versions(values []Value) (Outcome, bool) {
 	for i, v := range values {
 		if v.version == nil {
 			continue
 		}
-		if fullV != nil && !AgreeAt(*fullV, *v.version) {
-			return fail(full, i)
+		if out, failed := a.agreeWith(i, *v.version); failed {
+			return out, true
 		}
-		if partialV != nil && !AgreeAt(*partialV, *v.version) {
-			return fail(partial, i)
-		}
-		switch {
-		case !v.version.Partial():
-			if fullV == nil {
-				full, fullV = i, v.version
-			}
-		case partialV == nil || len(v.version.release) > len(partialV.release):
-			partial, partialV = i, v.version
-		}
+		a.take(i, v.version)
 	}
-	if full < 0 && partial < 0 {
-		var rs []Range
-		for _, v := range values {
-			rs = append(rs, *v.rng)
-		}
-		if k := Overlapping(rs); k < len(rs) {
-			return Outcome{OnlyRanges: true, First: -1, Second: k}
-		}
-		return Outcome{Holds: true, OnlyRanges: true, First: -1, Second: -1}
+	return Outcome{}, false
+}
+
+// agreeWith compares the version v, value i, with each anchor.
+func (a *anchors) agreeWith(i int, v Version) (Outcome, bool) {
+	if a.fullV != nil && !AgreeAt(*a.fullV, v) {
+		return failAt(a.full, i), true
 	}
+	if a.partialV != nil && !AgreeAt(*a.partialV, v) {
+		return failAt(a.partial, i), true
+	}
+	return Outcome{}, false
+}
+
+// take takes the version v, value i, as the full anchor when it is the
+// first stated in full, or as the partial one when it is longer.
+func (a *anchors) take(i int, v *Version) {
+	switch {
+	case !v.Partial():
+		if a.fullV == nil {
+			a.full, a.fullV = i, v
+		}
+	case a.partialV == nil || len(v.release) > len(a.partialV.release):
+		a.partial, a.partialV = i, v
+	}
+}
+
+// ranges holds each anchor to each range of values.
+func (a *anchors) ranges(values []Value) (Outcome, bool) {
 	for j, v := range values {
 		if v.rng == nil {
 			continue
 		}
-		if fullV != nil && !Satisfies(*fullV, *v.rng) {
-			return fail(full, j)
+		if a.fullV != nil && !Satisfies(*a.fullV, *v.rng) {
+			return failAt(a.full, j), true
 		}
-		if partialV != nil && !Satisfies(*partialV, *v.rng) {
-			return fail(partial, j)
+		if a.partialV != nil && !Satisfies(*a.partialV, *v.rng) {
+			return failAt(a.partial, j), true
 		}
 	}
-	return Outcome{Holds: true, First: -1, Second: -1}
+	return Outcome{}, false
+}
+
+// rangesAgree is the outcome of values that are ranges alone: they hold
+// when one release satisfies every range.
+func rangesAgree(values []Value) Outcome {
+	var rs []Range
+	for _, v := range values {
+		rs = append(rs, *v.rng)
+	}
+	if k := Overlapping(rs); k < len(rs) {
+		return Outcome{OnlyRanges: true, First: -1, Second: k}
+	}
+	return Outcome{Holds: true, OnlyRanges: true, First: -1, Second: -1}
 }

@@ -8,7 +8,6 @@ import (
 	"context"
 	"fmt"
 	"reflect"
-	"runtime"
 	"runtime/debug"
 	"sync"
 
@@ -31,7 +30,8 @@ type Engine struct {
 	// the report under the same name, which the outputs and the exit code
 	// read.
 	SkipsFail bool
-	// workers bounds the pool for a test; 0 is GOMAXPROCS (width).
+	// workers bounds the pool for a test; 0 is the CPUs the process may
+	// use (width).
 	workers int
 }
 
@@ -69,12 +69,13 @@ func (t Table) Dispatch(ctx context.Context, root string, c check.Check) check.R
 // Execute runs every check that the available providers can reach and skips
 // the rest with the reason. The report holds a result for each check, in
 // the order of checks, each followed by its witnesses' results, whatever
-// order they finish in. Rules and their witnesses run at once on a pool of
-// GOMAXPROCS workers (pool); a check of any other kind runs alone, after
-// every check before it and before any after it, since a program may
-// write the files a rule reads. The checks share one run (check.WithRun),
-// and each job that runs alone ends what the run kept of its files
-// (check.Wrote) before the next job starts.
+// order they finish in. Rules and their witnesses run at once on a pool as
+// wide as the CPUs the process may use (width, read once for the run); a
+// check of any other kind runs alone, after every check before it and
+// before any after it, since a program may write the files a rule reads.
+// The checks share one run (check.WithRun), and each job that runs alone
+// ends what the run kept of its files (check.Wrote) before the next job
+// starts.
 func (e *Engine) Execute(ctx context.Context, checks []check.Check) check.Report {
 	jobs := plan(provider.Union(e.Providers), checks)
 	rep := check.Report{SkipsFail: e.SkipsFail, Results: make([]check.Result, len(jobs))}
@@ -138,31 +139,32 @@ func (e *Engine) run(ctx context.Context, j job) check.Result {
 // of jobs between two that run alone runs on the pool, and finishes before
 // the next job alone starts. A job alone may have written to the
 // repository, so the run drops what it kept (check.Wrote) before any job
-// after it starts.
+// after it starts. Every stretch runs on width workers, the CPU quota
+// read once for the run.
 func (e *Engine) runAll(ctx context.Context, jobs []job, out []check.Result) {
-	from := 0
+	from, width := 0, e.width()
 	for i, j := range jobs {
 		if j.alone() {
-			e.pool(ctx, jobs[from:i], out[from:i])
+			e.pool(ctx, width, jobs[from:i], out[from:i])
 			out[i] = e.run(ctx, j)
 			check.Wrote(ctx)
 			from = i + 1
 		}
 	}
-	e.pool(ctx, jobs[from:], out[from:])
+	e.pool(ctx, width, jobs[from:], out[from:])
 }
 
-// pool runs jobs on at most e.width workers, and at least one, each taking
+// pool runs jobs on at most width workers, and at least one, each taking
 // the next job in order, and puts each result into out at the job's index.
 // One worker runs the jobs one at a time, in order, as a run on one core
 // does. A job that panics panics again here, on the caller's goroutine,
 // once every worker is done (caught), so the caller's defers run as they
 // did when the checks ran on it.
-func (e *Engine) pool(ctx context.Context, jobs []job, out []check.Result) {
+func (e *Engine) pool(ctx context.Context, width int, jobs []job, out []check.Result) {
 	next := make(chan int)
 	var wg sync.WaitGroup
 	var first caught
-	for range max(1, min(e.width(), len(jobs))) {
+	for range max(1, min(width, len(jobs))) {
 		wg.Go(func() {
 			for i := range next {
 				first.run(func() { out[i] = e.run(ctx, jobs[i]) })
@@ -217,13 +219,4 @@ func (p *workerPanic) Error() string {
 func (p *workerPanic) Unwrap() error {
 	err, _ := p.value.(error)
 	return err
-}
-
-// width is the most jobs that run at once: e.workers when a test sets it,
-// else GOMAXPROCS, the cores the process may use.
-func (e *Engine) width() int {
-	if e.workers > 0 {
-		return e.workers
-	}
-	return runtime.GOMAXPROCS(0)
 }

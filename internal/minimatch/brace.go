@@ -155,43 +155,66 @@ func indexFrom(s units, c rune, from int) int {
 func balancedRange(s units) ([2]int, bool) {
 	ai := indexFrom(s, '{', 0)
 	bi := indexFrom(s, '}', ai+1)
-	i := ai
 	if ai < 0 || bi <= 0 {
 		return [2]int{}, false
 	}
-	var begs []int
-	left, right, haveRight := len(s), 0, false
+	r := ranger{s: s, ai: ai, bi: bi, left: len(s)}
 	var result [2]int
-	haveResult := false
-	for i >= 0 && !haveResult {
-		switch {
-		case i == ai:
-			begs = append(begs, i)
-			ai = indexFrom(s, '{', i+1)
-		case len(begs) == 1:
-			r := begs[len(begs)-1]
-			begs = begs[:len(begs)-1]
-			result, haveResult = [2]int{r, bi}, true
-		default:
-			if len(begs) > 0 {
-				beg := begs[len(begs)-1]
-				begs = begs[:len(begs)-1]
-				if beg < left {
-					left, right, haveRight = beg, bi, true
-				}
-			}
-			bi = indexFrom(s, '}', i+1)
-		}
-		if ai < bi && ai >= 0 {
-			i = ai
-		} else {
-			i = bi
+	found := false
+	for i := ai; i >= 0 && !found; i = r.next() {
+		result, found = r.step(i)
+	}
+	if len(r.begs) > 0 && r.haveRight {
+		return [2]int{r.left, r.right}, true
+	}
+	return result, found
+}
+
+// ranger is balanced-match's range as it walks s: the next { at ai and }
+// at bi, the {s open, and the widest pair seen, left to right.
+type ranger struct {
+	s           units
+	ai, bi      int
+	begs        []int
+	left, right int
+	haveRight   bool
+}
+
+// next is the index the walk reads next, the nearer of ai and bi.
+func (r *ranger) next() int {
+	if r.ai < r.bi && r.ai >= 0 {
+		return r.ai
+	}
+	return r.bi
+}
+
+// step reads the brace at i, and returns the pair it closes when it closes
+// the last open one.
+func (r *ranger) step(i int) ([2]int, bool) {
+	switch {
+	case i == r.ai:
+		r.begs = append(r.begs, i)
+		r.ai = indexFrom(r.s, '{', i+1)
+	case len(r.begs) == 1:
+		beg := r.begs[len(r.begs)-1]
+		r.begs = r.begs[:len(r.begs)-1]
+		return [2]int{beg, r.bi}, true
+	default:
+		r.close(i)
+	}
+	return [2]int{}, false
+}
+
+// close reads the } at i that closes one of several open {s.
+func (r *ranger) close(i int) {
+	if len(r.begs) > 0 {
+		beg := r.begs[len(r.begs)-1]
+		r.begs = r.begs[:len(r.begs)-1]
+		if beg < r.left {
+			r.left, r.right, r.haveRight = beg, r.bi, true
 		}
 	}
-	if len(begs) > 0 && haveRight {
-		result, haveResult = [2]int{left, right}, true
-	}
-	return result, haveResult
+	r.bi = indexFrom(r.s, '}', i+1)
 }
 
 // splitUnits is s.split(sep) for one code unit.
@@ -338,31 +361,12 @@ func (e *expansion) expandSequence(body units, alpha bool) []units {
 	pad := slices.ContainsFunc(n, isPadded)
 	var out []units
 	length := 0
-	for i := x; (reverse && i >= y) || (!reverse && i <= y); i += incr {
+	for i := x; inSeq(i, y, reverse); i += incr {
 		if len(out) >= MaxExpansions {
 			e.cut = true
 			break
 		}
-		var c units
-		if alpha {
-			c = units{rune(int64(i) & 0xFFFF)}
-			if c[0] == '\\' {
-				c = units{}
-			}
-		} else {
-			str := jsNumber(i)
-			if pad {
-				if need := width - len(str); need > 0 {
-					z := strings.Repeat("0", need)
-					if i < 0 {
-						str = "-" + z + str[1:]
-					} else {
-						str = z + str
-					}
-				}
-			}
-			c = []rune(str)
-		}
+		c := seqValue(i, alpha, pad, width)
 		if length+len(c) > MaxExpandedLength {
 			e.cut = true
 			break
@@ -371,6 +375,42 @@ func (e *expansion) expandSequence(body units, alpha bool) []units {
 		length += len(c)
 	}
 	return out
+}
+
+// inSeq reports whether i is still in a sequence that ends at y.
+func inSeq(i, y float64, reverse bool) bool {
+	return (reverse && i >= y) || (!reverse && i <= y)
+}
+
+// seqValue is the value i of a sequence: a letter of an alphabetic one, a
+// backslash none, or a number, padded with zeros to width when pad is set.
+func seqValue(i float64, alpha, pad bool, width int) units {
+	if alpha {
+		c := units{rune(int64(i) & 0xFFFF)}
+		if c[0] == '\\' {
+			c = units{}
+		}
+		return c
+	}
+	str := jsNumber(i)
+	if pad {
+		str = zeroPad(str, width, i < 0)
+	}
+	return []rune(str)
+}
+
+// zeroPad pads the number str with zeros to width, after its sign when
+// neg is set.
+func zeroPad(str string, width int, neg bool) string {
+	need := width - len(str)
+	if need <= 0 {
+		return str
+	}
+	z := strings.Repeat("0", need)
+	if neg {
+		return "-" + z + str[1:]
+	}
+	return z + str
 }
 
 // isNumericSequence is /^-?\d+\.\.-?\d+(?:\.\.-?\d+)?$/.
@@ -396,16 +436,18 @@ func isAlphaSequence(b units) bool {
 	if len(n) != 2 && len(n) != 3 {
 		return false
 	}
-	letter := func(x units) bool {
-		return len(x) == 1 && ((x[0] >= 'a' && x[0] <= 'z') || (x[0] >= 'A' && x[0] <= 'Z'))
-	}
-	if !letter(n[0]) || !letter(n[1]) {
+	if !oneLetter(n[0]) || !oneLetter(n[1]) {
 		return false
 	}
 	if len(n) == 3 {
 		return isNumericSequence(concat(units{'0', '.', '.'}, n[2]))
 	}
 	return true
+}
+
+// oneLetter reports whether x is one ASCII letter.
+func oneLetter(x units) bool {
+	return len(x) == 1 && ((x[0] >= 'a' && x[0] <= 'z') || (x[0] >= 'A' && x[0] <= 'Z'))
 }
 
 // commaThenBrace is /,(?!,).*\}/.test(s): a comma not before a comma, then
@@ -432,90 +474,152 @@ func (e *expansion) expandOne(s units, depth, maxRewrites int, isTop bool) []uni
 	if depth > expansionMaxDepth {
 		return []units{s}
 	}
-	acc := []units{{}}
-	rewrites := 0
-	dropEmpties, firstGroup := false, true
-	for {
-		if !e.meter.look() {
-			return acc
+	x := &expander{e: e, acc: []units{{}}, depth: depth, maxRewrites: maxRewrites, isTop: isTop, firstGroup: true}
+	for more := true; more; {
+		s, more = x.step(s)
+	}
+	return x.acc
+}
+
+// expander is expand_'s state over one string: the expansions so far,
+// the rewrites of a set that is no set, and whether empty values drop,
+// which the first group decides.
+type expander struct {
+	e                       *expansion
+	acc                     []units
+	depth, maxRewrites      int
+	isTop                   bool
+	rewrites                int
+	dropEmpties, firstGroup bool
+}
+
+// step expands the first brace set of s into acc, and returns what is
+// left to read and whether there is any.
+func (x *expander) step(s units) (units, bool) {
+	if !x.e.meter.look() {
+		return nil, false
+	}
+	m, ok := balanced(s)
+	if !ok {
+		x.add(s, x.dropEmpties)
+		return nil, false
+	}
+	if len(m.pre) > 0 && m.pre[len(m.pre)-1] == '$' {
+		x.add(concat(m.pre, units{'{'}, m.body, units{'}'}), x.dropEmpties && len(m.post) == 0)
+		x.firstGroup = false
+		return x.rest(m)
+	}
+	return x.set(m)
+}
+
+// add joins s to each expansion so far.
+func (x *expander) add(s units, dropEmpties bool) {
+	x.acc = x.e.combine(x.acc, s, []units{{}}, dropEmpties)
+}
+
+// rest is what is left to read after the set m.
+func (x *expander) rest(m balancedMatch) (units, bool) {
+	if len(m.post) == 0 {
+		return nil, false
+	}
+	return m.post, true
+}
+
+// set expands the set m: a sequence, a list of options, or text when it
+// is neither.
+func (x *expander) set(m balancedMatch) (units, bool) {
+	numSeq, alphaSeq := isNumericSequence(m.body), isAlphaSequence(m.body)
+	isSeq := numSeq || alphaSeq
+	if !isSeq && !slices.Contains(m.body, ',') {
+		return x.noSet(m)
+	}
+	x.group(isSeq)
+	if isSeq {
+		return x.finish(m, x.e.expandSequence(m.body, alphaSeq))
+	}
+	return x.options(m)
+}
+
+// noSet reads the braces m, which hold no set: rewritten to read a set
+// after them while rewrites are left, else as text.
+func (x *expander) noSet(m balancedMatch) (units, bool) {
+	if x.rewrites < x.maxRewrites && commaThenBrace(m.post) {
+		x.rewrites++
+		x.isTop = true
+		return concat(m.pre, units{'{'}, m.body, escClose, m.post), true
+	}
+	x.add(concat(m.pre, units{'{'}, m.body, units{'}'}, m.post), x.dropEmpties)
+	return nil, false
+}
+
+// group lets the first set decide whether empty values drop: at the top
+// and for options only.
+func (x *expander) group(isSeq bool) {
+	if x.firstGroup {
+		x.dropEmpties = x.isTop && !isSeq
+		x.firstGroup = false
+	}
+}
+
+// finish joins the set's values to each expansion so far.
+func (x *expander) finish(m balancedMatch, values []units) (units, bool) {
+	x.acc = x.e.combine(x.acc, m.pre, values, x.dropEmpties && len(m.post) == 0)
+	return x.rest(m)
+}
+
+// options expands a set of options. One option alone is a set of its own
+// expansions, each in braces.
+func (x *expander) options(m balancedMatch) (units, bool) {
+	n := parseCommaParts(m.body)
+	if len(n) == 1 {
+		n = x.wrapped(n[0])
+		if len(n) == 1 {
+			x.add(concat(m.pre, n[0]), x.dropEmpties && len(m.post) == 0)
+			return x.rest(m)
 		}
-		m, ok := balanced(s)
-		if !ok {
-			return e.combine(acc, s, []units{{}}, dropEmpties)
+	}
+	return x.finish(m, x.values(n, x.dropsEmpties(m)))
+}
+
+// wrapped is each expansion of part, in braces.
+func (x *expander) wrapped(part units) []units {
+	inner := x.e.expandOne(part, x.depth+1, x.maxRewrites, false)
+	n := make([]units, len(inner))
+	for i, v := range inner {
+		n[i] = concat(units{'{'}, v, units{'}'})
+	}
+	return n
+}
+
+// dropsEmpties reports whether the set m drops its empty values: it is
+// all the string, and nothing before it has expanded to text.
+func (x *expander) dropsEmpties(m balancedMatch) bool {
+	d := x.dropEmpties && len(m.post) == 0 && len(m.pre) == 0
+	for _, a := range x.acc {
+		if len(a) > 0 {
+			d = false
 		}
-		pre := m.pre
-		if len(pre) > 0 && pre[len(pre)-1] == '$' {
-			acc = e.combine(acc, concat(pre, units{'{'}, m.body, units{'}'}), []units{{}}, dropEmpties && len(m.post) == 0)
-			firstGroup = false
-			if len(m.post) == 0 {
-				break
-			}
-			s = m.post
-			continue
-		}
-		numSeq, alphaSeq := isNumericSequence(m.body), isAlphaSequence(m.body)
-		isSeq := numSeq || alphaSeq
-		isOptions := slices.Contains(m.body, ',')
-		if !isSeq && !isOptions {
-			if rewrites < maxRewrites && commaThenBrace(m.post) {
-				rewrites++
-				s = concat(m.pre, units{'{'}, m.body, escClose, m.post)
-				isTop = true
+	}
+	return d
+}
+
+// values is the expansions of each option, up to MaxExpansions and
+// MaxExpandedLength.
+func (x *expander) values(n []units, drop bool) []units {
+	var values []units
+	length := 0
+	for _, part := range n {
+		for _, v := range x.e.expandOne(part, x.depth+1, x.maxRewrites, false) {
+			if drop && len(v) == 0 {
 				continue
 			}
-			return e.combine(acc, concat(pre, units{'{'}, m.body, units{'}'}, m.post), []units{{}}, dropEmpties)
-		}
-		if firstGroup {
-			dropEmpties = isTop && !isSeq
-			firstGroup = false
-		}
-		var values []units
-		if isSeq {
-			values = e.expandSequence(m.body, alphaSeq)
-		} else {
-			n := parseCommaParts(m.body)
-			if len(n) == 1 {
-				inner := e.expandOne(n[0], depth+1, maxRewrites, false)
-				n = make([]units, len(inner))
-				for i, x := range inner {
-					n[i] = concat(units{'{'}, x, units{'}'})
-				}
-				if len(n) == 1 {
-					acc = e.combine(acc, concat(pre, n[0]), []units{{}}, dropEmpties && len(m.post) == 0)
-					if len(m.post) == 0 {
-						break
-					}
-					s = m.post
-					continue
-				}
+			if len(values) >= MaxExpansions || length+len(v) > MaxExpandedLength {
+				x.e.cut = true
+				return values
 			}
-			dropsEmpties := dropEmpties && len(m.post) == 0 && len(pre) == 0
-			for _, a := range acc {
-				if len(a) > 0 {
-					dropsEmpties = false
-				}
-			}
-			valuesLength := 0
-		outer:
-			for _, part := range n {
-				for _, v := range e.expandOne(part, depth+1, maxRewrites, false) {
-					if dropsEmpties && len(v) == 0 {
-						continue
-					}
-					if len(values) >= MaxExpansions || valuesLength+len(v) > MaxExpandedLength {
-						e.cut = true
-						break outer
-					}
-					values = append(values, v)
-					valuesLength += len(v)
-				}
-			}
+			values = append(values, v)
+			length += len(v)
 		}
-		acc = e.combine(acc, pre, values, dropEmpties && len(m.post) == 0)
-		if len(m.post) == 0 {
-			break
-		}
-		s = m.post
 	}
-	return acc
+	return values
 }

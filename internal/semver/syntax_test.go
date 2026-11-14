@@ -257,11 +257,13 @@ func TestPEP440ReadsAsPEP440(t *testing.T) {
 			t.Errorf("PEP440.ParseVersion(%q) = %v, %v, want %s", in, v, err, want)
 		}
 	}
-	// The specification's ordering example, local versions included.
+	// The specification's ordering example, local versions included, with
+	// 1.0+abc before 1.0+abc.5: a local version that another starts with is
+	// below it.
 	ascending(t, PEP440, []string{
 		"1.dev0", "1.0.dev456", "1.0a1", "1.0a2.dev456", "1.0a12.dev456", "1.0a12",
 		"1.0b1.dev456", "1.0b2", "1.0b2.post345.dev456", "1.0b2.post345", "1.0rc1.dev456",
-		"1.0rc1", "1.0", "1.0+abc.5", "1.0+abc.7", "1.0+5", "1.0.post456.dev34", "1.0.post456", "1.0.15", "1.1.dev1",
+		"1.0rc1", "1.0", "1.0+abc", "1.0+abc.5", "1.0+abc.7", "1.0+5", "1.0.post456.dev34", "1.0.post456", "1.0.15", "1.1.dev1",
 	})
 	ascending(t, PEP440, []string{"2.0", "1!1.0"})
 	sameRange(t, PEP440, [][2]string{

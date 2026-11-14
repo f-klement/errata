@@ -63,6 +63,11 @@ The config
   names another file in place of <root>/errata.yaml; errata looks for no
   other file and reads no environment variable to find one.
 
+Flags
+  --version (default off)
+      Print the version of this errata binary and exit 0, the same line
+      errata version prints.
+
 Exit codes
   0  the command did what it was asked. For errata check, every check that
      ran found its claim true.
@@ -80,6 +85,9 @@ const rootExample = `  # Check the repository in the working directory.
 
   # See which checks a config holds, with the defaults filled in.
   errata list --config ci/errata.yaml
+
+  # Print the version, as errata version does.
+  errata --version
 
   # Check the working directory with the image in place of a binary.
   docker run --rm -v "$PWD:/repo" -w /repo fklement/errata check`
@@ -240,8 +248,8 @@ release, and a pseudo-version, such as v0.2.5-0.20261103212526-8ade832ca96d,
 for a build in a git checkout or a go install at a commit, with +dirty when
 the checkout has changes. A build without that record prints dev.
 
-errata version reads no config, and takes no argument and no flag but
---help (-h).
+errata --version prints the same line. errata version reads no config, and
+takes no argument and no flag but --help (-h).
 
 Exit codes
   0  errata printed its version.

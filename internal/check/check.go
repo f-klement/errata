@@ -83,19 +83,10 @@ func (c Check) validate(withKind bool) error {
 	if !c.Scope.known() {
 		errs = append(errs, fmt.Errorf("scope %q must be one of repo, live, applied", c.Scope))
 	}
-	switch {
-	case !withKind:
-		// ValidateKeys leaves the kind out, so no kind is no problem.
-	case c.Kind == nil:
-		errs = append(errs, errNoKind)
-	default:
-		if c.Scope.known() {
-			// An unknown scope is refused once, above.
-			if why := c.Kind.ScopeRefusal(c.Scope); why != "" {
-				errs = append(errs, fmt.Errorf("scope %q: %s", c.Scope, why))
-			}
-		}
-		errs = append(errs, c.Kind.Validate(c)...)
+	if withKind {
+		// ValidateKeys leaves the kind out, so only Validate asks for its
+		// problems.
+		errs = append(errs, c.kindErrors()...)
 	}
 	if c.Timeout < 0 {
 		errs = append(errs, errors.New("timeout must not be negative"))
@@ -105,6 +96,22 @@ func (c Check) validate(withKind bool) error {
 		return fmt.Errorf("check %q: %w", c.ID, errors.Join(errs...))
 	}
 	return nil
+}
+
+// kindErrors are the problems with c's kind: none, a scope it refuses, and
+// its own.
+func (c Check) kindErrors() []error {
+	if c.Kind == nil {
+		return []error{errNoKind}
+	}
+	var errs []error
+	if c.Scope.known() {
+		// An unknown scope is refused once, by validate.
+		if why := c.Kind.ScopeRefusal(c.Scope); why != "" {
+			errs = append(errs, fmt.Errorf("scope %q: %s", c.Scope, why))
+		}
+	}
+	return append(errs, c.Kind.Validate(c)...)
 }
 
 // Verdict is the result of a check that ran.

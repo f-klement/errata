@@ -79,7 +79,12 @@ func newRoot(load loader, stdout, stderr io.Writer) *cobra.Command {
 		Example:       rootExample,
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		Version:       resolveVersion(Version, debug.ReadBuildInfo),
 	}
+	// errata --version prints what errata version prints. The flag is
+	// declared here so that cobra adds no -v.
+	root.Flags().Bool("version", false, "print the errata version, as errata version does")
+	root.SetVersionTemplate("{{.Version}}\n")
 	root.SetOut(stdout)
 	root.SetErr(stderr)
 	root.AddCommand(newCheckCmd(load), newListCmd(load), newVersionCmd())

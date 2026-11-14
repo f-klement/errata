@@ -59,7 +59,9 @@ func TestAgreeComparesAFieldOfEachRecord(t *testing.T) {
 // lists the extractor, which leaves one value, true as for any extractor
 // allow_empty lets come back empty. Planted breaks: the extractor run for
 // each entry; a mapping in a field compared as its text; allow_empty read
-// by the entry gatus.group, which made the one value unknown.
+// by the entry gatus.group, which made the one value unknown; a field read
+// of an extractor with no values, which said "found no record" after
+// "found no value".
 func TestAgreeOverFieldsIsUnknownWithoutAFlatValue(t *testing.T) {
 	runs := 0
 	counted := countingExtractor{values: []check.Value{whole(rec(3, "x", "x"))}, runs: &runs}
@@ -88,6 +90,14 @@ func TestAgreeOverFieldsIsUnknownWithoutAFlatValue(t *testing.T) {
 	c.Rule().AllowEmpty = []string{"gatus"}
 	if res := Run(context.Background(), "", c); res.Verdict != check.VerdictTrue {
 		t.Fatalf("with allow_empty: verdict %s message %s", res.Verdict, res.Message)
+	}
+
+	// An extractor that returns nothing found no value, and that alone: it
+	// has no record to lack the field.
+	c = agreeRule(recordsOf(), other)
+	c.Rule().Agree = []string{"gatus.group", "other"}
+	if res := Run(context.Background(), "", c); res.Verdict != check.VerdictUnknown || res.Message != `extractor "gatus" found no value` {
+		t.Fatalf("empty: verdict %s message %q", res.Verdict, res.Message)
 	}
 }
 

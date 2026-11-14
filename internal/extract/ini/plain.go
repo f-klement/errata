@@ -106,121 +106,174 @@ func readConfigparser(data []byte, c configparser, m *core.Meter, visit func(*co
 	if err := notUTF8(data, tool); err != nil {
 		return err
 	}
-	var (
-		section    []byte
-		inSection  bool
-		sectionSeq int
-		cur        core.Entry // the key whose value is open
-		open       bool       // cur has a value that an indented line may continue
-		value      []byte
-		indent     int    // the indent of the last header or key
-		keyBuf     []byte // a tox key in lower case
-		raw        []byte // a tox value after process_raw
-		// tox refuses a section or a key written twice. A section is hashed
-		// once, at its header, and a key only among its section's keys, a new
-		// map at each header, since only DEFAULT may be written again: the
-		// memory is the sections' names and one section's keys, and a long
-		// section's name costs its length once.
-		sections    map[string]bool
-		keys, deflt map[string]bool
-	)
+	r := &cpReader{c: c, m: m, visit: visit}
 	if c.tox {
-		sections, deflt = map[string]bool{}, map[string]bool{}
+		r.sections, r.deflt = map[string]bool{}, map[string]bool{}
 	}
-	finish := func() error {
-		if !open {
-			return nil
-		}
-		open = false
-		cur.Value = pyTrimRight(value)
-		if c.tox {
-			if err := m.Charge(len(cur.Value)); err != nil {
-				return err
-			}
-			raw, cur.Computed = toxProcess(raw[:0], cur.Value)
-			cur.Value = raw
-		}
-		return visit(&cur)
-	}
-	err := eachTextLine(data, m, func(n int, line []byte) error {
-		clean := pyStrip(line)
-		comment := len(clean) > 0 && (clean[0] == '#' || clean[0] == ';')
-		if len(clean) == 0 || comment {
-			if !comment && open {
-				value = append(value, '\n')
-			}
-			return nil
-		}
-		lead := pyIndent(line)
-		if open && lead > indent {
-			value = append(append(value, '\n'), clean...)
-			return nil
-		}
-		if err := finish(); err != nil {
-			return err
-		}
-		indent = lead
-		if clean[0] == '[' {
-			if end := bytes.LastIndexByte(clean, ']'); end >= 2 {
-				section, inSection = clean[1:end], true
-				sectionSeq++
-				if c.tox {
-					if string(section) == "DEFAULT" {
-						keys = deflt
-						return nil
-					}
-					if err := m.Charge(mapWork + len(section)); err != nil {
-						return err
-					}
-					if sections[string(section)] {
-						return core.LineError(n, "the section %s is written twice, which tox refuses", core.Quote(string(section)))
-					}
-					sections[string(section)] = true
-					keys = newToxKeys() // a map's clear costs its size at its largest
-				}
-				return nil
-			}
-		}
-		if c.tox && !inSection {
-			return core.LineError(n, "a key before the first section header, which tox refuses")
-		}
-		at := bytes.IndexAny(clean, "=:")
-		if at < 0 {
-			return core.LineError(n, "%s is no section header, comment or key with = or :", core.Quote(string(clean)))
-		}
-		key := pyTrimRight(clean[:at])
-		if len(key) == 0 {
-			return core.LineError(n, "%s sets a value with no key", core.Quote(string(clean)))
-		}
-		if c.tox {
-			keyBuf = append(keyBuf[:0], strings.ToLower(string(key))...)
-			key = keyBuf
-			if err := m.Charge(mapWork + len(key)); err != nil {
-				return err
-			}
-			id := string(key)
-			if keys[id] {
-				return core.LineError(n, "the key %s is set twice in section %s, which tox refuses", core.Quote(string(key)), core.Quote(string(section)))
-			}
-			keys[id] = true
-		}
-		value = append(value[:0], pyStrip(clean[at+1:])...)
-		cur = core.Entry{Section: section, SectionSeq: sectionSeq, Key: key, Line: n}
-		open = true
-		return nil
-	})
-	if err != nil {
+	if err := eachTextLine(data, m, r.line); err != nil {
 		return err
 	}
-	return finish()
+	return r.finish()
 }
 
-// toxProcess appends value as tox's IniLoader.process_raw makes it, outside
-// an environment, to out: each line that starts with # goes, and in the
-// others the first # that no \ comes before ends the line with the white
-// space before it; then \# is #, \r goes, and a \ before a newline joins
-// the two lines.
-func toxProcess(out, value []byte) (processed []byte, factors bool) {
+// cpReader is readConfigparser's state between lines.
+type cpReader struct {
+	c          configparser
+	m          *core.Meter
+	visit      func(*core.Entry) error
+	section    []byte
+	inSection  bool
+	sectionSeq int
+	cur        core.Entry // the key whose value is open
+	open       bool       // cur has a value that an indented line may continue
+	value      []byte
+	indent     int    // the indent of the last header or key
+	keyBuf     []byte // a tox key in lower case
+	raw        []byte // a tox value after process_raw
+	// tox refuses a section or a key written twice. A section is hashed
+	// once, at its header, and a key only among its section's keys, a new
+	// map at each header, since only DEFAULT may be written again: the
+	// memory is the sections' names and one section's keys, and a long
+	// section's name costs its length once.
+	sections    map[string]bool
+	keys, deflt map[string]bool
+}
+
+// finish visits the open key, if any, with its value.
+func (r *cpReader) finish() error {
+	if !r.open {
+		return nil
+	}
+	r.open = false
+	r.cur.Value = pyTrimRight(r.value)
+	if r.c.tox {
+		if err := r.m.Charge(len(r.cur.Value)); err != nil {
+			return err
+		}
+		r.raw, r.cur.Computed = toxProcess(r.raw[:0], r.cur.Value)
+		r.cur.Value = r.raw
+	}
+	return r.visit(&r.cur)
+}
+
+// line reads line n of the file: a blank line or a comment, a line that
+// continues a value, a section header, or a key.
+func (r *cpReader) line(n int, line []byte) error {
+	clean := pyStrip(line)
+	if r.skipBlankOrComment(clean) {
+		return nil
+	}
+	lead := pyIndent(line)
+	if r.open && lead > r.indent {
+		r.value = append(append(r.value, '\n'), clean...)
+		return nil
+	}
+	if err := r.finish(); err != nil {
+		return err
+	}
+	r.indent = lead
+	if done, err := r.header(n, clean); done || err != nil {
+		return err
+	}
+	return r.key(n, clean)
+}
+
+// skipBlankOrComment skips clean, a stripped line, when it is blank or a
+// comment, and reports whether it did. A blank line continues an open value
+// with a line break.
+func (r *cpReader) skipBlankOrComment(clean []byte) bool {
+	comment := len(clean) > 0 && (clean[0] == '#' || clean[0] == ';')
+	if len(clean) == 0 || comment {
+		if !comment && r.open {
+			r.value = append(r.value, '\n')
+		}
+		return true
+	}
+	return false
+}
+
+// header reads clean as a section header, and reports false where it is
+// none.
+func (r *cpReader) header(n int, clean []byte) (bool, error) {
+	if clean[0] != '[' {
+		return false, nil
+	}
+	end := bytes.LastIndexByte(clean, ']')
+	if end < 2 {
+		return false, nil
+	}
+	r.section, r.inSection = clean[1:end], true
+	r.sectionSeq++
+	if !r.c.tox {
+		return true, nil
+	}
+	return true, r.toxSection(n)
+}
+
+// toxSection starts tox's record of the keys of the section just read, and
+// refuses a section written twice other than DEFAULT.
+func (r *cpReader) toxSection(n int) error {
+	if string(r.section) == "DEFAULT" {
+		r.keys = r.deflt
+		return nil
+	}
+	if err := r.m.Charge(mapWork + len(r.section)); err != nil {
+		return err
+	}
+	if r.sections[string(r.section)] {
+		return core.LineError(n, "the section %s is written twice, which tox refuses", core.Quote(string(r.section)))
+	}
+	r.sections[string(r.section)] = true
+	r.keys = newToxKeys() // a map's clear costs its size at its largest
+	return nil
+}
+
+// key reads clean as a key, = or :, and the start of its value, which it
+// opens.
+func (r *cpReader) key(n int, clean []byte) error {
+	if r.c.tox && !r.inSection {
+		return core.LineError(n, "a key before the first section header, which tox refuses")
+	}
+	at := bytes.IndexAny(clean, "=:")
+	if at < 0 {
+		return core.LineError(n, "%s is no section header, comment or key with = or :", core.Quote(string(clean)))
+	}
+	key := pyTrimRight(clean[:at])
+	if len(key) == 0 {
+		return core.LineError(n, "%s sets a value with no key", core.Quote(string(clean)))
+	}
+	if r.c.tox {
+		var err error
+		if key, err = r.toxKey(n, key); err != nil {
+			return err
+		}
+	}
+	r.value = append(r.value[:0], pyStrip(clean[at+1:])...)
+	r.cur = core.Entry{Section: r.section, SectionSeq: r.sectionSeq, Key: key, Line: n}
+	r.open = true
+	return nil
+}
+
+// toxKey is key in lower case, as tox reads it, and refuses a key its
+// section already set.
+func (r *cpReader) toxKey(n int, key []byte) ([]byte, error) {
+	r.keyBuf = append(r.keyBuf[:0], strings.ToLower(string(key))...)
+	key = r.keyBuf
+	if err := r.m.Charge(mapWork + len(key)); err != nil {
+		return nil, err
+	}
+	id := string(key)
+	if r.keys[id] {
+		return nil, core.LineError(n, "the key %s is set twice in section %s, which tox refuses", core.Quote(string(key)), core.Quote(string(r.section)))
+	}
+	r.keys[id] = true
+	return key, nil
+}
+
+// toxUncommented appends value to out without its comments: each line
+// that starts with # goes, and in the others the first # that no \ comes
+// before ends the line with the white space before it.
+func toxUncommented(out, value []byte) []byte {
 	first := true
 	for line := range bytes.SplitSeq(value, newline) {
 		if len(line) > 0 && line[0] == '#' {
@@ -230,14 +283,29 @@ func toxProcess(out, value []byte) (processed []byte, factors bool) {
 			out = append(out, '\n')
 		}
 		first = false
-		for i := range line {
-			if line[i] == '#' && (i == 0 || line[i-1] != '\\') {
-				line = pyTrimRight(line[:i])
-				break
-			}
-		}
-		out = append(out, line...)
+		out = append(out, toxLineText(line)...)
 	}
+	return out
+}
+
+// toxLineText is line up to its first # that no \ comes before, without
+// the white space before that #.
+func toxLineText(line []byte) []byte {
+	for i := range line {
+		if line[i] == '#' && (i == 0 || line[i-1] != '\\') {
+			return pyTrimRight(line[:i])
+		}
+	}
+	return line
+}
+
+// toxProcess appends value as tox's IniLoader.process_raw makes it, outside
+// an environment, to out: each line that starts with # goes, and in the
+// others the first # that no \ comes before ends the line with the white
+// space before it; then \# is #, \r goes, and a \ before a newline joins
+// the two lines.
+func toxProcess(out, value []byte) (processed []byte, factors bool) {
+	out = toxUncommented(out, value)
 	out = bytes.ReplaceAll(out, []byte(`\#`), []byte("#"))
 	out = bytes.ReplaceAll(out, []byte("\r"), nil)
 	// tox reads factor conditions here, before it joins the lines.

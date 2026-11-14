@@ -68,100 +68,171 @@ func regExpEscape(s units) units {
 // class at glob[pos], whether it needs the u flag, the code units it takes
 // (0 when it is no class), and whether it is magic.
 func parseClass(glob units, pos int) (units, bool, int, bool) {
-	var ranges, negs []units
-	i := pos + 1
-	sawStart, uflag, escaping, negate := false, false, false, false
-	endPos := pos
-	rangeStart := rune(-1)
-loop:
-	for i < len(glob) {
-		c := glob[i]
-		if (c == '!' || c == '^') && i == pos+1 {
-			negate = true
-			i++
-			continue
-		}
-		if c == ']' && sawStart && !escaping {
-			endPos = i + 1
-			break
-		}
-		sawStart = true
-		if c == '\\' && !escaping {
-			escaping = true
-			i++
-			continue
-		}
-		if c == '[' && !escaping {
-			for _, cls := range posixClasses {
-				if hasPrefixAt(glob, []rune(cls.name), i) {
-					if rangeStart >= 0 {
-						return units(`$.`), false, len(glob) - pos, true
-					}
-					i += len(cls.name)
-					if cls.neg {
-						negs = append(negs, []rune(cls.src))
-					} else {
-						ranges = append(ranges, []rune(cls.src))
-					}
-					uflag = uflag || cls.uflag
-					continue loop
-				}
-			}
-		}
-		escaping = false
-		if rangeStart >= 0 {
-			if c > rangeStart {
-				ranges = append(ranges, concat(braceEscape(units{rangeStart}), units{'-'}, braceEscape(units{c})))
-			} else if c == rangeStart {
-				ranges = append(ranges, braceEscape(units{c}))
-			}
-			rangeStart = -1
-			i++
-			continue
-		}
-		if hasPrefixAt(glob, units{'-', ']'}, i+1) {
-			ranges = append(ranges, braceEscape(units{c, '-'}))
-			i += 2
-			continue
-		}
-		if hasPrefixAt(glob, units{'-'}, i+1) {
-			rangeStart = c
-			i += 2
-			continue
-		}
-		ranges = append(ranges, braceEscape(units{c}))
-		i++
-	}
-	if endPos < i {
-		return nil, false, 0, false
-	}
-	if len(ranges) == 0 && len(negs) == 0 {
+	r := classReader{glob: glob, pos: pos, i: pos + 1, endPos: pos, rangeStart: -1}
+	if r.read() {
 		return units(`$.`), false, len(glob) - pos, true
 	}
-	if len(negs) == 0 && len(ranges) == 1 && !negate && oneCharacter(ranges[0]) {
-		r := ranges[0]
-		if len(r) == 2 {
-			r = r[1:]
+	return r.regex()
+}
+
+// classReader is parseClass's state: the class's ranges and negated
+// POSIX classes so far, at glob[i], with the end once a ] closes it, and
+// a range's start while one is open.
+type classReader struct {
+	glob                              units
+	pos, i, endPos                    int
+	ranges, negs                      []units
+	sawStart, uflag, escaping, negate bool
+	rangeStart                        rune
+}
+
+// read reads the class up to the ] that closes it, or the end of the
+// glob. It reports true for a POSIX class that ends a range, which
+// matches nothing.
+func (r *classReader) read() bool {
+	for r.i < len(r.glob) {
+		done, bad := r.unit(r.glob[r.i])
+		if bad {
+			return true
 		}
-		return regExpEscape(r), false, endPos - pos, false
+		if done {
+			break
+		}
 	}
+	return false
+}
+
+// unit reads c, at i: a negation first, the ] that closes the class, or
+// a member. done is set at the ].
+func (r *classReader) unit(c rune) (done, bad bool) {
+	if (c == '!' || c == '^') && r.i == r.pos+1 {
+		r.negate = true
+		r.i++
+		return false, false
+	}
+	if c == ']' && r.sawStart && !r.escaping {
+		r.endPos = r.i + 1
+		return true, false
+	}
+	r.sawStart = true
+	return false, r.member(c)
+}
+
+// member reads c, at i, as part of the class: a backslash that escapes
+// the next, a POSIX class, or a character.
+func (r *classReader) member(c rune) bool {
+	if c == '\\' && !r.escaping {
+		r.escaping = true
+		r.i++
+		return false
+	}
+	if c == '[' && !r.escaping {
+		if took, bad := r.posix(); took || bad {
+			return bad
+		}
+	}
+	r.escaping = false
+	r.plain(c)
+	return false
+}
+
+// posix reads the POSIX class that opens at i, if one does. bad is set
+// when it ends a range.
+func (r *classReader) posix() (took, bad bool) {
+	for _, cls := range posixClasses {
+		if !hasPrefixAt(r.glob, []rune(cls.name), r.i) {
+			continue
+		}
+		if r.rangeStart >= 0 {
+			return true, true
+		}
+		r.i += len(cls.name)
+		if cls.neg {
+			r.negs = append(r.negs, []rune(cls.src))
+		} else {
+			r.ranges = append(r.ranges, []rune(cls.src))
+		}
+		r.uflag = r.uflag || cls.uflag
+		return true, false
+	}
+	return false, false
+}
+
+// plain reads the character c, at i: the end of an open range, the start
+// of one, or a member alone. A - before the ] is a member.
+func (r *classReader) plain(c rune) {
+	if r.rangeStart >= 0 {
+		r.endRange(c)
+		return
+	}
+	switch {
+	case hasPrefixAt(r.glob, units{'-', ']'}, r.i+1):
+		r.ranges = append(r.ranges, braceEscape(units{c, '-'}))
+		r.i += 2
+	case hasPrefixAt(r.glob, units{'-'}, r.i+1):
+		r.rangeStart = c
+		r.i += 2
+	default:
+		r.ranges = append(r.ranges, braceEscape(units{c}))
+		r.i++
+	}
+}
+
+// endRange ends the open range at c. A range backwards holds nothing.
+func (r *classReader) endRange(c rune) {
+	if c > r.rangeStart {
+		r.ranges = append(r.ranges, concat(braceEscape(units{r.rangeStart}), units{'-'}, braceEscape(units{c})))
+	} else if c == r.rangeStart {
+		r.ranges = append(r.ranges, braceEscape(units{c}))
+	}
+	r.rangeStart = -1
+	r.i++
+}
+
+// regex is parseClass's answer once the class is read: none when no ]
+// closed it, nothing to match for an empty one, the character for one of
+// one character, and else the class.
+func (r *classReader) regex() (units, bool, int, bool) {
+	if r.endPos < r.i {
+		return nil, false, 0, false
+	}
+	if len(r.ranges) == 0 && len(r.negs) == 0 {
+		return units(`$.`), false, len(r.glob) - r.pos, true
+	}
+	if len(r.negs) == 0 && len(r.ranges) == 1 && !r.negate && oneCharacter(r.ranges[0]) {
+		return regExpEscape(unescapedOne(r.ranges[0])), false, r.endPos - r.pos, false
+	}
+	return r.classSource()
+}
+
+// unescapedOne is the one character of r, without the \ before it.
+func unescapedOne(r units) units {
+	if len(r) == 2 {
+		return r[1:]
+	}
+	return r
+}
+
+// classSource is the regex of the ranges, the negated POSIX classes, or
+// both as alternatives.
+func (r *classReader) classSource() (units, bool, int, bool) {
 	sranges := units{'['}
-	if negate {
+	if r.negate {
 		sranges = append(sranges, '^')
 	}
-	sranges = append(concat(sranges, concat(ranges...)), ']')
+	sranges = append(concat(sranges, concat(r.ranges...)), ']')
 	snegs := units{'['}
-	if !negate {
+	if !r.negate {
 		snegs = append(snegs, '^')
 	}
-	snegs = append(concat(snegs, concat(negs...)), ']')
+	snegs = append(concat(snegs, concat(r.negs...)), ']')
 	switch {
-	case len(ranges) > 0 && len(negs) > 0:
-		return concat(units{'('}, sranges, units{'|'}, snegs, units{')'}), uflag, endPos - pos, true
-	case len(ranges) > 0:
-		return sranges, uflag, endPos - pos, true
+	case len(r.ranges) > 0 && len(r.negs) > 0:
+		return concat(units{'('}, sranges, units{'|'}, snegs, units{')'}), r.uflag, r.endPos - r.pos, true
+	case len(r.ranges) > 0:
+		return sranges, r.uflag, r.endPos - r.pos, true
 	}
-	return snegs, uflag, endPos - pos, true
+	return snegs, r.uflag, r.endPos - r.pos, true
 }
 
 // oneCharacter is /^\\?.$/.test(r): one character, perhaps after a \,

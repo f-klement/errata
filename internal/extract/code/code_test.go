@@ -195,7 +195,9 @@ func TestGo(t *testing.T) {
 // reference to a var or to a name the file does not declare, a call, a
 // conversion to a type of another package or to string from a number, two
 // types mixed, a name declared twice, and an imaginary number. Planted
-// breaks: checked not called on a typed result; the cycle not seen.
+// breaks: checked not called on a typed result; the cycle not seen. A
+// rune literal at either bound, NUL or U+10FFFF, is its character. Planted
+// breaks: n <= 0, and n >= utf8.MaxRune, in charLit.
 func TestGoNotLiteral(t *testing.T) {
 	for _, c := range []struct{ decl, want string }{
 		{"const X uint8 = 256", "~256"},
@@ -260,6 +262,8 @@ func TestGoNotLiteral(t *testing.T) {
 		{"const X = ^int8(0)", "-1"},
 		{"const X = ','", ","},
 		{"const X = '\\n' + 0", "10"},
+		{"const X = '\\x00'", "\x00"},
+		{"const X = '\\U0010FFFF'", "\U0010FFFF"},
 		{"const X byte = 'a'", "97"},
 		{"const X rune = 'a'", "a"},
 		{"const X int32 = 'a'", "a"},

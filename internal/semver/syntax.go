@@ -85,28 +85,32 @@ func (syn Syntax) ParseRange(s string) (Range, error) {
 	if err != nil {
 		return Range{}, err
 	}
-	var r Range
-	switch syn {
-	case Any:
-		r, err = parseAnyRange(t)
-	case NPM:
-		r, err = parseNPMRange(t)
-	case Cargo:
-		r, err = parseCargoRange(t)
-	case PEP440:
-		r, err = parseListRange(t, "PEP 440", pep440Clause, preNamed)
-	case Go:
-		r, err = parseGoRange(t)
-	case RubyGems:
-		r, err = parseListRange(t, "RubyGems", rubyClause, preNamed)
-	default:
-		_, err = ParseSyntax(string(syn))
-	}
+	r, err := syn.parseRange(t)
 	if err != nil {
 		return Range{}, err
 	}
 	r.syn = syn
 	return r, nil
+}
+
+// parseRange reads t, a range already checked, by the syntax's reader.
+func (syn Syntax) parseRange(t string) (Range, error) {
+	switch syn {
+	case Any:
+		return parseAnyRange(t)
+	case NPM:
+		return parseNPMRange(t)
+	case Cargo:
+		return parseCargoRange(t)
+	case PEP440:
+		return parseListRange(t, "PEP 440", pep440Clause, preNamed)
+	case Go:
+		return parseGoRange(t)
+	case RubyGems:
+		return parseListRange(t, "RubyGems", rubyClause, preNamed)
+	}
+	_, err := ParseSyntax(string(syn))
+	return Range{}, err
 }
 
 // semverForm is how one ecosystem writes a SemVer version.
@@ -146,49 +150,77 @@ func strictNum(s string) (num, bool) {
 // to three numbers, then a pre-release after - and build metadata after +,
 // both only after three numbers.
 func parseSemVer(t string, f semverForm) (Version, error) {
-	rest := t
-	if f.v {
-		var cut bool
-		if rest, cut = strings.CutPrefix(rest, "v"); f.needV && !cut {
-			return Version{}, fmt.Errorf("%s writes a v before its version", f.who)
-		}
+	rest, err := f.cutV(t)
+	if err != nil {
+		return Version{}, err
 	}
 	v := Version{epoch: "0", syn: f.syn, exact: f.exact, module: f.needV}
-	var pre, build string
-	var hasPre, hasBuild bool
-	rest, build, hasBuild = strings.Cut(rest, "+")
-	rest, pre, hasPre = strings.Cut(rest, "-")
-	parts := strings.Split(rest, ".")
-	if len(parts) > 3 {
-		return Version{}, fmt.Errorf("%s writes at most three numbers", f.who)
+	rest, build, hasBuild := strings.Cut(rest, "+")
+	rest, pre, hasPre := strings.Cut(rest, "-")
+	if v.release, err = f.numbers(rest); err != nil {
+		return Version{}, err
 	}
+	if err := v.semverSuffix(f, pre, hasPre, build, hasBuild); err != nil {
+		return Version{}, err
+	}
+	return v, nil
+}
+
+// cutV cuts the v the form lets lead t, and refuses a version without
+// one when the form needs it.
+func (f semverForm) cutV(t string) (string, error) {
+	if !f.v {
+		return t, nil
+	}
+	rest, cut := strings.CutPrefix(t, "v")
+	if f.needV && !cut {
+		return "", fmt.Errorf("%s writes a v before its version", f.who)
+	}
+	return rest, nil
+}
+
+// numbers reads the numbers of a version, s, in the form: at most three,
+// at least f.fewest, each as SemVer writes one.
+func (f semverForm) numbers(s string) ([]num, error) {
+	parts := strings.Split(s, ".")
+	if len(parts) > 3 {
+		return nil, fmt.Errorf("%s writes at most three numbers", f.who)
+	}
+	var release []num
 	for _, p := range parts {
 		n, ok := strictNum(p)
 		if !ok {
-			return Version{}, fmt.Errorf("%s is not a number as %s writes one, digits with no leading zero", quoteToken(p), f.who)
+			return nil, fmt.Errorf("%s is not a number as %s writes one, digits with no leading zero", quoteToken(p), f.who)
 		}
-		v.release = append(v.release, n)
+		release = append(release, n)
 	}
 	if len(parts) < f.fewest {
-		return Version{}, fmt.Errorf("%s writes a version with three numbers", f.who)
+		return nil, fmt.Errorf("%s writes a version with three numbers", f.who)
 	}
-	if (hasPre || hasBuild) && len(parts) < 3 {
-		return Version{}, fmt.Errorf("%s writes a pre-release or build only after three numbers", f.who)
+	return release, nil
+}
+
+// semverSuffix reads the pre-release pre and the build build into v, each
+// when there is one (hasPre, hasBuild), which the form takes only after
+// three numbers.
+func (v *Version) semverSuffix(f semverForm, pre string, hasPre bool, build string, hasBuild bool) error {
+	if (hasPre || hasBuild) && len(v.release) < 3 {
+		return fmt.Errorf("%s writes a pre-release or build only after three numbers", f.who)
 	}
 	if hasPre {
 		ids, err := semverIdents(pre, "pre-release after -", true)
 		if err != nil {
-			return Version{}, err
+			return err
 		}
 		v.pre = ids
 	}
 	if hasBuild {
 		if _, err := semverIdents(build, "build after +", false); err != nil {
-			return Version{}, err
+			return err
 		}
 		v.build = build
 	}
-	return v, nil
+	return nil
 }
 
 // semverIdents reads SemVer identifiers separated by dots: letters, digits
@@ -197,21 +229,30 @@ func parseSemVer(t string, f semverForm) (Version, error) {
 func semverIdents(s, what string, numbers bool) ([]ident, error) {
 	var ids []ident
 	for _, part := range strings.Split(s, ".") {
-		if part == "" {
-			return nil, fmt.Errorf("the %s has an empty part", what)
-		}
-		for i := range len(part) {
-			if c := part[i]; !isDigit(c) && !isLetter(c) && c != '-' {
-				return nil, fmt.Errorf("the %s holds %q, which a version does not", what, c)
-			}
-		}
-		id := newIdent(part)
-		if numbers && id.numeric && id.text != part {
-			return nil, fmt.Errorf("the %s holds %s, a number with a leading zero", what, quoteToken(part))
+		id, err := semverIdent(part, what, numbers)
+		if err != nil {
+			return nil, err
 		}
 		ids = append(ids, id)
 	}
 	return ids, nil
+}
+
+// semverIdent reads one identifier of the what, as semverIdents does.
+func semverIdent(part, what string, numbers bool) (ident, error) {
+	if part == "" {
+		return ident{}, fmt.Errorf("the %s has an empty part", what)
+	}
+	for i := range len(part) {
+		if c := part[i]; !isAlnum(c) && c != '-' {
+			return ident{}, fmt.Errorf("the %s holds %q, which a version does not", what, c)
+		}
+	}
+	id := newIdent(part)
+	if numbers && id.numeric && id.text != part {
+		return ident{}, fmt.Errorf("the %s holds %s, a number with a leading zero", what, quoteToken(part))
+	}
+	return id, nil
 }
 
 // strictOperand reads a comparator's version as npm or Cargo writes it, x,
@@ -237,6 +278,13 @@ func strictOperand(s string, f semverForm) (operand, error) {
 	if core != t || len(parts) > 3 {
 		return operand{}, fmt.Errorf("%s: %s writes a wildcard in place of at most three numbers, with nothing after", quoteToken(s), f.who)
 	}
+	return f.wildOperand(s, parts, wild)
+}
+
+// wildOperand is the operand s, whose parts hold a wildcard first at wild,
+// as the form writes it: numbers before the wildcard, and after it only
+// wildcards, or numbers where the form lets them follow one.
+func (f semverForm) wildOperand(s string, parts []string, wild int) (operand, error) {
 	o := operand{n: wild, partial: true, wildcard: true, v: Version{epoch: "0", syn: f.syn}}
 	for i, p := range parts {
 		if i >= wild {
@@ -475,38 +523,54 @@ func parseGo(t string) (Version, error) {
 		return Version{}, errors.New("a number follows the dot of a Go version")
 	}
 	v.release = []num{major, minor}
+	if err := v.goAfterMinor(rest); err != nil {
+		return Version{}, err
+	}
+	return v, nil
+}
+
+// goAfterMinor reads what follows a Go version's second number, rest:
+// nothing, the language version from Go 1.21 on and the release before
+// it; a third number; or a pre-release.
+func (v *Version) goAfterMinor(rest string) error {
 	switch {
-	case rest == "" && cmpNum(minor, "21") < 0:
+	case rest == "" && cmpNum(v.release[1], "21") < 0:
 		v.release = append(v.release, "0")
-		return v, nil
+		return nil
 	case rest == "":
 		v.floor, v.lang = true, true
-		return v, nil
+		return nil
 	case rest[0] == '.':
 		patch, after, ok := cutStrictNum(rest[1:])
 		if !ok || after != "" {
-			return Version{}, errors.New("a Go release ends with its third number")
+			return errors.New("a Go release ends with its third number")
 		}
 		v.release = append(v.release, patch)
-		return v, nil
+		return nil
 	}
-	i := 0
-	for i < len(rest) && rest[i] >= 'a' && rest[i] <= 'z' {
-		i++
-	}
+	return v.goPre(rest)
+}
+
+// goPre reads a Go pre-release, rest: a word of lower case letters, such
+// as rc or beta, and a number after it, if any.
+func (v *Version) goPre(rest string) error {
+	i := runOf(rest, 0, isLower)
 	if i == 0 {
-		return Version{}, fmt.Errorf("%s follows the numbers of a Go version, where rc1 or beta2 may", quoteToken(rest))
+		return fmt.Errorf("%s follows the numbers of a Go version, where rc1 or beta2 may", quoteToken(rest))
 	}
 	v.pre, v.glued = []ident{{text: rest[:i]}}, true
 	if rest = rest[i:]; rest != "" {
 		n, after, ok := cutStrictNum(rest)
 		if !ok || after != "" {
-			return Version{}, fmt.Errorf("%s follows the numbers of a Go version, where rc1 or beta2 may", quoteToken(rest))
+			return fmt.Errorf("%s follows the numbers of a Go version, where rc1 or beta2 may", quoteToken(rest))
 		}
 		v.pre = append(v.pre, ident{numeric: true, text: string(n)})
 	}
-	return v, nil
+	return nil
 }
+
+// isLower reports whether c is a lower case letter.
+func isLower(c byte) bool { return c >= 'a' && c <= 'z' }
 
 // cutStrictNum reads the number at the start of s, as strictNum reads one,
 // and returns what follows it.

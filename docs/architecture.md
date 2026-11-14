@@ -87,8 +87,8 @@ through `rule.Compile`, so a type error in CEL is a load error too.
 runs each check through a function, `engine.Runner`. Production passes `engine.Dispatch`, which
 sends each check by its kind to `protocol.Run`, `protocol.RunGenerated` or `rule.Run` (The
 seams, 1).
-Rules and their witnesses run at once on a pool of `GOMAXPROCS` workers; a check of any other kind
-runs alone. The report keeps the order of the config (Decisions taken in the code).
+Rules and their witnesses run at once on a pool of `GOMAXPROCS` workers, fewer under a smaller CPU
+quota; a check of any other kind runs alone. The report keeps the order of the config (Decisions taken in the code).
 
 **rule** (`internal/rule`) evaluates a rule. It runs the rule's extractors, holds what they
 return to the bounds, and either compares their values (`agree:`) or evaluates the compiled CEL
@@ -737,6 +737,17 @@ to `GOMAXPROCS` rules hold what they read at once, so a run's peak memory grows 
 [0003](adr/0003-extractors-bound-time-and-size-and-let-memory-fail-closed.md) lets it fail closed.
 A check that panics on the pool panics again on the goroutine that called `engine.Execute`, once
 the pool's workers are done, so the caller's deferred cleanup runs as it did one at a time.
+
+**The pool is as wide as the CPU quota, rounded down.** Go sets `GOMAXPROCS` from a cgroup's CPU
+limit rounded up, and to at least 2, so in a pod limited to one CPU two workers shared it and the
+kernel throttled them: Endpaper's `errata check`, 17 checks and 32 witnesses, took 0.83 to 0.88 s
+there against 0.75 to 0.78 s with one worker. Once for each run, `engine` reads the cgroup v2
+`cpu.max` of its cgroup and each one above it from `/proc/self/cgroup` and `/sys/fs/cgroup`, and
+runs the lowest quota in whole CPUs, at least 1 and at most `GOMAXPROCS`. A cgroup path with `..`,
+which a process outside its namespace's root sees, counts as no cgroup. With no quota, no cgroup
+v2 (cgroup v1 included), cgroup2 mounted elsewhere, or another OS, the width is `GOMAXPROCS`; a
+`GOMAXPROCS` set in the environment that Go takes is the width as the user set it, and no flag
+sets it.
 
 **The check protocol is exit codes first.** Exit 0 is true, exit 1 is false, anything else is an
 error. Stdout is the message, or the `message` field when stdout is a JSON object. A shell script

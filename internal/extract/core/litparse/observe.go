@@ -59,81 +59,139 @@ func (p *parser) observe(t token) {
 	o := &p.obs
 	switch t.kind {
 	case tIdent:
-		name := p.key(t)
-		switch w := p.t.text(t); {
-		case o.all || o.rebind:
-			o.taint(name, p.stmt)
-			o.rebind = false
-		case p.t.oneOf(t, p.syn.Rebind):
-			o.rebind = true
-			o.all = w == "import" || w == "from"
-			o.cur = nil
-			return
-		}
-		if o.arg {
-			o.taint(name, p.stmt) // table.insert(deps, 'b') changes deps
-		}
-		o.arg = false
-		if o.cur != nil && o.cur.state == sDot {
-			o.cur.state = sMember
-			if o.cur.first == "" {
-				o.cur.first = name
-			}
-			o.cur.members++
-			o.cur.last = name
-			if p.syn.Command {
-				// A row that calls without parentheses may call the member:
-				// LIST.push 'b' changes LIST as LIST.push('b') does.
-				o.call(p, o.cur)
-			}
-			o.text += "." + name
-			return
-		}
-		o.cur = nil
-		self := p.members && slices.Contains(p.syn.Selves, name)
-		if !p.member(p.prev) && (!p.keyword(t) || self) {
-			o.cur = &chain{name: name, self: self}
-			o.text = name
-		}
+		p.observeIdent(t)
 	case tPunct:
-		o.arg = false
-		w := p.t.text(t)
-		switch {
-		case o.all && w == "*":
-			p.star = p.stmt
-		case o.cur != nil && o.cur.state != sDot && p.member(t):
-			o.cur.state = sDot
-			return
-		case o.cur != nil && o.cur.state != sDot && assigns[w]:
-			o.change(o.cur, p.stmt)
-		}
-		o.cur = nil
+		p.observePunct(t)
 	case tOpen:
-		switch {
-		case o.cur != nil && o.cur.state != sDot && p.src[t.start] == '[':
-			c := *o.cur
-			c.depth = len(p.open)
-			o.saved = append(o.saved, c)
-		case o.cur != nil && o.cur.state == sMember && p.src[t.start] == '(':
-			o.call(p, o.cur)
-			o.arg = slices.Contains(p.syn.Mutators, o.text)
-			o.cur = nil
-			return
-		}
-		o.arg = false
-		o.cur = nil
+		p.observeOpen(t)
 	case tClose:
-		o.cur, o.arg = nil, false
-		if n := len(o.saved); n > 0 && o.saved[n-1].depth == len(p.open)+1 && p.src[t.start] == ']' {
-			c := o.saved[n-1]
-			o.saved = o.saved[:n-1]
-			c.state = sIndexed
-			o.cur = &c
-		}
+		p.observeClose(t)
 	default:
 		o.cur, o.arg = nil, false
 	}
 }
+
+// observeIdent reads t, a name or a word: a name a Rebind word binds, the
+// name a Mutators call changes, a chain's member, or the start of a chain.
+func (p *parser) observeIdent(t token) {
+	o := &p.obs
+	name := p.key(t)
+	if p.rebinds(t, name) {
+		return
+	}
+	if o.arg {
+		o.taint(name, p.stmt) // table.insert(deps, 'b') changes deps
+	}
+	o.arg = false
+	if o.cur != nil && o.cur.state == sDot {
+		p.observeMember(name)
+		return
+	}
+	p.observeName(t, name)
+}
+
+// rebinds notes name, t's, as changed when a Rebind word binds it anew,
+// and reports whether t is a Rebind word itself, which starts no chain.
+// After import or from, every name to the end of the statement is bound
+// anew.
+func (p *parser) rebinds(t token, name string) bool {
+	o := &p.obs
+	switch w := p.t.text(t); {
+	case o.all || o.rebind:
+		o.taint(name, p.stmt)
+		o.rebind = false
+	case p.t.oneOf(t, p.syn.Rebind):
+		o.rebind = true
+		o.all = w == "import" || w == "from"
+		o.cur = nil
+		return true
+	}
+	return false
+}
+
+// observeMember reads name, the member after a chain's dot.
+func (p *parser) observeMember(name string) {
+	o := &p.obs
+	c := o.cur
+	c.state = sMember
+	if c.first == "" {
+		c.first = name
+	}
+	c.members++
+	c.last = name
+	if p.syn.Command {
+		// A row that calls without parentheses may call the member:
+		// LIST.push 'b' changes LIST as LIST.push('b') does.
+		o.call(p, c)
+	}
+	o.text += "." + name
+}
+
+// observeName starts a chain at name, t's, unless it is a member's name or
+// a word of the language other than one of the row's Selves.
+func (p *parser) observeName(t token, name string) {
+	o := &p.obs
+	o.cur = nil
+	self := p.members && slices.Contains(p.syn.Selves, name)
+	if !p.member(p.prev) && (!p.keyword(t) || self) {
+		o.cur = &chain{name: name, self: self}
+		o.text = name
+	}
+}
+
+// observePunct reads t, a punctuation mark: the * of an import of every
+// name, a chain's dot, or an assignment that changes the chain.
+func (p *parser) observePunct(t token) {
+	o := &p.obs
+	o.arg = false
+	w := p.t.text(t)
+	switch {
+	case o.all && w == "*":
+		p.star = p.stmt
+	case o.chained() && p.member(t):
+		o.cur.state = sDot
+		return
+	case o.chained() && assigns[w]:
+		o.change(o.cur, p.stmt)
+	}
+	o.cur = nil
+}
+
+// observeOpen reads t, an opening bracket: an index after a chain, which
+// saves the chain, or a call of a chain's member.
+func (p *parser) observeOpen(t token) {
+	o := &p.obs
+	switch {
+	case o.chained() && p.src[t.start] == '[':
+		c := *o.cur
+		c.depth = len(p.open)
+		o.saved = append(o.saved, c)
+	case o.cur != nil && o.cur.state == sMember && p.src[t.start] == '(':
+		o.call(p, o.cur)
+		o.arg = slices.Contains(p.syn.Mutators, o.text)
+		o.cur = nil
+		return
+	}
+	o.arg = false
+	o.cur = nil
+}
+
+// observeClose reads t, a closing bracket: the ] of an index takes up the
+// chain it saved, now indexed.
+func (p *parser) observeClose(t token) {
+	o := &p.obs
+	o.cur, o.arg = nil, false
+	if n := len(o.saved); n > 0 && o.saved[n-1].depth == len(p.open)+1 && p.src[t.start] == ']' {
+		c := o.saved[n-1]
+		o.saved = o.saved[:n-1]
+		c.state = sIndexed
+		o.cur = &c
+	}
+}
+
+// chained reports whether a chain is being read and is not waiting for a
+// member after its dot.
+func (o *observer) chained() bool { return o.cur != nil && o.cur.state != sDot }
 
 // taint notes that statement stmt changes name.
 func (o *observer) taint(name string, stmt int) {

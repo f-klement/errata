@@ -34,41 +34,80 @@ type segment struct {
 // The patterns minimatch tests a segment with first, and the tests it puts
 // in place of the segment's regex when one matches, for dot and nocase.
 func fastTest(seg units) func(units) bool {
-	allOf := func(s units, c rune) bool { return !slices.ContainsFunc(s, func(x rune) bool { return x != c }) }
-	extChar := func(c rune) bool { return !slices.Contains([]rune(`+@!?*[(`), c) }
-	notDots := func(f units) bool {
-		return !slices.Equal(f, units{'.'}) && !slices.Equal(f, units{'.', '.'})
+	stars := leading(seg, '*')
+	if f := starTest(seg, stars); f != nil {
+		return f
 	}
-	stars := 0
-	for stars < len(seg) && seg[stars] == '*' {
-		stars++
+	if f := qmarksTest(seg); f != nil {
+		return f
 	}
-	// starRE: ^\*+$
-	if stars > 0 && stars == len(seg) {
+	if f := starDotStarTest(seg, stars); f != nil {
+		return f
+	}
+	return dotStarTest(seg)
+}
+
+// leading is how many of seg's first code units are c.
+func leading(seg units, c rune) int {
+	n := 0
+	for n < len(seg) && seg[n] == c {
+		n++
+	}
+	return n
+}
+
+// allOf reports whether every code unit of s is c.
+func allOf(s units, c rune) bool { return !slices.ContainsFunc(s, func(x rune) bool { return x != c }) }
+
+// extChars reports whether s holds none of +@!?*[(, as [^+@!?*[(]* has it.
+func extChars(s units) bool {
+	return !slices.ContainsFunc(s, func(c rune) bool { return slices.Contains([]rune(`+@!?*[(`), c) })
+}
+
+// notDots reports whether f is neither . nor ..
+func notDots(f units) bool {
+	return !slices.Equal(f, units{'.'}) && !slices.Equal(f, units{'.', '.'})
+}
+
+// starTest is the test for starRE, ^\*+$, and starDotExtRE,
+// ^\*+([^+@!?*[(]*)$, or nil. stars is how many stars seg starts with.
+func starTest(seg units, stars int) func(units) bool {
+	if stars == 0 {
+		return nil
+	}
+	if stars == len(seg) {
 		return func(f units) bool { return len(f) != 0 && notDots(f) }
 	}
-	// starDotExtRE: ^\*+([^+@!?*[(]*)$
-	if stars > 0 && !slices.ContainsFunc(seg[stars:], func(c rune) bool { return !extChar(c) }) {
+	if extChars(seg[stars:]) {
 		ext := jsLower(seg[stars:])
 		return func(f units) bool { return hasSuffix(jsLower(f), ext) }
 	}
-	// qmarksRE: ^\?+([^+@!?*[(]*)?$
-	q := 0
-	for q < len(seg) && seg[q] == '?' {
-		q++
+	return nil
+}
+
+// qmarksTest is the test for qmarksRE, ^\?+([^+@!?*[(]*)?$, or nil.
+func qmarksTest(seg units) func(units) bool {
+	q := leading(seg, '?')
+	if q == 0 || !extChars(seg[q:]) {
+		return nil
 	}
-	if q > 0 && !slices.ContainsFunc(seg[q:], func(c rune) bool { return !extChar(c) }) {
-		n := len(seg)
-		ext := jsLower(seg[q:])
-		return func(f units) bool {
-			return len(f) == n && notDots(f) && (len(ext) == 0 || hasSuffix(jsLower(f), ext))
-		}
+	n := len(seg)
+	ext := jsLower(seg[q:])
+	return func(f units) bool {
+		return len(f) == n && notDots(f) && (len(ext) == 0 || hasSuffix(jsLower(f), ext))
 	}
-	// starDotStarRE: ^\*+\.\*+$
+}
+
+// starDotStarTest is the test for starDotStarRE, ^\*+\.\*+$, or nil.
+func starDotStarTest(seg units, stars int) func(units) bool {
 	if stars > 0 && stars+1 < len(seg) && seg[stars] == '.' && allOf(seg[stars+1:], '*') {
 		return func(f units) bool { return notDots(f) && slices.Contains(f, '.') }
 	}
-	// dotStarRE: ^\.\*+$
+	return nil
+}
+
+// dotStarTest is the test for dotStarRE, ^\.\*+$, or nil.
+func dotStarTest(seg units) func(units) bool {
 	if len(seg) > 1 && seg[0] == '.' && allOf(seg[1:], '*') {
 		return func(f units) bool { return notDots(f) && len(f) > 0 && f[0] == '.' }
 	}
@@ -181,37 +220,48 @@ func compile(w *meter, pattern units) (*mm, error) {
 		return m, nil
 	}
 	// parseNegate: each leading ! flips the match.
-	i := 0
-	for i < len(pattern) && pattern[i] == '!' {
-		m.negate = !m.negate
-		i++
-	}
-	pattern = pattern[i:]
-	expanded, err := braceExpand(w, pattern)
+	bangs := leading(pattern, '!')
+	m.negate = bangs%2 == 1
+	expanded, err := braceExpand(w, pattern[bangs:])
 	if err != nil {
 		return nil, err
 	}
-	var globSet []units
-	for _, g := range expanded {
-		if !slices.ContainsFunc(globSet, func(x units) bool { return slices.Equal(x, g) }) {
-			globSet = append(globSet, g)
-		}
-	}
-	for _, g := range globSet {
-		var segs []segment
-		for _, s := range levelOneOptimize(slashSplit(g)) {
-			if !w.look() {
-				return nil, w.err
-			}
-			seg, err := parseSegment(s, w)
-			if err != nil {
-				return nil, err
-			}
-			segs = append(segs, seg)
+	for _, g := range unique(expanded) {
+		segs, err := parseSegments(w, g)
+		if err != nil {
+			return nil, err
 		}
 		m.set = append(m.set, segs)
 	}
 	return m, nil
+}
+
+// unique is globs without a glob that repeats one before it.
+func unique(globs []units) []units {
+	var set []units
+	for _, g := range globs {
+		if !slices.ContainsFunc(set, func(x units) bool { return slices.Equal(x, g) }) {
+			set = append(set, g)
+		}
+	}
+	return set
+}
+
+// parseSegments parses each segment of the glob g, and stops once w's
+// context is done.
+func parseSegments(w *meter, g units) ([]segment, error) {
+	var segs []segment
+	for _, s := range levelOneOptimize(slashSplit(g)) {
+		if !w.look() {
+			return nil, w.err
+		}
+		seg, err := parseSegment(s, w)
+		if err != nil {
+			return nil, err
+		}
+		segs = append(segs, seg)
+	}
+	return segs, nil
 }
 
 // slashSplit is p.split(/\/+/).
@@ -235,14 +285,12 @@ func slashSplit(p units) []units {
 // that is no .., . or **.
 func levelOneOptimize(parts []units) []units {
 	var out []units
-	isAny := func(p units, s string) bool { return slices.Equal(p, []rune(s)) }
 	for _, p := range parts {
 		if len(out) > 0 {
-			prev := out[len(out)-1]
-			if isAny(p, "**") && isAny(prev, "**") {
+			switch prev := out[len(out)-1]; {
+			case isSegment(p, "**") && isSegment(prev, "**"):
 				continue
-			}
-			if isAny(p, "..") && len(prev) > 0 && !isAny(prev, "..") && !isAny(prev, ".") && !isAny(prev, "**") {
+			case resolvesDotDot(prev, p):
 				out = out[:len(out)-1]
 				continue
 			}
@@ -253,6 +301,15 @@ func levelOneOptimize(parts []units) []units {
 		return []units{{}}
 	}
 	return out
+}
+
+// isSegment reports whether the segment p is s.
+func isSegment(p units, s string) bool { return slices.Equal(p, []rune(s)) }
+
+// resolvesDotDot reports whether the segment p, a .., resolves the
+// segment prev before it: one that is no .., . or **.
+func resolvesDotDot(prev, p units) bool {
+	return isSegment(p, "..") && len(prev) > 0 && !isSegment(prev, "..") && !isSegment(prev, ".") && !isSegment(prev, "**")
 }
 
 // parseSegment is Minimatch.parse.
@@ -331,6 +388,26 @@ func isDots(f units) bool {
 }
 
 func (m *mm) matchGlobstar(file []units, pattern []segment) (bool, error) {
+	head, body, tail := splitGlobstars(pattern)
+	fileIndex, ok, err := m.matchHead(file, head)
+	if err != nil || !ok {
+		return false, err
+	}
+	fileTailMatch, ok, err := m.matchTail(file, tail, fileIndex)
+	if err != nil || !ok {
+		return false, err
+	}
+	if len(body) == 0 {
+		return restClear(file, fileIndex, len(file)-fileTailMatch, fileTailMatch > 0), nil
+	}
+	g := &globWalk{m: m, file: file, sections: globSections(body, len(file)-fileTailMatch)}
+	r, err := g.walk(fileIndex, 0, 0, fileTailMatch > 0)
+	return r == 1, err
+}
+
+// splitGlobstars is the pattern's segments before its first globstar,
+// between its first and its last, and after its last.
+func splitGlobstars(pattern []segment) (head, body, tail []segment) {
 	firstgs := slices.IndexFunc(pattern, func(s segment) bool { return s.globstar })
 	lastgs := firstgs
 	for i := len(pattern) - 1; i >= 0; i-- {
@@ -339,66 +416,79 @@ func (m *mm) matchGlobstar(file []units, pattern []segment) (bool, error) {
 			break
 		}
 	}
-	head, tail := pattern[:firstgs], pattern[lastgs+1:]
-	var body []segment
 	if lastgs > firstgs {
 		body = pattern[firstgs+1 : lastgs]
 	}
-	fileIndex := 0
-	if len(head) > 0 {
-		end := min(len(head), len(file))
-		ok, err := m.matchParts(file[:end], head, 0)
-		if err != nil || !ok {
-			return false, err
-		}
-		fileIndex += len(head)
+	return pattern[:firstgs], body, pattern[lastgs+1:]
+}
+
+// matchHead matches the segments before the first globstar against the
+// file's first, and returns the file index after them.
+func (m *mm) matchHead(file []units, head []segment) (int, bool, error) {
+	if len(head) == 0 {
+		return 0, true, nil
 	}
-	fileTailMatch := 0
-	if len(tail) > 0 {
-		if len(tail)+fileIndex > len(file) {
-			return false, nil
-		}
-		tailStart := len(file) - len(tail)
-		ok, err := m.matchParts(file, tail, tailStart)
-		if err != nil {
-			return false, err
-		}
-		if ok {
-			fileTailMatch = len(tail)
-		} else {
-			if len(file[len(file)-1]) != 0 || fileIndex+len(tail) == len(file) {
-				return false, nil
-			}
-			tailStart--
-			ok, err := m.matchParts(file, tail, tailStart)
-			if err != nil || !ok {
-				return false, err
-			}
-			fileTailMatch = len(tail) + 1
+	end := min(len(head), len(file))
+	ok, err := m.matchParts(file[:end], head, 0)
+	return len(head), ok, err
+}
+
+// matchTail matches the segments after the last globstar against the
+// file's last, or those before a trailing empty segment, and returns how
+// many of the file's segments they took.
+func (m *mm) matchTail(file []units, tail []segment, fileIndex int) (int, bool, error) {
+	if len(tail) == 0 {
+		return 0, true, nil
+	}
+	if len(tail)+fileIndex > len(file) {
+		return 0, false, nil
+	}
+	tailStart := len(file) - len(tail)
+	ok, err := m.matchParts(file, tail, tailStart)
+	if err != nil {
+		return 0, false, err
+	}
+	if ok {
+		return len(tail), true, nil
+	}
+	if len(file[len(file)-1]) != 0 || fileIndex+len(tail) == len(file) {
+		return 0, false, nil
+	}
+	ok, err = m.matchParts(file, tail, tailStart-1)
+	return len(tail) + 1, ok, err
+}
+
+// restClear reports whether a globstar takes the file's segments from
+// from to to: none of them is . or .., and it took one, or saw was set.
+func restClear(file []units, from, to int, saw bool) bool {
+	for i := from; i < to; i++ {
+		saw = true
+		if isDots(file[i]) {
+			return false
 		}
 	}
-	if len(body) == 0 {
-		sawSome := fileTailMatch > 0
-		for i := fileIndex; i < len(file)-fileTailMatch; i++ {
-			sawSome = true
-			if isDots(file[i]) {
-				return false, nil
-			}
-		}
-		return sawSome, nil
-	}
-	type section struct {
-		parts []segment
-		after int
-	}
-	sections := []*section{{}}
+	return saw
+}
+
+// globSection is a run of the body's segments between two globstars, and
+// the last file index it may start at.
+type globSection struct {
+	parts []segment
+	after int
+}
+
+// globSections splits the body at its globstars, each section with the
+// last index it may start at in a file of fileLength segments, less the
+// tail's.
+func globSections(body []segment, fileLength int) []*globSection {
+	sections := []*globSection{{}}
 	cur := sections[0]
 	nonGs := 0
 	sums := []int{0}
 	for _, b := range body {
 		if b.globstar {
 			sums = append(sums, nonGs)
-			cur = &section{}
+			cur = &globSection{}
 			sections = append(sections, cur)
 		} else {
 			cur.parts = append(cur.parts, b)
@@ -406,49 +496,49 @@ func (m *mm) matchGlobstar(file []units, pattern []segment) (bool, error) {
 		}
 	}
 	i := len(sections) - 1
-	fileLength := len(file) - fileTailMatch
 	for _, s := range sections {
 		s.after = fileLength - (sums[i] + len(s.parts))
 		i--
 	}
-	var walk func(fileIndex, bodyIndex, depth int, sawTail bool) (int8, error)
-	// walk returns 1 for a match, 0 for none, and -1 for none and no use
-	// in trying further, minimatch's true, false and null.
-	walk = func(fileIndex, bodyIndex, depth int, sawTail bool) (int8, error) {
-		if bodyIndex == len(sections) {
-			for i := fileIndex; i < len(file); i++ {
-				sawTail = true
-				if isDots(file[i]) {
-					return 0, nil
-				}
-			}
-			return boolInt(sawTail), nil
-		}
-		s := sections[bodyIndex]
-		for fileIndex <= s.after {
-			end := min(fileIndex+len(s.parts), len(file))
-			hit, err := m.matchParts(file[:end], s.parts, fileIndex)
-			if err != nil {
-				return 0, err
-			}
-			if hit && depth < maxGlobstarRecursion {
-				sub, err := walk(fileIndex+len(s.parts), bodyIndex+1, depth+1, sawTail)
-				if err != nil {
-					return 0, err
-				}
-				if sub != 0 {
-					return sub, nil
-				}
-			}
-			if fileIndex < len(file) && isDots(file[fileIndex]) {
-				return 0, nil
-			}
-			fileIndex++
-		}
-		return -1, nil
+	return sections
+}
+
+// globWalk matches the body's sections against the file, each section at
+// each index it may start at.
+type globWalk struct {
+	m        *mm
+	file     []units
+	sections []*globSection
+}
+
+// walk returns 1 for a match, 0 for none, and -1 for none and no use in
+// trying further, minimatch's true, false and null.
+func (g *globWalk) walk(fileIndex, bodyIndex, depth int, sawTail bool) (int8, error) {
+	if bodyIndex == len(g.sections) {
+		return boolInt(restClear(g.file, fileIndex, len(g.file), sawTail)), nil
 	}
-	r, err := walk(fileIndex, 0, 0, fileTailMatch > 0)
-	return r == 1, err
+	s := g.sections[bodyIndex]
+	for ; fileIndex <= s.after; fileIndex++ {
+		sub, err := g.try(s, fileIndex, bodyIndex, depth, sawTail)
+		if err != nil || sub != 0 {
+			return sub, err
+		}
+		if fileIndex < len(g.file) && isDots(g.file[fileIndex]) {
+			return 0, nil
+		}
+	}
+	return -1, nil
+}
+
+// try matches the section s at fileIndex and, on a hit short of
+// maxGlobstarRecursion, walks the sections after it.
+func (g *globWalk) try(s *globSection, fileIndex, bodyIndex, depth int, sawTail bool) (int8, error) {
+	end := min(fileIndex+len(s.parts), len(g.file))
+	hit, err := g.m.matchParts(g.file[:end], s.parts, fileIndex)
+	if err != nil || !hit || depth >= maxGlobstarRecursion {
+		return 0, err
+	}
+	return g.walk(fileIndex+len(s.parts), bodyIndex+1, depth+1, sawTail)
 }
 
 // matchParts is minimatch's #matchOne without partial.
@@ -465,11 +555,19 @@ func (m *mm) matchParts(file []units, pattern []segment, fi int) (bool, error) {
 			return false, err
 		}
 	}
+	return partsDone(file, fi, pi == pl), nil
+}
+
+// partsDone is #matchOne's answer once the file or the pattern ran out, at
+// the file index fi: a match when both did, or when the pattern did and
+// the file holds one empty segment more.
+func partsDone(file []units, fi int, patternDone bool) bool {
+	fl := len(file)
 	switch {
-	case fi == fl && pi == pl:
-		return true, nil
+	case fi == fl && patternDone:
+		return true
 	case fi == fl:
-		return false, nil
+		return false
 	}
-	return fi == fl-1 && len(file[fi]) == 0, nil
+	return fi == fl-1 && len(file[fi]) == 0
 }

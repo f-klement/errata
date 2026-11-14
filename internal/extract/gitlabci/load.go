@@ -86,6 +86,28 @@ func (t *target) set(dst *core.Node, k string, v *core.Node) {
 // order, then the file's own keys over them all. included is whether
 // another file includes it.
 func (l *loader) load(file string, included bool) (*core.Node, error) {
+	data, err := l.readFile(file)
+	if err != nil {
+		return nil, err
+	}
+	own, err := l.parseFile(file, data, included)
+	if err != nil {
+		return nil, err
+	}
+	merged := newTarget(own.Line)
+	if inc := own.Field["include"]; inc != nil {
+		if err := l.mergeIncludes(file, merged, inc); err != nil {
+			return nil, err
+		}
+	}
+	if err := l.mergeOwn(merged, own); err != nil {
+		return nil, err
+	}
+	return merged.root, nil
+}
+
+// readFile reads file within the bytes and the nodes max_bytes leaves.
+func (l *loader) readFile(file string) ([]byte, error) {
 	src := core.Source{File: file, Limit: l.left}
 	data, err := l.read(src)
 	if err != nil && l.left < l.limit && errors.Is(err, core.ErrTooLarge) {
@@ -105,6 +127,13 @@ func (l *loader) load(file string, included bool) (*core.Node, error) {
 		return nil, fmt.Errorf("%s: the files read so far can hold up to %d nodes, over the limit of %d, one for every %d bytes of max_bytes; set max_bytes: higher to read files this dense",
 			file, l.nodes, l.limit/f.BytesPerNode, f.BytesPerNode)
 	}
+	return data, nil
+}
+
+// parseFile parses data, the text of file, noting each node's file and
+// tag, and is the document that holds its configuration. An included file
+// that is empty is refused.
+func (l *loader) parseFile(file string, data []byte, included bool) (*core.Node, error) {
 	var tagErr error
 	docs, expanded, err := l.parse(data, l.expanded, func(n *core.Node, tag string, plain bool) {
 		l.info[n] = nodeInfo{file: file, tag: tag, plain: plain}
@@ -123,38 +152,43 @@ func (l *loader) load(file string, included bool) (*core.Node, error) {
 		// GitLab refuses an empty include: "Local file ... is empty!"
 		return nil, fmt.Errorf("%s: the included file is empty, which GitLab refuses", file)
 	}
-	own, err := configDoc(file, docs)
+	return configDoc(file, docs)
+}
+
+// mergeIncludes loads each local file the include: inc of file names, in
+// its order, and merges it into merged.
+func (l *loader) mergeIncludes(file string, merged *target, inc *core.Node) error {
+	files, err := l.includes(file, inc)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	merged := newTarget(own.Line)
-	if inc := own.Field["include"]; inc != nil {
-		files, err := l.includes(file, inc)
+	for _, f := range files {
+		if l.included++; l.included > maxIncludes {
+			return fmt.Errorf("%s: includes more than %d files, GitLab's limit, nested includes counted", file, maxIncludes)
+		}
+		sub, err := l.load(f, true)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		for _, f := range files {
-			if l.included++; l.included > maxIncludes {
-				return nil, fmt.Errorf("%s: includes more than %d files, GitLab's limit, nested includes counted", file, maxIncludes)
-			}
-			sub, err := l.load(f, true)
-			if err != nil {
-				return nil, err
-			}
-			if err := l.merge(merged, merged.root, sub); err != nil {
-				return nil, err
-			}
+		if err := l.merge(merged, merged.root, sub); err != nil {
+			return err
 		}
 	}
+	return nil
+}
+
+// mergeOwn merges the keys of own, a file's own configuration, but its
+// include:, into merged, over what the includes set.
+func (l *loader) mergeOwn(merged *target, own *core.Node) error {
 	for i, k := range own.Keys {
 		if k == "include" {
 			continue
 		}
 		if err := l.mergeKey(merged, merged.root, k, own.Vals[i], own.Line); err != nil {
-			return nil, err
+			return err
 		}
 	}
-	return merged.root, nil
+	return nil
 }
 
 // configDoc is the document of a file that holds its configuration: its
@@ -186,63 +220,112 @@ func (l *loader) includes(file string, inc *core.Node) ([]string, error) {
 	}
 	var files []string
 	for _, it := range items {
-		at := fmt.Sprintf("include at %s:%d", file, it.Line)
-		var local string
-		switch it.Shape {
-		case core.Scalar:
-			if strings.HasPrefix(it.Text, "http://") || strings.HasPrefix(it.Text, "https://") {
-				l.unreachable = append(l.unreachable, "the remote "+at)
-				continue
-			}
-			local = it.Text
-		case core.Mapping:
-			if it.Field["rules"] != nil {
-				l.unreachable = append(l.unreachable, fmt.Sprintf("the %s, whose rules: a pipeline decides", at))
-				continue
-			}
-			loc := it.Field["local"]
-			if loc == nil {
-				l.unreachable = append(l.unreachable, fmt.Sprintf("the %s %s", includeKind(it), at))
-				continue
-			}
-			if loc.Shape != core.Scalar {
-				return nil, fmt.Errorf("%s: line %d: include:local is %s, not a file", file, loc.Line, shapeName(loc))
-			}
-			local = loc.Text
-		default:
-			return nil, fmt.Errorf("%s: line %d: an include is a file or a mapping, not a sequence", file, it.Line)
-		}
-		if strings.Contains(local, "$") {
-			l.unreachable = append(l.unreachable, fmt.Sprintf("the %s, whose file %s a variable names", at, core.Quote(local)))
-			continue
-		}
-		// "include:local" names a file of the project's repository; a
-		// leading slash is its root. The name is held to core's bounds
-		// on a file name, so a message quotes a short part of it.
-		name := strings.TrimLeft(local, "/")
-		if name == "" || !filepath.IsLocal(name) {
-			return nil, fmt.Errorf("%s: line %d: include %s is outside the repository", file, it.Line, core.Quote(local))
-		}
-		if _, err := core.CheckSource("include", name, 0); err != nil {
-			return nil, fmt.Errorf("%s: line %d: %w", file, it.Line, err)
-		}
-		names := []string{name}
-		if strings.Contains(name, "*") {
-			var err error
-			if names, err = l.wildcard(file, name); err != nil {
-				return nil, fmt.Errorf("%s: line %d: include %s %w", file, it.Line, core.Quote(local), err)
-			}
-		}
-		for _, n := range names {
-			// GitLab reads only YAML: "does not have YAML extension!", of
-			// each file a wildcard matches too.
-			if ext := filepath.Ext(n); ext != ".yml" && ext != ".yaml" {
-				return nil, fmt.Errorf("%s: line %d: include %s is not a .yml or .yaml file, which GitLab refuses", file, it.Line, core.Quote(n))
-			}
+		names, err := l.include(file, it)
+		if err != nil {
+			return nil, err
 		}
 		files = append(files, names...)
 	}
 	return files, nil
+}
+
+// include is the local files the include it of file names, none when
+// errata cannot read it, which it adds to l.unreachable.
+func (l *loader) include(file string, it *core.Node) ([]string, error) {
+	at := fmt.Sprintf("include at %s:%d", file, it.Line)
+	local, ok, err := l.localOf(file, it, at)
+	if err != nil || !ok {
+		return nil, err
+	}
+	if strings.Contains(local, "$") {
+		l.unreachable = append(l.unreachable, fmt.Sprintf("the %s, whose file %s a variable names", at, core.Quote(local)))
+		return nil, nil
+	}
+	name, err := includeName(file, it, local)
+	if err != nil {
+		return nil, err
+	}
+	names, err := l.expand(file, it, local, name)
+	if err != nil {
+		return nil, err
+	}
+	return names, yamlOnly(file, it, names)
+}
+
+// localOf is the file the include it names, at, when it is a local one.
+// One errata cannot read, a remote file, an include with rules: or one of
+// another kind, is added to l.unreachable, and is not ok.
+func (l *loader) localOf(file string, it *core.Node, at string) (string, bool, error) {
+	switch it.Shape {
+	case core.Scalar:
+		if strings.HasPrefix(it.Text, "http://") || strings.HasPrefix(it.Text, "https://") {
+			l.unreachable = append(l.unreachable, "the remote "+at)
+			return "", false, nil
+		}
+		return it.Text, true, nil
+	case core.Mapping:
+		return l.mappingLocal(file, it, at)
+	default:
+		return "", false, fmt.Errorf("%s: line %d: an include is a file or a mapping, not a sequence", file, it.Line)
+	}
+}
+
+// mappingLocal is localOf of an include written as a mapping: its
+// include:local.
+func (l *loader) mappingLocal(file string, it *core.Node, at string) (string, bool, error) {
+	if it.Field["rules"] != nil {
+		l.unreachable = append(l.unreachable, fmt.Sprintf("the %s, whose rules: a pipeline decides", at))
+		return "", false, nil
+	}
+	loc := it.Field["local"]
+	if loc == nil {
+		l.unreachable = append(l.unreachable, fmt.Sprintf("the %s %s", includeKind(it), at))
+		return "", false, nil
+	}
+	if loc.Shape != core.Scalar {
+		return "", false, fmt.Errorf("%s: line %d: include:local is %s, not a file", file, loc.Line, shapeName(loc))
+	}
+	return loc.Text, true, nil
+}
+
+// includeName is the file of the repository that local, the include it's
+// include:local, names. "include:local" names a file of the project's
+// repository; a leading slash is its root. The name is held to core's
+// bounds on a file name, so a message quotes a short part of it.
+func includeName(file string, it *core.Node, local string) (string, error) {
+	name := strings.TrimLeft(local, "/")
+	if name == "" || !filepath.IsLocal(name) {
+		return "", fmt.Errorf("%s: line %d: include %s is outside the repository", file, it.Line, core.Quote(local))
+	}
+	if _, err := core.CheckSource("include", name, 0); err != nil {
+		return "", fmt.Errorf("%s: line %d: %w", file, it.Line, err)
+	}
+	return name, nil
+}
+
+// expand is the files the include's name matches: the name itself, or the
+// files a wildcard in it matches.
+func (l *loader) expand(file string, it *core.Node, local, name string) ([]string, error) {
+	if !strings.Contains(name, "*") {
+		return []string{name}, nil
+	}
+	names, err := l.wildcard(file, name)
+	if err != nil {
+		return nil, fmt.Errorf("%s: line %d: include %s %w", file, it.Line, core.Quote(local), err)
+	}
+	return names, nil
+}
+
+// yamlOnly refuses a file of names that is not YAML. GitLab reads only
+// YAML: "does not have YAML extension!", of each file a wildcard matches
+// too.
+func yamlOnly(file string, it *core.Node, names []string) error {
+	for _, n := range names {
+		if ext := filepath.Ext(n); ext != ".yml" && ext != ".yaml" {
+			return fmt.Errorf("%s: line %d: include %s is not a .yml or .yaml file, which GitLab refuses", file, it.Line, core.Quote(n))
+		}
+	}
+	return nil
 }
 
 // wildcard is the files git tracks that the include:local name, which
@@ -319,40 +402,9 @@ func (l *loader) wildcard(file, name string) ([]string, error) {
 func wildcardGlobs(name string) ([]string, error) {
 	globs := []string{""}
 	for i := 0; i < len(name); i++ {
-		dirs := strings.HasPrefix(name[i:], "**/")
-		var add []string
-		switch c := name[i]; {
-		case dirs:
-			i += 2
-		case c == '*' && strings.HasPrefix(name[i+1:], "**/"):
-			// GitLab replaces the leftmost **/ first, so in ***/ the
-			// first star is one on its own.
-			add = []string{"*"}
-		case strings.HasPrefix(name[i:], "**"):
-			i++
-			add = []string{"*", "*/**/*"}
-		case c == '*':
-			add = []string{"*"}
-		case strings.IndexByte(`?[\`, c) >= 0:
-			add = []string{`\` + string(c)}
-		default:
-			add = []string{string(c)}
-		}
-		var next []string
-		for _, g := range globs {
-			alts := add
-			if dirs && (g == "" || strings.HasSuffix(g, "/")) {
-				alts = []string{"**/"} // at the start of a name
-			} else if dirs {
-				alts = []string{"", "*/**/"} // inside a name
-			}
-			for _, a := range alts {
-				if strings.HasSuffix(g, "*") && strings.HasPrefix(a, "*") {
-					a = a[1:] // a star after a star in one name adds nothing
-				}
-				next = append(next, g+a)
-			}
-		}
+		add, dirs, width := globToken(name, i)
+		i += width - 1
+		next := extendGlobs(globs, add, dirs)
 		if len(next) > core.MaxEntries {
 			return nil, fmt.Errorf("holds more than 6 **, each of which errata matches as two globs, over the limit of %d globs", core.MaxEntries)
 		}
@@ -360,6 +412,55 @@ func wildcardGlobs(name string) ([]string, error) {
 	}
 	slices.Sort(globs)
 	return slices.Compact(globs), nil
+}
+
+// globToken reads the token of name at i: what each glob gains from it,
+// whether it is a **/, which matches whole directories, and its width.
+func globToken(name string, i int) (add []string, dirs bool, width int) {
+	switch c := name[i]; {
+	case strings.HasPrefix(name[i:], "**/"):
+		return nil, true, 3
+	case c == '*' && strings.HasPrefix(name[i+1:], "**/"):
+		// GitLab replaces the leftmost **/ first, so in ***/ the
+		// first star is one on its own.
+		return []string{"*"}, false, 1
+	case strings.HasPrefix(name[i:], "**"):
+		return []string{"*", "*/**/*"}, false, 2
+	case c == '*':
+		return []string{"*"}, false, 1
+	case strings.IndexByte(`?[\`, c) >= 0:
+		return []string{`\` + string(c)}, false, 1
+	default:
+		return []string{string(c)}, false, 1
+	}
+}
+
+// extendGlobs is each of globs with each way it goes on by a token, which
+// adds add, or is a **/ when dirs is set.
+func extendGlobs(globs, add []string, dirs bool) []string {
+	var next []string
+	for _, g := range globs {
+		for _, a := range globAlts(g, add, dirs) {
+			if strings.HasSuffix(g, "*") && strings.HasPrefix(a, "*") {
+				a = a[1:] // a star after a star in one name adds nothing
+			}
+			next = append(next, g+a)
+		}
+	}
+	return next
+}
+
+// globAlts is what the glob g gains by a token: a ** segment for a **/ at
+// the start of a name, nothing or a * that ends the name and a ** segment
+// for one inside a name, and add for any other token.
+func globAlts(g string, add []string, dirs bool) []string {
+	switch {
+	case dirs && (g == "" || strings.HasSuffix(g, "/")):
+		return []string{"**/"} // at the start of a name
+	case dirs:
+		return []string{"", "*/**/"} // inside a name
+	}
+	return add
 }
 
 // includeKind names an include errata cannot read by its key.

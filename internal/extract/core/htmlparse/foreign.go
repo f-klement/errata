@@ -27,6 +27,10 @@ func foreignKey(ns, name string) string { return ns + " " + name }
 // is foreignKey("math", "annotation-xml").
 const htmlAnnotation = "math annotation-xml html"
 
+// mathAnnotation is the nest's name for a math annotation-xml whose
+// encoding is not HTML: foreignKey("math", "annotation-xml").
+const mathAnnotation = "math annotation-xml"
+
 // namespace is the namespace of an element the nest holds as key: "" for
 // HTML, else "svg" or "math".
 func namespace(key string) string {
@@ -55,7 +59,7 @@ var breakout = set(`b big blockquote body br center code dd div dl dt em embed h
 func init() {
 	// The integration points end a scope, and are special: an end tag of
 	// no special element closes nothing past one.
-	for _, m := range []map[string]bool{htmlPoints, textPoints, {foreignKey("math", "annotation-xml"): true}} {
+	for _, m := range []map[string]bool{htmlPoints, textPoints, {mathAnnotation: true}} {
 		for k := range m {
 			scopeEnds[k], special[k] = true, true
 		}
@@ -74,14 +78,30 @@ func (s *Scanner) foreignToken(n *nest, tag, start bool) bool {
 		return false
 	case tag && !start:
 		return true
-	case textPoints[top] && (!tag || s.name != "mglyph" && s.name != "malignmark"):
-		return false
-	case top == foreignKey("math", "annotation-xml") && tag && s.name == "svg": // the HTML one is an integration point
-		return false
-	case htmlPoints[top]:
-		return false
 	}
-	return true
+	return !s.htmlAt(top, tag)
+}
+
+// htmlAt reports whether a tag, or text when tag is false, under the
+// foreign element top is HTML's: at an integration point, and an svg at
+// an annotation-xml.
+func (s *Scanner) htmlAt(top string, tag bool) bool {
+	switch {
+	case textPoints[top] && s.textPointHTML(tag):
+		return true
+	case top == mathAnnotation && tag && s.name == "svg": // the HTML one is an integration point
+		return true
+	case htmlPoints[top]:
+		return true
+	}
+	return false
+}
+
+// textPointHTML reports whether a MathML text integration point reads a
+// tag, or text when tag is false, as HTML's: text, and a start tag but
+// mglyph and malignmark.
+func (s *Scanner) textPointHTML(tag bool) bool {
+	return !tag || s.name != "mglyph" && s.name != "malignmark"
 }
 
 // foreignTag follows a tag the tree builder reads as foreign content in
@@ -92,37 +112,49 @@ func (s *Scanner) foreignToken(n *nest, tag, start bool) bool {
 func (s *Scanner) foreignTag(n *nest, selfClosing bool) (kept, html bool) {
 	s.kind = StartTag
 	if s.closing {
-		s.kind = EndTag
-		// x/net walks down from the top to the first HTML element for an
-		// element of the name; the last of the name above the last HTML
-		// element is the same one, found at a constant cost.
-		i := max(n.last(n.posOf(foreignKey("svg", s.name))), n.last(n.posOf(foreignKey("math", s.name))))
-		if s.name == "annotation-xml" {
-			i = max(i, n.last(n.posOf(htmlAnnotation)))
-		}
-		if i > n.last(n.htmls) {
-			n.closeForeign(i)
-			s.foreign = true
-			return true, false
-		}
-		// HTML's </br> is a <br>, and </p> with no p in scope opens one
-		// first: each a start tag the tree builder reads in foreign
-		// content again, where it breaks out. With a p in scope the </p>
-		// closes it and all above it, which ends the same.
-		if s.name == "br" || s.name == "p" {
-			n.breakOut()
-		}
-		return false, true
+		return s.foreignEnd(n)
 	}
 	if breakout[s.name] || s.name == "font" && s.fontBreaks() {
 		n.breakOut()
 		return false, true
 	}
+	return s.foreignStart(n, selfClosing)
+}
+
+// foreignEnd follows an end tag in foreign content in nest n, as
+// foreignTag does.
+func (s *Scanner) foreignEnd(n *nest) (kept, html bool) {
+	s.kind = EndTag
+	// x/net walks down from the top to the first HTML element for an
+	// element of the name; the last of the name above the last HTML
+	// element is the same one, found at a constant cost.
+	i := max(n.last(n.posOf(foreignKey("svg", s.name))), n.last(n.posOf(foreignKey("math", s.name))))
+	if s.name == "annotation-xml" {
+		i = max(i, n.last(n.posOf(htmlAnnotation)))
+	}
+	if i > n.last(n.htmls) {
+		n.closeForeign(i)
+		s.foreign = true
+		return true, false
+	}
+	// HTML's </br> is a <br>, and </p> with no p in scope opens one
+	// first: each a start tag the tree builder reads in foreign
+	// content again, where it breaks out. With a p in scope the </p>
+	// closes it and all above it, which ends the same.
+	if s.name == "br" || s.name == "p" {
+		n.breakOut()
+	}
+	return false, true
+}
+
+// foreignStart follows a start tag in foreign content in nest n that is
+// no breakout, which opens a foreign element, as foreignTag does.
+func (s *Scanner) foreignStart(n *nest, selfClosing bool) (kept, html bool) {
 	// The tokenizer reads what follows any start tag of svg or math as
 	// markup, a title's, a style's or a textarea's too.
 	s.z.NextIsNotRawText()
 	key := foreignKey(namespace(n.top()), s.name)
-	if key == foreignKey("math", "annotation-xml") && s.htmlEncoded() {
+	if key == mathAnnotation && s.htmlEncoded() {
 		key = htmlAnnotation
 	}
 	s.foreign = true

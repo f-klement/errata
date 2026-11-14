@@ -183,36 +183,57 @@ func stringsBound(cost uint64, offered []string, fns map[string]*decls.FunctionD
 		if !slices.Contains(offered, name) {
 			continue
 		}
-		bindings, err := fn.Bindings()
+		fnOpts, err := boundFunction(name, b, fn, overloads)
 		if err != nil {
 			return nil, err
 		}
-		var bound, hidden []cel.FunctionOpt
-		for _, o := range fn.OverloadDecls() {
-			entry, ok := overloads[o.ID()]
-			if !ok || entry.guard == nil {
-				return nil, fmt.Errorf("the strings extension's overload %s of %s has no size guard", o.ID(), name)
-			}
-			if entry.price == nil {
-				return nil, fmt.Errorf("the strings extension's overload %s of %s has no price", o.ID(), name)
-			}
-			i := slices.IndexFunc(bindings, func(f *functions.Overload) bool { return f.Operator == o.ID() })
-			if i < 0 {
-				return nil, fmt.Errorf("the strings extension's overload %s of %s has no binding", o.ID(), name)
-			}
-			call := guarded(name, b, entry.guard, bindings[i])
-			withLog := append(slices.Clone(o.ArgTypes()), logType)
-			if o.IsMemberFunction() {
-				bound = append(bound, cel.MemberOverload(o.ID(), o.ArgTypes(), o.ResultType(), cel.FunctionBinding(call)))
-				hidden = append(hidden, cel.MemberOverload(hiddenOverload(o.ID()), withLog, o.ResultType(), cel.FunctionBinding(throughLog(call))))
-			} else {
-				bound = append(bound, cel.Overload(o.ID(), o.ArgTypes(), o.ResultType(), cel.FunctionBinding(call)))
-				hidden = append(hidden, cel.Overload(hiddenOverload(o.ID()), withLog, o.ResultType(), cel.FunctionBinding(throughLog(call))))
-			}
-		}
-		opts = append(opts, cel.Function(name, bound...), cel.Function(hiddenFunction(name), hidden...))
+		opts = append(opts, fnOpts...)
 	}
 	return opts, nil
+}
+
+// boundFunction is the function name of the strings extension with each
+// overload guarded by b, and its hidden twin, whose overloads take the log
+// as their last argument.
+func boundFunction(name string, b bounds, fn *decls.FunctionDecl, overloads map[string]stringOverload) ([]cel.EnvOption, error) {
+	bindings, err := fn.Bindings()
+	if err != nil {
+		return nil, err
+	}
+	var bound, hidden []cel.FunctionOpt
+	for _, o := range fn.OverloadDecls() {
+		call, err := guardedOverload(name, b, o, bindings, overloads)
+		if err != nil {
+			return nil, err
+		}
+		withLog := append(slices.Clone(o.ArgTypes()), logType)
+		if o.IsMemberFunction() {
+			bound = append(bound, cel.MemberOverload(o.ID(), o.ArgTypes(), o.ResultType(), cel.FunctionBinding(call)))
+			hidden = append(hidden, cel.MemberOverload(hiddenOverload(o.ID()), withLog, o.ResultType(), cel.FunctionBinding(throughLog(call))))
+		} else {
+			bound = append(bound, cel.Overload(o.ID(), o.ArgTypes(), o.ResultType(), cel.FunctionBinding(call)))
+			hidden = append(hidden, cel.Overload(hiddenOverload(o.ID()), withLog, o.ResultType(), cel.FunctionBinding(throughLog(call))))
+		}
+	}
+	return []cel.EnvOption{cel.Function(name, bound...), cel.Function(hiddenFunction(name), hidden...)}, nil
+}
+
+// guardedOverload is the binding of the overload o of the function name,
+// guarded by b. An overload with no guard, no price or no binding is an
+// error.
+func guardedOverload(name string, b bounds, o *decls.OverloadDecl, bindings []*functions.Overload, overloads map[string]stringOverload) (functions.FunctionOp, error) {
+	entry, ok := overloads[o.ID()]
+	if !ok || entry.guard == nil {
+		return nil, fmt.Errorf("the strings extension's overload %s of %s has no size guard", o.ID(), name)
+	}
+	if entry.price == nil {
+		return nil, fmt.Errorf("the strings extension's overload %s of %s has no price", o.ID(), name)
+	}
+	i := slices.IndexFunc(bindings, func(f *functions.Overload) bool { return f.Operator == o.ID() })
+	if i < 0 {
+		return nil, fmt.Errorf("the strings extension's overload %s of %s has no binding", o.ID(), name)
+	}
+	return guarded(name, b, entry.guard, bindings[i]), nil
 }
 
 // hiddenFunction is the name of the hidden function that takes the place of

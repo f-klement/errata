@@ -108,93 +108,144 @@ func (t *tokenizer) newline(off int) {
 // token is the next token, tEOF at the end of the file or of its code.
 func (t *tokenizer) token() token {
 	if t.err != nil {
-		return token{kind: tEOF, start: len(t.data), end: len(t.data)}
+		return t.eof()
 	}
-	glued := true
-	for last := -1; t.pos < len(t.data); {
+	// glued holds only for the first step: every step that reads no token
+	// moves past something.
+	for glued, last := true, -1; t.pos < len(t.data); glued = false {
 		i := t.pos
 		if i <= last {
 			// Each step moves forward; one that does not is a defect, and
 			// the file's rule is unknown rather than the walk endless.
 			t.err = t.lost(i, "the tokenizer made no progress")
-			return token{kind: tEOF, start: len(t.data), end: len(t.data)}
+			return t.eof()
 		}
 		last = i
-		if i == t.eol {
-			t.pos, t.eol = t.resume, -1
-			t.newline(i)
-			// the closer's line holds code after its tag
-			t.lineStart = t.lineStartOf(t.pos)
-			t.lineHasTok = true
-			glued = false
-			continue
+		if tok, done := t.step(i, glued); done {
+			return tok
 		}
-		if t.more && t.span.Start == i {
-			s := t.span
-			t.span, t.more = t.next()
-			if err := core.CheckSpan(t.file, t.data, s); err != nil {
-				t.err = err
-				return token{kind: tEOF, start: len(t.data), end: len(t.data)}
-			}
-			switch {
-			case s.Kind == core.SpanText && !t.begins:
-				// The data after Ruby's __END__: the code ends.
-				t.pos = len(t.data)
-				return token{kind: tEOF, start: len(t.data), end: len(t.data)}
-			case s.Kind == core.SpanText:
-				// Text outside the code, such as a PHP template's HTML, holds
-				// no value: one with more than blanks is refused, since the
-				// code around it is not all the file says.
-				body := t.data[s.BodyStart:s.BodyEnd]
-				if text := bytes.TrimLeft(body, " \t\r\n"); len(text) > 0 {
-					t.err = t.lost(s.BodyEnd-len(text), "text that is not code stands here, outside <?php ... ?>")
-					return token{kind: tEOF, start: len(t.data), end: len(t.data)}
-				}
-				t.linesIn(s.Start, s.End)
-				t.pos, glued = s.End, false
-				t.skipOpener()
-				continue
-			case s.Kind == core.SpanString && !s.Closed:
-				// A string that stops unclosed at its line's end: no file its
-				// compiler takes holds one, so the lexer lost its place, as
-				// at a line end Lua's \z skips.
-				t.err = t.lost(s.Start, "a string opens here and ends unclosed at its line's end")
-				return token{kind: tEOF, start: len(t.data), end: len(t.data)}
-			}
-			if s.Kind == core.SpanComment {
-				t.linesIn(s.Start, s.End)
-				t.pos, glued = s.End, false
-				continue
-			}
-			if s.Here.Close > 0 {
-				if t.eol < 0 {
-					// The language ends the opener's line at a LF alone, where
-					// the lexer finds the body (lexer.Form.here); lines are core's.
-					t.eol = s.End + bytes.IndexByte(t.data[s.End:], '\n')
-				}
-				t.resume = s.Here.Close
-			}
-			t.pos = s.End
-			return t.emit(token{kind: tString, start: s.Start, end: s.End, span: s}, glued)
-		}
-		b := t.data[i]
-		switch {
-		case (b == '\n' || b == '\r') && t.endsLine(i):
-			t.newline(i) // a lone CR ends a line too
-			t.pos, glued = i+1, false
-			continue
-		case b == ' ' || b == '\t' || b == '\r' || b == '\f' || b == '\v':
-			t.pos, glued = i+1, false
-			continue
-		case b == '\\' && i+1 < len(t.data) && (t.data[i+1] == '\n' || t.data[i+1] == '\r'):
-			// a line continued: the line end is no statement's end
-			t.pos = core.NextLine(t.data, i+1)
-			t.lineStart, glued = t.pos, false
-			continue
-		}
-		return t.emit(t.scan(i), glued)
 	}
 	return token{kind: tEOF, start: len(t.data), end: len(t.data), line: true}
+}
+
+// eof is the token that ends the file.
+func (t *tokenizer) eof() token { return token{kind: tEOF, start: len(t.data), end: len(t.data)} }
+
+// step reads the file at i: it moves past a heredoc's body, a span that is
+// no token, or a blank, or returns the token that starts there, true.
+func (t *tokenizer) step(i int, glued bool) (token, bool) {
+	if i == t.eol {
+		t.resumeLine(i)
+		return token{}, false
+	}
+	if t.more && t.span.Start == i {
+		return t.spanToken(glued)
+	}
+	if t.blank(i) {
+		return token{}, false
+	}
+	return t.emit(t.scan(i), glued), true
+}
+
+// resumeLine moves past the line feed at i that ends a line of heredoc
+// openers, to the end of the last one's closer, whose line holds code after
+// its tag.
+func (t *tokenizer) resumeLine(i int) {
+	t.pos, t.eol = t.resume, -1
+	t.newline(i)
+	t.lineStart = t.lineStartOf(t.pos)
+	t.lineHasTok = true
+}
+
+// spanToken reads the span that starts at pos: a string is a token, true;
+// a comment and blank text are moved past; text after the code ends it,
+// and other text or a string that ends unclosed at its line refuses the
+// file.
+func (t *tokenizer) spanToken(glued bool) (token, bool) {
+	s := t.span
+	t.span, t.more = t.next()
+	if err := core.CheckSpan(t.file, t.data, s); err != nil {
+		t.err = err
+		return t.eof(), true
+	}
+	switch {
+	case s.Kind == core.SpanText && !t.begins:
+		// The data after Ruby's __END__: the code ends.
+		t.pos = len(t.data)
+		return t.eof(), true
+	case s.Kind == core.SpanText:
+		return t.textSpan(s)
+	case s.Kind == core.SpanString && !s.Closed:
+		// A string that stops unclosed at its line's end: no file its
+		// compiler takes holds one, so the lexer lost its place, as
+		// at a line end Lua's \z skips.
+		t.err = t.lost(s.Start, "a string opens here and ends unclosed at its line's end")
+		return t.eof(), true
+	case s.Kind == core.SpanComment:
+		t.linesIn(s.Start, s.End)
+		t.pos = s.End
+		return token{}, false
+	}
+	return t.stringToken(s, glued), true
+}
+
+// textSpan moves past s, text outside the code such as a PHP template's
+// HTML, and the opener after it. Such text holds no value: one with more
+// than blanks refuses the file, since the code around it is not all the
+// file says, and ends the tokens, true.
+func (t *tokenizer) textSpan(s core.Span) (token, bool) {
+	body := t.data[s.BodyStart:s.BodyEnd]
+	if text := bytes.TrimLeft(body, " \t\r\n"); len(text) > 0 {
+		t.err = t.lost(s.BodyEnd-len(text), "text that is not code stands here, outside <?php ... ?>")
+		return t.eof(), true
+	}
+	t.linesIn(s.Start, s.End)
+	t.pos = s.End
+	t.skipOpener()
+	return token{}, false
+}
+
+// stringToken is the token of s, a string, which notes the line of a
+// heredoc's opener, whose body the reading skips at its end.
+func (t *tokenizer) stringToken(s core.Span, glued bool) token {
+	if s.Here.Close > 0 {
+		if t.eol < 0 {
+			// The language ends the opener's line at a LF alone, where
+			// the lexer finds the body (lexer.Form.here); lines are core's.
+			t.eol = s.End + bytes.IndexByte(t.data[s.End:], '\n')
+		}
+		t.resume = s.Here.Close
+	}
+	t.pos = s.End
+	return t.emit(token{kind: tString, start: s.Start, end: s.End, span: s}, glued)
+}
+
+// blank moves past a line end, a blank, or a backslash that continues the
+// line at i, and reports whether one stood there.
+func (t *tokenizer) blank(i int) bool {
+	b := t.data[i]
+	switch {
+	case (b == '\n' || b == '\r') && t.endsLine(i):
+		t.newline(i) // a lone CR ends a line too
+		t.pos = i + 1
+	case space(b):
+		t.pos = i + 1
+	case t.continued(i):
+		// a line continued: the line end is no statement's end
+		t.pos = core.NextLine(t.data, i+1)
+		t.lineStart = t.pos
+	default:
+		return false
+	}
+	return true
+}
+
+// space reports whether b is a blank within a line.
+func space(b byte) bool { return b == ' ' || b == '\t' || b == '\r' || b == '\f' || b == '\v' }
+
+// continued reports whether a backslash at i continues its line.
+func (t *tokenizer) continued(i int) bool {
+	return t.data[i] == '\\' && i+1 < len(t.data) && (t.data[i+1] == '\n' || t.data[i+1] == '\r')
 }
 
 // skipOpener moves past the php or = of a PHP opener, <?php or <?=, whose
@@ -229,48 +280,98 @@ func (t *tokenizer) emit(tok token, glued bool) token {
 // scan is the token that starts at i, which is no span's start.
 func (t *tokenizer) scan(i int) token {
 	d := t.data
-	limit := len(d)
-	if t.more {
-		limit = t.span.Start
+	if t.more && t.span.Start > i {
+		d = d[:t.span.Start] // a token stops before a span
 	}
-	b := d[i]
 	switch {
-	case identStart(b): // a sigil such as PHP's $ starts a name too
-		j := i + 1
-		for j < limit && identByte(d[j]) {
-			j++
-		}
-		if t.syn.Symbols && j < limit && (d[j] == '?' || d[j] == '!') && (j+1 >= limit || d[j+1] != '=') {
-			j++ // Ruby's empty? and save!
-		}
-		return token{kind: tIdent, start: i, end: j}
-	case b >= '0' && b <= '9' || b == '.' && i+1 < limit && d[i+1] >= '0' && d[i+1] <= '9':
-		return token{kind: tNumber, start: i, end: number(d[:limit], i)}
-	case t.syn.Symbols && b == ':' && operatorEnd(d[:limit], i+1) > i+1 && symbolAt(d, i):
-		// An operator's symbol, such as Ruby's :/, :<=> or :[]=.
-		return token{kind: tSymbol, start: i, end: operatorEnd(d[:limit], i+1)}
-	case t.syn.Symbols && b == ':' && i+1 < limit && identStart(d[i+1]) && symbolAt(d, i):
-		j := i + 2
-		for j < limit && identByte(d[j]) {
-			j++
-		}
-		if j < limit && (d[j] == '?' || d[j] == '!') {
-			j++
-		}
-		return token{kind: tSymbol, start: i, end: j}
-	case b == '(' || b == '[' || b == '{':
-		return token{kind: tOpen, start: i, end: i + 1}
-	case b == ')' || b == ']' || b == '}':
-		return token{kind: tClose, start: i, end: i + 1}
+	case identStart(d[i]): // a sigil such as PHP's $ starts a name too
+		return t.ident(d, i)
+	case numberStart(d, i):
+		return token{kind: tNumber, start: i, end: number(d, i)}
 	}
+	if tok, ok := t.symbol(d, i); ok {
+		return tok
+	}
+	if k, ok := bracket(d[i]); ok {
+		return token{kind: k, start: i, end: i + 1}
+	}
+	return punct(d, i)
+}
+
+// ident is the name that starts at i in d, with the ? or ! that ends a
+// name such as Ruby's empty? and save! in a row with Symbols.
+func (t *tokenizer) ident(d []byte, i int) token {
+	j := identEnd(d, i+1)
+	if t.syn.Symbols && j < len(d) && (d[j] == '?' || d[j] == '!') && (j+1 >= len(d) || d[j+1] != '=') {
+		j++
+	}
+	return token{kind: tIdent, start: i, end: j}
+}
+
+// identEnd is the end of the run of name bytes from j in d.
+func identEnd(d []byte, j int) int {
+	for j < len(d) && identByte(d[j]) {
+		j++
+	}
+	return j
+}
+
+// numberStart reports whether a number starts at i in d: a digit, or a
+// point before one.
+func numberStart(d []byte, i int) bool { return d[i] >= '0' && d[i] <= '9' || pointDigit(d, i) }
+
+// pointDigit reports whether a point before a digit stands at j in d.
+func pointDigit(d []byte, j int) bool {
+	return d[j] == '.' && j+1 < len(d) && d[j+1] >= '0' && d[j+1] <= '9'
+}
+
+// symbol is the symbol that starts at i in d in a row with Symbols: an
+// operator's, such as Ruby's :/, :<=> or :[]=, or a name's; false when
+// none starts there.
+func (t *tokenizer) symbol(d []byte, i int) (token, bool) {
+	if !t.syn.Symbols || d[i] != ':' || !symbolAt(d, i) {
+		return token{}, false
+	}
+	if end := operatorEnd(d, i+1); end > i+1 {
+		return token{kind: tSymbol, start: i, end: end}, true
+	}
+	if i+1 < len(d) && identStart(d[i+1]) {
+		return token{kind: tSymbol, start: i, end: nameSymbol(d, i+2)}, true
+	}
+	return token{}, false
+}
+
+// nameSymbol is the end of a name's symbol whose name goes on at j in d,
+// with a ? or ! that ends it.
+func nameSymbol(d []byte, j int) int {
+	j = identEnd(d, j)
+	if j < len(d) && (d[j] == '?' || d[j] == '!') {
+		j++
+	}
+	return j
+}
+
+// bracket is the kind of token the bracket b is; false for any other byte.
+func bracket(b byte) (kind, bool) {
+	switch b {
+	case '(', '[', '{':
+		return tOpen, true
+	case ')', ']', '}':
+		return tClose, true
+	}
+	return 0, false
+}
+
+// punct is the operator that starts at i in d, the longest of puncts, or
+// else one byte, or one character past ASCII.
+func punct(d []byte, i int) token {
 	for _, p := range puncts {
-		if i+len(p) <= limit && string(d[i:i+len(p)]) == p {
+		if i+len(p) <= len(d) && string(d[i:i+len(p)]) == p {
 			return token{kind: tPunct, start: i, end: i + len(p)}
 		}
 	}
-	// One byte, or one character past ASCII.
 	j := i + 1
-	for j < limit && d[j]&0xC0 == 0x80 {
+	for j < len(d) && d[j]&0xC0 == 0x80 {
 		j++
 	}
 	return token{kind: tPunct, start: i, end: j}
@@ -310,19 +411,25 @@ func operatorEnd(d []byte, i int) int {
 func number(d []byte, i int) int {
 	j := i
 	for j < len(d) {
-		b := d[j]
 		switch {
-		case identByte(b) && b < 0x80:
-			if (b == 'e' || b == 'E') && j+1 < len(d) && (d[j+1] == '+' || d[j+1] == '-') && !hex(d[i:j]) {
+		case identByte(d[j]) && d[j] < 0x80:
+			if exponentSign(d, i, j) {
 				j++
 			}
-		case b == '.' && j+1 < len(d) && d[j+1] >= '0' && d[j+1] <= '9':
+		case pointDigit(d, j):
 		default:
 			return j
 		}
 		j++
 	}
 	return j
+}
+
+// exponentSign reports whether the byte at j in d, in the number that
+// starts at i, is an exponent's e followed by its sign: a decimal number's
+// e+ or e-, where a hex number's e is a digit.
+func exponentSign(d []byte, i, j int) bool {
+	return (d[j] == 'e' || d[j] == 'E') && j+1 < len(d) && (d[j+1] == '+' || d[j+1] == '-') && !hex(d[i:j])
 }
 
 // hex reports whether the number so far is written in hex.

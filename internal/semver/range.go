@@ -236,31 +236,48 @@ func (r Range) String() string {
 }
 
 func (iv interval) String() string {
-	switch {
-	case iv.lo.inf && iv.hi.inf:
-		return "*"
-	case !iv.lo.inf && !iv.hi.inf && Compare(iv.lo.v, iv.hi.v) == 0:
-		return "=" + full(iv.lo.v)
-	case !iv.lo.inf && !iv.hi.inf && iv.lo.inc && iv.hi.inc && iv.hi.v.localTop && iv.lo.v.build == "" && Compare(iv.lo.v, publicOf(iv.hi.v)) == 0:
-		// ==V under PEP 440: V and its local versions.
-		return "=" + full(iv.lo.v)
+	if s, ok := iv.single(); ok {
+		return s
 	}
 	var parts []string
 	if !iv.lo.inf {
-		op := ">"
-		if iv.lo.inc {
-			op = ">="
-		}
-		parts = append(parts, op+full(iv.lo.v))
+		parts = append(parts, orderOp(">", iv.lo.inc)+full(iv.lo.v))
 	}
 	if !iv.hi.inf {
-		op := "<"
-		if iv.hi.inc {
-			op = "<="
-		}
-		parts = append(parts, op+full(iv.hi.v))
+		parts = append(parts, orderOp("<", iv.hi.inc)+full(iv.hi.v))
 	}
 	return strings.Join(parts, " ")
+}
+
+// single is iv written as one comparator, and whether it is one: * for
+// every version, and = for one version, or under PEP 440 for a version
+// and its local versions.
+func (iv interval) single() (string, bool) {
+	switch {
+	case iv.lo.inf && iv.hi.inf:
+		return "*", true
+	case !iv.lo.inf && !iv.hi.inf && Compare(iv.lo.v, iv.hi.v) == 0:
+		return "=" + full(iv.lo.v), true
+	case iv.withLocals():
+		// ==V under PEP 440: V and its local versions.
+		return "=" + full(iv.lo.v), true
+	}
+	return "", false
+}
+
+// withLocals reports whether iv is a public version V and its local
+// versions, up to the bound above them.
+func (iv interval) withLocals() bool {
+	return !iv.lo.inf && !iv.hi.inf && iv.lo.inc && iv.hi.inc && iv.hi.v.localTop && iv.lo.v.build == "" && Compare(iv.lo.v, publicOf(iv.hi.v)) == 0
+}
+
+// orderOp is the operator op, > or <, with = after it when the bound is
+// inclusive.
+func orderOp(op string, inc bool) string {
+	if inc {
+		return op + "="
+	}
+	return op
 }
 
 // full is v written with at least three numbers, as the bounds of npm's,
@@ -467,32 +484,11 @@ type operand struct {
 // the numbers from some position on, as in 1.x, 1.2.* or *.
 func parseOperand(s string) (operand, error) {
 	t, prefixed := strings.CutPrefix(s, "v")
-	epoch := num("0")
-	if e, rest, ok := strings.Cut(t, "!"); ok {
-		if n, isNum := parseNum(e); isNum {
-			epoch, t = n, rest
-		}
-	}
+	epoch, t := cutOperandEpoch(t)
 	parts := strings.Split(t, ".")
-	n := 0
-	for n < len(parts) && parts[n] != "" && strings.Trim(parts[n], "0123456789") == "" {
-		n++
-	}
+	n := leadingNumbers(parts)
 	if n < len(parts) && isWild(parts[n]) {
-		if prefixed && n == 0 {
-			return operand{}, fmt.Errorf("%s: a v stands before a version, not a wildcard", quoteToken(s))
-		}
-		for _, p := range parts[n:] {
-			if !isWild(p) {
-				return operand{}, fmt.Errorf("%s: a number follows a wildcard", quoteToken(s))
-			}
-		}
-		o := operand{n: n, partial: true, wildcard: true, v: Version{epoch: epoch}}
-		for _, p := range parts[:n] {
-			d, _ := parseNum(p)
-			o.v.release = append(o.v.release, d)
-		}
-		return o, nil
+		return wildOperand(s, parts, n, epoch, prefixed)
 	}
 	v, err := ParseVersion(s)
 	if err != nil {
@@ -501,12 +497,78 @@ func parseOperand(s string) (operand, error) {
 	return operand{v: v, n: len(v.release), partial: v.Partial()}, nil
 }
 
+// cutOperandEpoch cuts an epoch, N!, off the start of t, and is the
+// epoch, 0 when there is none, and the rest.
+func cutOperandEpoch(t string) (num, string) {
+	if e, rest, ok := strings.Cut(t, "!"); ok {
+		if n, isNum := parseNum(e); isNum {
+			return n, rest
+		}
+	}
+	return "0", t
+}
+
+// leadingNumbers is how many of parts, from the first, are numbers.
+func leadingNumbers(parts []string) int {
+	n := 0
+	for n < len(parts) && parts[n] != "" && strings.Trim(parts[n], "0123456789") == "" {
+		n++
+	}
+	return n
+}
+
+// wildOperand is the operand s whose parts are n numbers then
+// wildcards, with the epoch epoch, prefixed when a v stood before it. It
+// refuses a v before a wildcard and a number after one.
+func wildOperand(s string, parts []string, n int, epoch num, prefixed bool) (operand, error) {
+	if prefixed && n == 0 {
+		return operand{}, fmt.Errorf("%s: a v stands before a version, not a wildcard", quoteToken(s))
+	}
+	for _, p := range parts[n:] {
+		if !isWild(p) {
+			return operand{}, fmt.Errorf("%s: a number follows a wildcard", quoteToken(s))
+		}
+	}
+	o := operand{n: n, partial: true, wildcard: true, v: Version{epoch: epoch}}
+	for _, p := range parts[:n] {
+		d, _ := parseNum(p)
+		o.v.release = append(o.v.release, d)
+	}
+	return o, nil
+}
+
 func isWild(p string) bool { return p == "x" || p == "X" || p == "*" }
 
 // comparator reads one comparator, such as >=1.2.3, ^1.2 or ~> 3.2. It
 // returns the interval it admits, or for != the hole it takes out, and its
 // version when that is a pre-release.
 func comparator(t string) (interval, *interval, *Version, error) {
+	op, rest, err := comparatorOp(t)
+	if err != nil {
+		return interval{}, nil, nil, err
+	}
+	o, err := parseOperand(rest)
+	if err != nil {
+		return interval{}, nil, nil, err
+	}
+	if o.n == 0 {
+		iv, err := wildAdmits(op, t)
+		return iv, nil, nil, err
+	}
+	if o.wildcard && (op == "~>" || op == "~=") {
+		return interval{}, nil, nil, fmt.Errorf("%s: %s takes a version, not a wildcard", quoteToken(t), op)
+	}
+	named := o.named()
+	if op == "!=" {
+		return interval{}, o.hole(), named, nil
+	}
+	iv, err := admits(op, o, t)
+	return iv, nil, named, err
+}
+
+// comparatorOp cuts the operator off the comparator t, "" for none, and
+// refuses === and an operator with no version after it.
+func comparatorOp(t string) (string, string, error) {
 	op := ""
 	for _, o := range operators {
 		if strings.HasPrefix(t, o) {
@@ -517,100 +579,138 @@ func comparator(t string) (interval, *interval, *Version, error) {
 	rest := t[len(op):]
 	switch {
 	case op == "===":
-		return interval{}, nil, nil, fmt.Errorf("%s: === compares text, which errata does not read as a version", quoteToken(t))
+		return "", "", fmt.Errorf("%s: === compares text, which errata does not read as a version", quoteToken(t))
 	case rest == "":
-		return interval{}, nil, nil, fmt.Errorf("%s: the operator has no version after it", quoteToken(t))
+		return "", "", fmt.Errorf("%s: the operator has no version after it", quoteToken(t))
 	}
-	o, err := parseOperand(rest)
-	if err != nil {
-		return interval{}, nil, nil, err
+	return op, rest, nil
+}
+
+// wildAdmits is what op admits before *, x or X: every version, after
+// any operator that admits it, and refuses the rest.
+func wildAdmits(op, t string) (interval, error) {
+	switch op {
+	case "", "=", "==", ">=", "<=", "^", "~":
+		return everything, nil
 	}
-	var named *Version
+	return interval{}, fmt.Errorf("%s: %s before a wildcard admits no version", quoteToken(t), op)
+}
+
+// named is o's version when it is a pre-release, which the comparator
+// names, else nil.
+func (o *operand) named() *Version {
 	if o.v.prerelease() {
-		named = &o.v
+		return &o.v
 	}
-	if o.n == 0 {
-		// *, x or X: every version, after any operator that admits it.
-		switch op {
-		case "", "=", "==", ">=", "<=", "^", "~":
-			return everything, nil, nil, nil
-		}
-		return interval{}, nil, nil, fmt.Errorf("%s: %s before a wildcard admits no version", quoteToken(t), op)
+	return nil
+}
+
+// hole is what != takes out with the operand o: its version, or every
+// release it stands for when it is a wildcard.
+func (o *operand) hole() *interval {
+	hole := interval{lo: bound{v: o.v, inc: true}, hi: bound{v: o.v, inc: true}}
+	if o.wildcard {
+		hole.hi = bound{v: atFloor(bump(o.v, o.n-1))}
 	}
-	if o.wildcard && (op == "~>" || op == "~=") {
-		return interval{}, nil, nil, fmt.Errorf("%s: %s takes a version, not a wildcard", quoteToken(t), op)
-	}
-	if op == "!=" {
-		hole := interval{lo: bound{v: o.v, inc: true}, hi: bound{v: o.v, inc: true}}
-		if o.wildcard {
-			hole.hi = bound{v: atFloor(bump(o.v, o.n-1))}
-		}
-		return interval{}, &hole, named, nil
-	}
-	iv, err := admits(op, o, t)
-	return iv, nil, named, err
+	return &hole
 }
 
 // admits is what op with the operand o admits, for every operator but !=.
 func admits(op string, o operand, t string) (interval, error) {
-	v := o.v
-	at := bound{v: v, inc: true}
-	// past is the bound below every version after the releases o stands
-	// for, when o is partial. It is made only where an operator needs it,
-	// since every bump allocates.
-	past := func() bound { return bound{v: atFloor(bump(v, o.n-1))} }
-	upTo := func(i int) interval { return interval{lo: at, hi: bound{v: atFloor(bump(v, i))}} }
-	from := func(lo bound) interval { return interval{lo: lo, hi: bound{inf: true}} }
-	below := func(hi bound) interval { return interval{lo: bound{inf: true}, hi: hi} }
 	switch op {
 	case "", "=":
-		if o.partial {
-			return interval{lo: at, hi: past()}, nil
-		}
-		return interval{lo: at, hi: at}, nil
+		return o.exact(o.partial), nil
 	case "==":
-		if o.wildcard {
-			return interval{lo: at, hi: past()}, nil
-		}
-		return interval{lo: at, hi: at}, nil
-	case ">=":
-		return from(at), nil
-	case ">":
-		if o.partial {
-			return from(bound{v: bump(v, o.n-1), inc: true}), nil
-		}
-		return from(bound{v: v}), nil
-	case "<":
-		if o.partial {
-			return below(bound{v: atFloor(v)}), nil
-		}
-		return below(bound{v: v}), nil
-	case "<=":
-		if o.partial {
-			return below(past()), nil
-		}
-		return below(at), nil
+		return o.exact(o.wildcard), nil
+	case ">=", ">", "<", "<=":
+		return o.ordered(op), nil
 	case "^":
-		// Up to the next change of the first number that is not 0, among
-		// those written; when all are 0, of the last one written.
-		i := o.n - 1
-		for k := range o.n {
-			if v.release[k] != "0" {
-				i = k
-				break
-			}
-		}
-		return upTo(i), nil
+		return o.upTo(o.caretAt()), nil
 	case "~":
-		return upTo(min(1, o.n-1)), nil
+		return o.upTo(min(1, o.n-1)), nil
 	case "~=":
 		if o.n < 2 {
 			return interval{}, fmt.Errorf("%s: ~= needs a version of at least two numbers", quoteToken(t))
 		}
-		return upTo(o.n - 2), nil
+		return o.upTo(o.n - 2), nil
 	}
 	// The one operator left is ~>.
-	return upTo(max(0, o.n-2)), nil
+	return o.upTo(max(0, o.n-2)), nil
+}
+
+// at is the bound at o's version, inclusive.
+func (o operand) at() bound { return bound{v: o.v, inc: true} }
+
+// past is the bound below every version after the releases o stands for,
+// when o is partial. It is made only where an operator needs it, since
+// every bump allocates.
+func (o operand) past() bound { return bound{v: atFloor(bump(o.v, o.n-1))} }
+
+// upTo is from o's version up to the next change of its number i.
+func (o operand) upTo(i int) interval {
+	return interval{lo: o.at(), hi: bound{v: atFloor(bump(o.v, i))}}
+}
+
+// exact is = with o: its version, or every release it stands for when
+// wide.
+func (o operand) exact(wide bool) interval {
+	if wide {
+		return interval{lo: o.at(), hi: o.past()}
+	}
+	return interval{lo: o.at(), hi: o.at()}
+}
+
+// ordered is what the ordering operator op, >=, >, < or <=, admits with
+// o: a partial version stands for every release it starts.
+func (o operand) ordered(op string) interval {
+	switch op {
+	case ">=":
+		return interval{lo: o.at(), hi: bound{inf: true}}
+	case ">":
+		return interval{lo: o.above(), hi: bound{inf: true}}
+	case "<":
+		return interval{lo: bound{inf: true}, hi: o.under()}
+	default: // <=
+		return interval{lo: bound{inf: true}, hi: o.atMost()}
+	}
+}
+
+// above is the bound >V starts at: past the releases a partial V stands
+// for, or just past V.
+func (o operand) above() bound {
+	if o.partial {
+		return bound{v: bump(o.v, o.n-1), inc: true}
+	}
+	return bound{v: o.v}
+}
+
+// under is the bound <V ends at: below every release a partial V stands
+// for, or just below V.
+func (o operand) under() bound {
+	if o.partial {
+		return bound{v: atFloor(o.v)}
+	}
+	return bound{v: o.v}
+}
+
+// atMost is the bound <=V ends at: past the releases a partial V stands
+// for, or at V.
+func (o operand) atMost() bound {
+	if o.partial {
+		return o.past()
+	}
+	return o.at()
+}
+
+// caretAt is the number ^ keeps: the first that is not 0, among those
+// written; when all are 0, the last one written.
+func (o operand) caretAt() int {
+	for k := range o.n {
+		if o.v.release[k] != "0" {
+			return k
+		}
+	}
+	return o.n - 1
 }
 
 // Satisfies reports whether v satisfies r. A partial version satisfies r
@@ -622,23 +722,38 @@ func admits(op string, o operand, t string) (interval, error) {
 // hold it.
 func Satisfies(v Version, r Range) bool {
 	for _, a := range r.alts {
-		if v.Partial() {
-			lo := bound{v: v, inc: true}
-			own := []interval{{lo: lo, hi: bound{v: atFloor(bump(v, len(v.release)-1))}}}
-			for _, iv := range intersectAll(a.ivs, own) {
-				if iv.holdsRelease() {
-					return true
-				}
-			}
-			continue
-		}
-		if !slices.ContainsFunc(a.ivs, func(iv interval) bool { return iv.contains(v) }) {
-			continue
-		}
-		switch {
-		case !v.prerelease(), a.rule == preFree, a.rule == preNamed && a.namesPre:
+		if a.satisfiedBy(v) {
 			return true
-		case a.rule == preSame && slices.ContainsFunc(a.named, func(n Version) bool { return cmpRelease(n, v) == 0 }):
+		}
+	}
+	return false
+}
+
+// satisfiedBy reports whether v satisfies the alternative a, by the rule
+// Satisfies gives.
+func (a alternative) satisfiedBy(v Version) bool {
+	if v.Partial() {
+		return partialIn(v, a.ivs)
+	}
+	if !slices.ContainsFunc(a.ivs, func(iv interval) bool { return iv.contains(v) }) {
+		return false
+	}
+	switch {
+	case !v.prerelease(), a.rule == preFree, a.rule == preNamed && a.namesPre:
+		return true
+	case a.rule == preSame && slices.ContainsFunc(a.named, func(n Version) bool { return cmpRelease(n, v) == 0 }):
+		return true
+	}
+	return false
+}
+
+// partialIn reports whether some release the partial version v stands
+// for is in ivs.
+func partialIn(v Version, ivs []interval) bool {
+	lo := bound{v: v, inc: true}
+	own := []interval{{lo: lo, hi: bound{v: atFloor(bump(v, len(v.release)-1))}}}
+	for _, iv := range intersectAll(ivs, own) {
+		if iv.holdsRelease() {
 			return true
 		}
 	}
@@ -715,11 +830,40 @@ func Overlap(rs []Range) bool {
 // An event points at its bound rather than copying it, so the sweep holds
 // 24 bytes for each end.
 func Overlapping(rs []Range) int {
-	type event struct {
-		at    point
-		rng   int32
-		start bool
+	events := rangeEvents(rs)
+	slices.SortFunc(events, cmpEvent)
+	// Go has no rule for pre-releases, so under it any version is one a
+	// range may share.
+	free := !slices.ContainsFunc(rs, func(r Range) bool { return r.syn != Go })
+	sw := newSweep(len(rs))
+	longest := 0
+	for i := 0; i < len(events); {
+		at := events[i].at
+		if i = sw.through(events, i); i == len(events) {
+			break
+		}
+		// Only a count above longest can lengthen the prefix. The test is
+		// written without < or >, whose boundary mutant would only read a
+		// stretch again and could not fail a test.
+		if lead := sw.covered.leading(); max(lead, longest) != longest && stretchHolds(free, at, events[i].at) {
+			if longest = lead; longest == len(rs) {
+				return longest
+			}
+		}
 	}
+	return longest
+}
+
+// event is an end of an interval of the range rng, the place it starts
+// or ends at, for Overlapping's sweep.
+type event struct {
+	at    point
+	rng   int32
+	start bool
+}
+
+// rangeEvents is the ends of every interval of rs, two for each.
+func rangeEvents(rs []Range) []event {
 	n := 0
 	for _, r := range rs {
 		for _, a := range r.alts {
@@ -735,60 +879,69 @@ func Overlapping(rs []Range) int {
 			}
 		}
 	}
-	slices.SortFunc(events, func(x, y event) int {
-		if c := cmpPoint(x.at, y.at); c != 0 {
-			return c
-		}
-		switch {
-		case x.start == y.start:
-			return 0
-		case x.start:
-			return 1 // an end before a start at one place: the intervals are half open
-		}
-		return -1
-	})
-	// depth counts, for each range, its intervals open at the sweep; the
-	// alternatives of one range may overlap, so a range covers a stretch
-	// when its depth is above 0. covered marks those ranges.
-	// Go has no rule for pre-releases, so under it any version is one a
-	// range may share.
-	free := !slices.ContainsFunc(rs, func(r Range) bool { return r.syn != Go })
-	depth := make([]int32, len(rs))
-	covered := newPrefixTree(len(rs))
-	longest := 0
-	for i := 0; i < len(events); {
-		at := events[i].at
-		for i < len(events) && cmpPoint(events[i].at, at) == 0 {
-			e := events[i]
-			if e.start {
-				if depth[e.rng] == 0 {
-					covered.add(int(e.rng), 1)
-				}
-				depth[e.rng]++
-			} else {
-				depth[e.rng]--
-				if depth[e.rng] == 0 {
-					covered.add(int(e.rng), -1)
-				}
-			}
-			i++
-		}
-		if i == len(events) {
-			break
-		}
-		// Only a count above longest can lengthen the prefix. The test is
-		// written without < or >, whose boundary mutant would only read a
-		// stretch again and could not fail a test.
-		if lead := covered.leading(); max(lead, longest) != longest {
-			iv := interval{lo: boundAt(at, true), hi: boundAt(events[i].at, false)}
-			if free && !iv.empty() || iv.holdsRelease() {
-				if longest = lead; longest == len(rs) {
-					return longest
-				}
-			}
-		}
+	return events
+}
+
+// cmpEvent orders events by place, and an end before a start at one
+// place: the intervals are half open.
+func cmpEvent(x, y event) int {
+	if c := cmpPoint(x.at, y.at); c != 0 {
+		return c
 	}
-	return longest
+	switch {
+	case x.start == y.start:
+		return 0
+	case x.start:
+		return 1
+	}
+	return -1
+}
+
+// sweep is Overlapping's state. depth counts, for each range, its
+// intervals open at the sweep; the alternatives of one range may overlap,
+// so a range covers a stretch when its depth is above 0. covered marks
+// those ranges.
+type sweep struct {
+	depth   []int32
+	covered *prefixTree
+}
+
+func newSweep(n int) sweep {
+	return sweep{depth: make([]int32, n), covered: newPrefixTree(n)}
+}
+
+// through applies the events from i on that are at the place of event i,
+// and is the index of the first event after them.
+func (sw sweep) through(events []event, i int) int {
+	at := events[i].at
+	for i < len(events) && cmpPoint(events[i].at, at) == 0 {
+		sw.apply(events[i])
+		i++
+	}
+	return i
+}
+
+// apply opens or closes an interval of the range of e.
+func (sw sweep) apply(e event) {
+	if e.start {
+		if sw.depth[e.rng] == 0 {
+			sw.covered.add(int(e.rng), 1)
+		}
+		sw.depth[e.rng]++
+		return
+	}
+	sw.depth[e.rng]--
+	if sw.depth[e.rng] == 0 {
+		sw.covered.add(int(e.rng), -1)
+	}
+}
+
+// stretchHolds reports whether the stretch from at to next, the place of
+// the next event, holds a version a range may share: a release, or, when
+// free, any version.
+func stretchHolds(free bool, at, next point) bool {
+	iv := interval{lo: boundAt(at, true), hi: boundAt(next, false)}
+	return free && !iv.empty() || iv.holdsRelease()
 }
 
 // prefixTree is a Fenwick tree over n flags, each 0 or 1, that says how

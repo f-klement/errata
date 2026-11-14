@@ -89,28 +89,32 @@ func (w *workflow) newEarlier(top, j *core.Node, name string) *earlierSteps {
 	// The job's, its container's and the workflow's env: reach every run:
 	// step's script, so a value there that names the file hands it to each
 	// of them.
-	envNames := func(holder *core.Node) *core.Node {
-		env := holder.Field["env"]
-		if env == nil || env.Shape != core.Mapping || e.seen[env] {
-			return nil
-		}
-		e.seen[env] = true
-		for _, v := range env.Vals {
-			if e.names(v) {
-				return v
-			}
-		}
-		return nil
-	}
-	e.levelEnv, e.levelWhat = envNames(j), "the job's env:"
+	e.levelEnv, e.levelWhat = e.envNames(j), "the job's env:"
 	// The run: scripts of a job with a container run in it, with its env:.
 	if c := j.Field["container"]; e.levelEnv == nil && c != nil && c.Shape == core.Mapping {
-		e.levelEnv, e.levelWhat = envNames(c), "the job's container.env:"
+		e.levelEnv, e.levelWhat = e.envNames(c), "the job's container.env:"
 	}
 	if e.levelEnv == nil {
-		e.levelEnv, e.levelWhat = envNames(top), "the workflow's env:"
+		e.levelEnv, e.levelWhat = e.envNames(top), "the workflow's env:"
 	}
 	return e
+}
+
+// envNames is the first value of holder's env: that names GITHUB_ENV, or
+// nil: holder is a step, a job, a job's container or the workflow. An
+// env: is read once.
+func (e *earlierSteps) envNames(holder *core.Node) *core.Node {
+	env := holder.Field["env"]
+	if env == nil || env.Shape != core.Mapping || e.seen[env] {
+		return nil
+	}
+	e.seen[env] = true
+	for _, v := range env.Vals {
+		if e.names(v) {
+			return v
+		}
+	}
+	return nil
 }
 
 // names reports whether n is a scalar that names GITHUB_ENV, reading each
@@ -126,39 +130,48 @@ func (e *earlierSteps) names(n *core.Node) bool {
 // step refuses the variable for the steps after s when s may set it
 // through GITHUB_ENV.
 func (e *earlierSteps) step(s *core.Node) error {
-	w, name := e.w, e.name
 	if uses := s.Field["uses"]; uses != nil && s.Field["run"] == nil {
-		if uses.Shape == core.Scalar && quiet(uses.Text) {
-			return nil
-		}
-		return fmt.Errorf("%s:%d: %s runs the action %s, which can set %s for the steps after it through GITHUB_ENV; errata reads no action's code, and this action is not on its list of those that set none",
-			w.file, uses.Line, describeStep(s), core.Quote(uses.Text), name)
+		return e.action(s, uses)
 	}
 	run := s.Field["run"]
 	if run == nil {
 		return nil
 	}
+	found, where := e.inRun(s, run)
+	return e.refuse(s, found, where)
+}
+
+// action refuses the variable after the step s, which runs the action
+// uses, unless the action is one known to set no variable.
+func (e *earlierSteps) action(s, uses *core.Node) error {
+	if uses.Shape == core.Scalar && quiet(uses.Text) {
+		return nil
+	}
+	return fmt.Errorf("%s:%d: %s runs the action %s, which can set %s for the steps after it through GITHUB_ENV; errata reads no action's code, and this action is not on its list of those that set none",
+		e.w.file, uses.Line, describeStep(s), core.Quote(uses.Text), e.name)
+}
+
+// inRun is the node of the run: step s that names GITHUB_ENV, and where
+// in the step it is: its run:, its shell, or its env:. It is nil when none
+// does.
+func (e *earlierSteps) inRun(s, run *core.Node) (*core.Node, string) {
 	shell, shellWhat := s.Field["shell"], "its shell:"
 	if shell == nil {
 		shell, shellWhat = e.defaultShell, "its shell, "+e.defaultWhat+" defaults.run.shell"
 	}
-	found, where := (*core.Node)(nil), ""
 	switch {
 	case e.names(run):
-		found, where = run, "its run:"
+		return run, "its run:"
 	case e.names(shell):
-		found, where = shell, shellWhat
-	default:
-		if env := s.Field["env"]; env != nil && env.Shape == core.Mapping && !e.seen[env] {
-			e.seen[env] = true
-			for _, v := range env.Vals {
-				if e.names(v) {
-					found, where = v, "its env:"
-					break
-				}
-			}
-		}
+		return shell, shellWhat
 	}
+	return e.envNames(s), "its env:"
+}
+
+// refuse is the refusal of the variable after the run: step s, when found
+// in it, or an env: of its job or workflow, names GITHUB_ENV.
+func (e *earlierSteps) refuse(s, found *core.Node, where string) error {
+	w, name := e.w, e.name
 	if found == nil && e.levelEnv != nil {
 		return fmt.Errorf("%s:%d: %s names GITHUB_ENV and reaches the run: of %s, which can set %s for the steps after it as the job runs; errata cannot read what it writes",
 			w.file, e.levelEnv.Line, e.levelWhat, describeStep(s), name)

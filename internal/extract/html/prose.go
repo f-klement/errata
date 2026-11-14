@@ -103,29 +103,41 @@ func (p *prose) endLine() {
 // character reference decoded, and each run of blanks one space, none
 // where atSpace. A lone space is copied, so ordinary text stays one piece.
 func (p *prose) shown(b []byte, from int) {
-	htmlparse.Unescape(b, from, func(b []byte, from int, wrote bool) {
-		start := 0
-		for i := 0; i < len(b); {
-			if !isBlank(b[i]) {
-				i++
-				continue
-			}
-			j := i
-			for j < len(b) && isBlank(b[j]) {
-				j++
-			}
-			p.add(b[start:i], from+offsetIn(start, wrote), wrote)
-			switch {
-			case p.atSpace():
-			case j-i == 1 && b[i] == ' ' && !wrote:
-				p.add(b[i:j], from+i, false)
-			default:
-				p.add([]byte{' '}, from+offsetIn(i, wrote), true)
-			}
-			start, i = j, j
+	htmlparse.Unescape(b, from, p.shownPiece)
+}
+
+// shownPiece appends a piece of text at from, which errata wrote or the
+// file holds, as shown appends it: the text between blanks as it is, and
+// each run of blanks as blankRun has it.
+func (p *prose) shownPiece(b []byte, from int, wrote bool) {
+	start := 0
+	for i := 0; i < len(b); {
+		if !isBlank(b[i]) {
+			i++
+			continue
 		}
-		p.add(b[start:], from+offsetIn(start, wrote), wrote)
-	})
+		j := i
+		for j < len(b) && isBlank(b[j]) {
+			j++
+		}
+		p.add(b[start:i], from+offsetIn(start, wrote), wrote)
+		p.blankRun(b, i, j, from, wrote)
+		start, i = j, j
+	}
+	p.add(b[start:], from+offsetIn(start, wrote), wrote)
+}
+
+// blankRun appends the run of blanks b[i:j] of a piece at from: nothing
+// where atSpace, a lone space of the file as it is, and any other run
+// as one space errata writes.
+func (p *prose) blankRun(b []byte, i, j, from int, wrote bool) {
+	switch {
+	case p.atSpace():
+	case j-i == 1 && b[i] == ' ' && !wrote:
+		p.add(b[i:j], from+i, false)
+	default:
+		p.add([]byte{' '}, from+offsetIn(i, wrote), true)
+	}
 }
 
 // written appends text of the file at from as it is written, each

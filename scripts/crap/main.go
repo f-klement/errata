@@ -20,10 +20,21 @@
 // crap4go, whose code this command does not use. A function's complexity is
 // 1, plus one for each if, for and range, each case clause of a switch, a
 // type switch or a select (default included), and each && and ||. A closure
-// counts toward the function that holds it and has no row of its own. A
-// function is keyed by its package's import path and its name; a method by
-// the import path, a dot and its receiver's type name, then its name, as
-// crapper keys Go: `github.com/f-klement/errata/internal/rule.Rule Validate`.
+// counts toward the function that holds it and has no row of its own: its
+// decisions add to that function's complexity and its blocks to that
+// function's coverage. A function is keyed by its package's import path and
+// its name; a method by the import path, a dot and its receiver's type name,
+// then its name, as crapper keys Go:
+// `github.com/f-klement/errata/internal/rule.Rule Validate`.
+//
+// A function literal that no function holds, such as a handler in a table of
+// a package level var, is a row of its own, scored by the same rules. It is
+// keyed by the import path, then the var's name, a dot, "func" and its place
+// among that var's literals in source order, from 1:
+// `github.com/f-klement/errata/internal/extract/ini gitDialect.func1`.
+// Moving lines leaves the name as it is; adding or removing a literal before
+// it in the same var renumbers it. A literal inside such a literal counts
+// toward it, as a closure counts toward its function.
 //
 // Coverage is Go's statement profile. A block counts toward the function
 // whose body holds it, by line and column, and a block that a -coverpkg run

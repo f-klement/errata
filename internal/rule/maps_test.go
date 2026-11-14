@@ -270,7 +270,9 @@ func TestMapsOfALargeListStayInsideTheCostLimit(t *testing.T) {
 // followed to the literal it runs over ([{'name': 'x', ...}].exists(w, ...));
 // the member type of in's right side left unchecked ([1, 2].map(x, x), the
 // map ternary); a cel.bind name after in not followed (the bound [1, 'a']);
-// a refused member not refused once (the member reached twice).
+// a refused member not refused once (the member reached twice). Round 4's
+// break: a literal index read as no literal in traceIndex, which left
+// want['spec'].replicas opaque and its comparison unrefused.
 func TestMapsRefuseComparisonsTheyNeverEqual(t *testing.T) {
 	const (
 		never  = "is compared with a value CEL types dyn, such as one from a map; a map's scalars are always strings, so the two are never equal; "
@@ -342,6 +344,7 @@ func TestMapsRefuseComparisonsTheyNeverEqual(t *testing.T) {
 		"cel.bind(ws, [{'name': 'x', 'automerge': true}], ws.exists(w, m[0] == w))":                                     "the bool true is compared",
 		"cel.bind(ws, [{'name': 'x', 'automerge': true}], m[0] == ws[0])":                                               "the bool true is compared",
 		"cel.bind(want, {'name': 'x', 'spec': {'name': 'y', 'replicas': 3}}, m[0].z == want.spec.replicas)":             "the number 3 is compared",
+		"cel.bind(want, {'spec': {'name': 'x', 'replicas': 3}}, m[0].z == want['spec'].replicas)":                       "the number 3 is compared",
 		"cel.bind(want, {'name': 'x', 'ports': [80, 'a']}, m[0].z in want.ports)":                                       "the number 80 is compared",
 		"cel.bind(want, {'name': 'x', 'ports': [80, 'a']}, want.ports.exists(p, m[0].z == p))":                          "the number 80 is compared",
 		"cel.bind(w, {'name': 'x', 'n': 3}, cel.bind(want, w, m[0].z == want.n))":                                       "the number 3 is compared",

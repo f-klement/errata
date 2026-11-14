@@ -265,23 +265,29 @@ func (g *goFile) gather(gd *ast.GenDecl) {
 			if gd.Tok == token.VAR || s.Type != nil || len(s.Values) > 0 {
 				typ, values = s.Type, s.Values
 			}
-			for j, name := range s.Names {
-				if name.Name == "_" {
-					continue
-				}
-				d := &goDecl{isConst: gd.Tok == token.CONST, spec: s, name: name, typ: typ, iota: i, repeated: len(s.Values) == 0}
-				switch {
-				case len(values) == len(s.Names):
-					d.value = values[j]
-				case len(values) > 0 || d.isConst:
-					d.broken = true // var a, b = f(), or a const with too few values
-				}
-				if _, twice := g.decls[name.Name]; twice {
-					d.broken = true
-				}
-				g.decls[name.Name] = d
-			}
+			g.declare(gd.Tok, s, i, typ, values)
 		}
+	}
+}
+
+// declare notes each name of the spec s, the i-th of a declaration of
+// tok, with the type and the values it has or repeats.
+func (g *goFile) declare(tok token.Token, s *ast.ValueSpec, i int, typ ast.Expr, values []ast.Expr) {
+	for j, name := range s.Names {
+		if name.Name == "_" {
+			continue
+		}
+		d := &goDecl{isConst: tok == token.CONST, spec: s, name: name, typ: typ, iota: i, repeated: len(s.Values) == 0}
+		switch {
+		case len(values) == len(s.Names):
+			d.value = values[j]
+		case len(values) > 0 || d.isConst:
+			d.broken = true // var a, b = f(), or a const with too few values
+		}
+		if _, twice := g.decls[name.Name]; twice {
+			d.broken = true
+		}
+		g.decls[name.Name] = d
 	}
 }
 
@@ -343,19 +349,7 @@ func (g *goFile) value(name string) (n *core.Node, isConst, ok bool, err error) 
 	if d.value != nil && !d.repeated {
 		line = g.line(d.value.Pos())
 	}
-	var v goVal
-	switch {
-	case d.broken || d.value == nil && !d.isConst:
-		v = goVal{}
-	case d.isConst:
-		v = g.constant(name, 0)
-	default:
-		v = g.typed(g.eval(d.value, -1, 0), d.typ)
-		v = defaulted(v)
-		if g.assigned[name] {
-			v.ok = false
-		}
-	}
+	v := g.declared(name, d)
 	if g.err != nil {
 		return nil, false, false, g.err
 	}
@@ -363,6 +357,23 @@ func (g *goFile) value(name string) (n *core.Node, isConst, ok bool, err error) 
 		return &core.Node{Shape: core.Scalar, Type: core.TypeString, NotLiteral: true, Text: g.source(d), Line: line}, d.isConst, true, nil
 	}
 	return g.scalar(v, line), d.isConst, true, nil
+}
+
+// declared is the value of the declaration d of name: none for one that
+// is broken or a var with no value, and none for a var the program
+// changes.
+func (g *goFile) declared(name string, d *goDecl) goVal {
+	switch {
+	case d.broken || d.value == nil && !d.isConst:
+		return goVal{}
+	case d.isConst:
+		return g.constant(name, 0)
+	}
+	v := defaulted(g.typed(g.eval(d.value, -1, 0), d.typ))
+	if g.assigned[name] {
+		v.ok = false
+	}
+	return v
 }
 
 // source is the text the file wrote for d's value, or for its spec when it
@@ -548,19 +559,12 @@ func (g *goFile) resolve(typ ast.Expr) (goType, bool) {
 // literal, a const of the file, iota, true, false, an operator on those and
 // a conversion to a type of the file's or Go's own is not literal.
 func (g *goFile) eval(e ast.Expr, io, depth int) goVal {
-	if depth > core.MaxDepth {
-		g.fail(fmt.Errorf("%s: %w", g.file, core.TooDeep(g.line(e.Pos()))))
-		return goVal{}
-	}
-	if g.spend(1) {
+	if g.stop(e, depth) {
 		return goVal{}
 	}
 	switch e := e.(type) {
 	case *ast.BasicLit:
-		if g.spend(len(e.Value) / 8) {
-			return goVal{}
-		}
-		return literal(e)
+		return g.evalLit(e)
 	case *ast.ParenExpr:
 		v := g.eval(e.X, io, depth+1)
 		v.lit, v.char = "", false
@@ -568,39 +572,79 @@ func (g *goFile) eval(e ast.Expr, io, depth int) goVal {
 	case *ast.Ident:
 		return g.ident(e.Name, io, depth)
 	case *ast.UnaryExpr:
-		x := g.eval(e.X, io, depth+1)
-		if g.charge(x) {
-			return goVal{}
-		}
-		return unary(e.Op, x)
+		return g.evalUnary(e, io, depth)
 	case *ast.BinaryExpr:
-		x, y := g.eval(e.X, io, depth+1), g.eval(e.Y, io, depth+1)
-		if g.charge(x, y) || g.chargeProduct(e.Op, x, y) {
-			return goVal{}
-		}
-		if e.Op == token.SHL || e.Op == token.SHR {
-			return shift(e.Op, x, y)
-		}
-		return g.binary(e.Op, x, y)
+		return g.evalBinary(e, io, depth)
 	case *ast.CallExpr:
-		if len(e.Args) != 1 || e.Ellipsis.IsValid() {
-			return goVal{}
-		}
-		t, ok := g.resolve(e.Fun)
-		if !ok {
-			return goVal{} // a call, which is no constant
-		}
-		v := g.eval(e.Args[0], io, depth+1)
-		if !v.ok || v.t.class == cInt && t.class == cString || v.t.class == cRune && t.class == cString {
-			return goVal{} // string(65), which is A, and not literal here
-		}
-		if g.charge(v) {
-			return goVal{}
-		}
-		v.lit, v.char = "", false
-		return convert(v, t)
+		return g.evalCall(e, io, depth)
 	}
 	return goVal{}
+}
+
+// stop reports whether eval must not read e: it is nested past
+// core.MaxDepth, which fails the file, or the file's budget is spent.
+func (g *goFile) stop(e ast.Expr, depth int) bool {
+	if depth > core.MaxDepth {
+		g.fail(fmt.Errorf("%s: %w", g.file, core.TooDeep(g.line(e.Pos()))))
+		return true
+	}
+	return g.spend(1)
+}
+
+// evalLit is the value of a literal, its text charged to the budget.
+func (g *goFile) evalLit(e *ast.BasicLit) goVal {
+	if g.spend(len(e.Value) / 8) {
+		return goVal{}
+	}
+	return literal(e)
+}
+
+// evalUnary is the value of a unary expression.
+func (g *goFile) evalUnary(e *ast.UnaryExpr, io, depth int) goVal {
+	x := g.eval(e.X, io, depth+1)
+	if g.charge(x) {
+		return goVal{}
+	}
+	return unary(e.Op, x)
+}
+
+// evalBinary is the value of a binary expression, a shift among them.
+func (g *goFile) evalBinary(e *ast.BinaryExpr, io, depth int) goVal {
+	x, y := g.eval(e.X, io, depth+1), g.eval(e.Y, io, depth+1)
+	if g.charge(x, y) || g.chargeProduct(e.Op, x, y) {
+		return goVal{}
+	}
+	if e.Op == token.SHL || e.Op == token.SHR {
+		return shift(e.Op, x, y)
+	}
+	return g.binary(e.Op, x, y)
+}
+
+// evalCall is the value of a call, which is a constant only when it
+// converts one value to a type.
+func (g *goFile) evalCall(e *ast.CallExpr, io, depth int) goVal {
+	if len(e.Args) != 1 || e.Ellipsis.IsValid() {
+		return goVal{}
+	}
+	t, ok := g.resolve(e.Fun)
+	if !ok {
+		return goVal{} // a call, which is no constant
+	}
+	v := g.eval(e.Args[0], io, depth+1)
+	if !v.ok || runeString(v.t, t) {
+		return goVal{} // string(65), which is A, and not literal here
+	}
+	if g.charge(v) {
+		return goVal{}
+	}
+	v.lit, v.char = "", false
+	return convert(v, t)
+}
+
+// runeString reports whether a conversion from v to t makes a string of a
+// number, as string(65) does.
+func runeString(v, t goType) bool {
+	return v.class == cInt && t.class == cString || v.class == cRune && t.class == cString
 }
 
 // ident is the value of a name in a constant expression.
@@ -631,37 +675,53 @@ func (g *goFile) ident(name string, io, depth int) goVal {
 func literal(e *ast.BasicLit) goVal {
 	switch e.Kind {
 	case token.INT, token.FLOAT:
-		if len(e.Value) > maxNumberLit {
-			return goVal{}
-		}
-		v := constant.MakeFromLiteral(e.Value, e.Kind, 0)
-		class := cInt
-		if e.Kind == token.FLOAT {
-			class = cFloat
-		}
-		return checked(goVal{v: v, t: goType{class: class}, lit: e.Value, ok: v.Kind() != constant.Unknown})
+		return numberLit(e)
 	case token.CHAR:
-		// A rune written as one literal is its character, as the file
-		// means it; a computed one is its number.
-		v := constant.MakeFromLiteral(e.Value, e.Kind, 0)
-		n, _ := constant.Int64Val(v)
-		if v.Kind() != constant.Int || n < 0 || n > utf8.MaxRune {
-			return goVal{}
-		}
-		r := rune(n)
-		if !utf8.ValidRune(r) {
-			return goVal{}
-		}
-		return goVal{v: v, t: goType{class: cRune}, lit: string(r), char: true, ok: true}
+		return charLit(e)
 	case token.STRING:
-		v := constant.MakeFromLiteral(e.Value, e.Kind, 0)
-		if v.Kind() != constant.String || !utf8.ValidString(constant.StringVal(v)) {
-			return goVal{}
-		}
-		return goVal{v: v, t: goType{class: cString}, strLen: len(constant.StringVal(v)), ok: true}
+		return stringLit(e)
 	default:
 		return goVal{} // an imaginary number
 	}
+}
+
+// numberLit is the value of an integer or a float literal, which keeps
+// the text the file wrote.
+func numberLit(e *ast.BasicLit) goVal {
+	if len(e.Value) > maxNumberLit {
+		return goVal{}
+	}
+	v := constant.MakeFromLiteral(e.Value, e.Kind, 0)
+	class := cInt
+	if e.Kind == token.FLOAT {
+		class = cFloat
+	}
+	return checked(goVal{v: v, t: goType{class: class}, lit: e.Value, ok: v.Kind() != constant.Unknown})
+}
+
+// charLit is the value of a rune literal. A rune written as one literal
+// is its character, as the file means it; a computed one is its number.
+func charLit(e *ast.BasicLit) goVal {
+	v := constant.MakeFromLiteral(e.Value, e.Kind, 0)
+	n, _ := constant.Int64Val(v)
+	if v.Kind() != constant.Int || n < 0 || n > utf8.MaxRune {
+		return goVal{}
+	}
+	r := rune(n)
+	if !utf8.ValidRune(r) {
+		return goVal{}
+	}
+	return goVal{v: v, t: goType{class: cRune}, lit: string(r), char: true, ok: true}
+}
+
+// stringLit is the value of a string literal, decoded; one that is no
+// valid UTF-8 is not literal.
+func stringLit(e *ast.BasicLit) goVal {
+	v := constant.MakeFromLiteral(e.Value, e.Kind, 0)
+	if v.Kind() != constant.String || !utf8.ValidString(constant.StringVal(v)) {
+		return goVal{}
+	}
+	return goVal{v: v, t: goType{class: cString}, strLen: len(constant.StringVal(v)), ok: true}
 }
 
 // unary is op applied to x: +, - and ^ on a number, ! on a bool.
@@ -669,12 +729,7 @@ func unary(op token.Token, x goVal) goVal {
 	if !x.ok {
 		return goVal{}
 	}
-	numeric := x.t.class == cInt || x.t.class == cRune || x.t.class == cFloat
-	switch {
-	case (op == token.ADD || op == token.SUB) && numeric,
-		op == token.NOT && x.t.class == cBool,
-		op == token.XOR && (x.t.class == cInt || x.t.class == cRune):
-	default:
+	if !unaryApplies(op, x.t.class) {
 		return goVal{}
 	}
 	prec := uint(0)
@@ -683,6 +738,24 @@ func unary(op token.Token, x goVal) goVal {
 	}
 	return checked(goVal{v: constant.UnaryOp(op, x.v, prec), t: x.t, ok: true})
 }
+
+// unaryApplies reports whether op applies to an operand of class c: +
+// and - to a number, ! to a bool, ^ to an integer.
+func unaryApplies(op token.Token, c uint8) bool {
+	switch op {
+	case token.ADD, token.SUB:
+		return numeric(c)
+	case token.NOT:
+		return c == cBool
+	case token.XOR:
+		return c == cInt || c == cRune
+	default:
+		return false
+	}
+}
+
+// numeric reports whether the class c is a number's.
+func numeric(c uint8) bool { return c == cInt || c == cRune || c == cFloat }
 
 // shift is x shifted by y, a count of at most maxIntBits. An untyped x
 // becomes an integer, as Go makes it.
@@ -695,74 +768,118 @@ func shift(op token.Token, x, y goVal) goVal {
 	if s.Kind() != constant.Int || !exact || n > maxIntBits {
 		return goVal{}
 	}
+	x, ok := shiftable(x)
+	if !ok {
+		return goVal{}
+	}
+	return checked(goVal{v: constant.Shift(x.v, op, uint(n)), t: x.t, ok: true})
+}
+
+// shiftable is x as the integer a shift moves, and whether it is one. An
+// untyped x becomes an integer, as Go makes it.
+func shiftable(x goVal) (goVal, bool) {
 	if x.t.name == "" {
 		x.v = constant.ToInt(x.v)
 		if x.t.class != cRune {
 			x.t = goType{class: cInt}
 		}
 	}
-	if x.v.Kind() != constant.Int || x.t.class != cInt && x.t.class != cRune {
-		return goVal{}
-	}
-	return checked(goVal{v: constant.Shift(x.v, op, uint(n)), t: x.t, ok: true})
+	return x, x.v.Kind() == constant.Int && (x.t.class == cInt || x.t.class == cRune)
 }
 
 // binary is x op y. An untyped operand takes the other's type; two untyped
 // ones take the later of int, rune, float. Integers divide as integers. A
 // comparison is an untyped bool. A string longer than the file is refused.
 func (g *goFile) binary(op token.Token, x, y goVal) goVal {
-	if !x.ok || !y.ok {
+	x, y, ok := operands(x, y)
+	if !ok {
 		return goVal{}
 	}
 	switch {
-	case x.t.name != "" && y.t.name != "" && x.t.name != y.t.name:
-		return goVal{}
-	case x.t.name != "" && y.t.name == "":
+	case comparison(op):
+		return g.compare(op, x, y)
+	case op == token.ADD && x.t.class == cString:
+		return g.concat(x, y)
+	}
+	return arith(op, x, y)
+}
+
+// operands are x and y of one type, and whether they are: an untyped
+// operand takes the other's type, and two typed ones must have one.
+func operands(x, y goVal) (goVal, goVal, bool) {
+	if !x.ok || !y.ok {
+		return x, y, false
+	}
+	x, y = unify(x, y)
+	return x, y, x.ok && y.ok && x.t.class == y.t.class
+}
+
+// unify gives x and y one type: an untyped operand takes the other's, and
+// two typed ones of two names are not literal.
+func unify(x, y goVal) (goVal, goVal) {
+	switch {
+	case x.t.name != "" && y.t.name != "":
+		if x.t.name != y.t.name {
+			return goVal{}, goVal{}
+		}
+	case x.t.name != "":
 		y = convert(y, x.t)
-	case x.t.name == "" && y.t.name != "":
+	case y.t.name != "":
 		x = convert(x, y.t)
+	default:
+		x, y = widen(x, y)
+	}
+	return x, y
+}
+
+// widen gives two untyped numbers the later class of int, rune, float.
+func widen(x, y goVal) (goVal, goVal) {
+	switch {
 	case x.t.class < y.t.class && x.t.class >= cInt && y.t.class <= cFloat:
 		x.t = y.t
 	case y.t.class < x.t.class && y.t.class >= cInt && x.t.class <= cFloat:
 		y.t = x.t
 	}
-	if !x.ok || !y.ok || x.t.class != y.t.class {
-		return goVal{}
-	}
-	t := x.t
+	return x, y
+}
+
+// comparison reports whether op compares, giving an untyped bool.
+func comparison(op token.Token) bool {
 	switch op {
 	case token.EQL, token.NEQ, token.LSS, token.LEQ, token.GTR, token.GEQ:
-		if t.class == cBool && op != token.EQL && op != token.NEQ {
-			return goVal{}
-		}
-		if t.class == cString && g.spend(x.strLen+y.strLen) {
-			return goVal{} // go/constant joins both strings to compare them
-		}
-		return goVal{v: constant.MakeBool(constant.Compare(x.v, op, y.v)), t: goType{class: cBool}, ok: true}
-	case token.LAND, token.LOR:
-		if t.class != cBool {
-			return goVal{}
-		}
-	case token.ADD:
-		if t.class == cString {
-			if x.strLen+y.strLen > len(g.data) {
-				g.fail(fmt.Errorf("%s: a string constant is longer than the file, %d bytes; errata reads no constant built that long", g.file, len(g.data)))
-				return goVal{}
-			}
-			return goVal{v: constant.BinaryOp(x.v, op, y.v), t: t, strLen: x.strLen + y.strLen, ok: true}
-		}
-		if t.class == cBool {
-			return goVal{}
-		}
-	case token.SUB, token.MUL, token.QUO:
-		if t.class == cBool || t.class == cString {
-			return goVal{}
-		}
-	case token.REM, token.AND, token.OR, token.XOR, token.AND_NOT:
-		if t.class != cInt && t.class != cRune {
-			return goVal{}
-		}
+		return true
 	default:
+		return false
+	}
+}
+
+// compare is x op y, a comparison of two operands of one type. A bool is
+// only equal or not.
+func (g *goFile) compare(op token.Token, x, y goVal) goVal {
+	t := x.t
+	if t.class == cBool && op != token.EQL && op != token.NEQ {
+		return goVal{}
+	}
+	if t.class == cString && g.spend(x.strLen+y.strLen) {
+		return goVal{} // go/constant joins both strings to compare them
+	}
+	return goVal{v: constant.MakeBool(constant.Compare(x.v, op, y.v)), t: goType{class: cBool}, ok: true}
+}
+
+// concat is x + y of two strings. One longer than the file is refused.
+func (g *goFile) concat(x, y goVal) goVal {
+	if x.strLen+y.strLen > len(g.data) {
+		g.fail(fmt.Errorf("%s: a string constant is longer than the file, %d bytes; errata reads no constant built that long", g.file, len(g.data)))
+		return goVal{}
+	}
+	return goVal{v: constant.BinaryOp(x.v, token.ADD, y.v), t: x.t, strLen: x.strLen + y.strLen, ok: true}
+}
+
+// arith is x op y for an operator that is no comparison and no string
+// concatenation. Integers divide as integers.
+func arith(op token.Token, x, y goVal) goVal {
+	t := x.t
+	if !binaryApplies(op, t.class) {
 		return goVal{}
 	}
 	if (op == token.QUO || op == token.REM) && constant.Sign(y.v) == 0 {
@@ -774,34 +891,68 @@ func (g *goFile) binary(op token.Token, x, y goVal) goVal {
 	return checked(goVal{v: constant.BinaryOp(x.v, op, y.v), t: t, ok: true})
 }
 
+// binaryApplies reports whether op, no comparison and no string
+// concatenation, applies to two operands of class c.
+func binaryApplies(op token.Token, c uint8) bool {
+	switch op {
+	case token.LAND, token.LOR:
+		return c == cBool
+	case token.ADD:
+		return c != cBool
+	case token.SUB, token.MUL, token.QUO:
+		return c != cBool && c != cString
+	case token.REM, token.AND, token.OR, token.XOR, token.AND_NOT:
+		return c == cInt || c == cRune
+	default:
+		return false
+	}
+}
+
 // convert is v given the type t: a number must be one t holds, rounded to
 // a float type's precision, and a bool or a string stays one.
 func convert(v goVal, t goType) goVal {
 	if !v.ok {
 		return goVal{}
 	}
-	numeric := func(c uint8) bool { return c == cInt || c == cRune || c == cFloat }
 	switch {
-	case t.class == cBool && v.t.class == cBool, t.class == cString && v.t.class == cString:
+	case keepsKind(v.t.class, t.class):
 		v.t = t
 		return v
 	case t.class == cInt && numeric(v.t.class):
-		if t.bits != 32 || !t.signed {
-			// const I int = '0' is the number 48; a type over int32 or
-			// rune, as type Delim rune, keeps the character.
-			v.lit, v.char = "", false
-		}
-		v.v = constant.ToInt(v.v)
+		v = toInt(v, t)
 	case t.class == cFloat && numeric(v.t.class):
-		if v.char {
-			v.lit, v.char = "", false
-		}
-		v.v = constant.ToFloat(v.v)
+		v = toFloat(v)
 	default:
 		return goVal{}
 	}
 	v.t = t
 	return checked(v)
+}
+
+// keepsKind reports whether a conversion from the class from to the class to
+// keeps a bool a bool or a string a string.
+func keepsKind(from, to uint8) bool {
+	return from == to && (to == cBool || to == cString)
+}
+
+// toInt is the number v as an integer of the type t. const I int = '0' is
+// the number 48; a type over int32 or rune, as type Delim rune, keeps the
+// character.
+func toInt(v goVal, t goType) goVal {
+	if t.bits != 32 || !t.signed {
+		v.lit, v.char = "", false
+	}
+	v.v = constant.ToInt(v.v)
+	return v
+}
+
+// toFloat is the number v as a float, a character as its number.
+func toFloat(v goVal) goVal {
+	if v.char {
+		v.lit, v.char = "", false
+	}
+	v.v = constant.ToFloat(v.v)
+	return v
 }
 
 // checked is v, or not literal when its type does not hold it: an integer
@@ -812,31 +963,45 @@ func checked(v goVal) goVal {
 	case !v.ok || v.v.Kind() == constant.Unknown:
 		return goVal{}
 	case v.t.class == cInt || v.t.class == cRune:
-		if v.v.Kind() != constant.Int {
-			return goVal{}
-		}
-		if v.t.name == "" {
-			v.ok = constant.BitLen(v.v) <= maxIntBits
-			return v
-		}
-		lo, hi := constant.MakeInt64(0), constant.Shift(constant.MakeInt64(1), token.SHL, uint(v.t.bits))
-		if v.t.signed {
-			hi = constant.Shift(constant.MakeInt64(1), token.SHL, uint(v.t.bits-1))
-			lo = constant.UnaryOp(token.SUB, hi, 0)
-		}
-		v.ok = constant.Compare(v.v, token.GEQ, lo) && constant.Compare(v.v, token.LSS, hi)
+		return checkedInt(v)
 	case v.t.class == cFloat && v.t.name != "":
-		f, _ := constant.Float64Val(v.v)
-		if v.t.bits == 32 {
-			f32, _ := constant.Float32Val(v.v)
-			f = float64(f32)
-		}
-		if math.IsInf(f, 0) {
-			return goVal{}
-		}
-		v.v = constant.MakeFloat64(f) // a literal keeps its text: 0.10 is 0.10
+		return checkedFloat(v)
 	case v.t.class == cFloat:
 		v.ok = v.v.Kind() == constant.Int || v.v.Kind() == constant.Float
 	}
+	return v
+}
+
+// checkedInt is the integer v, or not literal past its type's range, or
+// for an untyped one past maxIntBits.
+func checkedInt(v goVal) goVal {
+	if v.v.Kind() != constant.Int {
+		return goVal{}
+	}
+	if v.t.name == "" {
+		v.ok = constant.BitLen(v.v) <= maxIntBits
+		return v
+	}
+	lo, hi := constant.MakeInt64(0), constant.Shift(constant.MakeInt64(1), token.SHL, uint(v.t.bits))
+	if v.t.signed {
+		hi = constant.Shift(constant.MakeInt64(1), token.SHL, uint(v.t.bits-1))
+		lo = constant.UnaryOp(token.SUB, hi, 0)
+	}
+	v.ok = constant.Compare(v.v, token.GEQ, lo) && constant.Compare(v.v, token.LSS, hi)
+	return v
+}
+
+// checkedFloat is v rounded to its float type, or not literal when it
+// overflows it.
+func checkedFloat(v goVal) goVal {
+	f, _ := constant.Float64Val(v.v)
+	if v.t.bits == 32 {
+		f32, _ := constant.Float32Val(v.v)
+		f = float64(f32)
+	}
+	if math.IsInf(f, 0) {
+		return goVal{}
+	}
+	v.v = constant.MakeFloat64(f) // a literal keeps its text: 0.10 is 0.10
 	return v
 }

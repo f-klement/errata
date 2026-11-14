@@ -42,7 +42,7 @@ func pyValue(v []byte) (value []byte, computed bool, err error) {
 	if s, ok := pyString(u); ok {
 		return s, false, nil
 	}
-	if len(u) == 0 || bytes.IndexByte(u, '#') < 0 && !startsString(u) && !mayBeComputed(u[0]) {
+	if plainPyWord(u) {
 		return v, false, nil // a word, True or None: the text written
 	}
 	p := &pyLit{s: u}
@@ -50,27 +50,54 @@ func pyValue(v []byte) (value []byte, computed bool, err error) {
 	if !ok {
 		return v, false, nil // no literal: literal_eval refuses it, and ansible keeps the text
 	}
+	return p.valueOf(v, kind)
+}
+
+// plainPyWord reports whether u, a value without its leading blanks, is
+// one pyValue keeps as written before it reads any literal: empty, or with
+// no #, no string and no start of a literal Python writes otherwise.
+func plainPyWord(u []byte) bool {
+	return len(u) == 0 || bytes.IndexByte(u, '#') < 0 && !startsString(u) && !mayBeComputed(u[0])
+}
+
+// valueOf is pyValue of v once p has read the first literal of p.s, v
+// without its leading blanks, and kind is what that literal is.
+func (p *pyLit) valueOf(v []byte, kind litKind) ([]byte, bool, error) {
+	u := p.s
 	end := p.i
 	p.blanks()
 	if p.i < len(u) && u[p.i] == ',' {
-		// Literals joined by commas are a tuple, which ansible holds as a
-		// list: str of it is never the text.
-		if end, ok = p.tuple(); !ok {
-			return v, false, nil
-		}
-		return u[:end], true, nil // the tuple, without a comment after it
+		return p.tupleValue(v)
 	}
 	switch {
 	case p.i < len(u) && u[p.i] != '#':
 		return v, false, nil // more than one literal is a syntax error
-	case kind == litString && p.undecodable:
-		return nil, false, fmt.Errorf("the value %s is a Python string errata cannot decode exactly; write the text it stands for", core.Quote(string(v)))
 	case kind == litString:
-		return p.text, false, nil
+		return p.stringValue(v)
 	case p.i < len(u):
 		return u[:end], pyComputed(u[:end]), nil // the literal without its comment
 	}
 	return v, pyComputed(u[:end]), nil
+}
+
+// tupleValue is pyValue of v when its first literal ends at a comma.
+// Literals joined by commas are a tuple, which ansible holds as a list:
+// str of it is never the text.
+func (p *pyLit) tupleValue(v []byte) ([]byte, bool, error) {
+	end, ok := p.tuple()
+	if !ok {
+		return v, false, nil
+	}
+	return p.s[:end], true, nil // the tuple, without a comment after it
+}
+
+// stringValue is pyValue of v when it is strings: their text, or an error
+// for a string errata cannot decode exactly.
+func (p *pyLit) stringValue(v []byte) ([]byte, bool, error) {
+	if p.undecodable {
+		return nil, false, fmt.Errorf("the value %s is a Python string errata cannot decode exactly; write the text it stands for", core.Quote(string(v)))
+	}
+	return p.text, false, nil
 }
 
 // tuple reads the rest of a tuple whose first literal ends at the comma at
@@ -159,23 +186,10 @@ func (p *pyLit) literal() (litKind, bool) {
 	if c := p.peek(); c == '+' || c == '-' {
 		p.i++
 		p.blanks()
-		return litOther, p.number() && p.imaginaryAfter()
+		return litOther, p.numberLit()
 	}
-	switch c := p.peek(); {
-	case isDigit(c) || (c == '.' && p.i+1 < len(p.s) && isDigit(p.s[p.i+1])):
-		return litOther, p.number() && p.imaginaryAfter()
-	case c == '[':
-		return litOther, p.items(']', false)
-	case c == '(':
-		return litOther, p.items(')', false)
-	case c == '{':
-		return litOther, p.items('}', true)
-	case c == '.':
-		if bytes.HasPrefix(p.s[p.i:], []byte("...")) {
-			p.i += 3
-			return litOther, true
-		}
-		return litOther, false
+	if ok, read := p.numberOrContainer(); read {
+		return litOther, ok
 	}
 	if p.strings() {
 		return litString, true
@@ -183,22 +197,70 @@ func (p *pyLit) literal() (litKind, bool) {
 	if p.i > len(p.s) {
 		return litOther, false // a string Python refuses
 	}
-	name := p.name()
-	switch string(name) {
+	return litOther, p.named()
+}
+
+// numberOrContainer reads a literal that starts with a digit, a bracket or
+// a dot: a number, a list, a tuple, a set or a dict, or .... read is false
+// at any other byte, where it reads nothing.
+func (p *pyLit) numberOrContainer() (ok, read bool) {
+	switch c := p.peek(); {
+	case p.numberStarts(c):
+		return p.numberLit(), true
+	case c == '[':
+		return p.items(']', false), true
+	case c == '(':
+		return p.items(')', false), true
+	case c == '{':
+		return p.items('}', true), true
+	case c == '.':
+		return p.ellipsis(), true
+	}
+	return false, false
+}
+
+// numberStarts reports whether a number starts at p.i, whose byte is c: a
+// digit, or a dot and a digit.
+func (p *pyLit) numberStarts(c byte) bool {
+	return isDigit(c) || (c == '.' && p.i+1 < len(p.s) && isDigit(p.s[p.i+1]))
+}
+
+// numberLit reads a number and the imaginary part a sum adds to it.
+func (p *pyLit) numberLit() bool { return p.number() && p.imaginaryAfter() }
+
+// ellipsis reads ..., the one literal other than a number that starts with
+// a dot.
+func (p *pyLit) ellipsis() bool {
+	if bytes.HasPrefix(p.s[p.i:], []byte("...")) {
+		p.i += 3
+		return true
+	}
+	return false
+}
+
+// named reads a literal written as a name: True, False, None, or set().
+func (p *pyLit) named() bool {
+	switch string(p.name()) {
 	case "True", "False", "None":
-		return litOther, true
+		return true
 	case "set":
+		return p.emptyCall()
+	}
+	return false
+}
+
+// emptyCall reads the () after set, blanks allowed.
+func (p *pyLit) emptyCall() bool {
+	p.blanks()
+	if p.peek() == '(' {
+		p.i++
 		p.blanks()
-		if p.peek() == '(' {
+		if p.peek() == ')' {
 			p.i++
-			p.blanks()
-			if p.peek() == ')' {
-				p.i++
-				return litOther, true
-			}
+			return true
 		}
 	}
-	return litOther, false
+	return false
 }
 
 // imaginaryAfter reads, after a real number, a + or a - and an imaginary
@@ -225,7 +287,7 @@ func (p *pyLit) imaginaryAfter() bool {
 		return false
 	}
 	p.i += n
-	if c := p.peek(); isAlpha(c) || isDigit(c) || c == '_' || c >= utf8.RuneSelf {
+	if isPyNameByte(p.peek()) {
 		p.i = len(p.s) + 1
 		return false
 	}
@@ -240,7 +302,7 @@ func (p *pyLit) number() bool {
 	}
 	p.i += n
 	// A letter or digit right after a number is a syntax error.
-	if c := p.peek(); isAlpha(c) || isDigit(c) || c == '_' || c >= utf8.RuneSelf {
+	if isPyNameByte(p.peek()) {
 		p.i = len(p.s) + 1
 		return false
 	}
@@ -249,14 +311,16 @@ func (p *pyLit) number() bool {
 
 func (p *pyLit) name() []byte {
 	start := p.i
-	for p.i < len(p.s) {
-		c := p.s[p.i]
-		if !isAlpha(c) && !isDigit(c) && c != '_' && c < utf8.RuneSelf {
-			break
-		}
+	for p.i < len(p.s) && isPyNameByte(p.s[p.i]) {
 		p.i++
 	}
 	return p.s[start:p.i]
+}
+
+// isPyNameByte reports whether c can be in a Python name: a letter, a
+// digit, _, or a byte of a character that is not ASCII.
+func isPyNameByte(c byte) bool {
+	return isAlpha(c) || isDigit(c) || c == '_' || c >= utf8.RuneSelf
 }
 
 // strings reads one or more string literals of one kind, bytes or text,
@@ -296,18 +360,8 @@ func (p *pyLit) strings() bool {
 // for bytes. An escape Python refuses, and a byte that is not ASCII in
 // bytes, set p.i past the end.
 func (p *pyLit) stringLit(decode bool) (int, bool) {
-	start := p.i
-	j := p.i
-	for j < len(p.s) && j-start < 2 && bytes.IndexByte([]byte("rRbBuUfF"), p.s[j]) >= 0 {
-		j++
-	}
-	prefix := strings.ToLower(string(p.s[start:j]))
-	switch prefix {
-	case "", "r", "u", "b", "br", "rb":
-	default:
-		return 0, false
-	}
-	if j >= len(p.s) || (p.s[j] != '\'' && p.s[j] != '"') {
+	prefix, j, ok := p.stringPrefix()
+	if !ok {
 		return 0, false
 	}
 	raw, isBytes := strings.Contains(prefix, "r"), strings.Contains(prefix, "b")
@@ -315,127 +369,187 @@ func (p *pyLit) stringLit(decode bool) (int, bool) {
 	if bytes.HasPrefix(p.s[j:], bytes.Repeat(q, 3)) {
 		q = p.s[j : j+3]
 	}
-	j += len(q)
+	return p.stringBody(j+len(q), q, raw, isBytes, decode)
+}
+
+// stringPrefix reads a string literal's prefix at p.i, in lower case, and
+// returns it and where its quote is. It reports false for a prefix
+// literal_eval does not take, such as an f-string's, and where no quote
+// follows.
+func (p *pyLit) stringPrefix() (string, int, bool) {
+	j := p.i + pyPrefixLen(p.s[p.i:])
+	prefix := strings.ToLower(string(p.s[p.i:j]))
+	switch prefix {
+	case "", "r", "u", "b", "br", "rb":
+	default:
+		return "", 0, false
+	}
+	if j >= len(p.s) || (p.s[j] != '\'' && p.s[j] != '"') {
+		return "", 0, false
+	}
+	return prefix, j, true
+}
+
+// pyPrefixLen is the length of the prefix letters at the start of s, two
+// at most.
+func pyPrefixLen(s []byte) int {
+	n := 0
+	for n < len(s) && n < 2 && bytes.IndexByte([]byte("rRbBuUfF"), s[n]) >= 0 {
+		n++
+	}
+	return n
+}
+
+// stringBody reads a string literal's text from j through its closing
+// quote q, and reports 1 for bytes.
+func (p *pyLit) stringBody(j int, q []byte, raw, isBytes, decode bool) (int, bool) {
 	for j < len(p.s) {
-		c := p.s[j]
-		switch {
-		case bytes.HasPrefix(p.s[j:], q):
+		if bytes.HasPrefix(p.s[j:], q) {
 			p.i = j + len(q)
 			if isBytes {
 				return 1, true
 			}
 			return 0, true
-		case isBytes && c >= utf8.RuneSelf:
-			p.i = len(p.s) + 1 // bytes can only contain ASCII literal characters
+		}
+		var ok bool
+		if j, ok = p.stringChar(j, raw, isBytes, decode); !ok {
 			return 0, false
-		case c == '\\' && raw:
-			if decode {
-				p.text = append(p.text, p.s[j:min(j+2, len(p.s))]...)
-			}
-			j += 2
-		case c == '\\':
-			n, ok := p.escape(j, isBytes, decode)
-			if !ok {
-				p.i = len(p.s) + 1
-				return 0, false
-			}
-			j += n
-		default:
-			if decode {
-				p.text = append(p.text, c)
-			}
-			j++
 		}
 	}
 	return 0, false
 }
 
+// stringChar reads one character of a string literal's text at j, and
+// returns where the next starts. A byte that is not ASCII in bytes, and an
+// escape Python refuses, set p.i past the end and report false.
+func (p *pyLit) stringChar(j int, raw, isBytes, decode bool) (int, bool) {
+	c := p.s[j]
+	n, ok := 1, true
+	switch {
+	case isBytes && c >= utf8.RuneSelf:
+		ok = false // bytes can only contain ASCII literal characters
+	case c == '\\' && raw:
+		p.keep(decode, p.s[j:min(j+2, len(p.s))]...)
+		n = 2
+	case c == '\\':
+		n, ok = p.escape(j, isBytes, decode)
+	default:
+		p.keep(decode, c)
+	}
+	if !ok {
+		p.i = len(p.s) + 1
+	}
+	return j + n, ok
+}
+
+// keep appends b to p.text when decode is set.
+func (p *pyLit) keep(decode bool, b ...byte) {
+	if decode {
+		p.text = append(p.text, b...)
+	}
+}
+
+// keepRune appends r to p.text when decode is set. A surrogate, which
+// UTF-8 cannot hold, makes the string one errata cannot decode.
+func (p *pyLit) keepRune(decode bool, r rune) {
+	if utf16.IsSurrogate(r) {
+		p.undecodable = true
+		return
+	}
+	if decode {
+		p.text = utf8.AppendRune(p.text, r)
+	}
+}
+
+// keepCode appends the character of code v: in bytes its low byte, as
+// Python keeps the low byte of \777, and otherwise the rune.
+func (p *pyLit) keepCode(decode, isBytes bool, v rune) {
+	if isBytes {
+		p.keep(decode, byte(v&0xff))
+		return
+	}
+	p.keepRune(decode, v)
+}
+
+// pyEscapes are the escapes of one character after the \ that stand for
+// one byte, by that character; 0 for the others.
+var pyEscapes = [256]byte{'\\': '\\', '\'': '\'', '"': '"', 'a': '\a', 'b': '\b', 'f': '\f', 'n': '\n', 'r': '\r', 't': '\t', 'v': '\v'}
+
 // escape reads the escape at s[j], a \, as Python reads it in a string or
 // bytes literal, appends its value to p.text when decode is set, and
 // returns its length. It reports false for one Python refuses.
 func (p *pyLit) escape(j int, isBytes, decode bool) (int, bool) {
-	s := p.s
-	if j+1 >= len(s) {
+	if j+1 >= len(p.s) {
 		return 0, false
 	}
-	add := func(b ...byte) {
-		if decode {
-			p.text = append(p.text, b...)
-		}
+	c := p.s[j+1]
+	if b := pyEscapes[c]; b != 0 {
+		p.keep(decode, b)
+		return 2, true
 	}
-	addRune := func(r rune) {
-		if utf16.IsSurrogate(r) {
-			p.undecodable = true
-			return
-		}
-		if decode {
-			p.text = utf8.AppendRune(p.text, r)
-		}
-	}
-	switch c := s[j+1]; c {
-	case '\\', '\'', '"':
-		add(c)
-	case 'a':
-		add('\a')
-	case 'b':
-		add('\b')
-	case 'f':
-		add('\f')
-	case 'n':
-		add('\n')
-	case 'r':
-		add('\r')
-	case 't':
-		add('\t')
-	case 'v':
-		add('\v')
+	switch c {
 	case '0', '1', '2', '3', '4', '5', '6', '7':
-		n, v := 1, rune(c-'0')
-		for n < 3 && j+1+n < len(s) && '0' <= s[j+1+n] && s[j+1+n] <= '7' {
-			v = v*8 + rune(s[j+1+n]-'0')
-			n++
-		}
-		if isBytes {
-			add(byte(v & 0xff)) // Python keeps the low byte of \777 in bytes
-		} else {
-			addRune(v)
-		}
-		return 1 + n, true
+		return p.octalEscape(j, isBytes, decode)
 	case 'x':
-		v, ok := hexDigits(s[j+2:], 2)
-		if !ok {
-			return 0, false
-		}
-		if isBytes {
-			add(byte(v & 0xff)) // Python keeps the low byte of \777 in bytes
-		} else {
-			addRune(v)
-		}
-		return 4, true
+		return p.hexEscape(j, isBytes, decode)
 	case 'u', 'U', 'N':
-		if isBytes {
-			add('\\', c) // no escape in bytes
-			break
+		if !isBytes { // bytes have no such escape
+			return p.unicodeEscape(j, decode)
 		}
-		if c == 'N' {
-			p.undecodable = true // a character's name, which errata has no table of
-			end := bytes.IndexByte(s[j:], '}')
-			if j+2 >= len(s) || s[j+2] != '{' || end < 0 {
-				return 0, false
-			}
-			return end + 1, true
-		}
-		width := map[byte]int{'u': 4, 'U': 8}[c]
-		v, ok := hexDigits(s[j+2:], width)
-		if !ok || v > unicode.MaxRune {
-			return 0, false
-		}
-		addRune(v)
-		return 2 + width, true
-	default:
-		add('\\', c) // an unknown escape keeps its \, as Python does
 	}
+	p.keep(decode, '\\', c) // an unknown escape keeps its \, as Python does
 	return 2, true
+}
+
+// octalEscape reads \ and one to three octal digits at j.
+func (p *pyLit) octalEscape(j int, isBytes, decode bool) (int, bool) {
+	s := p.s
+	n, v := 1, rune(s[j+1]-'0')
+	for n < 3 && j+1+n < len(s) && '0' <= s[j+1+n] && s[j+1+n] <= '7' {
+		v = v*8 + rune(s[j+1+n]-'0')
+		n++
+	}
+	p.keepCode(decode, isBytes, v)
+	return 1 + n, true
+}
+
+// hexEscape reads \x and two hex digits at j.
+func (p *pyLit) hexEscape(j int, isBytes, decode bool) (int, bool) {
+	v, ok := hexDigits(p.s[j+2:], 2)
+	if !ok {
+		return 0, false
+	}
+	p.keepCode(decode, isBytes, v)
+	return 4, true
+}
+
+// unicodeEscape reads \u and four hex digits, \U and eight, or \N{name}
+// at j, in a string.
+func (p *pyLit) unicodeEscape(j int, decode bool) (int, bool) {
+	s := p.s
+	c := s[j+1]
+	if c == 'N' {
+		return p.namedEscape(j)
+	}
+	width := map[byte]int{'u': 4, 'U': 8}[c]
+	v, ok := hexDigits(s[j+2:], width)
+	if !ok || v > unicode.MaxRune {
+		return 0, false
+	}
+	p.keepRune(decode, v)
+	return 2 + width, true
+}
+
+// namedEscape reads \N{name} at j. errata has no table of the names, so
+// the string is one it cannot decode.
+func (p *pyLit) namedEscape(j int) (int, bool) {
+	s := p.s
+	p.undecodable = true
+	end := bytes.IndexByte(s[j:], '}')
+	if j+2 >= len(s) || s[j+2] != '{' || end < 0 {
+		return 0, false
+	}
+	return end + 1, true
 }
 
 // hexDigits reads n hex digits at the start of b.
@@ -475,25 +589,8 @@ func (p *pyLit) items(close byte, braces bool) bool {
 			p.i++
 			return true
 		}
-		if _, ok := p.literal(); !ok {
+		if !p.element(braces, &dict) {
 			return false
-		}
-		p.blanks()
-		if braces {
-			pair := p.peek() == ':'
-			if dict == -1 {
-				dict = map[bool]int{false: 0, true: 1}[pair]
-			}
-			if (dict == 1) != pair {
-				return false
-			}
-			if pair {
-				p.i++
-				if _, ok := p.literal(); !ok {
-					return false
-				}
-				p.blanks()
-			}
 		}
 		switch p.peek() {
 		case ',':
@@ -507,47 +604,90 @@ func (p *pyLit) items(close byte, braces bool) bool {
 	}
 }
 
+// element reads one element of a container and the blanks after it: in
+// braces, a pair when dict is 1, and dict set by the first element.
+func (p *pyLit) element(braces bool, dict *int) bool {
+	if _, ok := p.literal(); !ok {
+		return false
+	}
+	p.blanks()
+	return !braces || p.pairRest(dict)
+}
+
+// pairRest reads, in braces, the : and value of a dict's pair, where the
+// set or dict needs one. The first element decides which it is.
+func (p *pyLit) pairRest(dict *int) bool {
+	pair := p.peek() == ':'
+	if *dict == -1 {
+		*dict = map[bool]int{false: 0, true: 1}[pair]
+	}
+	if (*dict == 1) != pair {
+		return false
+	}
+	if pair {
+		p.i++
+		if _, ok := p.literal(); !ok {
+			return false
+		}
+		p.blanks()
+	}
+	return true
+}
+
 // pyNumberLen is the length of the longest Python number token at the
 // start of s, 0 for none: an integer in base 16, 8 or 2 after 0x, 0o or 0b,
 // a decimal integer (no leading 0 but for zeros), a float, or an imaginary
 // number, _ allowed between two digits.
 func pyNumberLen(s []byte) int {
-	if len(s) >= 2 && s[0] == '0' {
-		var digit func(byte) bool
-		switch s[1] | 0x20 {
-		case 'x':
-			digit = func(c byte) bool { return isDigit(c) || ('a' <= c|0x20 && c|0x20 <= 'f') }
-		case 'o':
-			digit = func(c byte) bool { return '0' <= c && c <= '7' }
-		case 'b':
-			digit = func(c byte) bool { return c == '0' || c == '1' }
-		}
-		if digit != nil {
-			if n := digitRun(s, 2, digit); n > 0 {
-				return 2 + n
-			}
-			return 1 // 0, then a letter: the 0 alone
-		}
+	if n := radixLen(s); n > 0 {
+		return n
 	}
+	return decimalLen(s)
+}
+
+// radixLen is the length of an integer in base 16, 8 or 2 at the start of
+// s, with its 0x, 0o or 0b, 1 for a 0 and such a letter with no digit, and
+// 0 for none.
+func radixLen(s []byte) int {
+	if len(s) < 2 || s[0] != '0' {
+		return 0
+	}
+	digit := radixDigit(s[1])
+	if digit == nil {
+		return 0
+	}
+	if n := digitRun(s, 2, digit); n > 0 {
+		return 2 + n
+	}
+	return 1 // 0, then a letter: the 0 alone
+}
+
+// radixDigit is the digits of the base that the letter c after a 0 names,
+// or nil for none.
+func radixDigit(c byte) func(byte) bool {
+	switch c | 0x20 {
+	case 'x':
+		return isPyHexDigit
+	case 'o':
+		return func(c byte) bool { return '0' <= c && c <= '7' }
+	case 'b':
+		return func(c byte) bool { return c == '0' || c == '1' }
+	}
+	return nil
+}
+
+// isPyHexDigit reports whether c is a hex digit, in either case.
+func isPyHexDigit(c byte) bool { return isDigit(c) || ('a' <= c|0x20 && c|0x20 <= 'f') }
+
+// decimalLen is the length of a decimal integer, a float or an imaginary
+// number at the start of s, 0 for none.
+func decimalLen(s []byte) int {
 	dp := digitRun(s, 0, isDigit)
-	i, float := dp, false
-	if i < len(s) && s[i] == '.' {
-		if f := digitRun(s, i+1, isDigit); dp > 0 || f > 0 {
-			i, float = i+1+f, true
-		}
-	}
+	i, float := pyFraction(s, dp)
 	if !float && dp == 0 {
 		return 0
 	}
-	if i < len(s) && s[i]|0x20 == 'e' {
-		j := i + 1
-		if j < len(s) && (s[j] == '+' || s[j] == '-') {
-			j++
-		}
-		if e := digitRun(s, j, isDigit); e > 0 {
-			i, float = j+e, true
-		}
-	}
+	i, float = pyExponent(s, i, float)
 	if i < len(s) && s[i]|0x20 == 'j' {
 		return i + 1
 	}
@@ -555,6 +695,33 @@ func pyNumberLen(s []byte) int {
 		return i
 	}
 	return digitRun(s, 0, func(c byte) bool { return c == '0' }) // a decimal 0 takes only zeros
+}
+
+// pyFraction reads a . and the digits after it at i, after dp digits, and
+// reports whether it read a float. A . needs a digit before or after it.
+func pyFraction(s []byte, dp int) (int, bool) {
+	if dp < len(s) && s[dp] == '.' {
+		if f := digitRun(s, dp+1, isDigit); dp > 0 || f > 0 {
+			return dp + 1 + f, true
+		}
+	}
+	return dp, false
+}
+
+// pyExponent reads an exponent at i, an e, a sign or none and digits, and
+// returns where it ends and whether the number is a float.
+func pyExponent(s []byte, i int, float bool) (int, bool) {
+	if i >= len(s) || s[i]|0x20 != 'e' {
+		return i, float
+	}
+	j := i + 1
+	if j < len(s) && (s[j] == '+' || s[j] == '-') {
+		j++
+	}
+	if e := digitRun(s, j, isDigit); e > 0 {
+		return j + e, true
+	}
+	return i, float
 }
 
 // digitRun is how many bytes from i are digits, with one _ between two.
@@ -637,23 +804,9 @@ func checkHost(host []byte, m *core.Meter) (empty bool, err error) {
 		}
 		return false, nil
 	}
-	pattern := string(host)
-	// parse_address changes the ranges a host holds only when it takes off
-	// the brackets of [address]:port: a port after a name, web[1:3]:22,
-	// holds no bracket. So the address patterns run, charged, only on a
-	// host that starts with [ and ends in a port.
-	if host[0] == '[' && hasPort(host) {
-		stripped := withoutPort(host)
-		valid, err := addressOf(m, stripped)
-		if err != nil {
-			return false, err
-		}
-		if valid {
-			if bytes.IndexByte(stripped, '[') < 0 {
-				return false, nil // [x]:22, an address in brackets and its port
-			}
-			pattern = string(stripped)
-		}
+	pattern, done, err := rangesPattern(host, m)
+	if err != nil || done {
+		return false, err
 	}
 	empty, err = checkRanges(pattern, m)
 	switch {
@@ -663,6 +816,29 @@ func checkHost(host []byte, m *core.Meter) (empty bool, err error) {
 		return false, fmt.Errorf("has a range ansible refuses: %w", err)
 	}
 	return empty, nil
+}
+
+// rangesPattern is the part of host, which holds a [, whose ranges ansible
+// expands, and done true for [x]:22, an address in brackets and its port,
+// which holds no range. parse_address changes the ranges a host holds only
+// when it takes off the brackets of [address]:port: a port after a name,
+// web[1:3]:22, holds no bracket. So the address patterns run, charged,
+// only on a host that starts with [ and ends in a port.
+func rangesPattern(host []byte, m *core.Meter) (pattern string, done bool, err error) {
+	if host[0] != '[' || !hasPort(host) {
+		return string(host), false, nil
+	}
+	stripped := withoutPort(host)
+	valid, err := addressOf(m, stripped)
+	switch {
+	case err != nil:
+		return "", false, err
+	case !valid:
+		return string(host), false, nil
+	case bytes.IndexByte(stripped, '[') < 0:
+		return "", true, nil
+	}
+	return string(stripped), false, nil
 }
 
 // addressWork is what parse_address's address patterns cost for each byte
@@ -720,21 +896,33 @@ func plainHostname(a []byte) (address, ok bool) {
 	if bytes.ContainsAny(a, "[]:") {
 		return false, false
 	}
-	alnum := func(r rune) bool { return unicode.IsLetter(r) || unicode.IsNumber(r) }
 	for label := range bytes.SplitSeq(a, []byte(".")) {
-		first, _ := utf8.DecodeRune(label)
-		last, _ := utf8.DecodeLastRune(label)
-		if len(label) == 0 || !alnum(last) || first == '-' {
+		if !plainLabel(label) {
 			return false, true
-		}
-		for _, r := range string(label) {
-			if !alnum(r) && r != '_' && r != '-' {
-				return false, true
-			}
 		}
 	}
 	return true, true
 }
+
+// plainLabel reports whether label is one label of the hostname pattern:
+// letters, numbers, _ and -, starting with no - and ending in a letter or
+// a number.
+func plainLabel(label []byte) bool {
+	first, _ := utf8.DecodeRune(label)
+	last, _ := utf8.DecodeLastRune(label)
+	if len(label) == 0 || !isAlnumRune(last) || first == '-' {
+		return false
+	}
+	for _, r := range string(label) {
+		if !isAlnumRune(r) && r != '_' && r != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+// isAlnumRune reports whether r is a letter or a number, \p{L} or \p{N}.
+func isAlnumRune(r rune) bool { return unicode.IsLetter(r) || unicode.IsNumber(r) }
 
 // pyMaxDigits is the most digits Python's int() converts
 // (sys.get_int_max_str_digits): a range bound past it makes ansible fail the
@@ -815,10 +1003,40 @@ func checkRange(nrange string) (bool, error) {
 	return r.empty(), nil
 }
 
+// parseRange reads the text between a range's brackets as
+// expand_hostname_range does, and refuses what it refuses.
 func parseRange(nrange string) (rangeSpec, error) {
+	beg, end, step, err := splitRange(nrange)
+	if err != nil {
+		return rangeSpec{}, err
+	}
+	var r rangeSpec
+	if r.width, err = rangeWidth(beg, end); err != nil {
+		return rangeSpec{}, err
+	}
+	if ok, err := r.letters(beg, end, step); ok || err != nil {
+		return r.or(err)
+	}
+	if ok, err := r.smallBounds(beg, end, step); ok || err != nil {
+		return r.or(err)
+	}
+	return r.or(r.bigBounds(beg, end, step))
+}
+
+// or is r, or the zero range and err when err is not nil.
+func (r rangeSpec) or(err error) (rangeSpec, error) {
+	if err != nil {
+		return rangeSpec{}, err
+	}
+	return r, nil
+}
+
+// splitRange splits a range at its colons into its begin, end and step,
+// with a missing begin 0 and a missing step 1.
+func splitRange(nrange string) (beg, end, step string, err error) {
 	n := strings.Count(nrange, ":") + 1
 	if n != 2 && n != 3 {
-		return rangeSpec{}, errors.New("host range must be begin:end or begin:end:step")
+		return "", "", "", errors.New("host range must be begin:end or begin:end:step")
 	}
 	beg, rest, _ := strings.Cut(nrange, ":")
 	end, step, three := strings.Cut(rest, ":")
@@ -829,55 +1047,80 @@ func parseRange(nrange string) (rangeSpec, error) {
 		beg = "0"
 	}
 	if end == "" {
-		return rangeSpec{}, errors.New("host range must specify end value")
+		return "", "", "", errors.New("host range must specify end value")
 	}
-	var r rangeSpec
-	if beg[0] == '0' && len(beg) > 1 {
-		if len(beg) != len(end) {
-			return rangeSpec{}, errors.New("host range must specify equal-length begin and end formats")
-		}
-		r.width = len(beg)
+	return beg, end, step, nil
+}
+
+// rangeWidth is the width a begin written with a leading zero sets, which
+// the end must be written to as well, and 0 for any other begin.
+func rangeWidth(beg, end string) (int, error) {
+	if beg[0] != '0' || len(beg) <= 1 {
+		return 0, nil
 	}
-	if ib, ie := strings.Index(asciiLetters, beg), strings.Index(asciiLetters, end); ib >= 0 && ie >= 0 {
-		if ib > ie {
-			return rangeSpec{}, errors.New("host range must have begin <= end")
-		}
-		// letters[ib:ie+1:step]: a step that is no int, or 0, makes Python
-		// take the numeric path, which then refuses the letters; a negative
-		// step from begin to end selects nothing.
-		if s, err := pyInt(step); err == nil && s.Sign() != 0 {
-			r.alpha, r.ib, r.ie, r.step = true, ib, ie, len(asciiLetters)
-			if s.IsInt64() && s.Int64() < int64(len(asciiLetters)) {
-				r.step = int(s.Int64()) // a negative step leaves the range empty
-			}
-			return r, nil
-		}
+	if len(beg) != len(end) {
+		return 0, errors.New("host range must specify equal-length begin and end formats")
 	}
+	return len(beg), nil
+}
+
+// letters sets r to a range of letters when both bounds are a letter and
+// the step an int other than 0, and reports whether it did.
+func (r *rangeSpec) letters(beg, end, step string) (bool, error) {
+	ib, ie := strings.Index(asciiLetters, beg), strings.Index(asciiLetters, end)
+	if ib < 0 || ie < 0 {
+		return false, nil
+	}
+	if ib > ie {
+		return false, errors.New("host range must have begin <= end")
+	}
+	// letters[ib:ie+1:step]: a step that is no int, or 0, makes Python
+	// take the numeric path, which then refuses the letters; a negative
+	// step from begin to end selects nothing.
+	if s, err := pyInt(step); err == nil && s.Sign() != 0 {
+		r.alpha, r.ib, r.ie, r.step = true, ib, ie, len(asciiLetters)
+		if s.IsInt64() && s.Int64() < int64(len(asciiLetters)) {
+			r.step = int(s.Int64()) // a negative step leaves the range empty
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
+// smallBounds sets r to a range of int64 bounds when each of beg, end and
+// step is one (smallInt), and reports whether it did.
+func (r *rangeSpec) smallBounds(beg, end, step string) (bool, error) {
 	if b, ok := smallInt(beg); ok {
 		if e, ok := smallInt(end); ok {
 			if st, ok := smallInt(step); ok {
 				if st == 0 {
-					return rangeSpec{}, errors.New("its step is 0")
+					return false, errors.New("its step is 0")
 				}
 				r.small, r.b64, r.e64, r.s64 = true, b, e, st
-				return r, nil
+				return true, nil
 			}
 		}
 	}
+	return false, nil
+}
+
+// bigBounds sets r to a range of big.Int bounds, as Python's int() reads
+// them.
+func (r *rangeSpec) bigBounds(beg, end, step string) error {
 	var err error
 	if r.b, err = pyInt(beg); err != nil {
-		return rangeSpec{}, err
+		return err
 	}
 	if r.e, err = pyInt(end); err != nil {
-		return rangeSpec{}, err
+		return err
 	}
 	if r.s, err = pyInt(step); err != nil {
-		return rangeSpec{}, err
+		return err
 	}
 	if r.s.Sign() == 0 {
-		return rangeSpec{}, errors.New("its step is 0")
+		return errors.New("its step is 0")
 	}
-	return r, nil
+	return nil
 }
 
 // rangeOf is the range nrange writes, and false for one ansible refuses,
@@ -930,6 +1173,11 @@ func hostIn(host, name []byte, m *core.Meter) (bool, error) {
 	if !port {
 		return inPattern(host, name, m)
 	}
+	return portHostIn(host, name, m)
+}
+
+// portHostIn is hostIn for a host that ends in a port.
+func portHostIn(host, name []byte, m *core.Meter) (bool, error) {
 	// parse_address takes the port off when what is left is an address or a
 	// host name. Which it is takes the address patterns, some 400 ns a byte,
 	// so they run only when the name is one of the hosts of the host without
@@ -967,6 +1215,12 @@ func withoutPort(host []byte) []byte {
 	if i := portStart(a); len(a) > 2 && a[0] == '[' && i > 2 && a[i-1] == ']' {
 		a = a[1 : i-1] // ^\[(.+)\]:([0-9]+)$
 	}
+	return withoutNamePort(a)
+}
+
+// withoutNamePort is a without the : and digits at its end, where no
+// bracket holds that :, and a otherwise.
+func withoutNamePort(a []byte) []byte {
 	// ^((?:[^:\[\]]|\[[^\]]*\])*):([0-9]+)$
 	for i := 0; i < len(a); i++ {
 		switch a[i] {
@@ -1018,60 +1272,107 @@ func inPattern(pattern, name []byte, m *core.Meter) (bool, error) {
 	if err := m.Charge(len(name) + 1); err != nil {
 		return false, err
 	}
-	stamp := make([]int, len(name)+1)
-	reach, next := []int{0}, []int(nil)
-	pos := 0
-	for k := 1; bytes.IndexByte(pattern[pos:], '[') >= 0; k++ {
-		i, j := bytes.IndexByte(pattern[pos:], '['), bytes.IndexByte(pattern[pos:], ']')
-		if j < 0 {
-			return false, nil
-		}
-		lo, hi := pos+min(i, j), pos+max(i, j)
-		if err := m.Charge(rangeWork + hi - pos + parseWork(hi-lo)); err != nil {
+	w := &hostWalk{pattern: pattern, name: name, m: m, stamp: make([]int, len(name)+1), reach: []int{0}}
+	return w.walk()
+}
+
+// hostWalk is inPattern's walk of a pattern with ranges against name: pos
+// is where the pattern's next literal text starts, reach the positions of
+// name the pattern up to pos can end at, and next those the range being
+// walked reaches.
+type hostWalk struct {
+	pattern, name []byte
+	pos           int
+	m             *core.Meter
+	stamp         []int
+	reach, next   []int
+}
+
+// walk walks each range and the literal text before it, then the tail.
+func (w *hostWalk) walk() (bool, error) {
+	for k := 1; bytes.IndexByte(w.pattern[w.pos:], '[') >= 0; k++ {
+		r, lit, ok, err := w.nextRange()
+		if err != nil || !ok {
 			return false, err
 		}
-		r, ok := rangeOf(string(pattern[lo+1 : hi]))
-		if !ok {
-			return false, nil
+		if ok, err := w.reachAfter(k, lit, r); err != nil || !ok {
+			return false, err
 		}
-		switch {
-		case r.small:
-			r.most = max(r.width, decimalDigits(r.b64), decimalDigits(r.e64))
-		case !r.alpha:
-			r.most = max(r.width, len(r.b.Text(10)), len(r.e.Text(10)))
-		}
-		lit := pattern[pos:lo]
-		next = next[:0]
-		for _, p := range reach {
-			if err := m.Charge(positionWork + len(lit)); err != nil {
-				return false, err
-			}
-			if !bytes.HasPrefix(name[p:], lit) {
-				continue
-			}
-			at := p + len(lit)
-			mark := func(n int) {
-				if stamp[at+n] != k {
-					stamp[at+n] = k
-					next = append(next, at+n)
-				}
-			}
-			if err := r.matches(name[at:], m, mark); err != nil {
-				return false, err
-			}
-		}
-		if len(next) == 0 {
-			return false, nil
-		}
-		reach, next = next, reach
-		pos = hi + 1
 	}
-	tail := pattern[pos:]
-	for _, p := range reach {
-		if err := m.Charge(positionWork + len(tail)); err != nil {
+	return w.tail()
+}
+
+// nextRange reads the next range of the pattern, charged, and returns it
+// and the literal text before it, and moves pos past it. It reports false
+// for a range that selects no host.
+func (w *hostWalk) nextRange() (rangeSpec, []byte, bool, error) {
+	rest := w.pattern[w.pos:]
+	i, j := bytes.IndexByte(rest, '['), bytes.IndexByte(rest, ']')
+	if j < 0 {
+		return rangeSpec{}, nil, false, nil
+	}
+	lo, hi := w.pos+min(i, j), w.pos+max(i, j)
+	if err := w.m.Charge(rangeWork + hi - w.pos + parseWork(hi-lo)); err != nil {
+		return rangeSpec{}, nil, false, err
+	}
+	r, ok := rangeOf(string(w.pattern[lo+1 : hi]))
+	if !ok {
+		return rangeSpec{}, nil, false, nil
+	}
+	r.setMost()
+	lit := w.pattern[w.pos:lo]
+	w.pos = hi + 1
+	return r, lit, true, nil
+}
+
+// setMost sets the most digits a value of a numeric range has.
+func (r *rangeSpec) setMost() {
+	switch {
+	case r.small:
+		r.most = max(r.width, decimalDigits(r.b64), decimalDigits(r.e64))
+	case !r.alpha:
+		r.most = max(r.width, len(r.b.Text(10)), len(r.e.Text(10)))
+	}
+}
+
+// reachAfter moves reach past lit and r, the k-th range: to each position
+// a value of r ends at, from each reached position that lit follows. It
+// reports false when it reaches none.
+func (w *hostWalk) reachAfter(k int, lit []byte, r rangeSpec) (bool, error) {
+	w.next = w.next[:0]
+	for _, p := range w.reach {
+		if err := w.m.Charge(positionWork + len(lit)); err != nil {
 			return false, err
 		}
-		if bytes.Equal(name[p:], tail) {
+		if !bytes.HasPrefix(w.name[p:], lit) {
+			continue
+		}
+		at := p + len(lit)
+		if err := r.matches(w.name[at:], w.m, func(n int) { w.mark(k, at+n) }); err != nil {
+			return false, err
+		}
+	}
+	w.reach, w.next = w.next, w.reach
+	return len(w.reach) > 0, nil
+}
+
+// mark adds position q to next once for the k-th range.
+func (w *hostWalk) mark(k, q int) {
+	if w.stamp[q] != k {
+		w.stamp[q] = k
+		w.next = append(w.next, q)
+	}
+}
+
+// tail reports whether the pattern's text after its last range ends name
+// from a reached position.
+func (w *hostWalk) tail() (bool, error) {
+	tail := w.pattern[w.pos:]
+	for _, p := range w.reach {
+		if err := w.m.Charge(positionWork + len(tail)); err != nil {
+			return false, err
+		}
+		if bytes.Equal(w.name[p:], tail) {
 			return true, nil
 		}
 	}
@@ -1104,25 +1405,41 @@ func decimalDigits(v int64) int {
 // longer bound, or the width the begin is written to.
 func (r rangeSpec) matches(s []byte, m *core.Meter, mark func(n int)) error {
 	if r.alpha {
-		if len(s) > 0 && r.step > 0 {
-			k := strings.IndexByte(asciiLetters, s[0])
-			if k >= r.ib && k <= r.ie && (k-r.ib)%r.step == 0 {
-				mark(1)
-			}
-		}
-		return m.Charge(digitWork)
+		return r.matchesLetter(s, m, mark)
 	}
-	sign := 0
-	if len(s) > 0 && s[0] == '-' {
-		sign = 1
-	}
-	digits := 0
-	for sign+digits < len(s) && isDigit(s[sign+digits]) && digits < r.most {
-		digits++
-	}
+	sign, digits := r.leadingDigits(s)
 	if r.small {
 		return r.matchesSmall(s, sign, digits, m, mark)
 	}
+	return r.matchesBig(s, sign, digits, m, mark)
+}
+
+// matchesLetter is matches for a range of letters, whose values are one
+// byte.
+func (r rangeSpec) matchesLetter(s []byte, m *core.Meter, mark func(n int)) error {
+	if len(s) > 0 && r.step > 0 {
+		k := strings.IndexByte(asciiLetters, s[0])
+		if k >= r.ib && k <= r.ie && (k-r.ib)%r.step == 0 {
+			mark(1)
+		}
+	}
+	return m.Charge(digitWork)
+}
+
+// leadingDigits is the - at the start of s, 1 or 0, and how many digits
+// follow it, up to the most a value of r has.
+func (r rangeSpec) leadingDigits(s []byte) (sign, digits int) {
+	if len(s) > 0 && s[0] == '-' {
+		sign = 1
+	}
+	for sign+digits < len(s) && isDigit(s[sign+digits]) && digits < r.most {
+		digits++
+	}
+	return sign, digits
+}
+
+// matchesBig is matches for a range of big.Int bounds.
+func (r rangeSpec) matchesBig(s []byte, sign, digits int, m *core.Meter, mark func(n int)) error {
 	for n := 1; n <= digits; n++ {
 		if err := m.Charge(bigDigitWork * (sign + n)); err != nil {
 			return err
@@ -1146,10 +1463,7 @@ func (r rangeSpec) matchesSmall(s []byte, sign, digits int, m *core.Meter, mark 
 	var x int64
 	for n := 1; n <= digits && n <= 18; n++ {
 		x = x*10 + int64(s[sign+n-1]-'0')
-		length := sign + n
-		zero := s[sign] == '0' && n > 1 // a 0 before the first digit
-		switch {
-		case sign == 1 && x == 0, length < r.width, length > r.width && zero:
+		if !r.zfilled(s, sign, n, x) {
 			continue
 		}
 		v := x
@@ -1157,10 +1471,24 @@ func (r rangeSpec) matchesSmall(s []byte, sign, digits int, m *core.Meter, mark 
 			v = -x
 		}
 		if r.holdsSmall(v) {
-			mark(length)
+			mark(sign + n)
 		}
 	}
 	return nil
+}
+
+// zfilled reports whether the sign and n digits at the start of s, whose
+// value is x, are the text zfill writes for a value of r: not -0, at
+// least the width, and longer than it only with no 0 before the first
+// digit.
+func (r rangeSpec) zfilled(s []byte, sign, n int, x int64) bool {
+	length := sign + n
+	zero := s[sign] == '0' && n > 1 // a 0 before the first digit
+	switch {
+	case sign == 1 && x == 0, length < r.width, length > r.width && zero:
+		return false
+	}
+	return true
 }
 
 // holdsSmall is holds for int64 bounds.
@@ -1235,7 +1563,7 @@ func pyInt(s string) (*big.Int, error) {
 	}
 	t := string(pyStrip([]byte(s)))
 	digits := strings.TrimLeft(t, "+-")
-	if len(t)-len(digits) > 1 || digits == "" || digits[0] == '_' || digits[len(digits)-1] == '_' || strings.Contains(digits, "__") {
+	if !pyDigits(len(t)-len(digits), digits) {
 		return nil, errNoInteger
 	}
 	if len(digits)-strings.Count(digits, "_") > pyMaxDigits {
@@ -1246,6 +1574,12 @@ func pyInt(s string) (*big.Int, error) {
 		return nil, errNoInteger
 	}
 	return n, nil
+}
+
+// pyDigits reports whether digits, after signs signs, are what int() takes:
+// one sign at most, and digits with single _ between them.
+func pyDigits(signs int, digits string) bool {
+	return signs <= 1 && digits != "" && digits[0] != '_' && digits[len(digits)-1] != '_' && !strings.Contains(digits, "__")
 }
 
 var errNoInteger = errors.New("its begin, end or step is no integer")

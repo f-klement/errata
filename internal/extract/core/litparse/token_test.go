@@ -72,3 +72,18 @@ func TestTokens(t *testing.T) {
 		}
 	}
 }
+
+// A token read past the start of the next span, which no path reaches but a
+// defect, refuses the file as one that opens a string inside a token, and
+// does not panic. Planted break: scan cutting the file at the span's start
+// whatever i is, which indexes past the cut.
+func TestAScanPastASpanRefuses(t *testing.T) {
+	l, _ := core.LanguageNamed("python")
+	data := []byte("'a' b")
+	tz := newTokenizer("f", l, data, core.LineIndex(data))
+	defer tz.stop()
+	tz.emit(tz.scan(4), false)
+	if tz.err == nil || !strings.Contains(tz.err.Error(), "a string or a comment opens inside a token") {
+		t.Errorf("got %v, want the refusal of a span inside a token", tz.err)
+	}
+}

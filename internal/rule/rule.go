@@ -84,46 +84,74 @@ func extractAll(ctx context.Context, root string, r check.Rule, names []string) 
 		if err := ctx.Err(); err != nil {
 			return extracted, problems, fmt.Sprintf("cancelled before extractor %q ran: %v", name, err)
 		}
-		values, err := extractOne(ctx, root, byName[name], read)
-		why := ""
-		if none := (*check.NoValue)(nil); errors.As(err, &none) {
-			values, err, why = nil, nil, ": "+none.Reason
-		}
+		values, why, err := runExtractor(ctx, root, byName[name], read)
 		if err != nil {
 			problems = append(problems, fmt.Sprintf("extractor %q: %v", name, err))
 			continue
 		}
-		x := check.Extracted{Extractor: name, Values: shown(r, values)}
-		computed := slices.ContainsFunc(values, func(v check.Value) bool { return v.NotLiteral })
-		skip := slices.Contains(r.SkipNotLiteral, name)
-		switch {
-		case computed && skip:
-			// The values with their shown form, so a whole value kept
-			// beside one left out keeps it.
-			all := x.Values
-			x.Values = nil
-			for _, v := range all {
-				if v.NotLiteral {
-					x.LeftOut = append(x.LeftOut, v)
-				} else {
-					x.Values = append(x.Values, v)
-				}
-			}
-		case computed:
-			problems = append(problems, notLiteral(name, values))
+		x, problem := notLiteralOf(r, name, values)
+		if problem != "" {
+			problems = append(problems, problem)
 		}
 		extracted = append(extracted, x)
 		read[name] = literal(x.Values)
-		if len(x.Values) == 0 && !slices.Contains(r.AllowEmpty, name) {
-			if len(x.LeftOut) > 0 {
-				// The count line at the end of the message says how many.
-				problems = append(problems, fmt.Sprintf("extractor %q found no literal value", name))
-			} else {
-				problems = append(problems, fmt.Sprintf("extractor %q found no value%s", name, why))
-			}
+		if problem := emptyProblem(r, x, why); problem != "" {
+			problems = append(problems, problem)
 		}
 	}
 	return extracted, problems, ""
+}
+
+// runExtractor runs e (extractOne). An extractor that found no value
+// returns none, with ": " and the reason it gave.
+func runExtractor(ctx context.Context, root string, e check.NamedExtractor, read map[string][]check.Value) ([]check.Value, string, error) {
+	values, err := extractOne(ctx, root, e, read)
+	if none := (*check.NoValue)(nil); errors.As(err, &none) {
+		return nil, ": " + none.Reason, nil
+	}
+	return values, "", err
+}
+
+// notLiteralOf is what the extractor name returned, as the result shows
+// it. Its not literal values are left out when skip_not_literal lists it,
+// and else are a problem, which it returns.
+func notLiteralOf(r check.Rule, name string, values []check.Value) (check.Extracted, string) {
+	x := check.Extracted{Extractor: name, Values: shown(r, values)}
+	computed := slices.ContainsFunc(values, func(v check.Value) bool { return v.NotLiteral })
+	switch {
+	case computed && slices.Contains(r.SkipNotLiteral, name):
+		x.Values, x.LeftOut = leaveOut(x.Values)
+	case computed:
+		return x, notLiteral(name, values)
+	}
+	return x, ""
+}
+
+// leaveOut splits values into the literal ones and those left out, each
+// with its shown form, so a whole value kept beside one left out keeps it.
+func leaveOut(values []check.Value) (kept, left []check.Value) {
+	for _, v := range values {
+		if v.NotLiteral {
+			left = append(left, v)
+		} else {
+			kept = append(kept, v)
+		}
+	}
+	return kept, left
+}
+
+// emptyProblem is the problem of an extractor x that kept no value while
+// allow_empty does not list it, or "". why is the reason it gave for
+// finding none.
+func emptyProblem(r check.Rule, x check.Extracted, why string) string {
+	if len(x.Values) != 0 || slices.Contains(r.AllowEmpty, x.Extractor) {
+		return ""
+	}
+	if len(x.LeftOut) > 0 {
+		// The count line at the end of the message says how many.
+		return fmt.Sprintf("extractor %q found no literal value", x.Extractor)
+	}
+	return fmt.Sprintf("extractor %q found no value%s", x.Extractor, why)
 }
 
 // shown is values with each one handed over whole given its Shown form, a
@@ -187,21 +215,31 @@ func bounded(d check.Description, values []check.Value) error {
 		if bytes += b; bytes > limit {
 			return fmt.Errorf("its values hold more than %d bytes in all, the extractor's max_bytes; set max_bytes: higher", limit)
 		}
-		if v.At.OutsideOnWindows() {
-			return fmt.Errorf("it returned a value at %s, which is absolute, names a drive or climbs out where a backslash separates names, as on Windows, so it is refused on every OS", newQuoter(nil).quote(v.At.File))
+		if err := boundedValue(v); err != nil {
+			return err
 		}
-		if !v.At.Inside() {
-			return fmt.Errorf("it returned a value at %s, which is no path inside the repository", newQuoter(nil).quote(v.At.File))
-		}
-		if check.HoldsControl(v.At.File) {
-			return fmt.Errorf("it returned a value at %s, a path that holds a control character, a direction control or a line or paragraph separator, which a terminal or a report viewer would act on", newQuoter(nil).quote(v.At.File))
-		}
-		if v.Data != nil && len(v.Text) > check.MaxShown {
-			return fmt.Errorf("it returned a value handed over whole at %s whose text holds %d bytes, over the %d a whole value shows", newQuoter(nil).quote(v.At.String()), len(v.Text), check.MaxShown)
-		}
-		if v.Shown != "" {
-			return fmt.Errorf("it returned a value at %s with its shown form set, which only the rule sets", newQuoter(nil).quote(v.At.String()))
-		}
+	}
+	return nil
+}
+
+// boundedValue refuses a value at a path outside the repository or that
+// holds a control character, a value handed over whole whose text is too
+// long to show, and one whose Shown the extractor set (bounded).
+func boundedValue(v check.Value) error {
+	if v.At.OutsideOnWindows() {
+		return fmt.Errorf("it returned a value at %s, which is absolute, names a drive or climbs out where a backslash separates names, as on Windows, so it is refused on every OS", newQuoter(nil).quote(v.At.File))
+	}
+	if !v.At.Inside() {
+		return fmt.Errorf("it returned a value at %s, which is no path inside the repository", newQuoter(nil).quote(v.At.File))
+	}
+	if check.HoldsControl(v.At.File) {
+		return fmt.Errorf("it returned a value at %s, a path that holds a control character, a direction control or a line or paragraph separator, which a terminal or a report viewer would act on", newQuoter(nil).quote(v.At.File))
+	}
+	if v.Data != nil && len(v.Text) > check.MaxShown {
+		return fmt.Errorf("it returned a value handed over whole at %s whose text holds %d bytes, over the %d a whole value shows", newQuoter(nil).quote(v.At.String()), len(v.Text), check.MaxShown)
+	}
+	if v.Shown != "" {
+		return fmt.Errorf("it returned a value at %s with its shown form set, which only the rule sets", newQuoter(nil).quote(v.At.String()))
 	}
 	return nil
 }
@@ -671,33 +709,10 @@ func agree(ctx context.Context, root string, r check.Rule) (check.Verdict, strin
 		return check.VerdictUnknown, cancelled, "", nil, extracted
 	}
 	extracted, problems = onFields(r, extracted, problems)
-	var (
-		all        []found
-		listedNone bool
-	)
-	for i, x := range extracted {
-		// An entry name.field is allowed empty by its extractor's name.
-		if on, _, _ := r.AgreeOn(x.Extractor); len(x.Values) == 0 && slices.Contains(r.AllowEmpty, on.Name) {
-			listedNone = true
-		}
-		for j, v := range x.Values {
-			all = append(all, found{value: v, extractor: x.Extractor, of: check.Blame{Extractor: i, Value: j}})
-		}
+	all, listedNone := agreeValues(r, extracted)
+	if message := nothingToCompare(problems, all, listedNone); message != "" {
+		return check.VerdictUnknown, message, "", nil, extracted
 	}
-	switch {
-	case len(problems) > 0:
-		return check.VerdictUnknown, strings.Join(problems, "\n"), "", nil, extracted
-	case len(all) == 0:
-		return check.VerdictUnknown, "no extractor found a value, so agree has nothing to compare", "", nil, extracted
-	case len(all) == 1 && !listedNone:
-		// One value agrees with itself. Only an extractor that allow_empty
-		// lists coming back empty makes one value a comparison the author
-		// asked for.
-		f := all[0]
-		return check.VerdictUnknown, fmt.Sprintf("agree found one value, so it has nothing to compare: %s at %s%s (%s)",
-			newQuoter(nil).quote(f.value.Text), f.value.At, f.value.Notes(), f.extractor), "", nil, extracted
-	}
-
 	groups := group(all, r)
 	if r.Comparison() == check.CompareSemver {
 		verdict, message, note, blamed := agreeSemver(groups, semver.Syntax(r.Syntax))
@@ -707,6 +722,41 @@ func agree(ctx context.Context, root string, r check.Rule) (check.Verdict, strin
 		return check.VerdictTrue, "", "", nil, extracted
 	}
 	return check.VerdictFalse, differ(groups), "", groups.blame(groups.outsideMajority()), extracted
+}
+
+// agreeValues is every value agree compares, each with where it came
+// from, and whether an extractor that allow_empty lists came back empty.
+func agreeValues(r check.Rule, extracted []check.Extracted) (all []found, listedNone bool) {
+	for i, x := range extracted {
+		// An entry name.field is allowed empty by its extractor's name.
+		if on, _, _ := r.AgreeOn(x.Extractor); len(x.Values) == 0 && slices.Contains(r.AllowEmpty, on.Name) {
+			listedNone = true
+		}
+		for j, v := range x.Values {
+			all = append(all, found{value: v, extractor: x.Extractor, of: check.Blame{Extractor: i, Value: j}})
+		}
+	}
+	return all, listedNone
+}
+
+// nothingToCompare is why agree is unknown before it compares, or "": a
+// problem, no value at all, or one value when no extractor that
+// allow_empty lists came back empty.
+func nothingToCompare(problems []string, all []found, listedNone bool) string {
+	switch {
+	case len(problems) > 0:
+		return strings.Join(problems, "\n")
+	case len(all) == 0:
+		return "no extractor found a value, so agree has nothing to compare"
+	case len(all) == 1 && !listedNone:
+		// One value agrees with itself. Only an extractor that allow_empty
+		// lists coming back empty makes one value a comparison the author
+		// asked for.
+		f := all[0]
+		return fmt.Sprintf("agree found one value, so it has nothing to compare: %s at %s%s (%s)",
+			newQuoter(nil).quote(f.value.Text), f.value.At, f.value.Notes(), f.extractor)
+	}
+	return ""
 }
 
 // agreed is the extractors r.Agree reads, each once, in the order of the
@@ -740,26 +790,46 @@ func onFields(r check.Rule, extracted []check.Extracted, problems []string) ([]c
 			out = append(out, extracted[i])
 			continue
 		}
-		on := check.Extracted{Extractor: entry}
-		for j, v := range extracted[i].Values {
-			if v.Data == nil {
-				continue
-			}
-			d := v.Data.Field(field)
-			switch {
-			case d == nil:
-			case d.Kind != check.DataScalar:
-				problems = append(problems, fmt.Sprintf("extractor %q: %s[%d] holds %s in field %q at %s, and agree compares flat values; write an assert", x.Name, x.Name, j, d.Show(check.ShownBytes), field, d.At))
-			default:
-				on.Values = append(on.Values, check.Value{Text: d.Text, At: d.At})
-			}
-		}
-		if len(on.Values) == 0 && len(extracted[i].Values) > 0 && !slices.Contains(r.AllowEmpty, x.Name) {
-			problems = append(problems, fmt.Sprintf("extractor %q found no record with field %q", x.Name, field))
-		}
+		var on check.Extracted
+		on, problems = fieldEntry(r, entry, field, extracted[i], problems)
 		out = append(out, on)
 	}
 	return out, problems
+}
+
+// fieldEntry is the entry name.field of onFields: the field of each record
+// of x, what the extractor returned, with the problems it adds to problems.
+func fieldEntry(r check.Rule, entry, field string, x check.Extracted, problems []string) (check.Extracted, []string) {
+	on := check.Extracted{Extractor: entry}
+	for j, v := range x.Values {
+		var problem string
+		if on.Values, problem = addField(on.Values, x.Extractor, j, v, field); problem != "" {
+			problems = append(problems, problem)
+		}
+	}
+	if len(on.Values) == 0 && len(x.Values) > 0 && !slices.Contains(r.AllowEmpty, x.Extractor) {
+		problems = append(problems, fmt.Sprintf("extractor %q found no record with field %q", x.Extractor, field))
+	}
+	return on, problems
+}
+
+// addField adds to values the field of v, record j of the extractor name,
+// as a flat value at its own place. A record without it adds nothing, and
+// a field that holds a mapping or a sequence is a problem, which it
+// returns.
+func addField(values []check.Value, name string, j int, v check.Value, field string) ([]check.Value, string) {
+	if v.Data == nil {
+		return values, ""
+	}
+	d := v.Data.Field(field)
+	switch {
+	case d == nil:
+	case d.Kind != check.DataScalar:
+		return values, fmt.Sprintf("extractor %q: %s[%d] holds %s in field %q at %s, and agree compares flat values; write an assert", name, name, j, d.Show(check.ShownBytes), field, d.At)
+	default:
+		values = append(values, check.Value{Text: d.Text, At: d.At})
+	}
+	return values, ""
 }
 
 // distinct is one normalised value and every place it was found.
@@ -864,6 +934,29 @@ func agreeSemver(groups []distinct, syn semver.Syntax) (verdict check.Verdict, m
 		texts[i] = g.text
 	}
 	q := newQuoter(texts)
+	values, unknown := parseGroups(groups, syn, q)
+	if unknown != "" {
+		return check.VerdictUnknown, unknown, "", -1
+	}
+	out := semver.Agree(values)
+	switch {
+	case out.Holds && out.OnlyRanges:
+		return check.VerdictTrue, "", "agree: only ranges were compared, since no value is a version, and they overlap", -1
+	case out.Holds:
+		return check.VerdictTrue, "", "", -1
+	}
+	var b strings.Builder
+	b.WriteString(semverLead(out, values, texts, q))
+	for i, g := range groups {
+		fmt.Fprintf(&b, "\n  %s (%s) at %s", q.quote(g.text), clip(values[i].String()), places(g))
+	}
+	return check.VerdictFalse, b.String(), "", out.Second
+}
+
+// parseGroups reads each group's text as a version or a range, with the
+// message of an unknown verdict when one it cannot read, or a bound it
+// meets, stops the comparison.
+func parseGroups(groups []distinct, syn semver.Syntax, q quoter) ([]semver.Value, string) {
 	values := make([]semver.Value, len(groups))
 	var (
 		unread []string
@@ -874,40 +967,35 @@ func agreeSemver(groups []distinct, syn semver.Syntax) (verdict check.Verdict, m
 		v, err := reader.Parse(g.text)
 		switch {
 		case errors.As(err, &bound):
-			return check.VerdictUnknown, "agree: compare semver stopped at " + q.quote(g.text) + " at " + places(g) + ": " + err.Error(), "", -1
+			return nil, "agree: compare semver stopped at " + q.quote(g.text) + " at " + places(g) + ": " + err.Error()
 		case err != nil:
 			unread = append(unread, fmt.Sprintf("%s at %s: %v", q.quote(g.text), places(g), err))
 		}
 		values[i] = v
 	}
 	if len(unread) > 0 {
-		return check.VerdictUnknown, "agree: compare semver reads every value as a version or a range, and cannot read " +
-			count(len(unread), "value") + "\n  " + strings.Join(unread, "\n  "), "", -1
+		return nil, "agree: compare semver reads every value as a version or a range, and cannot read " +
+			count(len(unread), "value") + "\n  " + strings.Join(unread, "\n  ")
 	}
-	out := semver.Agree(values)
-	var lead string
+	return values, ""
+}
+
+// semverLead is the first line of the message of values that do not
+// agree: ranges that no release satisfies, a version outside a range, or
+// two versions that differ.
+func semverLead(out semver.Outcome, values []semver.Value, texts []string, q quoter) string {
 	switch {
-	case out.Holds && out.OnlyRanges:
-		return check.VerdictTrue, "", "agree: only ranges were compared, since no value is a version, and they overlap", -1
-	case out.Holds:
-		return check.VerdictTrue, "", "", -1
 	case out.OnlyRanges:
-		lead = "agree: only ranges were compared, since no value is a version, and no release satisfies them all"
+		return "agree: only ranges were compared, since no value is a version, and no release satisfies them all"
 	case values[out.First].IsRange() || values[out.Second].IsRange():
 		version, rng := out.First, out.Second
 		if values[version].IsRange() {
 			version, rng = rng, version
 		}
-		lead = fmt.Sprintf("agree: the version %s does not satisfy the range %s", q.quote(texts[version]), q.quote(texts[rng]))
+		return fmt.Sprintf("agree: the version %s does not satisfy the range %s", q.quote(texts[version]), q.quote(texts[rng]))
 	default:
-		lead = fmt.Sprintf("agree: the versions %s and %s differ at the precision both state", q.quote(texts[out.First]), q.quote(texts[out.Second]))
+		return fmt.Sprintf("agree: the versions %s and %s differ at the precision both state", q.quote(texts[out.First]), q.quote(texts[out.Second]))
 	}
-	var b strings.Builder
-	b.WriteString(lead)
-	for i, g := range groups {
-		fmt.Fprintf(&b, "\n  %s (%s) at %s", q.quote(g.text), clip(values[i].String()), places(g))
-	}
-	return check.VerdictFalse, b.String(), "", out.Second
 }
 
 // clip is what a value was read as, cut to maxQuoted bytes with its length

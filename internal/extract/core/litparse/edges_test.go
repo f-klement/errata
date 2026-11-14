@@ -1,6 +1,7 @@
 package litparse
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -57,6 +58,55 @@ func TestDecodeEdges(t *testing.T) {
 		{"python", `a = 'a' f'{x}'`, "a", `~'a' f'{x}'@1`},
 		{"python", `a = 'a' x'b'`, "a", `~'a' x'b'@1`},
 		{"python", `a = f'{x}' 'b'`, "a", `~f'{x}' 'b'@1`},
+		{"python", "a = b\"\\n\"", "a", "\n@1"},
+		{"python", "a = b\"\\u0041\"", "a", "~b\"\\u0041\"@1"},
+		{"python", "a = \"\\00\"", "a", "~\"\\00\"@1"},
+		{"python", "a = \"\\09\"", "a", "~\"\\09\"@1"},
+		{"php", "<?php $a = <<<EOT\na\\\nEOT;\n", "a", "a\\@1"},
+	})
+}
+
+// A prefix's Interp, where it has one, opens code in the body in place of
+// the form's. No row of the table writes one, so a copy of Python's row
+// gets a prefix t that opens code at {. Planted break: decoding taking the
+// prefix's Interp only when it is empty, which reads t'{x}' as the text
+// {x} and u'{x}' as computed.
+func TestAPrefixInterpReplacesTheForms(t *testing.T) {
+	l, _ := core.LanguageNamed("python")
+	syn := *l.Syntax
+	syn.Prefixes = append(slices.Clone(syn.Prefixes), core.Prefix{Word: "t", Interp: "{"})
+	l.Syntax = &syn
+	for _, c := range []struct{ src, want string }{
+		{"a = t'{x}'\n", "~t'{x}'"},
+		{"a = u'{x}'\n", "{x}"},
+	} {
+		root, err := Parse("f", l, []byte(c.src))
+		if err != nil {
+			t.Fatalf("%q: %v", c.src, err)
+		}
+		got := root.Field["a"]
+		if text := got.Text; got.NotLiteral {
+			got.Text = "~" + text
+		}
+		if got.Text != c.want {
+			t.Errorf("%q: got %q, want %q", c.src, got.Text, c.want)
+		}
+	}
+}
+
+// PHP's array(...) is a list however many elements it holds, as its short
+// form [...] is: one element in it is no value in parentheses. Planted
+// break: listNode reading array( as parentheses reads array('x') as the
+// scalar x, so its [*] selects nothing.
+func TestArrayCallIsAList(t *testing.T) {
+	src := "<?php\nreturn ['b' => array('x'), 'c' => array('x', 'y'), 'd' => ['x'], 'e' => array('x',), 'f' => array(array('x')), 'g' => array('k' => 'v')];\n"
+	cases(t, []struct{ lang, src, path, want string }{
+		{"php", src, "return.b[*]", "x@2"},
+		{"php", src, "return.c[*]", "x@2, y@2"},
+		{"php", src, "return.d[*]", "x@2"},
+		{"php", src, "return.e[*]", "x@2"},
+		{"php", src, "return.f[*][*]", "x@2"},
+		{"php", src, "return.g.k", "v@2"},
 	})
 }
 
@@ -85,15 +135,39 @@ func TestParseEdges(t *testing.T) {
 		{"php", "<?php\nreturn = 1;\n", "return", "1@2"},
 		{"lua", "x = 1\nreturn x\n", "return", "~x@2"},
 	})
-	deep := func(n int, open, close string) string {
-		return "a = " + strings.Repeat(open, n) + "1" + strings.Repeat(close, n)
-	}
-	for _, c := range []struct{ open, close string }{{"[", "]"}, {"f(", ")"}} {
-		if got := read(t, "python", deep(core.MaxDepth, c.open, c.close), "a"); strings.HasPrefix(got, "error") && strings.Contains(got, "levels deep") {
-			t.Errorf("%s nested %d deep: %.120s", c.open, core.MaxDepth, got)
+	// Each way a value nests counts toward the depth limit: a list, a
+	// call, a member's call, a prefixed list and an ArrayCall. Planted
+	// break: level - 1 for level + 1 in memberLiteral, prefixedList or the
+	// ArrayCall case reads 1001 levels without an error.
+	for _, c := range []struct{ lang, head, path, open, close string }{
+		{"python", "a = ", "a", "[", "]"},
+		{"python", "a = ", "a", "f(", ")"},
+		{"swift", "let a = ", "a", ".f(", ")"},
+		{"elixir", "a = ", "a", "%{a: ", "}"},
+		{"php", "<?php\nreturn ", "return", "array(", ")"},
+	} {
+		deep := func(n int) string {
+			return c.head + strings.Repeat(c.open, n) + "1" + strings.Repeat(c.close, n)
 		}
-		if got := read(t, "python", deep(core.MaxDepth+1, c.open, c.close), "a"); !strings.Contains(got, "nested more than 1000 levels deep") {
-			t.Errorf("%s nested %d deep: %.120s", c.open, core.MaxDepth+1, got)
+		if got := read(t, c.lang, deep(core.MaxDepth), c.path); strings.HasPrefix(got, "error") && strings.Contains(got, "levels deep") {
+			t.Errorf("%s %s nested %d deep: %.120s", c.lang, c.open, core.MaxDepth, got)
+		}
+		if got := read(t, c.lang, deep(core.MaxDepth+1), c.path); !strings.Contains(got, "nested more than 1000 levels deep") {
+			t.Errorf("%s %s nested %d deep: %.120s", c.lang, c.open, core.MaxDepth+1, got)
 		}
 	}
+}
+
+// The tokenizer's edges: the body of a heredoc on a later line is skipped
+// as the first one's is, and a number's fraction may start with any digit.
+// Planted breaks: resumeLine leaving the line of openers set (1 for -1),
+// so the later heredoc's line is never noted and its body reads as code;
+// pointDigit taking 0 or 9 for no digit, which ends 1.05 and 0.9 at their
+// point.
+func TestTokenEdges(t *testing.T) {
+	cases(t, []struct{ lang, src, path, want string }{
+		{"ruby", "A = <<~X\n  a\nX\nB = <<~Y\n  PLANTED = 9\nY\n", "PLANTED", ""},
+		{"ruby", "A = <<~X\n  a\nX\nB = <<~Y\n  PLANTED = 9\nY\n", "B", "PLANTED = 9\n@4"},
+		{"python", "X = 1.05\nY = 0.9\n", "$[*]", "1.05@1, 0.9@2"},
+	})
 }

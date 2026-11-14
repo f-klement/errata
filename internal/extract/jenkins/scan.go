@@ -305,26 +305,7 @@ func isValue(t token) bool {
 func (s *scan) feed(t token) error {
 	lv := &s.stack[len(s.stack)-1]
 	if t.kind == tokNewline {
-		if lv.parens > 0 || lv.st == stStart {
-			return nil
-		}
-		if !s.endsStatement(lv) {
-			return nil
-		}
-		// A line that starts with . or ?: goes on with this statement.
-		next, err := s.lx.next()
-		for err == nil && next.kind == tokNewline {
-			next, err = s.lx.next()
-		}
-		if err != nil {
-			return err
-		}
-		s.pushed = &next
-		if next.kind == tokOp && goesOn[next.op] {
-			return nil
-		}
-		s.endStatement(len(s.stack) - 1)
-		return nil
+		return s.newline(lv)
 	}
 	s.watch(lv, t)
 	switch {
@@ -335,12 +316,52 @@ func (s *scan) feed(t token) error {
 		return s.open(lv, t)
 	case t.is("}"):
 		return s.close(t)
-	case t.is("(") || t.is("[") || t.is("?["):
-		if t.is("(") && lv.parens == 0 && lv.prev2.kind == tokName && conditions[string(lv.prev2.text(s.data))] {
+	}
+	s.bracket(lv, t)
+	s.step(lv, t)
+	lv.last = t
+	return nil
+}
+
+// newline reads a line end in the block of lv, which ends the statement
+// there unless the statement goes on: inside brackets, after an operator,
+// or before a line that starts with . or ?:.
+func (s *scan) newline(lv *level) error {
+	if lv.parens > 0 || lv.st == stStart || !s.endsStatement(lv) {
+		return nil
+	}
+	next, err := s.nextLine()
+	if err != nil {
+		return err
+	}
+	s.pushed = &next
+	if next.kind == tokOp && goesOn[next.op] {
+		return nil
+	}
+	s.endStatement(len(s.stack) - 1)
+	return nil
+}
+
+// nextLine is the first token after the line ends that follow.
+func (s *scan) nextLine() (token, error) {
+	next, err := s.lx.next()
+	for err == nil && next.kind == tokNewline {
+		next, err = s.lx.next()
+	}
+	return next, err
+}
+
+// bracket keeps the count of the ( and [ open in the statement of lv, with
+// whether the ( open is an if's, a while's or a for's condition and where
+// that condition ends, and ends a withEnv( that t closes.
+func (s *scan) bracket(lv *level, t token) {
+	switch {
+	case opens(t):
+		if s.opensCondition(lv, t) {
 			lv.cond = true
 		}
 		lv.parens++
-	case t.is(")") || t.is("]"): // the lexer refuses one that closes nothing
+	case closes(t): // the lexer refuses one that closes nothing
 		lv.parens--
 		if lv.parens == 0 && lv.cond {
 			lv.cond, lv.condEnd = false, t.end
@@ -349,41 +370,92 @@ func (s *scan) feed(t token) error {
 			lv.withEnv = 0
 		}
 	}
-	s.step(lv, t)
-	lv.last = t
-	return nil
 }
+
+// opensCondition reports whether t is the ( after if, while or for, at
+// the statement's own level.
+func (s *scan) opensCondition(lv *level, t token) bool {
+	return t.is("(") && lv.parens == 0 && lv.prev2.kind == tokName && conditions[string(lv.prev2.text(s.data))]
+}
+
+// opens reports whether t opens a ( or a [.
+func opens(t token) bool { return t.is("(") || t.is("[") || t.is("?[") }
+
+// closes reports whether t closes a ( or a [.
+func closes(t token) bool { return t.is(")") || t.is("]") }
 
 // watch looks at every token for what makes the variable unknown, whatever
 // statement it is in: a library or a load, a withEnv that sets the
 // variable, and a parameter or axis of its name.
 func (s *scan) watch(lv *level, t token) {
-	d := s.data
+	if !s.watchLoad(lv, t) {
+		s.watchEnvAndDeclared(lv, t)
+	}
+	s.watchEnv(lv, t)
+	s.watchChange(lv, t)
+	lv.prev6, lv.prev5, lv.prev4, lv.prev3, lv.prev2, lv.prev = lv.prev5, lv.prev4, lv.prev3, lv.prev2, lv.prev, t
+}
+
+// watchLoad notes a library or a file that t, after the last tokens,
+// loads, and reports whether it does: an @Library, a load, library or
+// evaluate step, or a libraries directive.
+func (s *scan) watchLoad(lv *level, t token) bool {
 	switch {
-	case lv.prev.kind == tokAt && t.kind == tokName && string(t.text(d)) == "Library":
+	case lv.prev.kind == tokAt && s.isName(t, "Library"):
 		s.note(&s.loads, "the shared library of the @Library", t.line)
-	case lv.prev.kind == tokName && loaders[string(lv.prev.text(d))] && (t.is("(") || t.kind == tokString || t.kind == tokName) &&
-		(!member[lv.prev2.op] || lv.prev2.is(".") && s.isName(lv.prev3, "this")):
-		s.note(&s.loads, "the file that "+string(lv.prev.text(d))+" reads", lv.prev.line)
+	case s.loadsFile(lv, t):
+		s.note(&s.loads, "the file that "+string(lv.prev.text(s.data))+" reads", lv.prev.line)
 	case s.isName(lv.prev, "libraries") && t.is("{"):
 		s.note(&s.loads, "the shared library of the libraries directive", lv.prev.line)
+	default:
+		return false
+	}
+	return true
+}
+
+// loadsFile reports whether the name before t is a step that loads Groovy
+// errata does not read, called with t as its argument or its parenthesis.
+func (s *scan) loadsFile(lv *level, t token) bool {
+	return lv.prev.kind == tokName && loaders[string(lv.prev.text(s.data))] && startsArgs(t) && s.calledAsStep(lv)
+}
+
+// startsArgs reports whether t starts a call's arguments: a ( or, in a
+// command call, a string or a name.
+func startsArgs(t token) bool {
+	return t.is("(") || t.kind == tokString || t.kind == tokName
+}
+
+// calledAsStep reports whether the name before the last token is a step's:
+// no member operator comes before it, or only this.
+func (s *scan) calledAsStep(lv *level) bool {
+	return !member[lv.prev2.op] || lv.prev2.is(".") && s.isName(lv.prev3, "this")
+}
+
+// watchEnvAndDeclared keeps where a withEnv( opens and notes a withEnv
+// that may set the variable, and notes a parameter or an axis of its name.
+func (s *scan) watchEnvAndDeclared(lv *level, t token) {
+	switch {
 	case s.isName(lv.prev, "withEnv") && t.is("("):
 		lv.withEnv = lv.parens + 1
 	case lv.withEnv > 0 && s.withEnvMaySet(t):
 		s.note(&s.withEnv, "withEnv", t.line)
 	case t.kind == tokString && s.declares(lv) && s.literalFold(t):
-		what := "a parameter of the pipeline, which whoever starts a build chooses"
-		if s.opened[blockAxis] > 0 {
-			what = "an axis of a matrix, whose cells errata does not read"
-			if s.cell[lv.matrix] {
-				s.note(&s.cellAxis, what, t.line)
-			}
-		}
-		s.note(&s.declared, what, t.line)
+		s.noteDeclared(lv, t)
 	}
-	s.watchEnv(lv, t)
-	s.watchChange(lv, t)
-	lv.prev6, lv.prev5, lv.prev4, lv.prev3, lv.prev2, lv.prev = lv.prev5, lv.prev4, lv.prev3, lv.prev2, lv.prev, t
+}
+
+// noteDeclared notes the parameter or the axis of the variable's name that the
+// string t declares. An axis in a matrix around the target sets the
+// variable in the target's cell, and is noted as that too.
+func (s *scan) noteDeclared(lv *level, t token) {
+	what := "a parameter of the pipeline, which whoever starts a build chooses"
+	if s.opened[blockAxis] > 0 {
+		what = "an axis of a matrix, whose cells errata does not read"
+		if s.cell[lv.matrix] {
+			s.note(&s.cellAxis, what, t.line)
+		}
+	}
+	s.note(&s.declared, what, t.line)
 }
 
 // watchChange looks for what changes the variable in a way the scan does
@@ -392,9 +464,8 @@ func (s *scan) watch(lv *level, t token) {
 // env.X = v anywhere but at a statement's start, which is the one the
 // scan reads: env?.X = v, this.env.X = v, (env).X = v, if (c) env.X = v.
 func (s *scan) watchChange(lv *level, t token) {
-	d := s.data
 	grouped := s.groupAssigned(lv, t)
-	if (t.is("=") || t.kind == tokOp && compound[t.op]) && (grouped || s.reassigns(lv)) {
+	if assigns(t) && (grouped || s.reassigns(lv)) {
 		s.note(&s.reassigned, fmt.Sprintf("%s %s", s.name, t.op), t.line)
 	}
 	after := lv.envName
@@ -403,24 +474,59 @@ func (s *scan) watchChange(lv *level, t token) {
 		lv.envName = true
 		return
 	}
+	if after && s.envChanged(lv, t) {
+		return
+	}
+	s.watchName(lv, t)
+}
+
+// envChanged notes an operator t after env.X that changes the variable, or
+// an = that may set it where the scan does not read the assignment, and
+// reports whether it did.
+func (s *scan) envChanged(lv *level, t token) bool {
 	switch {
-	case after && (t.is("++") || t.is("--") || t.kind == tokOp && compound[t.op]):
+	case isIncrement(t) || isCompound(t):
 		s.note(&s.envOther, fmt.Sprintf("env.%s %s changes %s", s.name, t.op, s.name), t.line)
-	case after && t.is("=") && lv.st != stProperty:
+	case t.is("=") && lv.st != stProperty:
 		s.note(&s.envOther, fmt.Sprintf("this assignment to env.%s may set %s", s.name, s.name), t.line)
-	case t.kind == tokName && bytes.EqualFold(t.text(d), s.name) && s.afterEnv(lv):
-		lv.envName = true
-		if op := prefix(s.beforeEnv(lv)); op.is("++") || op.is("--") {
-			s.note(&s.envOther, fmt.Sprintf("%s env.%s changes %s", op.op, s.name, s.name), t.line)
-		}
-	case (t.is("++") || t.is("--")) && s.postfixOnName(lv):
+	default:
+		return false
+	}
+	return true
+}
+
+// watchName looks at the variable's name t, and at a ++ or -- after it:
+// env.X, with a ++ or -- before the env, and X with one before or after it.
+func (s *scan) watchName(lv *level, t token) {
+	switch {
+	case t.kind == tokName && bytes.EqualFold(t.text(s.data), s.name) && s.afterEnv(lv):
+		s.envNamed(lv, t)
+	case isIncrement(t) && s.postfixOnName(lv):
 		s.note(&s.reassigned, fmt.Sprintf("%s%s", s.name, t.op), t.line)
 	case s.isName(t, string(s.name)):
-		if op := prefix(lv.prev, lv.prev2); op.is("++") || op.is("--") {
+		if op := prefix(lv.prev, lv.prev2); isIncrement(op) {
 			s.note(&s.reassigned, fmt.Sprintf("%s%s", op.op, s.name), t.line)
 		}
 	}
 }
+
+// envNamed marks the variable's name t after env., for the token after
+// it, and notes a ++ or -- before the env reference.
+func (s *scan) envNamed(lv *level, t token) {
+	lv.envName = true
+	if op := prefix(s.beforeEnv(lv)); isIncrement(op) {
+		s.note(&s.envOther, fmt.Sprintf("%s env.%s changes %s", op.op, s.name, s.name), t.line)
+	}
+}
+
+// assigns reports whether t is an = or a compound assignment.
+func assigns(t token) bool { return t.is("=") || isCompound(t) }
+
+// isCompound reports whether t is a compound assignment, such as +=.
+func isCompound(t token) bool { return t.kind == tokOp && compound[t.op] }
+
+// isIncrement reports whether t is ++ or --.
+func isIncrement(t token) bool { return t.is("++") || t.is("--") }
 
 // reassigns reports whether an = or a compound assignment after the last
 // tokens assigns the variable, wherever it stands: X = v, if (c) X = v,
@@ -447,27 +553,40 @@ func (s *scan) reassigns(lv *level) bool {
 // by t, a step of constant work: lv.parens is the count of brackets open
 // before t.
 func (s *scan) groupAssigned(lv *level, t token) bool {
+	inGroup := lv.group > 0 && lv.group == lv.parens
+	if s.groupStep(lv, t, inGroup) {
+		return true
+	}
+	if inGroup && closes(t) {
+		lv.group = 0
+	}
+	return false
+}
+
+// groupStep moves the group's state on by t, and reports whether t
+// assigns the group that closed before it. inGroup is whether the
+// brackets open before t are the group's.
+func (s *scan) groupStep(lv *level, t token, inGroup bool) bool {
 	closed, bare := lv.closed, lv.bare
 	lv.closed, lv.bare = false, false
-	inGroup := lv.group > 0 && lv.group == lv.parens
 	switch {
 	case closed:
-		if t.is("=") || t.kind == tokOp && compound[t.op] {
-			return true
-		}
 		lv.closed = t.is(")") // ((X)) = v
+		return assigns(t)
 	case t.is(")") && (bare || inGroup):
 		lv.closed = true
 	case t.is(",") && bare:
 		lv.group = lv.parens
-		return false
-	case s.isName(t, string(s.name)) && lv.parens > 0 && (lv.prev.is("(") || lv.prev.is(",")):
+	case s.bareName(lv, t):
 		lv.bare = true
 	}
-	if inGroup && (t.is(")") || t.is("]")) {
-		lv.group = 0
-	}
 	return false
+}
+
+// bareName reports whether t is the variable's name right after a ( or a
+// comma inside brackets.
+func (s *scan) bareName(lv *level, t token) bool {
+	return s.isName(t, string(s.name)) && lv.parens > 0 && (lv.prev.is("(") || lv.prev.is(","))
 }
 
 // postfixOnName reports whether a ++ or -- after the last tokens changes
@@ -527,26 +646,56 @@ func (s *scan) beforeEnv(lv *level) (token, token) {
 // env.putAt('X', v), which env['X'] = v calls.
 func (s *scan) watchEnv(lv *level, t token) {
 	pending := lv.setProperty
-	lv.setProperty = false
-	switch {
-	case pending:
-	case s.isName(lv.prev2, "env") && (lv.prev.is("[") || lv.prev.is("?[")):
-	case s.isName(lv.prev2, "env") && (lv.prev.is(".") || lv.prev.is("?.")) && t.kind == tokString:
-	case s.isName(lv.prev3, "env") && (lv.prev2.is(".") || lv.prev2.is("?.")) && (s.isName(lv.prev, "setProperty") || s.isName(lv.prev, "putAt")):
-		if t.is("(") {
-			lv.setProperty = true
-			return
-		}
-	default:
+	// At the ( of env.setProperty( or env.putAt( the key comes next.
+	lv.setProperty = s.envSetter(lv) && t.is("(")
+	if lv.setProperty {
 		return
 	}
-	if t.kind == tokString {
-		if text, ok := literalText(t, s.data); ok && !bytes.EqualFold(text, s.name) {
-			return
-		}
+	if !pending && !s.mayNameEnv(lv, t) {
+		return
+	}
+	if s.namesOther(t) {
+		return
 	}
 	s.note(&s.envOther, fmt.Sprintf("the env[...], env.\"...\", env.setProperty or env.putAt here may set %s", s.name), t.line)
 }
+
+// mayNameEnv reports whether t, after the last tokens, names a variable
+// of env in a way errata does not read: the key of env[ or env?[, the
+// string after env. or env?., or the argument of an env.setProperty or
+// env.putAt called without a (. watchEnv handles the ( of one before it
+// asks.
+func (s *scan) mayNameEnv(lv *level, t token) bool {
+	if s.envSetter(lv) {
+		return true
+	}
+	if !s.isName(lv.prev2, "env") {
+		return false
+	}
+	return isIndex(lv.prev) || isDot(lv.prev) && t.kind == tokString
+}
+
+// envSetter reports whether the last tokens are env.setProperty or
+// env.putAt, with . or ?..
+func (s *scan) envSetter(lv *level) bool {
+	return s.isName(lv.prev3, "env") && isDot(lv.prev2) && (s.isName(lv.prev, "setProperty") || s.isName(lv.prev, "putAt"))
+}
+
+// namesOther reports whether t is a literal string that names a variable
+// other than the spec's.
+func (s *scan) namesOther(t token) bool {
+	if t.kind != tokString {
+		return false
+	}
+	text, ok := literalText(t, s.data)
+	return ok && !bytes.EqualFold(text, s.name)
+}
+
+// isDot reports whether t is . or ?..
+func isDot(t token) bool { return t.is(".") || t.is("?.") }
+
+// isIndex reports whether t is [ or ?[.
+func isIndex(t token) bool { return t.is("[") || t.is("?[") }
 
 // isName reports whether t is the name n.
 func (s *scan) isName(t token, n string) bool {
@@ -647,81 +796,130 @@ var compound = map[string]bool{
 
 // step moves the statement's state on by one token at the block's level.
 func (s *scan) step(lv *level, t token) {
-	d := s.data
-	if lv.st == stValue {
-		if lv.valToks == 0 {
-			lv.val = t
-		}
-		lv.valToks++
-		lv.valEnd = t.end
-		return
-	}
-	if lv.st == stArgs {
-		if lv.parens == 0 { // the head's ) closed
-			lv.st = stCalled
-			return
-		}
-		if lv.args++; lv.args == 1 && t.kind == tokString {
-			lv.arg = t
-		}
-		return
-	}
-	if lv.parens > 0 && lv.st != stHead {
+	switch {
+	case lv.st == stValue:
+		lv.addValue(t)
+	case lv.st == stArgs:
+		lv.addArg(t)
+	case lv.parens > 0 && lv.st != stHead:
 		lv.st = stOther
+	default:
+		s.stepStatement(lv, t)
+	}
+}
+
+// addValue adds t to the value of the assignment the statement holds.
+func (lv *level) addValue(t token) {
+	if lv.valToks == 0 {
+		lv.val = t
+	}
+	lv.valToks++
+	lv.valEnd = t.end
+}
+
+// addArg adds t to the arguments in the parentheses after the head, or
+// ends them at the ) that closes them.
+func (lv *level) addArg(t token) {
+	if lv.parens == 0 { // the head's ) closed
+		lv.st = stCalled
 		return
 	}
+	if lv.args++; lv.args == 1 && t.kind == tokString {
+		lv.arg = t
+	}
+}
+
+// stepStatement moves the state of a statement outside brackets on by t,
+// one helper for each state that reads further.
+func (s *scan) stepStatement(lv *level, t token) {
 	switch lv.st {
 	case stStart:
-		switch {
-		case t.kind == tokName && (declarers[string(t.text(d))] || builtInTypes[string(t.text(d))]):
-			lv.st = stDecl
-		case t.kind == tokName:
-			lv.st, lv.head = stHead, t
-		case t.kind == tokAt:
-			lv.st = stAnnot
-		default:
-			lv.st = stOther
-		}
+		s.stepStart(lv, t)
 	case stHead:
-		switch {
-		case t.is("("):
-			lv.st, lv.args, lv.arg = stArgs, 0, token{}
-		case t.is("=") && lv.block == blockEnvironment:
-			s.startValue(lv, formEnvironment, lv.head)
-		case t.is("=") || t.kind == tokOp && compound[t.op]: // watchChange notes X = v
-			lv.st = stOther
-		case t.is("."):
-			lv.st = stDot
-		case t.kind == tokName && isTypeName(lv.head.text(d)):
-			lv.st, lv.head = stDeclName, t
-		default:
-			lv.st = stOther
-		}
+		s.stepHead(lv, t)
 	case stDot:
-		lv.st = stOther
-		if t.kind == tokName && string(lv.head.text(d)) == "env" {
-			lv.st, lv.head = stProperty, t
-		}
+		s.stepDot(lv, t)
 	case stProperty:
-		lv.st = stOther
-		if t.is("=") {
-			s.startValue(lv, formEnv, lv.head)
-		}
+		s.stepProperty(lv, t)
 	case stDecl:
-		if t.kind == tokName && !declarers[string(t.text(d))] {
-			lv.st, lv.head = stDeclName, t
-		} else if t.kind != tokName {
-			lv.st = stOther
-		}
+		s.stepDecl(lv, t)
 	case stDeclName:
-		switch {
-		case t.is("="):
-			s.startValue(lv, formDef, lv.head)
-		case t.kind == tokName:
-			lv.head = t // the name before was a type
-		default:
-			lv.st = stOther
+		s.stepDeclName(lv, t)
+	default:
+		lv.st = stOther
+	}
+}
+
+// stepStart reads the statement's first token: a declaration's def or
+// type, a head, or an annotation's @.
+func (s *scan) stepStart(lv *level, t token) {
+	d := s.data
+	switch {
+	case t.kind == tokName && (declarers[string(t.text(d))] || builtInTypes[string(t.text(d))]):
+		lv.st = stDecl
+	case t.kind == tokName:
+		lv.st, lv.head = stHead, t
+	case t.kind == tokAt:
+		lv.st = stAnnot
+	default:
+		lv.st = stOther
+	}
+}
+
+// stepHead reads the token after a head: its parentheses, an assignment,
+// a . or the name a type declares.
+func (s *scan) stepHead(lv *level, t token) {
+	switch {
+	case t.is("("):
+		lv.st, lv.args, lv.arg = stArgs, 0, token{}
+	case assigns(t): // watchChange notes X = v
+		lv.st = stOther
+		if t.is("=") && lv.block == blockEnvironment {
+			s.startValue(lv, formEnvironment, lv.head)
 		}
+	case t.is("."):
+		lv.st = stDot
+	case t.kind == tokName && isTypeName(lv.head.text(s.data)):
+		lv.st, lv.head = stDeclName, t
+	default:
+		lv.st = stOther
+	}
+}
+
+// stepDot reads the name after head., a property of env.
+func (s *scan) stepDot(lv *level, t token) {
+	lv.st = stOther
+	if t.kind == tokName && string(lv.head.text(s.data)) == "env" {
+		lv.st, lv.head = stProperty, t
+	}
+}
+
+// stepProperty reads the token after env.NAME, whose = starts a value.
+func (s *scan) stepProperty(lv *level, t token) {
+	lv.st = stOther
+	if t.is("=") {
+		s.startValue(lv, formEnv, lv.head)
+	}
+}
+
+// stepDecl reads the token after def or a type: the declared name, or
+// another declarer.
+func (s *scan) stepDecl(lv *level, t token) {
+	if t.kind == tokName && !declarers[string(t.text(s.data))] {
+		lv.st, lv.head = stDeclName, t
+	} else if t.kind != tokName {
+		lv.st = stOther
+	}
+}
+
+// stepDeclName reads the token after a declared name: the = of its value,
+// or the name it declares when the name before was a type.
+func (s *scan) stepDeclName(lv *level, t token) {
+	switch {
+	case t.is("="):
+		s.startValue(lv, formDef, lv.head)
+	case t.kind == tokName:
+		lv.head = t // the name before was a type
 	default:
 		lv.st = stOther
 	}
@@ -747,6 +945,18 @@ func (s *scan) open(lv *level, t token) error {
 	if len(s.stack) >= core.MaxDepth {
 		return core.TooDeep(t.line)
 	}
+	nl := level{block: s.blockOf(lv), line: t.line}
+	if err := s.countBlock(lv, &nl, t); err != nil {
+		return err
+	}
+	lv.openValue(t)
+	lv.last = t
+	s.push(nl)
+	return nil
+}
+
+// blockOf is the kind of block a { opens after the statement of lv.
+func (s *scan) blockOf(lv *level) block {
 	b := blockOther
 	if lv.parens == 0 && (lv.st == stHead || lv.st == stCalled) {
 		b = blockNames[string(lv.head.text(s.data))]
@@ -754,8 +964,14 @@ func (s *scan) open(lv *level, t token) error {
 	if b == blockStage && lv.st != stCalled {
 		b = blockOther // stage { } names no stage
 	}
-	nl := level{block: b, line: t.line}
-	switch b {
+	return b
+}
+
+// countBlock counts the pipeline, stage or matrix block nl that the { t
+// opens after the statement of lv, and numbers it. A second pipeline is
+// refused.
+func (s *scan) countBlock(lv *level, nl *level, t token) error {
+	switch nl.block {
 	case blockPipeline:
 		if s.pipeline++; s.pipeline == 2 {
 			return core.LineError(t.line, "the file holds a second pipeline block, and Jenkins runs one; errata reads a file of one")
@@ -769,16 +985,19 @@ func (s *scan) open(lv *level, t token) error {
 		nl.matrix = s.matrices
 	default: // the other blocks need no note when they open
 	}
-	if lv.st == stValue {
-		if lv.valToks++; lv.valToks == 1 {
-			lv.val = t
-		}
-	} else {
-		lv.st = stOther
-	}
-	lv.last = t
-	s.push(nl)
 	return nil
+}
+
+// openValue adds the { t to the value the statement holds, or ends the
+// statement's reading when it holds none.
+func (lv *level) openValue(t token) {
+	if lv.st != stValue {
+		lv.st = stOther
+		return
+	}
+	if lv.valToks++; lv.valToks == 1 {
+		lv.val = t
+	}
 }
 
 // openStage notes a stage, from the level whose stage(...) opens it, and
@@ -794,24 +1013,31 @@ func (s *scan) openStage(lv *level) []byte {
 		}
 		return nil
 	}
-	if s.target == nil || !bytes.Equal(name, s.target) {
-		return name
+	if s.target != nil && bytes.Equal(name, s.target) {
+		s.targetStage(lv)
 	}
+	return name
+}
+
+// targetStage notes a stage named the target, from the level whose
+// stage(...) opens it: the lines of the first two, and the stages and
+// matrix blocks around the first.
+func (s *scan) targetStage(lv *level) {
 	if s.targets++; s.targets <= 2 {
 		s.targetLine = append(s.targetLine, lv.head.line)
 	}
-	if s.targets == 1 {
-		s.around = append(s.around, s.stages)
-		for i := len(s.stack) - 1; i >= 0; i-- {
-			if s.stack[i].block == blockStage {
-				s.around = append(s.around, s.stack[i].stage)
-			}
-			if s.stack[i].block == blockMatrix {
-				s.aroundCell = append(s.aroundCell, s.stack[i].matrix)
-			}
+	if s.targets != 1 {
+		return
+	}
+	s.around = append(s.around, s.stages)
+	for i := len(s.stack) - 1; i >= 0; i-- {
+		if s.stack[i].block == blockStage {
+			s.around = append(s.around, s.stack[i].stage)
+		}
+		if s.stack[i].block == blockMatrix {
+			s.aroundCell = append(s.aroundCell, s.stack[i].matrix)
 		}
 	}
-	return name
 }
 
 // close leaves a { }, ending the statement inside it. A } with no block
@@ -867,22 +1093,35 @@ func (s *scan) assigned(i int) {
 		s.note(&s.envOther, fmt.Sprintf("an env. assignment sets %s in another case, which Jenkins reads as the same name", s.name), r.line)
 		return
 	}
-	// Once an environment block or an env.X = sets the variable, def X =
-	// does not count: the def records go, and none is kept after, so they
-	// never fill the cap that the env.X = records count toward.
-	if lv.assign != formDef && !s.envSets {
-		s.envSets = true
-		s.records = slices.DeleteFunc(s.records, func(r record) bool { return r.form == formDef })
+	if lv.assign != formDef {
+		s.setsEnv()
 	}
-	if lv.assign == formDef && s.envSets {
-		return
-	}
-	if lv.assign != formEnvironment {
+	switch {
+	case lv.assign == formDef && s.envSets:
+	case lv.assign != formEnvironment:
 		if len(s.records) <= keepRecords {
 			s.records = append(s.records, r)
 		}
+	default:
+		s.environmentValue(i, r)
+	}
+}
+
+// setsEnv notes that an environment block or an env.X = sets the
+// variable. From then on def X = does not count: the def records go, and
+// none is kept after, so they never fill the cap that the env.X = records
+// count toward.
+func (s *scan) setsEnv() {
+	if s.envSets {
 		return
 	}
+	s.envSets = true
+	s.records = slices.DeleteFunc(s.records, func(r record) bool { return r.form == formDef })
+}
+
+// environmentValue records r, the value an environment block at depth i
+// gives the variable, when the block is the pipeline's or a stage's.
+func (s *scan) environmentValue(i int, r record) {
 	if i == 0 || s.opened[blockPipeline] == 0 {
 		return
 	}
@@ -890,21 +1129,28 @@ func (s *scan) assigned(i int) {
 	case blockPipeline:
 		s.pipelineEnv = &r
 	case blockStage:
-		r.owner = parent.stage
-		if s.chain[parent.stage] {
-			s.stageEnv[parent.stage] = r
-		}
-		if !parent.counted && s.chain == nil {
-			// The note of a spec that names no stage: the first stages whose
-			// environment sets the variable, by name.
-			parent.counted = true
-			s.setting = append(s.setting, settingStage{name: parent.stageName, line: parent.line})
-			if len(s.settingIn) < 3 && parent.stageName != nil {
-				s.settingIn = append(s.settingIn, parent.stageName)
-			} else {
-				s.settingMore++
-			}
-		}
+		s.stageValue(parent, r)
 	default: // an environment block anywhere else is none Jenkins reads
+	}
+}
+
+// stageValue records r, the value the environment of the stage of level
+// parent gives the variable.
+func (s *scan) stageValue(parent *level, r record) {
+	r.owner = parent.stage
+	if s.chain[parent.stage] {
+		s.stageEnv[parent.stage] = r
+	}
+	if parent.counted || s.chain != nil {
+		return
+	}
+	// The note of a spec that names no stage: the first stages whose
+	// environment sets the variable, by name.
+	parent.counted = true
+	s.setting = append(s.setting, settingStage{name: parent.stageName, line: parent.line})
+	if len(s.settingIn) < 3 && parent.stageName != nil {
+		s.settingIn = append(s.settingIn, parent.stageName)
+	} else {
+		s.settingMore++
 	}
 }

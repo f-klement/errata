@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/f-klement/errata/internal/extract/core/clip"
 	"github.com/f-klement/errata/internal/extract/extracttest"
@@ -223,6 +224,25 @@ func TestPathsSpan(t *testing.T) {
 	}
 	if sp := unsorted.Span("a"); sp.self != nil || !slices.Equal(sp.under, files) {
 		t.Errorf("the span of a in a reversed index: %q and %q, want every path", sp.self, sp.under)
+	}
+}
+
+// The search for a directory a sparse checkout leaves out above dir ends
+// at the top for a dir that starts with a slash too, where path.Dir stays
+// at "/". No caller gives one today: an absolute glob is refused before
+// its span, and so is an absolute path in the index. The planted break:
+// the walk up without its stop at "/", which never returned.
+func TestPathsSpanEndsAtTheRoot(t *testing.T) {
+	paths := Paths{paths: []string{"/a/x"}, left: []string{"/a/"}, sorted: true}
+	done := make(chan Span, 1)
+	go func() { done <- paths.Span("/a") }()
+	select {
+	case sp := <-done:
+		if !slices.Equal(sp.under, []string{"/a/x"}) || !slices.Equal(sp.left, []string{"/a/"}) {
+			t.Errorf("the span of /a: %q, %q left out", sp.under, sp.left)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the span of /a did not return in 10 s")
 	}
 }
 

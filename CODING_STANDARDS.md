@@ -37,8 +37,11 @@ coverage that is a complexity of 9 at most; at complexity 9 the tests run more t
 `make cover` scores each function of `internal/` and `scripts/` from the profile `make test`
 writes (`scripts/crap`, which counts as unclebob/crapper counts Go: 1, plus each `if`, `for`,
 `range`, each `case` and `default` clause, and each `&&` and `||`, a closure's counted in the
-function that holds it). `cmd/errata` has no tests of its own, so no profile covers it; a
-reviewer holds its functions to the rule.
+function that holds it). A function literal that no function holds, such as a handler in a
+package level table, is scored as a function of its own, named for its var and its place there
+(`gitDialect.func1`), so moving a switch into a table moves no branch out of the rule.
+`cmd/errata` has no tests of its own, so no profile covers it; a reviewer holds its functions to
+the rule.
 
 A parser is an aggregate of small composite helpers, kept in the same file as the parser they
 make up: its complexity is broken up and still in one place. A helper moved to another file or

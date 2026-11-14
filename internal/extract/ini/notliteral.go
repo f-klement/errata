@@ -119,51 +119,76 @@ func toxFactorLine(line []byte) bool {
 // factors of word characters, ., * and ?, joined by -, each with a ! before
 // it or not. An empty s holds no factor, which tox also takes.
 func toxFactors(s string) bool {
-	part := func(t string) bool {
-		t = strings.TrimSpace(t)
-		start := true // at the start of a factor, where a ! may stand
-		for _, r := range t {
-			switch {
-			case r == '-':
-				start = true
-				continue
-			case r == '!' && start:
-			case r == '.' || r == '*' || r == '?' || r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r):
-			default:
-				return false
-			}
-			start = false
-		}
-		return true
-	}
 	for len(s) > 0 {
 		open := strings.IndexByte(s, '{')
 		comma := strings.IndexByte(s, ',')
 		switch {
-		case open >= 0 && (comma < 0 || open < comma):
-			if !part(s[:open]) {
+		case braceFirst(open, comma):
+			var ok bool
+			if s, ok = toxBraceGroup(s, open); !ok {
 				return false
 			}
-			end := strings.IndexByte(s[open:], '}')
-			if end <= 1 {
-				return false // { with no }, or {}: text tox's factor pattern refuses
-			}
-			for _, alt := range strings.Split(s[open+1:open+end], ",") {
-				if !part(alt) {
-					return false
-				}
-			}
-			s = s[open+end+1:]
 		case comma >= 0:
-			if !part(s[:comma]) {
+			if !toxPart(s[:comma]) {
 				return false
 			}
 			s = s[comma+1:]
 		default:
-			return part(s)
+			return toxPart(s)
 		}
 	}
 	return true
+}
+
+// braceFirst reports whether a { at open comes before the comma at comma,
+// either one -1 for none.
+func braceFirst(open, comma int) bool {
+	return open >= 0 && (comma < 0 || open < comma)
+}
+
+// toxBraceGroup reads the text before the { at open and the brace group
+// that starts there, and returns what follows the group. It reports false
+// for text tox's factor pattern refuses.
+func toxBraceGroup(s string, open int) (string, bool) {
+	if !toxPart(s[:open]) {
+		return "", false
+	}
+	end := strings.IndexByte(s[open:], '}')
+	if end <= 1 {
+		return "", false // { with no }, or {}: text tox's factor pattern refuses
+	}
+	for _, alt := range strings.Split(s[open+1:open+end], ",") {
+		if !toxPart(alt) {
+			return "", false
+		}
+	}
+	return s[open+end+1:], true
+}
+
+// toxPart reports whether t, stripped of white space at its ends, is
+// factors joined by -, each with a ! before it or not.
+func toxPart(t string) bool {
+	t = strings.TrimSpace(t)
+	start := true // at the start of a factor, where a ! may stand
+	for _, r := range t {
+		switch {
+		case r == '-':
+			start = true
+			continue
+		case r == '!' && start:
+		case isToxFactorRune(r):
+		default:
+			return false
+		}
+		start = false
+	}
+	return true
+}
+
+// isToxFactorRune reports whether r can be in a factor: a word character,
+// ., * or ?.
+func isToxFactorRune(r rune) bool {
+	return r == '.' || r == '*' || r == '?' || r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r)
 }
 
 // plainNotLiteral is a value of a plain file that a tool reading the file
@@ -187,25 +212,28 @@ func toxFactors(s string) bool {
 func plainNotLiteral(file string) func(*core.Entry) bool {
 	switch _, base := core.FileParts(file); base {
 	case "setup.cfg":
-		return func(e *core.Entry) bool {
-			switch v := e.Value; {
-			case bytes.IndexByte(v, '%') >= 0 || bytes.HasPrefix(v, []byte("attr:")) || bytes.HasPrefix(v, []byte("file:")):
-				return true
-			case mypySection(e.Section):
-				return mypyChanges(e.Key, v)
-			case coverageSection(e.Section):
-				return coverageChanges(v)
-			case toxSection(e.Section):
-				return toxChanges(v)
-			}
-			return false
-		}
+		return setupCfgChanges
 	case "mypy.ini", ".mypy.ini":
 		return func(e *core.Entry) bool { return mypySection(e.Section) && mypyChanges(e.Key, e.Value) }
 	case ".coveragerc":
 		return func(e *core.Entry) bool { return coverageChanges(e.Value) }
 	}
 	return nil
+}
+
+// setupCfgChanges is plainNotLiteral of an entry of setup.cfg.
+func setupCfgChanges(e *core.Entry) bool {
+	switch v := e.Value; {
+	case bytes.IndexByte(v, '%') >= 0 || bytes.HasPrefix(v, []byte("attr:")) || bytes.HasPrefix(v, []byte("file:")):
+		return true
+	case mypySection(e.Section):
+		return mypyChanges(e.Key, v)
+	case coverageSection(e.Section):
+		return coverageChanges(v)
+	case toxSection(e.Section):
+		return toxChanges(v)
+	}
+	return false
 }
 
 // mypyPaths are the options mypy expands as paths (config_parser's
@@ -333,49 +361,87 @@ func toxSection(s []byte) bool {
 // back into the text "...", as it turns a complex number into its str.
 func pyComputed(lit []byte) bool {
 	t := string(lit)
-	switch {
-	case t == "True" || t == "False" || t == "None" || t == "...":
-		return false
-	case t == "" || strings.HasPrefix(t, "set"):
-		return true
-	case strings.ContainsAny(t[:1], "[{"):
-		r := &reprReader{s: t}
-		return !r.value() || r.i != len(t)
-	case t[0] == '(' || t[0] == '+':
-		return true
+	if computed, decided := pyFormComputed(t); decided {
+		return computed
 	}
 	neg := t[0] == '-'
 	if neg {
 		rest := t[1:]
-		if len(rest) == 0 || rest[0] == ' ' || rest[0] == '\t' || rest[0] == '\f' {
+		if blankAfterSign(rest) {
 			return true // blanks after the sign go
 		}
 		t = rest
 	}
+	return numberComputed(t, neg)
+}
+
+// pyFormComputed is pyComputed of t where its form decides it: a word, ...,
+// a set, a container or a tuple. decided is false for a number.
+func pyFormComputed(t string) (computed, decided bool) {
+	switch t {
+	case "True", "False", "None", "...":
+		return false, true
+	}
+	switch {
+	case t == "" || strings.HasPrefix(t, "set"):
+		return true, true
+	case strings.ContainsAny(t[:1], "[{"):
+		r := &reprReader{s: t}
+		return !r.value() || r.i != len(t), true
+	case t[0] == '(' || t[0] == '+':
+		return true, true
+	}
+	return false, false
+}
+
+// blankAfterSign reports whether rest, the text after a -, is empty or
+// starts with a blank.
+func blankAfterSign(rest string) bool {
+	return len(rest) == 0 || rest[0] == ' ' || rest[0] == '\t' || rest[0] == '\f'
+}
+
+// numberComputed is pyComputed of t, a number without its -, where neg
+// reports the -.
+func numberComputed(t string, neg bool) bool {
 	switch {
 	case strings.IndexByte(t, '_') >= 0:
 		return true // underscores go
 	case t[len(t)-1] == 'j' || t[len(t)-1] == 'J':
-		// str of a complex number with a real part of +0 is its imaginary
-		// part as repr writes it, without a .0, and j; -1j is (-0-1j).
-		f, err := strconv.ParseFloat(t[:len(t)-1], 64)
-		if neg || err != nil && !math.IsInf(f, 0) {
-			return true
-		}
-		return t != pyImagRepr(f)
-	case len(t) >= 2 && t[0] == '0' && strings.IndexByte("xXoObB", t[1]) >= 0:
+		return imaginaryComputed(t, neg)
+	case isRadixInt(t):
 		return true
 	case strings.ContainsAny(t, ".eE"):
-		f, err := strconv.ParseFloat(t, 64)
-		if err != nil && !math.IsInf(f, 0) {
-			return true
-		}
-		if neg {
-			return "-"+t != pyFloatRepr(-f)
-		}
-		return t != pyFloatRepr(f)
+		return floatComputed(t, neg)
 	}
 	return t[0] == '0' && (len(t) > 1 || neg) // 00 is 0, and -0 is 0
+}
+
+// isRadixInt reports whether t starts with 0x, 0o or 0b, in either case.
+func isRadixInt(t string) bool {
+	return len(t) >= 2 && t[0] == '0' && strings.IndexByte("xXoObB", t[1]) >= 0
+}
+
+// imaginaryComputed is numberComputed of an imaginary number. str of a
+// complex number with a real part of +0 is its imaginary part as repr
+// writes it, without a .0, and j; -1j is (-0-1j).
+func imaginaryComputed(t string, neg bool) bool {
+	f, err := strconv.ParseFloat(t[:len(t)-1], 64)
+	if neg || err != nil && !math.IsInf(f, 0) {
+		return true
+	}
+	return t != pyImagRepr(f)
+}
+
+// floatComputed is numberComputed of a float.
+func floatComputed(t string, neg bool) bool {
+	f, err := strconv.ParseFloat(t, 64)
+	if err != nil && !math.IsInf(f, 0) {
+		return true
+	}
+	if neg {
+		return "-"+t != pyFloatRepr(-f)
+	}
+	return t != pyFloatRepr(f)
 }
 
 // pyImagRepr is str(complex(0, f)) as Python writes it: repr's digits and
@@ -437,17 +503,28 @@ func (r *reprReader) value() bool {
 		_, ok := r.str()
 		return ok
 	case c == '-' || isDigit(c):
-		j := r.i
-		if c == '-' {
-			j++
-		}
-		n := pyNumberLen([]byte(r.s[j:]))
-		if n == 0 || pyComputed([]byte(r.s[r.i:j+n])) {
-			return false
-		}
-		r.i = j + n
-		return true
+		return r.number()
 	}
+	return r.word()
+}
+
+// number reads a number that pyComputed leaves literal, a - before it or
+// not.
+func (r *reprReader) number() bool {
+	j := r.i
+	if r.s[j] == '-' {
+		j++
+	}
+	n := pyNumberLen([]byte(r.s[j:]))
+	if n == 0 || pyComputed([]byte(r.s[r.i:j+n])) {
+		return false
+	}
+	r.i = j + n
+	return true
+}
+
+// word reads True, False or None.
+func (r *reprReader) word() bool {
 	for _, w := range []string{"True", "False", "None"} {
 		if strings.HasPrefix(r.s[r.i:], w) {
 			r.i += len(w)
@@ -479,16 +556,24 @@ func (r *reprReader) items(close byte) bool {
 		if !r.value() {
 			return false
 		}
-		switch rest := r.s[r.i:]; {
-		case strings.HasPrefix(rest, string(close)):
-			r.i++
-			return true
-		case strings.HasPrefix(rest, ", "):
-			r.i += 2
-		default:
-			return false
+		if end, ok := r.after(string(close)); end || !ok {
+			return ok
 		}
 	}
+}
+
+// after reads what follows an element: close, which ends the container
+// (end), or ", ". It reports false for anything else.
+func (r *reprReader) after(close string) (end, ok bool) {
+	switch rest := r.s[r.i:]; {
+	case strings.HasPrefix(rest, close):
+		r.i++
+		return true, true
+	case strings.HasPrefix(rest, ", "):
+		r.i += 2
+		return false, true
+	}
+	return false, false
 }
 
 // dict reads a dict from its brace: key: value pairs joined by ", ", each
@@ -504,25 +589,25 @@ func (r *reprReader) dict() bool {
 	}
 	keys := map[string]bool{}
 	for {
-		key, ok := r.str()
-		if !ok || keys[key] || !strings.HasPrefix(r.s[r.i:], ": ") {
+		if !r.pair(keys) {
 			return false
 		}
-		keys[key] = true
-		r.i += 2
-		if !r.value() {
-			return false
-		}
-		switch rest := r.s[r.i:]; {
-		case strings.HasPrefix(rest, "}"):
-			r.i++
-			return true
-		case strings.HasPrefix(rest, ", "):
-			r.i += 2
-		default:
-			return false
+		if end, ok := r.after("}"); end || !ok {
+			return ok
 		}
 	}
+}
+
+// pair reads a dict's key, a string not in keys, which it adds, then : and
+// the value.
+func (r *reprReader) pair(keys map[string]bool) bool {
+	key, ok := r.str()
+	if !ok || keys[key] || !strings.HasPrefix(r.s[r.i:], ": ") {
+		return false
+	}
+	keys[key] = true
+	r.i += 2
+	return r.value()
 }
 
 // str reads a string as repr quotes it, and returns its text.
@@ -536,14 +621,23 @@ func (r *reprReader) str() (string, bool) {
 		return "", false
 	}
 	text := r.s[r.i+1 : r.i+1+end]
-	for _, c := range []byte(text) {
-		if c < ' ' || c > '~' || c == '\\' {
-			return "", false
-		}
+	if !reprPrintable(text) {
+		return "", false
 	}
 	if q == '"' && strings.IndexByte(text, '\'') < 0 {
 		return "", false
 	}
 	r.i += end + 2
 	return text, true
+}
+
+// reprPrintable reports whether text is printable ASCII with no \, which
+// repr writes as it is.
+func reprPrintable(text string) bool {
+	for _, c := range []byte(text) {
+		if c < ' ' || c > '~' || c == '\\' {
+			return false
+		}
+	}
+	return true
 }

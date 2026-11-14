@@ -100,37 +100,76 @@ func Build(s Spec) (check.Extractor, error) {
 	if err != nil {
 		return nil, err
 	}
-	name, field := s.Name, "name"
+	name, field, err := nameOf(s)
+	if err != nil {
+		return nil, err
+	}
+	parts, err := splitName(name, field)
+	if err != nil {
+		return nil, err
+	}
+	lang, err := languageOf(s)
+	if err != nil {
+		return nil, err
+	}
+	if err := fits(s, lang, parts, field, name); err != nil {
+		return nil, err
+	}
+	return extractor{Source: src, parts: parts, constant: s.Const != "", lang: lang}, nil
+}
+
+// nameOf is the name the spec reads, from name: or const:, and which of
+// the two fields it is in. A spec sets exactly one of them.
+func nameOf(s Spec) (name, field string, err error) {
 	switch {
 	case s.Name == "" && s.Const == "":
-		return nil, errors.New("code: name or const is required: the name whose value to read, such as name: __version__ or const: DefaultPort")
+		return "", "", errors.New("code: name or const is required: the name whose value to read, such as name: __version__ or const: DefaultPort")
 	case s.Name != "" && s.Const != "":
-		return nil, errors.New("code: write name or const, not both; const reads only a name declared a constant")
+		return "", "", errors.New("code: write name or const, not both; const reads only a name declared a constant")
 	case s.Const != "":
-		name, field = s.Const, "const"
+		return s.Const, "const", nil
 	}
+	return s.Name, "name", nil
+}
+
+// splitName splits a dotted name into its parts, each a name.
+func splitName(name, field string) ([]string, error) {
 	parts := strings.Split(name, ".")
 	for _, p := range parts {
 		if !identifier(p) {
 			return nil, fmt.Errorf("code: %s %s is not a name, or names joined by dots, such as Config.PORT", field, core.Quote(name))
 		}
 	}
-	var lang core.Language
-	var ok bool
+	return parts, nil
+}
+
+// languageOf is the language the spec names, or else the one the file's
+// name chooses, of those the reader reads.
+func languageOf(s Spec) (core.Language, error) {
 	if s.Language != "" {
-		if lang, ok = core.LanguageNamed(s.Language); !ok || !reads(lang) {
-			return nil, fmt.Errorf("code: language %s is not one errata reads code of; write one of %s", core.Quote(s.Language), names())
+		lang, ok := core.LanguageNamed(s.Language)
+		if !ok || !reads(lang) {
+			return lang, fmt.Errorf("code: language %s is not one errata reads code of; write one of %s", core.Quote(s.Language), names())
 		}
-	} else if lang, ok = core.LanguageFor(s.File); !ok || !reads(lang) {
-		return nil, fmt.Errorf("code: %s: its name chooses no language errata reads code of; set language: to one of %s", s.File, names())
+		return lang, nil
 	}
+	lang, ok := core.LanguageFor(s.File)
+	if !ok || !reads(lang) {
+		return lang, fmt.Errorf("code: %s: its name chooses no language errata reads code of; set language: to one of %s", s.File, names())
+	}
+	return lang, nil
+}
+
+// fits refuses a dotted name in Go, whose top level names have none, and
+// const: in a language that declares no constant.
+func fits(s Spec, lang core.Language, parts []string, field, name string) error {
 	switch {
 	case lang.Name == golang && len(parts) > 1:
-		return nil, fmt.Errorf("code: %s %s has a dot, and a Go file's top level names have none; name the const or var itself", field, core.Quote(name))
+		return fmt.Errorf("code: %s %s has a dot, and a Go file's top level names have none; name the const or var itself", field, core.Quote(name))
 	case s.Const != "" && lang.Name != golang && len(lang.Syntax.Constants) == 0:
-		return nil, fmt.Errorf("code: %s declares no constant, so const: names nothing; write name: %s", lang.Name, s.Const)
+		return fmt.Errorf("code: %s declares no constant, so const: names nothing; write name: %s", lang.Name, s.Const)
 	}
-	return extractor{Source: src, parts: parts, constant: s.Const != "", lang: lang}, nil
+	return nil
 }
 
 // identifier reports whether s is one name: a letter, _ or $, then those
@@ -138,12 +177,17 @@ func Build(s Spec) (check.Extractor, error) {
 func identifier(s string) bool {
 	for i := range len(s) {
 		c := s[i]
-		letter := c == '_' || c == '$' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= 0x80
-		if !letter && (i == 0 || c < '0' || c > '9') {
+		if !nameStart(c) && (i == 0 || c < '0' || c > '9') {
 			return false
 		}
 	}
 	return s != ""
+}
+
+// nameStart reports whether c can start a name: a letter, _ or $, or a
+// byte past ASCII.
+func nameStart(c byte) bool {
+	return c == '_' || c == '$' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= 0x80
 }
 
 // ExtractWith is Extract: the extractor reads no other extractor's values.

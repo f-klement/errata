@@ -74,19 +74,26 @@ func local(p string, windows bool) bool {
 	}
 	depth := 0
 	for _, n := range strings.FieldsFunc(p, sep) {
-		switch {
-		case n == ".":
-		case n == "..":
-			if depth--; depth < 0 {
-				return false
-			}
-		case windows && depth == 0 && isDrive(n):
+		if depth = depthAfter(n, depth, windows); depth < 0 {
 			return false
-		default:
-			depth++
 		}
 	}
 	return true
+}
+
+// depthAfter is how deep below the root a path is after its name n, given
+// depth before it; below 0 when n leaves the root, by .. or by a drive at
+// the root on Windows.
+func depthAfter(n string, depth int, windows bool) int {
+	switch {
+	case n == ".":
+		return depth
+	case n == "..":
+		return depth - 1
+	case windows && depth == 0 && isDrive(n):
+		return -1
+	}
+	return depth + 1
 }
 
 // isDrive reports whether the name n starts with a drive, an ASCII letter

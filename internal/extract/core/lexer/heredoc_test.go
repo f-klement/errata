@@ -78,7 +78,8 @@ func TestHeredocTagBound(t *testing.T) {
 // Elixir's sigils: a lower case letter reads escapes, an upper case one or
 // more does not, each between any of the delimiters, three quotes over
 // lines included. A ~ with no letter, or with a letter and no delimiter,
-// opens nothing. Planted break: Tag ignored.
+// opens nothing. Planted breaks: Tag ignored; tagEnd taking an empty tag
+// (t >= j), which reads ~~~(1) as a sigil.
 func TestSigils(t *testing.T) {
 	check(t, []pinned{
 		{"elixir", `a = ~s(x \) # no) # yes`, []string{`string x \) # no`, "comment  yes"}},
@@ -87,6 +88,7 @@ func TestSigils(t *testing.T) {
 		{"elixir", "a = ~r/#no/ ~w[a #b] # yes", []string{"string #no", "string a #b", "comment  yes"}},
 		{"elixir", "a = ~ (1) # yes\nb = ~sx # c", []string{"comment  yes", "comment  c"}},
 		{"elixir", "a = ~ss(x) # c", []string{"comment  c"}},
+		{"elixir", "a = ~~~(1) # c", []string{"comment  c"}},
 		{"elixir", "a = ~s'''\n# no\n''' # yes", []string{"string \n# no\n", "comment  yes"}},
 	})
 }
@@ -255,7 +257,10 @@ func TestDelta1(t *testing.T) {
 // the two pygments lines the corpus found. Ruby's percent literals are
 // read where a value starts, their bracket delimiters nest, and a % after
 // a value is the operator. A Ruby regular expression may run over lines.
-// Planted breaks: braceCode's escape skipping the brace; the percent forms
+// An escaped quote in an f-string is part of its body. Planted breaks:
+// braceCode's escape skipping the brace; an escape that takes only itself
+// before a byte other than a brace, which lets the quote of f'it\'s'
+// close it; the percent forms
 // left out; Pair ignored; the Ruby regex ending at its line; Words
 // ignored; Glued ignored; LineStarts ignored.
 func TestDelta2(t *testing.T) {
@@ -263,6 +268,7 @@ func TestDelta2(t *testing.T) {
 		{"python", "    (rf'(\\{{[{_dash}])(![^}}]*)(\\}}?)', # c\n", []string{"string (\\{{[{_dash}])(![^}}]*)(\\}}?)", "comment  c"}},
 		{"python", "    (rf'(\\{{%)(-?\\s*)(filter)(\\s+)({_ident_inner})', # c\n", []string{"string (\\{{%)(-?\\s*)(filter)(\\s+)({_ident_inner})", "comment  c"}},
 		{"python", "a = f'\\{{a}}' # c", []string{"string \\{{a}}", "comment  c"}},
+		{"python", "a = f'it\\'s' # c", []string{"string it\\'s", "comment  c"}},
 		{"ruby", "x = %r{^/([a-z]):/}i # c", []string{"string ^/([a-z]):/", "comment  c"}},
 		{"ruby", "x = \"#{n ? %[-#{n}] : ''}\" # c", []string{"string #{n ? %[-#{n}] : ''}", "comment  c"}},
 		{"ruby", "x = %w(a (b) #c) # d", []string{"string a (b) #c", "comment  d"}},

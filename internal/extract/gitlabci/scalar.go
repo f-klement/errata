@@ -99,34 +99,50 @@ func references(text string) bool {
 // null never reaches it, since GitLab refuses one in a matrix.
 func (c *config) psychText(n *core.Node) string {
 	text := n.Text
-	if len(text) > maxCondition || !c.retyped(n, text) {
+	if len(text) > maxCondition || !c.retyped(n, text) || !psychInt.MatchString(text) {
 		return text
 	}
-	if !psychInt.MatchString(text) {
-		return text
+	if v, ok := psychInteger(text); ok {
+		return v
 	}
+	return text
+}
+
+// psychInteger is the integer text, which psychInt matches, as Ruby's to_s
+// writes it, and false when Psych reads it as no integer.
+func psychInteger(text string) (string, bool) {
 	digits := strings.NewReplacer(",", "", "_", "").Replace(text)
 	sign := ""
 	if digits[0] == '-' || digits[0] == '+' {
 		sign, digits = digits[:1], digits[1:]
 	}
-	base := 10
-	switch {
-	case strings.HasPrefix(digits, "0b"):
-		base, digits = 2, digits[2:]
-	case strings.HasPrefix(digits, "0x"):
-		base, digits = 16, digits[2:]
-	case len(digits) > 1 && digits[0] == '0':
-		base = 8
-	case !psychDecimal.MatchString(text):
-		return text // a string to Psych, such as 1,
+	base, digits, ok := integerBase(text, digits)
+	if !ok {
+		return "", false // a string to Psych, such as 1,
 	}
 	v, ok := new(big.Int).SetString(digits, base)
 	if !ok {
-		return text // Ruby's Integer() refuses it too, such as 0b
+		return "", false // Ruby's Integer() refuses it too, such as 0b
 	}
 	if sign == "-" {
 		v.Neg(v)
 	}
-	return v.String()
+	return v.String(), true
+}
+
+// integerBase is the base of the integer text, whose digits, without its
+// sign and separators, are digits, and the digits after a base's prefix.
+// It is false when Psych reads text as a string.
+func integerBase(text, digits string) (int, string, bool) {
+	switch {
+	case strings.HasPrefix(digits, "0b"):
+		return 2, digits[2:], true
+	case strings.HasPrefix(digits, "0x"):
+		return 16, digits[2:], true
+	case len(digits) > 1 && digits[0] == '0':
+		return 8, digits, true
+	case !psychDecimal.MatchString(text):
+		return 0, "", false
+	}
+	return 10, digits, true
 }

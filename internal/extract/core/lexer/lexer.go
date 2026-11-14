@@ -320,105 +320,106 @@ func (l Language) Spans(data []byte) iter.Seq[Span] {
 		c = compile(l.Forms)
 	}
 	return func(yield func(Span) bool) {
-		blank := true // only blanks since the start of the line
-		var hd heredocs
-		start := 0
-		if l.Begin != "" {
-			if s, ok := l.before(data); ok {
-				if !yield(s) {
-					return
-				}
-				start = s.End
-			}
-		}
-	scan:
-		for i := start; i < len(data); {
-			if hd.open && i == hd.eol {
-				i, hd.open, blank = hd.resume, false, false
-				continue
-			}
-			b := data[i]
-			if l.Escape != 0 && b == l.Escape {
-				blank = false
-				i += 2
-				continue
-			}
-			for _, f := range c.first[b] {
-				s, ok := f.at(data, i, blank, c, 0)
-				if !ok {
-					continue
-				}
-				s.Form = f.i
-				if f.Heredoc && s.Closed {
-					s = f.here(data, s, &hd, c)
-				}
-				if hd.open && s.End > hd.eol && !f.Heredoc {
-					yield(Span{Kind: s.Kind, Start: s.Start, BodyStart: len(data), BodyEnd: len(data), End: len(data), Form: f.i})
-					return
-				}
-				if !yield(s) {
-					return
-				}
-				if !s.Closed && s.End == len(data) {
-					return
-				}
-				i, blank = s.End, data[s.End-1] == '\n' // a span is never empty
-				continue scan
-			}
-			switch b {
-			case '\n':
-				blank = true
-			case ' ', '\t', '\r', '\f', '\v':
-			default:
-				blank = false
-			}
-			i++
+		w := spanWalk{l: l, c: c, data: data, blank: true}
+		i, ok := l.text(data, yield)
+		for ok && i < len(data) {
+			i, ok = w.step(i, yield)
 		}
 	}
+}
+
+// text yields the span of the text before the file's code, for a row with
+// a Begin, and returns where the code starts; false when yield stopped.
+func (l Language) text(data []byte, yield func(Span) bool) (int, bool) {
+	if l.Begin == "" {
+		return 0, true
+	}
+	s, ok := l.before(data)
+	if !ok {
+		return 0, true
+	}
+	return s.End, yield(s)
+}
+
+// spanWalk is what Spans knows as it reads a file: the row and its index,
+// whether only blanks stand before the byte on its line, and the heredocs
+// opened on that line.
+type spanWalk struct {
+	l     Language
+	c     *compiled
+	data  []byte
+	blank bool
+	hd    heredocs
+}
+
+// step reads the file at i, yielding the span that opens there, and returns
+// where the walk goes on; false when it stops: yield stopped, or the span
+// runs off the end of the file.
+func (w *spanWalk) step(i int, yield func(Span) bool) (int, bool) {
+	if w.hd.open && i == w.hd.eol {
+		w.hd.open, w.blank = false, false
+		return w.hd.resume, true
+	}
+	b := w.data[i]
+	if w.l.Escape != 0 && b == w.l.Escape {
+		w.blank = false
+		return i + 2, true
+	}
+	s, ok := w.open(i)
+	if !ok {
+		w.blank = stillBlank(w.blank, b)
+		return i + 1, true
+	}
+	w.blank = w.data[s.End-1] == '\n' // a span is never empty
+	return s.End, yield(s) && (s.Closed || s.End != len(w.data))
+}
+
+// open is the span of the first of the row's forms that opens at i, with a
+// heredoc's body found. A span other than a heredoc that runs past the end
+// of a line whose heredocs are open makes the walk lose its place, so the
+// span runs off the end of the file from its start.
+func (w *spanWalk) open(i int) (Span, bool) {
+	for _, f := range w.c.first[w.data[i]] {
+		s, ok := f.at(w.data, i, w.blank, w.c, 0)
+		if !ok {
+			continue
+		}
+		s.Form = f.i
+		if f.Heredoc && s.Closed {
+			s = f.here(w.data, s, &w.hd, w.c)
+		}
+		if w.hd.open && s.End > w.hd.eol && !f.Heredoc {
+			n := len(w.data)
+			return Span{Kind: s.Kind, Start: s.Start, BodyStart: n, BodyEnd: n, End: n, Form: f.i}, true
+		}
+		return s, true
+	}
+	return Span{}, false
 }
 
 // at is the span of f opening at i in data, if it opens there; blank is
 // whether only blanks stand before i on its line. c is f's row, whose forms
 // the code inside f's body is lexed with, level deep in such code.
 func (f *Form) at(data []byte, i int, blank bool, c *compiled, level int) (Span, bool) {
-	if !bytes.HasPrefix(data[i:], []byte(f.Open)) {
-		return Span{}, false
-	}
-	if f.LineStart && !blank {
-		return Span{}, false
-	}
-	if f.After != "" && i > 0 && data[i-1] != '\n' && strings.IndexByte(f.After, data[i-1]) < 0 {
-		return Span{}, false
-	}
-	if f.Before != "" && !f.valueStarts(data, i) {
+	if !f.opens(data, i, blank) {
 		return Span{}, false
 	}
 	j := i + len(f.Open)
-	n := 0
-	if f.Fence != "" {
-		for j+n < len(data) && f.inFence[data[j+n]] && (f.FenceMax == 0 || n < f.FenceMax) {
-			n++
-		}
-		if n < f.FenceMin {
-			return Span{}, false
-		}
-		if n == f.FenceMax && j+n < len(data) && f.inFence[data[j+n]] {
-			// A fence past its bound: the lexer cannot know where the
-			// string ends, so the span runs off the end and the file's
-			// rule is unknown (Span.RunsOff), never read on as code.
-			return Span{Kind: f.Kind, Start: i, BodyStart: len(data), BodyEnd: len(data), End: len(data)}, true
-		}
+	n, ok, runsOff := f.fence(data, j)
+	if !ok {
+		return Span{}, false
+	}
+	if runsOff {
+		// A fence past its bound: the lexer cannot know where the
+		// string ends, so the span runs off the end and the file's
+		// rule is unknown (Span.RunsOff), never read on as code.
+		return Span{Kind: f.Kind, Start: i, BodyStart: len(data), BodyEnd: len(data), End: len(data)}, true
 	}
 	fence := data[j : j+n]
 	if f.Tag != "" { // a form with a tag has no fence, so n is 0
-		t := j
-		for t < len(data) && f.inTag[data[t]] && t-j < f.TagMax {
-			t++
-		}
-		if t == j {
+		if j, ok = f.tagEnd(data, j); !ok {
 			return Span{}, false
 		}
-		j = t
 	}
 	if f.Heredoc {
 		return f.tag(data, i, j)
@@ -426,46 +427,114 @@ func (f *Form) at(data []byte, i int, blank bool, c *compiled, level int) (Span,
 	if !bytes.HasPrefix(data[j+n:], []byte(f.Inner)) {
 		return Span{}, false
 	}
-	s := Span{Kind: f.Kind, Start: i, BodyStart: j + n + len(f.Inner)}
-	if f.Indented {
-		return indented(data, i, s)
+	return f.body(data, Span{Kind: f.Kind, Start: i, BodyStart: j + n + len(f.Inner)}, fence, c, level)
+}
+
+// opens reports whether f's opener stands at i in data where it may open:
+// at a line's start when f needs one, after a byte of After, and where a
+// value starts when f has a Before.
+func (f *Form) opens(data []byte, i int, blank bool) bool {
+	return bytes.HasPrefix(data[i:], []byte(f.Open)) && (!f.LineStart || blank) && f.after(data, i) &&
+		(f.Before == "" || f.valueStarts(data, i))
+}
+
+// after reports whether the byte before i in data may stand before f's
+// opener: f has no After, i starts the file or a line, or After holds it.
+func (f *Form) after(data []byte, i int) bool {
+	return f.After == "" || i == 0 || data[i-1] == '\n' || strings.IndexByte(f.After, data[i-1]) >= 0
+}
+
+// fence is the length of the fence that starts at j in data; false when it
+// is shorter than FenceMin. runsOff reports a fence of FenceMax bytes that
+// one more of them follows. A form with no Fence has an empty fence.
+func (f *Form) fence(data []byte, j int) (n int, ok, runsOff bool) {
+	if f.Fence == "" {
+		return 0, true, false
 	}
-	if f.Short {
+	n = f.fenceRun(data, j)
+	if n < f.FenceMin {
+		return n, false, false
+	}
+	return n, true, n == f.FenceMax && j+n < len(data) && f.inFence[data[j+n]]
+}
+
+// fenceRun is how many bytes of Fence stand from j in data, at most
+// FenceMax when it is set.
+func (f *Form) fenceRun(data []byte, j int) int {
+	n := 0
+	for j+n < len(data) && f.inFence[data[j+n]] && (f.FenceMax == 0 || n < f.FenceMax) {
+		n++
+	}
+	return n
+}
+
+// tagEnd is the end of the tag that starts at j in data, one to TagMax
+// bytes of Tag; false when no byte of Tag stands at j.
+func (f *Form) tagEnd(data []byte, j int) (int, bool) {
+	t := j
+	for t < len(data) && f.inTag[data[t]] && t-j < f.TagMax {
+		t++
+	}
+	return t, t > j
+}
+
+// body is s, whose body starts at s.BodyStart, read to its end the way f's
+// kind of form ends: a block scalar, a character literal, the rest of the
+// file, the end of the line, or a closer after fence.
+func (f *Form) body(data []byte, s Span, fence []byte, c *compiled, level int) (Span, bool) {
+	switch {
+	case f.Indented:
+		return indented(data, s.Start, s)
+	case f.Short:
 		return f.short(data, s)
+	case f.ToEnd && f.Close == "":
+		return toEnd(data, s)
+	case f.Close == "":
+		return f.lineEnd(data, s), true
 	}
-	if f.ToEnd && f.Close == "" {
-		// Alone on its line: the rest of the file is the span.
-		if k := s.BodyStart; k < len(data) && data[k] != '\n' && data[k] != '\r' {
-			return Span{}, false
-		}
-		s.BodyEnd, s.End, s.Closed = len(data), len(data), true
-		return s, true
+	return f.closed(data, s, fence, c, level)
+}
+
+// toEnd is s, which runs to the end of the file, closed, when its opener
+// stands alone on its line; no span otherwise.
+func toEnd(data []byte, s Span) (Span, bool) {
+	if k := s.BodyStart; k < len(data) && data[k] != '\n' && data[k] != '\r' {
+		return Span{}, false
 	}
-	if f.Close == "" {
-		end := len(data)
-		if k := bytes.IndexByte(data[s.BodyStart:], '\n'); k >= 0 {
+	s.BodyEnd, s.End, s.Closed = len(data), len(data), true
+	return s, true
+}
+
+// lineEnd is s, a line comment, closed at the end of its line or before
+// f's Stop on it. Its body ends before a carriage return that ends the
+// line.
+func (f *Form) lineEnd(data []byte, s Span) Span {
+	end := len(data)
+	if k := bytes.IndexByte(data[s.BodyStart:], '\n'); k >= 0 {
+		end = s.BodyStart + k
+	}
+	if f.Stop != "" {
+		if k := bytes.Index(data[s.BodyStart:end], []byte(f.Stop)); k >= 0 {
 			end = s.BodyStart + k
+			s.End, s.BodyEnd, s.Closed = end, end, true
+			return s
 		}
-		if f.Stop != "" {
-			if k := bytes.Index(data[s.BodyStart:end], []byte(f.Stop)); k >= 0 {
-				end = s.BodyStart + k
-				s.End, s.BodyEnd, s.Closed = end, end, true
-				return s, true
-			}
-		}
-		s.End, s.Closed = end, true
-		if data[end-1] == '\r' { // end is past the opener, so end-1 is in data
-			end--
-		}
-		s.BodyEnd = end
-		return s, true
 	}
-	closer := slices.Concat([]byte(f.Close), fence, []byte(f.Outer))
-	depth := 1
-	blank = false
-	class := false // inside a regular expression's [...]
+	s.End, s.Closed = end, true
+	if data[end-1] == '\r' { // end is past the opener, so end-1 is in data
+		end--
+	}
+	s.BodyEnd = end
+	return s
+}
+
+// closed is s read up to the closer that ends it, f's Close, then fence
+// and Outer. Code inside the body is walked as c's code, level+1 deep.
+// A span that meets no closer runs to the end of the file, Closed only
+// when f is ToEnd.
+func (f *Form) closed(data []byte, s Span, fence []byte, c *compiled, level int) (Span, bool) {
+	w := bodyWalk{f: f, data: data, closer: slices.Concat([]byte(f.Close), fence, []byte(f.Outer)), depth: 1}
 	for k := s.BodyStart; k < len(data); {
-		b := data[k]
 		if f.braces(data, k) {
 			k += 2 // {{ is a brace
 			continue
@@ -481,61 +550,125 @@ func (f *Form) at(data []byte, i int, blank bool, c *compiled, level int) (Span,
 			k = end
 			continue
 		}
-		switch {
-		case f.Line && b == '\n':
-			s.BodyEnd, s.End = k, k
+		next, done := w.step(&s, k)
+		if done {
 			return s, true
-		case f.Escape != 0 && b == f.Escape:
-			// In a form whose code opens with a lone {, an escape takes no
-			// brace: Python's rf'\{{' is a backslash and a brace.
-			if f.braceCode() && k+1 < len(data) && (data[k+1] == '{' || data[k+1] == '}') {
-				k++
-			} else {
-				k += 2
-			}
-			continue
-		case f.Pair != 0 && b == f.Pair:
-			depth++ // a bracket the closer's byte closes, nested in the body
-			k++
-			continue
-		case f.Nests && bytes.HasPrefix(data[k:], []byte(f.Open)):
-			depth++
-			k += len(f.Open)
-			blank = false
-			continue
-		case f.Classes && (b == '[' || b == ']'):
-			class = b == '['
-			k++
-			continue
-		case !class && bytes.HasPrefix(data[k:], closer) && (!f.LineStart || blank) && f.then(data, k+len(closer)):
-			if f.Doubled && bytes.HasPrefix(data[k+len(closer):], closer) {
-				k += 2 * len(closer)
-				blank = false
-				continue
-			}
-			if depth--; depth == 0 {
-				end := k + len(closer)
-				for f.Greedy && end < len(data) && data[end] == closer[len(closer)-1] && end-k-len(closer) < maxRun {
-					end++
-				}
-				s.BodyEnd, s.End, s.Closed = end-len(closer), end, true
-				return s, true
-			}
-			k += len(closer)
-			blank = false
-			continue
 		}
-		switch b {
-		case '\n':
-			blank = true
-		case ' ', '\t', '\r', '\f', '\v':
-		default:
-			blank = false
-		}
-		k++
+		k = next
 	}
 	s.BodyEnd, s.End, s.Closed = len(data), len(data), f.ToEnd
 	return s, true
+}
+
+// bodyWalk is what closed knows of a body as it reads it: the closer, how
+// many levels deep the body nests, whether only blanks stand before the
+// byte on its line, and whether it is inside a regular expression's [...].
+type bodyWalk struct {
+	f      *Form
+	data   []byte
+	closer []byte
+	depth  int
+	blank  bool
+	class  bool
+}
+
+// step reads the byte at k of the body and returns where the walk goes on;
+// true when it ends the span, which it sets in s.
+func (w *bodyWalk) step(s *Span, k int) (int, bool) {
+	f, b := w.f, w.data[k]
+	if f.Line && b == '\n' {
+		s.BodyEnd, s.End = k, k
+		return k, true
+	}
+	if f.Escape != 0 && b == f.Escape {
+		return k + f.escaped(w.data, k), false
+	}
+	if next, ok := w.bracket(k); ok {
+		return next, false
+	}
+	if w.closes(k) {
+		return w.close(s, k)
+	}
+	w.blank = stillBlank(w.blank, b)
+	return k + 1, false
+}
+
+// escaped is how many bytes the escape at k in data takes: two, or one in
+// a form whose code opens with a lone { when a brace follows, since there
+// an escape takes no brace: Python's rf'\{{' is a backslash and a brace.
+func (f *Form) escaped(data []byte, k int) int {
+	if f.braceCode() && k+1 < len(data) && (data[k+1] == '{' || data[k+1] == '}') {
+		return 1
+	}
+	return 2
+}
+
+// bracket reads, at k, a bracket the body counts: one the closer's byte
+// closes, f's opener in a form that nests, or a regular expression's [ or ].
+// It returns where the walk goes on past it; false when none stands at k.
+func (w *bodyWalk) bracket(k int) (int, bool) {
+	f, b := w.f, w.data[k]
+	switch {
+	case f.Pair != 0 && b == f.Pair:
+		w.depth++ // a bracket the closer's byte closes, nested in the body
+		return k + 1, true
+	case f.Nests && bytes.HasPrefix(w.data[k:], []byte(f.Open)):
+		w.depth++
+		w.blank = false
+		return k + len(f.Open), true
+	case f.Classes && (b == '[' || b == ']'):
+		w.class = b == '['
+		return k + 1, true
+	}
+	return k, false
+}
+
+// closes reports whether the closer at k may close: outside a class, at a
+// line's start for a LineStart form, and followed by one of f's Then.
+func (w *bodyWalk) closes(k int) bool {
+	f := w.f
+	return !w.class && bytes.HasPrefix(w.data[k:], w.closer) && (!f.LineStart || w.blank) && f.then(w.data, k+len(w.closer))
+}
+
+// close reads the closer at k: a doubled closer is part of the body, a
+// nested one closes a level, and the last closes the span, which it sets
+// in s, true.
+func (w *bodyWalk) close(s *Span, k int) (int, bool) {
+	n := len(w.closer)
+	if w.f.Doubled && bytes.HasPrefix(w.data[k+n:], w.closer) {
+		w.blank = false
+		return k + 2*n, false
+	}
+	if w.depth--; w.depth == 0 {
+		end := w.greedy(k + n)
+		s.BodyEnd, s.End, s.Closed = end-n, end, true
+		return end, true
+	}
+	w.blank = false
+	return k + n, false
+}
+
+// greedy is end, the end of a closer, moved past the run of the closer's
+// last byte that follows it when f is Greedy, at most maxRun bytes.
+func (w *bodyWalk) greedy(end int) int {
+	last, from := w.closer[len(w.closer)-1], end
+	for w.f.Greedy && end < len(w.data) && w.data[end] == last && end-from < maxRun {
+		end++
+	}
+	return end
+}
+
+// stillBlank is whether only blanks stand on a line after b, given blank
+// for the bytes before it: a line feed starts a blank line, a blank keeps
+// it as it was, and any other byte ends it.
+func stillBlank(blank bool, b byte) bool {
+	switch b {
+	case '\n':
+		return true
+	case ' ', '\t', '\r', '\f', '\v':
+		return blank
+	}
+	return false
 }
 
 // maxNest is how deeply code inside a string may hold strings that hold
@@ -615,33 +748,61 @@ func (c *compiled) walk(data []byte, k int, open byte, level int, spec string) (
 	if open == '{' {
 		shut = '}'
 	}
+	return c.walkCode(data, k, shut, level, spec)
+}
+
+// walkCode is walk past its bound and its opener: shut is the bracket that
+// closes the code.
+func (c *compiled) walkCode(data []byte, k int, shut byte, level int, spec string) (int, bool) {
 	depth := 1 // the brackets of every kind open, open's included
-scan:
 	for k < len(data) {
 		b := data[k]
-		if depth == 1 && spec != "" && strings.IndexByte(spec, b) >= 0 && (k+1 == len(data) || data[k+1] != '=') {
-			return c.spec(data, k+1, level, spec) // not := or !=, which are code
+		if depth == 1 && specStarts(data, k, spec) {
+			return c.spec(data, k+1, level, spec)
 		}
-		for _, f := range c.first[b] {
-			if s, ok := f.at(data, k, false, c, level); ok {
-				if !s.Closed || f.Heredoc {
-					return 0, false
-				}
-				k = s.End
-				continue scan
+		if end, ok, lexed := c.lexed(data, k, level); lexed {
+			if !ok {
+				return 0, false
 			}
+			k = end
+			continue
 		}
-		switch b {
-		case '(', '[', '{':
-			depth++
-		case ')', ']', '}':
-			if depth--; depth == 0 {
-				return k + 1, b == shut
-			}
+		if depth = nest(b, depth); depth == 0 {
+			return k + 1, b == shut
 		}
 		k++
 	}
 	return 0, false
+}
+
+// specStarts reports whether a byte of spec at k in data starts a format
+// spec: not := or !=, which are code.
+func specStarts(data []byte, k int, spec string) bool {
+	return spec != "" && strings.IndexByte(spec, data[k]) >= 0 && (k+1 == len(data) || data[k+1] != '=')
+}
+
+// lexed reports whether a comment or string of the row opens at k in data,
+// level deep in code, and where it ends; false for one that runs off, ends
+// unclosed at its line or is a heredoc.
+func (c *compiled) lexed(data []byte, k, level int) (end int, ok, lexed bool) {
+	for _, f := range c.first[data[k]] {
+		if s, opens := f.at(data, k, false, c, level); opens {
+			return s.End, s.Closed && !f.Heredoc, true
+		}
+	}
+	return 0, false, false
+}
+
+// nest is depth after b: one more for an opening bracket, one fewer for a
+// closing one.
+func nest(b byte, depth int) int {
+	switch b {
+	case '(', '[', '{':
+		return depth + 1
+	case ')', ']', '}':
+		return depth - 1
+	}
+	return depth
 }
 
 // spec reads a format spec from k to the } that ends its replacement field:
@@ -673,25 +834,48 @@ func (f *Form) valueStarts(data []byte, i int) bool {
 	if i > 0 && strings.IndexByte(f.Glued, data[i-1]) >= 0 {
 		return false
 	}
-	k := i - 1
-	for k >= 0 && (data[k] == ' ' || data[k] == '\t' || data[k] == '\n' || data[k] == '\r') {
-		if data[k] != ' ' && data[k] != '\t' && f.LineStarts {
-			// A line end ends the statement before it, unless a backslash
-			// joins the lines.
-			j := k - 1
-			if j >= 0 && data[k] == '\n' && data[j] == '\r' {
-				j--
-			}
-			if j < 0 || data[j] != '\\' {
-				return true
+	k, ended := f.back(data, i-1)
+	if ended || k < 0 || strings.IndexByte(f.Before, data[k]) >= 0 {
+		return true
+	}
+	return f.word(data, i, k)
+}
+
+// back is k moved back past the blanks and line ends at and before it in
+// data, to the byte before them, -1 at the start of the file; true when f
+// is LineStarts and a line end there ends a statement.
+func (f *Form) back(data []byte, k int) (int, bool) {
+	for k >= 0 && gap(data[k]) {
+		if f.LineStarts && data[k] != ' ' && data[k] != '\t' {
+			j, joined := joined(data, k)
+			if !joined {
+				return k, true
 			}
 			k = j
 		}
 		k--
 	}
-	if k < 0 || strings.IndexByte(f.Before, data[k]) >= 0 {
-		return true
+	return k, false
+}
+
+// gap reports whether b is a blank or a line end.
+func gap(b byte) bool { return b == ' ' || b == '\t' || b == '\n' || b == '\r' }
+
+// joined reports whether a backslash joins the line that the line end at k
+// in data ends to the next, and where that backslash stands. A line end
+// ends the statement before it unless a backslash joins the lines.
+func joined(data []byte, k int) (int, bool) {
+	j := k - 1
+	if j >= 0 && data[k] == '\n' && data[j] == '\r' {
+		j--
 	}
+	return j, j >= 0 && data[j] == '\\'
+}
+
+// word reports whether the word that ends at k in data is one after which
+// f's value starts at i: one of Words, or one of Calls with a blank before
+// i and none after Open. A member named so is no word.
+func (f *Form) word(data []byte, i, k int) bool {
 	w := k + 1
 	for w > 0 && identByte(data[w-1]) {
 		w--
@@ -752,29 +936,52 @@ func identByte(b byte) bool {
 // i: the tag, in quotes or not, at most maxTag bytes. The span is the
 // opener, Closed, and Here.Quote its quote; its body is found by here.
 func (f *Form) tag(data []byte, i, j int) (Span, bool) {
-	var q byte
-	if j < len(data) && (data[j] == '\'' || data[j] == '"' || data[j] == '`') {
-		q = data[j]
-		j++
-	}
+	q, j := quoted(data, j)
 	k := j
 	for k < len(data) && k-j < maxTag && identByte(data[k]) {
 		k++
 	}
-	if k == j || data[j] >= '0' && data[j] <= '9' || f.TagFirst != "" && strings.IndexByte(f.TagFirst, data[j]) < 0 {
+	if !f.tagStarts(data, j, k) {
 		return Span{}, false
 	}
-	end := k
-	if q != 0 {
-		if k >= len(data) || data[k] != q {
-			return Span{}, false
-		}
-		end++
-	} else if k < len(data) && identByte(data[k]) {
-		return Span{}, false // a tag past maxTag
+	end, ok := tagEnds(data, k, q)
+	if !ok {
+		return Span{}, false
 	}
 	return Span{Kind: f.Kind, Start: i, BodyStart: end, BodyEnd: end, End: end, Closed: true,
 		Here: Here{Start: j, End: k, Quote: q}}, true
+}
+
+// quoted is the quote that stands at j in data before a heredoc's tag, 0
+// for none, and where the tag starts.
+func quoted(data []byte, j int) (byte, int) {
+	if j < len(data) && (data[j] == '\'' || data[j] == '"' || data[j] == '`') {
+		return data[j], j + 1
+	}
+	return 0, j
+}
+
+// tagStarts reports whether data[j:k] may be a heredoc's tag: not empty,
+// not starting with a digit, and starting with a byte of TagFirst when f
+// has one.
+func (f *Form) tagStarts(data []byte, j, k int) bool {
+	return k != j && (data[j] < '0' || data[j] > '9') && (f.TagFirst == "" || strings.IndexByte(f.TagFirst, data[j]) >= 0)
+}
+
+// tagEnds is the end of a heredoc's opener whose tag ends at k in data,
+// past its closing quote q when it has one; false when that quote is not
+// there, or, for a tag with no quotes, when the tag runs past maxTag.
+func tagEnds(data []byte, k int, q byte) (int, bool) {
+	if q != 0 {
+		if k >= len(data) || data[k] != q {
+			return 0, false
+		}
+		return k + 1, true
+	}
+	if k < len(data) && identByte(data[k]) {
+		return 0, false // a tag past maxTag
+	}
+	return k, true
 }
 
 // heredocs is what the walk knows of the heredocs opened on the line it is
@@ -794,7 +1001,6 @@ type heredocs struct {
 // holds code that does not close before the closer's line, where the lexer
 // cannot tell which line closes it. c is f's row.
 func (f *Form) here(data []byte, s Span, hd *heredocs, c *compiled) Span {
-	tag := data[s.Here.Start:s.Here.End]
 	runsOff := Span{Kind: s.Kind, Start: s.Start, BodyStart: len(data), BodyEnd: len(data), End: len(data), Form: s.Form}
 	at := s.End // the body starts on the line after at
 	if hd.open {
@@ -808,27 +1014,42 @@ func (f *Form) here(data []byte, s Span, hd *heredocs, c *compiled) Span {
 		hd.open, hd.eol = true, at+k
 	}
 	from := at + k + 1
-	for p := from; ; {
-		q := p
-		for f.Indent && q < len(data) && (data[q] == ' ' || data[q] == '\t') {
-			q++
-		}
-		end := q + len(tag)
-		if bytes.HasPrefix(data[q:], tag) && (end == len(data) || data[end] == '\n' || data[end] == '\r' ||
-			f.Trail && !identByte(data[end])) {
-			if s.Here.Quote != '\'' && !f.codeCloses(data, from, p, c) {
-				return runsOff
-			}
-			s.Here = Here{Start: from, End: p, Close: end, Quote: s.Here.Quote}
-			hd.resume = end
-			return s
+	p, end, ok := f.closerLine(data, from, data[s.Here.Start:s.Here.End])
+	if !ok || s.Here.Quote != '\'' && !f.codeCloses(data, from, p, c) {
+		return runsOff
+	}
+	s.Here = Here{Start: from, End: p, Close: end, Quote: s.Here.Quote}
+	hd.resume = end
+	return s
+}
+
+// closerLine is the start of the first line from p in data that closes a
+// heredoc whose tag is tag, and the end of the tag on it; false when no
+// line does.
+func (f *Form) closerLine(data []byte, p int, tag []byte) (int, int, bool) {
+	for {
+		if end, ok := f.closesAt(data, p, tag); ok {
+			return p, end, true
 		}
 		k := bytes.IndexByte(data[p:], '\n')
 		if k < 0 {
-			return runsOff
+			return 0, 0, false
 		}
 		p += k + 1
 	}
+}
+
+// closesAt reports whether the line at p in data closes a heredoc whose tag
+// is tag, and where the tag ends on it: the tag, after blanks when f is
+// Indent, then the end of the line or the file, or for a Trail form a byte
+// that is no identifier's.
+func (f *Form) closesAt(data []byte, p int, tag []byte) (int, bool) {
+	if f.Indent {
+		p = blanks(data, p)
+	}
+	end := p + len(tag)
+	return end, bytes.HasPrefix(data[p:], tag) && (end == len(data) || data[end] == '\n' || data[end] == '\r' ||
+		f.Trail && !identByte(data[end]))
 }
 
 // maxShortEscape is the most bytes a character literal's escape may run to
@@ -870,21 +1091,9 @@ func (s Span) RunsOff(size int) bool { return !s.Closed && s.End == size }
 // indented is s, a YAML block scalar opening at i, or no span when what
 // follows Open on its line is no block scalar's header.
 func indented(data []byte, i int, s Span) (Span, bool) {
-	k := s.BodyStart
-	indicator := 0 // an explicit indentation indicator, 0 for none
-	for n := 0; n < 2 && k < len(data) && strings.IndexByte("-+123456789", data[k]) >= 0; n++ {
-		if data[k] >= '1' && data[k] <= '9' {
-			indicator = int(data[k] - '0')
-		}
-		k++
-	}
-	for k < len(data) && (data[k] == ' ' || data[k] == '\t') {
-		k++
-	}
-	switch {
-	case k == len(data) || data[k] == '\n' || data[k] == '\r':
-	case data[k] == '#' && (data[k-1] == ' ' || data[k-1] == '\t'):
-	default:
+	k, indicator := indicators(data, s.BodyStart)
+	k = blanks(data, k)
+	if !headerEnds(data, k) {
 		return Span{}, false
 	}
 	nl := bytes.IndexByte(data[k:], '\n')
@@ -893,23 +1102,57 @@ func indented(data []byte, i int, s Span) (Span, bool) {
 		return s, true
 	}
 	parent := parentColumn(data, i)
-	p := k + nl + 1
-	s.BodyStart = p
 	// content is the body's indentation: the node's column plus an explicit
 	// indicator, else that of the body's first line that is not blank.
 	content := -1
 	if indicator > 0 {
 		content = max(parent, 0) + indicator
 	}
+	s.BodyStart = k + nl + 1
+	end := blockEnd(data, s.BodyStart, parent, content)
+	s.BodyEnd, s.End, s.Closed = end, end, true
+	return s, true
+}
+
+// indicators reads at most two indicators of chomping and indentation from
+// k in data, and returns where they end and the explicit indentation
+// indicator, 0 for none.
+func indicators(data []byte, k int) (int, int) {
+	indicator := 0
+	for n := 0; n < 2 && k < len(data) && strings.IndexByte("-+123456789", data[k]) >= 0; n++ {
+		if data[k] >= '1' && data[k] <= '9' {
+			indicator = int(data[k] - '0')
+		}
+		k++
+	}
+	return k, indicator
+}
+
+// blanks is where the run of spaces and tabs from k in data ends.
+func blanks(data []byte, k int) int {
+	for k < len(data) && (data[k] == ' ' || data[k] == '\t') {
+		k++
+	}
+	return k
+}
+
+// headerEnds reports whether a block scalar's header may end at k in data,
+// k past its opener: at the end of the line or the file, or where a comment
+// starts after a blank.
+func headerEnds(data []byte, k int) bool {
+	return k == len(data) || data[k] == '\n' || data[k] == '\r' ||
+		data[k] == '#' && (data[k-1] == ' ' || data[k-1] == '\t')
+}
+
+// blockEnd is where the body of a block scalar that starts at p in data
+// ends: before its first line that is not blank and is indented no further
+// than parent, the node's column, or less than content, the body's
+// indentation (-1 for that of its first line that is not blank), or that is
+// a document marker at column 0.
+func blockEnd(data []byte, p, parent, content int) int {
 	for p < len(data) {
-		col := 0
-		for p+col < len(data) && data[p+col] == ' ' {
-			col++
-		}
-		end := len(data)
-		if e := bytes.IndexByte(data[p:], '\n'); e >= 0 {
-			end = p + e + 1
-		}
+		col := spaces(data, p)
+		end := nextLine(data, p)
 		if len(bytes.TrimSpace(data[p:end])) > 0 {
 			if content < 0 {
 				content = col
@@ -920,8 +1163,25 @@ func indented(data []byte, i int, s Span) (Span, bool) {
 		}
 		p = end
 	}
-	s.BodyEnd, s.End, s.Closed = p, p, true
-	return s, true
+	return p
+}
+
+// spaces is how many spaces stand from p in data.
+func spaces(data []byte, p int) int {
+	col := 0
+	for p+col < len(data) && data[p+col] == ' ' {
+		col++
+	}
+	return col
+}
+
+// nextLine is the start of the line after the one at p in data, past its
+// line feed, or the end of the file.
+func nextLine(data []byte, p int) int {
+	if e := bytes.IndexByte(data[p:], '\n'); e >= 0 {
+		return p + e + 1
+	}
+	return len(data)
 }
 
 // documentMarker reports whether line starts with a YAML document marker,

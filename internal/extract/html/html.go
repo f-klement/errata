@@ -238,16 +238,7 @@ func (r *reading) inScope() bool { return r.outline == nil || len(r.sections) > 
 // read makes the pass and appends the target's items.
 func (r *reading) read() error {
 	for r.s.Next() {
-		var err error
-		switch r.s.Kind() {
-		case htmlparse.Comment:
-			r.comment()
-		case htmlparse.Text, htmlparse.Pre:
-			r.text()
-		default:
-			err = r.tag()
-		}
-		if err != nil {
+		if err := r.token(); err != nil {
 			return err
 		}
 		if r.sel.Search == nil && len(r.items) > core.MaxValues {
@@ -255,15 +246,7 @@ func (r *reading) read() error {
 		}
 	}
 	if err := r.s.Err(); err != nil {
-		var many *htmlparse.TooManyTokensError
-		var nest *htmlparse.NestError
-		switch {
-		case errors.As(err, &many):
-			return fmt.Errorf("line %d: %w", r.lines.At(many.At), err)
-		case errors.As(err, &nest):
-			return fmt.Errorf("line %d: %w", r.lines.At(nest.At), err)
-		}
-		return err
+		return r.scanError(err)
 	}
 	r.finish()
 	if r.p.over {
@@ -271,6 +254,33 @@ func (r *reading) read() error {
 			r.lines.At(r.p.overAt), r.p.maxPieces, bytesPerPiece)
 	}
 	return nil
+}
+
+// token follows the token the scanner is at.
+func (r *reading) token() error {
+	switch r.s.Kind() {
+	case htmlparse.Comment:
+		r.comment()
+	case htmlparse.Text, htmlparse.Pre:
+		r.text()
+	default:
+		return r.tag()
+	}
+	return nil
+}
+
+// scanError is the scanner's error err, with the line of a refusal that
+// names its offset.
+func (r *reading) scanError(err error) error {
+	var many *htmlparse.TooManyTokensError
+	var nest *htmlparse.NestError
+	switch {
+	case errors.As(err, &many):
+		return fmt.Errorf("line %d: %w", r.lines.At(many.At), err)
+	case errors.As(err, &nest):
+		return fmt.Errorf("line %d: %w", r.lines.At(nest.At), err)
+	}
+	return err
 }
 
 // finish ends what the end of the file leaves open, in the order the
@@ -313,36 +323,55 @@ func (r *reading) text() {
 	}
 	switch r.sel.Target {
 	case markup.TargetSection:
-		if len(r.sections) == 0 {
-			return
-		}
-		if r.s.Kind() == htmlparse.Text {
-			r.p.shown(b, at)
-			return
-		}
-		for len(b) > 0 { // a pre's lines stay lines
-			line, rest, cut := bytes.Cut(b, []byte("\n"))
-			r.p.shown(line, at)
-			if cut {
-				r.p.endLine()
-			}
-			at += len(b) - len(rest)
-			b = rest
-		}
+		r.sectionText(b, at)
 	case markup.TargetCode:
-		if r.code != nil {
-			if r.code.line == 0 {
-				r.code.line = r.lines.At(at)
-			}
-			r.p.written(b, at)
-		}
+		r.codeText(b, at)
 	case markup.TargetTable:
-		switch t := r.table(); {
-		case t != nil && t.inCell:
-			r.p.shown(b, at)
-		case t != nil && !t.inCaption && r.trace != nil && len(bytes.Trim(b, htmlBlanks)) > 0:
-			r.trace("foster", "") // a browser moves it before the table; errata reads it where it is
+		r.tableText(b, at)
+	}
+}
+
+// sectionText appends text at offset at to the prose of a section open,
+// for a section target. A pre's lines stay lines.
+func (r *reading) sectionText(b []byte, at int) {
+	if len(r.sections) == 0 {
+		return
+	}
+	if r.s.Kind() == htmlparse.Text {
+		r.p.shown(b, at)
+		return
+	}
+	for len(b) > 0 {
+		line, rest, cut := bytes.Cut(b, []byte("\n"))
+		r.p.shown(line, at)
+		if cut {
+			r.p.endLine()
 		}
+		at += len(b) - len(rest)
+		b = rest
+	}
+}
+
+// codeText appends text at offset at to the code block open, as it is
+// written, for a code target; the block's line is that of its first text.
+func (r *reading) codeText(b []byte, at int) {
+	if r.code == nil {
+		return
+	}
+	if r.code.line == 0 {
+		r.code.line = r.lines.At(at)
+	}
+	r.p.written(b, at)
+}
+
+// tableText appends text at offset at to the cell open, for a table
+// target, and traces text outside a cell or caption that a browser moves.
+func (r *reading) tableText(b []byte, at int) {
+	switch t := r.table(); {
+	case t != nil && t.inCell:
+		r.p.shown(b, at)
+	case t != nil && !t.inCaption && r.trace != nil && len(bytes.Trim(b, htmlBlanks)) > 0:
+		r.trace("foster", "") // a browser moves it before the table; errata reads it where it is
 	}
 }
 
@@ -353,20 +382,9 @@ func (r *reading) tag() error {
 	}
 	name, opens, at := r.s.Name(), r.s.Kind() == htmlparse.StartTag, r.s.Start()
 	if r.s.BreaksLine() {
-		if r.sel.Target == markup.TargetSection {
-			r.p.endLine()
-		}
-		if r.head != nil {
-			r.head.name.space(at) // <br> in a heading is a space, as in markdown's
-		}
+		r.breakLine(at)
 	}
-	level := headingLevel(name)
-	if r.head != nil && (!r.s.HeadingOpen() || opens && level > 0) {
-		r.endHeading() // the scanner ends a heading where a browser does
-	}
-	if opens && level > 0 {
-		r.head = &heading{level: level, line: r.lines.At(at), name: prose{maxPieces: r.p.maxPieces}, textAt: len(r.p.text)}
-	}
+	r.headingTag(name, opens, at)
 	if name == "a" && r.head != nil {
 		r.link(opens)
 	}
@@ -377,6 +395,31 @@ func (r *reading) tag() error {
 		return r.tableTag(name, opens, at)
 	}
 	return nil
+}
+
+// breakLine follows a tag at offset at that breaks a line: it ends a line
+// of a section's prose, and is a space in a heading, as <br> is in
+// markdown's.
+func (r *reading) breakLine(at int) {
+	if r.sel.Target == markup.TargetSection {
+		r.p.endLine()
+	}
+	if r.head != nil {
+		r.head.name.space(at)
+	}
+}
+
+// headingTag ends the heading open where the scanner ends it, as a
+// browser does, and where another opens, and opens a heading at a
+// heading's start tag.
+func (r *reading) headingTag(name string, opens bool, at int) {
+	level := headingLevel(name)
+	if r.head != nil && (!r.s.HeadingOpen() || opens && level > 0) {
+		r.endHeading()
+	}
+	if opens && level > 0 {
+		r.head = &heading{level: level, line: r.lines.At(at), name: prose{maxPieces: r.p.maxPieces}, textAt: len(r.p.text)}
+	}
 }
 
 // link follows a link in the heading open. A link to a place in the page,
@@ -439,9 +482,15 @@ func (r *reading) endHeading() {
 	if r.trace != nil {
 		r.trace("heading", strings.Trim(string(h.name.text), htmlBlanks))
 	}
-	if r.outline == nil {
-		return
+	if r.outline != nil {
+		r.outlineHeading(h)
 	}
+}
+
+// outlineHeading follows the heading h in the outline of the path: the
+// sections it ends end where its text started, and the section of a
+// heading the path names starts after it.
+func (r *reading) outlineHeading(h *heading) {
 	ends, named, _ := r.outline.Heading(h.level, strings.Trim(string(h.name.text), htmlBlanks))
 	for _, n := range ends {
 		r.endSection(n, h.textAt)
@@ -478,10 +527,19 @@ func (r *reading) codeTag(name string, opens bool, at int) {
 	if r.code != nil && !r.s.InPre() {
 		r.endCode() // an end tag, or a start tag such as a cell's, ended the pre
 	}
+	if opens {
+		r.codeStart(name, at)
+	}
+}
+
+// codeStart follows a start tag of name at offset at, for a code target:
+// a pre or a listing opens a code block, and the first code inside it
+// with a language names the block's.
+func (r *reading) codeStart(name string, at int) {
 	switch {
-	case opens && r.code == nil && (name == "pre" || name == "listing"):
+	case r.code == nil && (name == "pre" || name == "listing"):
 		r.code = &codeBlock{start: len(r.p.text), tagLine: r.lines.At(at), language: language(r.s.Class()), scoped: r.inScope()}
-	case opens && r.code != nil && name == "code" && r.code.language == "":
+	case r.code != nil && name == "code" && r.code.language == "":
 		r.code.language = language(r.s.Class())
 	}
 }
@@ -546,40 +604,85 @@ func (r *reading) tableTag(name string, opens bool, at int) error {
 	}
 	t := r.table()
 	switch {
-	case name == "table" && opens:
-		if t != nil && !t.inCell && !t.inCaption {
-			r.endTable() // a table in a table, outside a cell, ends it in a browser
-			t = r.table()
-		}
-		if t != nil {
-			t.cut = min(t.cut, len(r.p.text))
-		}
-		r.tables = append(r.tables, &table{scoped: r.inScope()})
-	case t == nil:
 	case name == "table":
-		r.endTable()
-	case name == "tr" || name == "thead" || name == "tbody" || name == "tfoot" || name == "caption" ||
-		(name == "col" || name == "colgroup") && opens: // a column closes the row, as the scanner does
-		r.endRow(t)
-		t.inCaption = name == "caption" && opens
-		if name == "tr" && opens {
+		r.tableElement(t, opens)
+	case t == nil:
+	case endsRow(name, opens):
+		r.rowTag(t, name, opens, at)
+	case name == "td" || name == "th":
+		r.cellTag(t, opens, at)
+	default:
+		r.inTableTag(t, name, opens, at)
+	}
+	return nil
+}
+
+// rowEnds are the table tags that end the row open, start or end tag;
+// columnTags those whose start tags do.
+var (
+	rowEnds    = map[string]bool{"tr": true, "thead": true, "tbody": true, "tfoot": true, "caption": true}
+	columnTags = map[string]bool{"col": true, "colgroup": true}
+)
+
+// endsRow reports whether a tag of name ends the row open: a row's, a
+// section's or a caption's, or a column's start tag, which closes the
+// row, as the scanner does.
+func endsRow(name string, opens bool) bool {
+	return rowEnds[name] || columnTags[name] && opens
+}
+
+// tableElement follows a table's start or end tag, t the innermost table
+// open before it, or nil.
+func (r *reading) tableElement(t *table, opens bool) {
+	if !opens {
+		if t != nil {
+			r.endTable()
+		}
+		return
+	}
+	if t != nil && !t.inCell && !t.inCaption {
+		r.endTable() // a table in a table, outside a cell, ends it in a browser
+		t = r.table()
+	}
+	if t != nil {
+		t.cut = min(t.cut, len(r.p.text))
+	}
+	r.tables = append(r.tables, &table{scoped: r.inScope()})
+}
+
+// rowTag follows a tag that ends the row open of t: a row's, a section's,
+// a caption's or a column's. A row's start tag opens a row.
+func (r *reading) rowTag(t *table, name string, opens bool, at int) {
+	r.endRow(t)
+	t.inCaption = name == "caption" && opens
+	if name == "tr" && opens {
+		t.inRow, t.rowLine = true, r.lines.At(at)
+	}
+}
+
+// cellTag follows a cell's tag in t, which ends the cell open. A start
+// tag opens a cell, and a row when none is open.
+func (r *reading) cellTag(t *table, opens bool, at int) {
+	r.endCell(t)
+	t.inCaption = false
+	if opens {
+		if !t.inRow {
 			t.inRow, t.rowLine = true, r.lines.At(at)
 		}
-	case name == "td" || name == "th":
-		r.endCell(t)
-		t.inCaption = false
-		if opens {
-			if !t.inRow {
-				t.inRow, t.rowLine = true, r.lines.At(at)
-			}
-			t.inCell, t.start, t.cut = true, len(r.p.text), math.MaxInt
-		}
+		t.inCell, t.start, t.cut = true, len(r.p.text), math.MaxInt
+	}
+}
+
+// inTableTag follows any other tag in t: one that breaks a line in a
+// cell is a space there, and a start tag a browser moves before the
+// table is traced.
+func (r *reading) inTableTag(t *table, name string, opens bool, at int) {
+	switch {
 	case t.inCell && r.s.BreaksLine():
 		r.p.space(at)
 	case !t.inCell && !t.inCaption && opens && r.trace != nil && !tableTags[name]:
 		r.trace("foster", "") // as for text: a browser moves the element before the table
 	}
-	return nil
 }
 
 // endTable ends the innermost table, with its row open.
@@ -613,27 +716,40 @@ func (r *reading) endRow(t *table) {
 	if len(cells) == 0 {
 		return
 	}
-	if r.trace != nil {
-		texts := make([]string, len(cells))
-		for i, c := range cells {
-			texts[i] = string(r.p.text[c[0]:c[1]])
-		}
-		r.trace("row", strings.Join(texts, "|"))
-	}
+	r.traceRow(cells)
 	if t.rows++; t.rows == 1 {
-		headers := make([]string, len(cells))
-		for i, c := range cells {
-			headers[i] = string(r.p.text[c[0]:c[1]])
-		}
-		t.col, t.key, t.ok = r.sel.Columns(headers)
+		t.col, t.key, t.ok = r.sel.Columns(r.cellTexts(cells))
 		return
 	}
+	if r.rowSelected(t, cells) {
+		c := cells[t.col]
+		r.items = append(r.items, markup.Item{Start: c[0], End: c[1], Line: t.rowLine, Fixed: true})
+	}
+}
+
+// cellTexts is the text of each of cells.
+func (r *reading) cellTexts(cells [][2]int) []string {
+	texts := make([]string, len(cells))
+	for i, c := range cells {
+		texts[i] = string(r.p.text[c[0]:c[1]])
+	}
+	return texts
+}
+
+// traceRow traces the text of a row's cells, when a trace is on.
+func (r *reading) traceRow(cells [][2]int) {
+	if r.trace != nil {
+		r.trace("row", strings.Join(r.cellTexts(cells), "|"))
+	}
+}
+
+// rowSelected reports whether the row of cells, after the headers of t,
+// gives the select's item: the select's columns are in the headers, the
+// path keeps the table, the row has the column, and its key cell, if the
+// select names a row, holds the row named.
+func (r *reading) rowSelected(t *table, cells [][2]int) bool {
 	if !t.ok || !t.scoped || t.col >= len(cells) {
-		return
+		return false
 	}
-	if t.key >= 0 && (t.key >= len(cells) || string(r.p.text[cells[t.key][0]:cells[t.key][1]]) != r.sel.Row) {
-		return
-	}
-	c := cells[t.col]
-	r.items = append(r.items, markup.Item{Start: c[0], End: c[1], Line: t.rowLine, Fixed: true})
+	return t.key < 0 || t.key < len(cells) && string(r.p.text[cells[t.key][0]:cells[t.key][1]]) == r.sel.Row
 }

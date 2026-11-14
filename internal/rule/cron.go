@@ -52,38 +52,67 @@ const minutesPerWeek = 7 * 24 * 60
 // job's name. Day of month and month must be *, since months differ in
 // length. The interval is that of a clock without daylight saving changes.
 func cronInterval(schedule string) (time.Duration, error) {
-	spec := strings.TrimSpace(schedule)
-	if strings.HasPrefix(spec, "@") {
-		expanded, ok := cronMacros[spec]
-		switch {
-		case slices.Contains([]string{"@monthly", "@yearly", "@annually"}, spec):
-			return 0, fmt.Errorf("%q has no fixed interval, since months and years differ in length", schedule)
-		case !ok:
-			return 0, fmt.Errorf("%q: cron_interval reads the macros @hourly, @daily, @midnight and @weekly", schedule)
-		}
-		spec = expanded
+	fields, err := cronFields(schedule)
+	if err != nil {
+		return 0, err
+	}
+	runs, err := weekRuns(schedule, fields)
+	if err != nil {
+		return 0, err
+	}
+	return fixedGap(schedule, runs)
+}
+
+// cronFields is the five fields of schedule, a macro expanded, refused
+// unless day of month and month are *.
+func cronFields(schedule string) ([]string, error) {
+	spec, err := expandMacro(schedule)
+	if err != nil {
+		return nil, err
 	}
 	fields := strings.Fields(spec)
 	if len(fields) != 5 {
-		return 0, fmt.Errorf("%q has %d fields; cron_interval reads five: minute, hour, day of month, month, day of week", schedule, len(fields))
+		return nil, fmt.Errorf("%q has %d fields; cron_interval reads five: minute, hour, day of month, month, day of week", schedule, len(fields))
 	}
 	if fields[2] != "*" || fields[3] != "*" {
-		return 0, fmt.Errorf("%q has no fixed interval: day of month and month must be *, since months differ in length", schedule)
+		return nil, fmt.Errorf("%q has no fixed interval: day of month and month must be *, since months differ in length", schedule)
 	}
+	return fields, nil
+}
+
+// expandMacro is schedule trimmed, with a macro such as @daily expanded.
+// A macro of no fixed interval, or one cron_interval does not read, is
+// refused.
+func expandMacro(schedule string) (string, error) {
+	spec := strings.TrimSpace(schedule)
+	if !strings.HasPrefix(spec, "@") {
+		return spec, nil
+	}
+	expanded, ok := cronMacros[spec]
+	switch {
+	case slices.Contains([]string{"@monthly", "@yearly", "@annually"}, spec):
+		return "", fmt.Errorf("%q has no fixed interval, since months and years differ in length", schedule)
+	case !ok:
+		return "", fmt.Errorf("%q: cron_interval reads the macros @hourly, @daily, @midnight and @weekly", schedule)
+	}
+	return expanded, nil
+}
+
+// weekRuns is every run of schedule's fields in one week, in minutes from
+// Sunday 00:00, in order.
+func weekRuns(schedule string, fields []string) ([]int, error) {
 	minutes, err := minuteField.parse(fields[0])
 	if err != nil {
-		return 0, fmt.Errorf("%q: %w", schedule, err)
+		return nil, fmt.Errorf("%q: %w", schedule, err)
 	}
 	hours, err := hourField.parse(fields[1])
 	if err != nil {
-		return 0, fmt.Errorf("%q: %w", schedule, err)
+		return nil, fmt.Errorf("%q: %w", schedule, err)
 	}
 	days, err := weekdays.parse(fields[4])
 	if err != nil {
-		return 0, fmt.Errorf("%q: %w", schedule, err)
+		return nil, fmt.Errorf("%q: %w", schedule, err)
 	}
-
-	// Every run in one week, in minutes from Sunday 00:00, in order.
 	var runs []int
 	for _, d := range days {
 		for _, h := range hours {
@@ -92,6 +121,12 @@ func cronInterval(schedule string) (time.Duration, error) {
 			}
 		}
 	}
+	return runs, nil
+}
+
+// fixedGap is the one gap between each run and the next, around the week,
+// or a refusal that names every gap there is.
+func fixedGap(schedule string, runs []int) (time.Duration, error) {
 	gaps := map[int]bool{}
 	for i, r := range runs {
 		next := runs[(i+1)%len(runs)]
@@ -132,47 +167,13 @@ func (f cronField) parse(text string) ([]int, error) {
 // mark sets the values one comma separated part of a field selects.
 func (f cronField) mark(set []bool, part string) error {
 	base, stepText, stepped := strings.Cut(part, "/")
-	step := 1
-	if stepped {
-		n, err := strconv.Atoi(stepText)
-		if err != nil || n < 1 {
-			return fmt.Errorf("the step %q is not a whole number above 0", stepText)
-		}
-		step = n
+	step, err := cronStep(stepText, stepped)
+	if err != nil {
+		return err
 	}
-	var lo, hi int
-	switch {
-	case base == "*":
-		lo, hi = 0, f.span-1
-	case base == "H":
-		if stepped && f.span%step != 0 {
-			return fmt.Errorf("in H/%d, %d does not divide the field's %d values, so the runs depend on the job's name", step, step, f.span)
-		}
-		lo, hi = 0, 0
-		if stepped {
-			hi = f.span - 1
-		}
-	case strings.HasPrefix(base, "H("):
-		return fmt.Errorf("%q: H with a range is not read", base)
-	default:
-		first, last, ranged := strings.Cut(base, "-")
-		var err error
-		if lo, err = f.value(first); err != nil {
-			return err
-		}
-		hi = lo
-		switch {
-		case ranged:
-			if hi, err = f.value(last); err != nil {
-				return err
-			}
-			if hi < lo {
-				return fmt.Errorf("the range %q ends before it starts", base)
-			}
-		case stepped:
-			// 5/15 is 5-59/15, as cronie and Kubernetes read it.
-			hi = f.max
-		}
+	lo, hi, err := f.bounds(base, step, stepped)
+	if err != nil {
+		return err
 	}
 	// A step past the field's range selects only the first value, so
 	// */90 in the minute field runs once an hour, as cronie and Kubernetes
@@ -184,6 +185,72 @@ func (f cronField) mark(set []bool, part string) error {
 		}
 	}
 	return nil
+}
+
+// cronStep is the step after a part's /, or 1 when it has none.
+func cronStep(text string, stepped bool) (int, error) {
+	if !stepped {
+		return 1, nil
+	}
+	n, err := strconv.Atoi(text)
+	if err != nil || n < 1 {
+		return 0, fmt.Errorf("the step %q is not a whole number above 0", text)
+	}
+	return n, nil
+}
+
+// bounds is the first and last value the part base, before its step,
+// selects: the whole field for *, Jenkins' H, or a value or a range.
+func (f cronField) bounds(base string, step int, stepped bool) (int, int, error) {
+	switch {
+	case base == "*":
+		return 0, f.span - 1, nil
+	case base == "H":
+		hi, err := f.hashHigh(step, stepped)
+		return 0, hi, err
+	case strings.HasPrefix(base, "H("):
+		return 0, 0, fmt.Errorf("%q: H with a range is not read", base)
+	default:
+		return f.rangeBounds(base, stepped)
+	}
+}
+
+// hashHigh is the last value of H, read as the field's first value, or of
+// H/step, which starts there too, refused where step does not divide the
+// field.
+func (f cronField) hashHigh(step int, stepped bool) (int, error) {
+	if !stepped {
+		return 0, nil
+	}
+	if f.span%step != 0 {
+		return 0, fmt.Errorf("in H/%d, %d does not divide the field's %d values, so the runs depend on the job's name", step, step, f.span)
+	}
+	return f.span - 1, nil
+}
+
+// rangeBounds is the bounds of a value or a range, a-b, of the field. A
+// value with a step runs to the field's end: 5/15 is 5-59/15, as cronie and
+// Kubernetes read it.
+func (f cronField) rangeBounds(base string, stepped bool) (int, int, error) {
+	first, last, ranged := strings.Cut(base, "-")
+	lo, err := f.value(first)
+	if err != nil {
+		return 0, 0, err
+	}
+	switch {
+	case ranged:
+		hi, err := f.value(last)
+		if err != nil {
+			return 0, 0, err
+		}
+		if hi < lo {
+			return 0, 0, fmt.Errorf("the range %q ends before it starts", base)
+		}
+		return lo, hi, nil
+	case stepped:
+		return lo, f.max, nil
+	}
+	return lo, lo, nil
 }
 
 // value reads one number or day name of the field.

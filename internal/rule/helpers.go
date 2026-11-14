@@ -359,35 +359,66 @@ var portNumber = regexp.MustCompile(`^(\d{1,5})(?:-(\d{1,5}))?$`)
 // when the string names none, as in Compose. An address with no host port,
 // such as 127.0.0.1::80, has an empty host.
 func splitPort(s string) (map[string]string, error) {
-	rest, protocol, named := strings.Cut(s, "/")
-	if !named {
-		protocol = "tcp"
-	} else if !slices.Contains(portProtocols, protocol) {
-		return nil, fmt.Errorf("%q: the protocol %q is not one of %s", s, protocol, strings.Join(portProtocols, ", "))
+	rest, protocol, err := portProtocol(s)
+	if err != nil {
+		return nil, err
 	}
 	out := map[string]string{"ip": "", "host": "", "container": rest, "protocol": protocol}
-	if i := strings.LastIndex(rest, ":"); i >= 0 {
-		out["container"], out["host"] = rest[i+1:], rest[:i]
-		if j := strings.LastIndex(out["host"], ":"); j >= 0 {
-			ip := strings.TrimSuffix(strings.TrimPrefix(out["host"][:j], "["), "]")
-			if _, err := netip.ParseAddr(ip); err != nil {
-				return nil, fmt.Errorf("%q: %q is not an IP address", s, out["host"][:j])
-			}
-			out["ip"], out["host"] = ip, out["host"][j+1:]
-		}
-		if out["host"] == "" && out["ip"] == "" {
-			return nil, fmt.Errorf("%q: the host port before the colon is empty", s)
-		}
+	if err := splitHost(s, rest, out); err != nil {
+		return nil, err
 	}
+	if err := checkPorts(s, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// portProtocol is the port s before its slash, and the protocol it names
+// after it, tcp when it names none.
+func portProtocol(s string) (string, string, error) {
+	rest, protocol, named := strings.Cut(s, "/")
+	if !named {
+		return rest, "tcp", nil
+	}
+	if !slices.Contains(portProtocols, protocol) {
+		return "", "", fmt.Errorf("%q: the protocol %q is not one of %s", s, protocol, strings.Join(portProtocols, ", "))
+	}
+	return rest, protocol, nil
+}
+
+// splitHost reads the address and the host port before the container port
+// of rest, the port s without its protocol, into out.
+func splitHost(s, rest string, out map[string]string) error {
+	i := strings.LastIndex(rest, ":")
+	if i < 0 {
+		return nil
+	}
+	out["container"], out["host"] = rest[i+1:], rest[:i]
+	if j := strings.LastIndex(out["host"], ":"); j >= 0 {
+		ip := strings.TrimSuffix(strings.TrimPrefix(out["host"][:j], "["), "]")
+		if _, err := netip.ParseAddr(ip); err != nil {
+			return fmt.Errorf("%q: %q is not an IP address", s, out["host"][:j])
+		}
+		out["ip"], out["host"] = ip, out["host"][j+1:]
+	}
+	if out["host"] == "" && out["ip"] == "" {
+		return fmt.Errorf("%q: the host port before the colon is empty", s)
+	}
+	return nil
+}
+
+// checkPorts checks the host port, when there is one, and the container
+// port of out, read from s.
+func checkPorts(s string, out map[string]string) error {
 	for _, key := range []string{"host", "container"} {
 		if key == "host" && out[key] == "" {
 			continue
 		}
 		if err := checkPort(out[key]); err != nil {
-			return nil, fmt.Errorf("%q: the %s port %w", s, key, err)
+			return fmt.Errorf("%q: the %s port %w", s, key, err)
 		}
 	}
-	return out, nil
+	return nil
 }
 
 // checkPort accepts a port number or an ascending range of them.

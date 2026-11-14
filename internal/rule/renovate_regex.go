@@ -369,10 +369,7 @@ type regexText struct {
 // patterns. A single character, or a POSIX or Perl class such as \w, Go
 // folds in at most 63 code points, which maxRegexText holds.
 func regexScan(body string) (named int, folded int64, refused string) {
-	// The two tokens before this one: a character's code point, whether
-	// it is a character at all, and whether the last is a plain -.
-	var twoBack, oneBack rune
-	twoChar, oneChar, oneDash := false, false, false
+	var back tokensBack
 	for i := 0; i < len(body); {
 		c, n, class := regexToken(body[i:])
 		if class == 'q' || class == 'm' {
@@ -385,14 +382,29 @@ func regexScan(body string) (named int, folded int64, refused string) {
 		if class == 'p' {
 			named++
 		}
-		char := class == 0
-		if char && oneDash && twoChar {
-			folded += foldedSpan(twoBack, c)
-		}
-		twoBack, twoChar = oneBack, oneChar
-		oneBack, oneChar, oneDash = c, char, char && c == '-' && n == 1
+		folded += back.next(c, n, class == 0)
 	}
 	return named, folded, ""
+}
+
+// tokensBack is what regexScan keeps of the two tokens before the one it
+// reads: a character's code point, whether it is a character at all, and
+// whether the last is a plain -.
+type tokensBack struct {
+	twoBack, oneBack          rune
+	twoChar, oneChar, oneDash bool
+}
+
+// next moves on by the token c of n bytes, a character when char is set,
+// and is the code points Go folds of the range it ends, or 0.
+func (b *tokensBack) next(c rune, n int, char bool) int64 {
+	var folded int64
+	if char && b.oneDash && b.twoChar {
+		folded = foldedSpan(b.twoBack, c)
+	}
+	b.twoBack, b.twoChar = b.oneBack, b.oneChar
+	b.oneBack, b.oneChar, b.oneDash = c, char, char && c == '-' && n == 1
+	return folded
 }
 
 // foldedSpan is how many code points of the range lo-hi Go's parser folds
@@ -421,29 +433,60 @@ func regexToken(s string) (r rune, n int, class byte) {
 		r, n = utf8.DecodeRuneInString(s)
 		return r, n, 0
 	}
-	switch e := s[1]; {
-	case e == 'p' || e == 'P':
-		if len(s) > 2 && s[2] == '{' {
-			k := 3 + leading(s[3:], isClassName)
-			if k > 3 && k < len(s) && s[k] == '}' {
-				return 0, k + 1, 'p'
-			}
-			return 0, k, 'm'
-		}
-		return 0, min(3, len(s)), 'p'
-	case e == 'Q':
+	return escapeToken(s)
+}
+
+// escapeToken is regexToken of an escape, a backslash and at least one
+// byte after it.
+func escapeToken(s string) (r rune, n int, class byte) {
+	switch s[1] {
+	case 'p', 'P':
+		n, class := classToken(s)
+		return 0, n, class
+	case 'Q':
 		return 0, 2, 'q'
-	case strings.IndexByte("dDsSwW", e) >= 0:
+	case 'd', 'D', 's', 'S', 'w', 'W':
 		return 0, 2, 'c'
-	case e == 'x' && len(s) > 2 && s[2] == '{':
+	case 'x':
+		return hexToken(s)
+	default:
+		return plainEscape(s)
+	}
+}
+
+// classToken is the length and the class of \p or \P: a class's one
+// letter name, or its name in braces, 'm' when the braces do not close
+// after a name. It stands for no character.
+func classToken(s string) (n int, class byte) {
+	if len(s) > 2 && s[2] == '{' {
+		k := 3 + leading(s[3:], isClassName)
+		if k > 3 && k < len(s) && s[k] == '}' {
+			return k + 1, 'p'
+		}
+		return k, 'm'
+	}
+	return min(3, len(s)), 'p'
+}
+
+// hexToken is regexToken of \x: two hex digits, or hex digits in braces,
+// 'm' when the braces do not close after them.
+func hexToken(s string) (r rune, n int, class byte) {
+	if len(s) > 2 && s[2] == '{' {
 		k := 3 + leading(s[3:], isHexDigit)
 		if k > 3 && k < len(s) && s[k] == '}' {
 			return digitsValue(s[3:k], 16), k + 1, 0
 		}
 		return 0, k, 'm'
-	case e == 'x':
-		k := 2 + leading(s[2:min(4, len(s))], isHexDigit)
-		return digitsValue(s[2:k], 16), k, 0
+	}
+	k := 2 + leading(s[2:min(4, len(s))], isHexDigit)
+	return digitsValue(s[2:k], 16), k, 0
+}
+
+// plainEscape is regexToken of an escape that names no class: an octal
+// one, punctuation, which stands for itself, or a letter, which stands
+// for a code point below minFold.
+func plainEscape(s string) (r rune, n int, class byte) {
+	switch e := s[1]; {
 	case e >= '1' && e <= '7':
 		k := 1 + leading(s[1:min(4, len(s))], isOctalDigit)
 		return digitsValue(s[1:k], 8), k, 0
@@ -515,26 +558,35 @@ func programSize(re *syntax.Regexp) int64 {
 	case syntax.OpPlus, syntax.OpQuest:
 		size = 1 + programSize(re.Sub[0])
 	case syntax.OpConcat:
-		for _, sub := range re.Sub {
-			size += programSize(sub)
-		}
+		size = subsSize(re.Sub)
 	case syntax.OpAlternate:
-		for _, sub := range re.Sub {
-			size += programSize(sub)
-		}
-		size += int64(max(len(re.Sub)-1, 0))
+		size = subsSize(re.Sub) + int64(max(len(re.Sub)-1, 0))
 	case syntax.OpRepeat:
-		sub := programSize(re.Sub[0])
-		switch {
-		case re.Max == -1 && re.Min == 0:
-			size = 2 + sub
-		case re.Max == -1:
-			size = 1 + int64(re.Min)*sub
-		default:
-			size = int64(re.Max)*sub + int64(re.Max-re.Min)
-		}
+		size = repeatSize(re, programSize(re.Sub[0]))
 	default:
 		// A class, an anchor or an empty match is one instruction.
 	}
 	return max(1, size)
+}
+
+// subsSize is the sum of the program sizes of subs.
+func subsSize(subs []*syntax.Regexp) int64 {
+	var size int64
+	for _, sub := range subs {
+		size += programSize(sub)
+	}
+	return size
+}
+
+// repeatSize is the program size of the counted repetition re, whose
+// operand's size is sub.
+func repeatSize(re *syntax.Regexp, sub int64) int64 {
+	switch {
+	case re.Max == -1 && re.Min == 0:
+		return 2 + sub
+	case re.Max == -1:
+		return 1 + int64(re.Min)*sub
+	default:
+		return int64(re.Max)*sub + int64(re.Max-re.Min)
+	}
 }

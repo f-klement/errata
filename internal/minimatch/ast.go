@@ -228,47 +228,88 @@ func charAt(s units, i int) rune {
 // parseAST is ast.js's #parseAST: it reads str from pos into the node and
 // returns where it stopped.
 func parseAST(str units, n *node, pos, extDepth int) int {
-	escaping, inBrace, braceNeg := false, false, false
-	braceStart := -1
 	if n.typ == 0 {
-		i := pos
-		var acc units
-		for i < len(str) {
-			c := str[i]
-			i++
-			if escaping || c == '\\' {
-				escaping = !escaping
-				acc = append(acc, c)
-				continue
-			}
-			if inBrace {
-				if i == braceStart+1 {
-					if c == '^' || c == '!' {
-						braceNeg = true
-					}
-				} else if c == ']' && (i != braceStart+2 || !braceNeg) {
-					inBrace = false
-				}
-				acc = append(acc, c)
-				continue
-			} else if c == '[' {
-				inBrace, braceStart, braceNeg = true, i, false
-				acc = append(acc, c)
-				continue
-			}
-			if isExtglobType(c) && charAt(str, i) == '(' && extDepth <= maxExtglobRecursion {
-				n.push(part{s: acc})
-				acc = nil
-				ext := newNode(c, n)
-				i = parseAST(str, ext, i, extDepth+1)
-				n.push(part{a: ext})
-				continue
-			}
-			acc = append(acc, c)
-		}
-		n.push(part{s: acc})
-		return i
+		return parsePlain(str, n, pos, extDepth)
 	}
+	return parseExt(str, n, pos, extDepth)
+}
+
+// scan is what #parseAST keeps across the code units of a part: whether
+// the last one escapes the next, and whether a [ class is open, at
+// braceStart, and negated.
+type scan struct {
+	escaping, inBrace, braceNeg bool
+	braceStart                  int
+}
+
+// literal reports whether c, the code unit before i, is text as it
+// stands: an escape, the code unit an escape takes, one inside a class or
+// the [ that opens one.
+func (sc *scan) literal(c rune, i int) bool {
+	if sc.escaping || c == '\\' {
+		sc.escaping = !sc.escaping
+		return true
+	}
+	if sc.inBrace {
+		sc.inClass(c, i)
+		return true
+	}
+	if c == '[' {
+		sc.inBrace, sc.braceStart, sc.braceNeg = true, i, false
+		return true
+	}
+	return false
+}
+
+// inClass reads c, the code unit before i, inside a class: a ^ or ! first
+// negates it, and a ] closes it, unless it is the first of a negated one.
+func (sc *scan) inClass(c rune, i int) {
+	if i == sc.braceStart+1 {
+		if c == '^' || c == '!' {
+			sc.braceNeg = true
+		}
+	} else if c == ']' && (i != sc.braceStart+2 || !sc.braceNeg) {
+		sc.inBrace = false
+	}
+}
+
+// opensExt reports whether c, the code unit before i, opens an extglob:
+// its type, then (.
+func opensExt(str units, c rune, i int) bool {
+	return isExtglobType(c) && charAt(str, i) == '('
+}
+
+// parsePlain is #parseAST for a node that is no extglob: its text, and
+// each extglob in it as a child.
+func parsePlain(str units, n *node, pos, extDepth int) int {
+	sc := scan{braceStart: -1}
+	i := pos
+	var acc units
+	for i < len(str) {
+		c := str[i]
+		i++
+		if sc.literal(c, i) {
+			acc = append(acc, c)
+			continue
+		}
+		if opensExt(str, c, i) && extDepth <= maxExtglobRecursion {
+			n.push(part{s: acc})
+			acc = nil
+			ext := newNode(c, n)
+			i = parseAST(str, ext, i, extDepth+1)
+			n.push(part{a: ext})
+			continue
+		}
+		acc = append(acc, c)
+	}
+	n.push(part{s: acc})
+	return i
+}
+
+// parseExt is #parseAST for an extglob, whose ( is at pos: its
+// alternatives up to the ) that closes it, each split at |.
+func parseExt(str units, n *node, pos, extDepth int) int {
+	sc := scan{braceStart: -1}
 	i := pos + 1
 	cur := newNode(0, n)
 	var parts []part
@@ -276,36 +317,14 @@ func parseAST(str units, n *node, pos, extDepth int) int {
 	for i < len(str) {
 		c := str[i]
 		i++
-		if escaping || c == '\\' {
-			escaping = !escaping
+		if sc.literal(c, i) {
 			acc = append(acc, c)
 			continue
 		}
-		if inBrace {
-			if i == braceStart+1 {
-				if c == '^' || c == '!' {
-					braceNeg = true
-				}
-			} else if c == ']' && (i != braceStart+2 || !braceNeg) {
-				inBrace = false
-			}
-			acc = append(acc, c)
-			continue
-		} else if c == '[' {
-			inBrace, braceStart, braceNeg = true, i, false
-			acc = append(acc, c)
-			continue
-		}
-		if isExtglobType(c) && charAt(str, i) == '(' && (extDepth <= maxExtglobRecursion || n.canAdoptType(c, adoptionAnyMap)) {
-			depthAdd := 1
-			if n.canAdoptType(c, adoptionAnyMap) {
-				depthAdd = 0
-			}
+		if opensExt(str, c, i) && (extDepth <= maxExtglobRecursion || n.canAdoptType(c, adoptionAnyMap)) {
 			cur.push(part{s: acc})
 			acc = nil
-			ext := newNode(c, cur)
-			cur.push(part{a: ext})
-			i = parseAST(str, ext, i, extDepth+depthAdd)
+			i = n.nestExt(str, cur, c, i, extDepth)
 			continue
 		}
 		if c == '|' {
@@ -316,11 +335,7 @@ func parseAST(str units, n *node, pos, extDepth int) int {
 			continue
 		}
 		if c == ')' {
-			if len(acc) == 0 && len(n.parts) == 0 {
-				n.emptyExt = true
-			}
-			cur.push(part{s: acc})
-			n.push(append(parts, part{a: cur})...)
+			n.closeExt(cur, parts, acc)
 			return i
 		}
 		acc = append(acc, c)
@@ -330,6 +345,29 @@ func parseAST(str units, n *node, pos, extDepth int) int {
 	n.hasMagic = -1
 	n.parts = []part{{s: slices.Clone(str[pos-1:])}}
 	return i
+}
+
+// nestExt reads the extglob of type c whose ( is before i into a new
+// child of cur, and returns where it stopped. One n can adopt adds no
+// depth.
+func (n *node) nestExt(str units, cur *node, c rune, i, extDepth int) int {
+	depthAdd := 1
+	if n.canAdoptType(c, adoptionAnyMap) {
+		depthAdd = 0
+	}
+	ext := newNode(c, cur)
+	cur.push(part{a: ext})
+	return parseAST(str, ext, i, extDepth+depthAdd)
+}
+
+// closeExt ends the extglob n at its ): the alternative cur, with the text
+// acc, joins the alternatives before it.
+func (n *node) closeExt(cur *node, parts []part, acc units) {
+	if len(acc) == 0 && len(n.parts) == 0 {
+		n.emptyExt = true
+	}
+	cur.push(part{s: acc})
+	n.push(append(parts, part{a: cur})...)
 }
 
 // The extglob adoption tables of ast.js.
@@ -414,26 +452,7 @@ func (n *node) flatten() {
 		}
 	} else {
 		for iterations := 0; ; {
-			done := true
-			//nolint:intrange // adopting changes the parts, and ast.js reads their length each turn
-			for i := 0; i < len(n.parts); i++ {
-				c := n.parts[i].a
-				if c == nil {
-					continue
-				}
-				c.flatten()
-				switch {
-				case n.canAdopt(c, adoptionMap):
-					done = false
-					n.adopt(c, i)
-				case n.canAdopt(c, adoptionWithSpaceMap):
-					done = false
-					n.adoptWithSpace(c, i)
-				case n.canUsurp(c):
-					done = false
-					n.usurp(c)
-				}
-			}
+			done := n.adoptAll()
 			iterations++
 			if done || iterations >= 10 {
 				break
@@ -441,6 +460,33 @@ func (n *node) flatten() {
 		}
 	}
 	n.strSet = false
+}
+
+// adoptAll is one pass of an extglob's flatten: each child is flattened,
+// then adopted or usurped where the tables let it. It reports whether the
+// pass changed nothing.
+func (n *node) adoptAll() bool {
+	done := true
+	//nolint:intrange // adopting changes the parts, and ast.js reads their length each turn
+	for i := 0; i < len(n.parts); i++ {
+		c := n.parts[i].a
+		if c == nil {
+			continue
+		}
+		c.flatten()
+		switch {
+		case n.canAdopt(c, adoptionMap):
+			done = false
+			n.adopt(c, i)
+		case n.canAdopt(c, adoptionWithSpaceMap):
+			done = false
+			n.adoptWithSpace(c, i)
+		case n.canUsurp(c):
+			done = false
+			n.usurp(c)
+		}
+	}
+	return done
 }
 
 // fromGlob parses one segment of a glob.
@@ -590,54 +636,95 @@ func (n *node) writeSource(b *source) (bool, bool) {
 		return false, false
 	}
 	if !isExtglobType(n.typ) {
-		noEmpty := n.isStart() && n.isEnd() && !slices.ContainsFunc(n.parts, func(p part) bool { return p.a != nil })
-		mark := len(b.buf)
-		for _, p := range n.parts {
-			var magic, uflag bool
-			if p.a == nil {
-				var re units
-				re, magic, uflag = parseGlob(p.s, n.hasMagic, noEmpty)
-				b.write(re...)
-			} else {
-				magic, uflag = p.a.writeSource(b)
-			}
-			if b.meter.err != nil {
-				return false, false
-			}
-			if n.hasMagic != 1 {
-				n.hasMagic = boolInt(magic)
-			}
-			n.uflag = n.uflag || uflag
-		}
-		if n.isStart() && len(n.parts) > 0 && n.parts[0].a == nil {
-			first := n.parts[0].s
-			dotTravAllowed := len(n.parts) == 1 && (slices.Equal(first, units{'.'}) || slices.Equal(first, units{'.', '.'}))
-			if !dotTravAllowed {
-				// The first part is a string, whose source is not empty,
-				// and an extglob after it opens with at least three
-				// units, so no offset in noTrav lies among the five
-				// units read here.
-				src := b.buf[mark:]
-				aps := func(c rune) bool { return c == '[' || c == '.' }
-				needNoTrav := aps(charAt(src, 0)) ||
-					(hasPrefixAt(src, units{'\\', '.'}, 0) && aps(charAt(src, 2))) ||
-					(hasPrefixAt(src, units{'\\', '.', '\\', '.'}, 0) && aps(charAt(src, 4)))
-				if needNoTrav {
-					b.noTrav = append(b.noTrav, mark)
-					if !b.fits() {
-						return false, false
-					}
-				}
-			}
-		}
-		if n.isEnd() && n.root.filledNegs && n.parent != nil && n.parent.typ == '!' {
-			b.write(units(`(?:$|\/)`)...)
-		}
-		if n.hasMagic < 0 {
-			n.hasMagic = 0
-		}
-		return n.hasMagic == 1, n.uflag
+		return n.writePlain(b)
 	}
+	return n.writeExt(b)
+}
+
+// writePlain is writeSource for a node that is no extglob.
+func (n *node) writePlain(b *source) (bool, bool) {
+	noEmpty := n.isStart() && n.isEnd() && !slices.ContainsFunc(n.parts, func(p part) bool { return p.a != nil })
+	mark := len(b.buf)
+	if !n.writePlainParts(b, noEmpty) {
+		return false, false
+	}
+	if !n.markNoTrav(b, mark) {
+		return false, false
+	}
+	if n.closesNeg() {
+		b.write(units(`(?:$|\/)`)...)
+	}
+	return n.magicOf()
+}
+
+// writePlainParts writes each part of a plain node: a glob's source, or a
+// child's. It reports false once the meter stops.
+func (n *node) writePlainParts(b *source, noEmpty bool) bool {
+	for _, p := range n.parts {
+		var magic, uflag bool
+		if p.a == nil {
+			var re units
+			re, magic, uflag = parseGlob(p.s, n.hasMagic, noEmpty)
+			b.write(re...)
+		} else {
+			magic, uflag = p.a.writeSource(b)
+		}
+		if b.meter.err != nil {
+			return false
+		}
+		if n.hasMagic != 1 {
+			n.hasMagic = boolInt(magic)
+		}
+		n.uflag = n.uflag || uflag
+	}
+	return true
+}
+
+// markNoTrav notes mark in noTrav when the segment's source, written from
+// mark, opens with what could be . or .. and the segment is not one of
+// them. It reports false when the source then passes its bound.
+func (n *node) markNoTrav(b *source, mark int) bool {
+	if !n.isStart() || len(n.parts) == 0 || n.parts[0].a != nil {
+		return true
+	}
+	if len(n.parts) == 1 && isDots(n.parts[0].s) {
+		return true
+	}
+	// The first part is a string, whose source is not empty, and an
+	// extglob after it opens with at least three units, so no offset in
+	// noTrav lies among the five units read here.
+	if !opensTraversal(b.buf[mark:]) {
+		return true
+	}
+	b.noTrav = append(b.noTrav, mark)
+	return b.fits()
+}
+
+// opensTraversal reports whether the source src may match a leading . or
+// .., opening with [ or ., after none, one or two escaped dots.
+func opensTraversal(src units) bool {
+	aps := func(c rune) bool { return c == '[' || c == '.' }
+	return aps(charAt(src, 0)) ||
+		(hasPrefixAt(src, units{'\\', '.'}, 0) && aps(charAt(src, 2))) ||
+		(hasPrefixAt(src, units{'\\', '.', '\\', '.'}, 0) && aps(charAt(src, 4)))
+}
+
+// closesNeg reports whether the node ends a negation's alternative once
+// fillNegs has run, which then ends at the segment's end or a /.
+func (n *node) closesNeg() bool {
+	return n.isEnd() && n.root.filledNegs && n.parent != nil && n.parent.typ == '!'
+}
+
+// magicOf is what writeSource returns for n once its source is written.
+func (n *node) magicOf() (bool, bool) {
+	if n.hasMagic < 0 {
+		n.hasMagic = 0
+	}
+	return n.hasMagic == 1, n.uflag
+}
+
+// writeExt is writeSource for an extglob.
+func (n *node) writeExt(b *source) (bool, bool) {
 	mark := len(b.buf)
 	if n.typ == '!' {
 		b.write(units(`(?:(?!(?:`)...)
@@ -650,37 +737,44 @@ func (n *node) writeSource(b *source) (bool, bool) {
 		return false, false
 	}
 	if n.isStart() && n.isEnd() && len(b.buf) == bodyMark && n.typ != '!' {
-		// An extglob that is the whole segment and matches nothing is
-		// read as its text.
-		s := n.toString()
-		n.parts = []part{{s: s}}
-		n.typ = 0
-		n.hasMagic = -1
-		b.truncate(mark)
-		b.write(s...)
+		n.asText(b, mark)
 		return false, false
 	}
+	n.closeSource(b, mark)
+	return n.magicOf()
+}
+
+// asText makes the extglob n, the whole segment and matching nothing, the
+// text it was written as, and writes that from mark.
+func (n *node) asText(b *source, mark int) {
+	s := n.toString()
+	n.parts = []part{{s: s}}
+	n.typ = 0
+	n.hasMagic = -1
+	b.truncate(mark)
+	b.write(s...)
+}
+
+// closeSource ends the extglob's source as its type says. An empty
+// negation, written from mark, is one or more of anything instead.
+func (n *node) closeSource(b *source, mark int) {
 	if n.typ == '!' && n.emptyExt {
 		b.truncate(mark)
 		b.write(starNoEmpty...)
-	} else {
-		switch n.typ {
-		case '!':
-			b.write(units(`))`)...)
-			b.write(star...)
-			b.write(')')
-		case '@':
-			b.write(')')
-		case '?':
-			b.write(')', '?')
-		default:
-			b.write(')', n.typ)
-		}
+		return
 	}
-	if n.hasMagic < 0 {
-		n.hasMagic = 0
+	switch n.typ {
+	case '!':
+		b.write(units(`))`)...)
+		b.write(star...)
+		b.write(')')
+	case '@':
+		b.write(')')
+	case '?':
+		b.write(')', '?')
+	default:
+		b.write(')', n.typ)
 	}
-	return n.hasMagic == 1, n.uflag
 }
 
 func boolInt(b bool) int8 {
@@ -721,75 +815,117 @@ const reSpecials = `().*{}+?[]^$\!`
 // parseGlob is ast.js's #parseGlob: the regex source of a glob without
 // extglobs.
 func parseGlob(glob units, hasMagic int8, noEmpty bool) (units, bool, bool) {
-	escaping, uflag, inStar := false, false, false
-	magic := hasMagic == 1
-	allStars := len(glob) > 0 && !slices.ContainsFunc(glob, func(c rune) bool { return c != '*' })
-	var re units
+	g := globWriter{magic: hasMagic == 1}
+	g.nonEmpty = noEmpty && len(glob) > 0 && !slices.ContainsFunc(glob, func(c rune) bool { return c != '*' })
 	for i := 0; i < len(glob); i++ {
-		c := glob[i]
-		if escaping {
-			escaping = false
-			if slices.Contains([]rune(reSpecials), c) {
-				re = append(re, '\\')
-			}
-			re = append(re, c)
-			continue
-		}
-		if c == '*' {
-			if inStar {
-				continue
-			}
-			inStar = true
-			if noEmpty && allStars {
-				re = append(re, starNoEmpty...)
-			} else {
-				re = append(re, star...)
-			}
-			magic = true
-			continue
-		}
-		inStar = false
-		if c == '\\' {
-			if i == len(glob)-1 {
-				re = append(re, '\\', '\\')
-			} else {
-				escaping = true
-			}
-			continue
-		}
-		if c == '[' {
-			src, needU, consumed, isMagic := parseClass(glob, i)
-			if consumed > 0 {
-				re = append(re, src...)
-				uflag = uflag || needU
-				i += consumed - 1
-				magic = magic || isMagic
-				continue
-			}
-		}
-		if c == '?' {
-			re = append(re, qmark...)
-			magic = true
-			continue
-		}
-		re = append(re, regExpEscape(units{c})...)
+		i += g.unit(glob, i)
 	}
-	return re, magic, uflag
+	return g.re, g.magic, g.uflag
+}
+
+// globWriter is #parseGlob's state: the source so far, whether it has
+// magic and needs the u flag, whether the last code unit escapes the
+// next, and whether a run of stars is open. nonEmpty is set for a glob of
+// stars alone that must match one or more.
+type globWriter struct {
+	re               units
+	magic, uflag     bool
+	escaping, inStar bool
+	nonEmpty         bool
+}
+
+// unit writes the code unit at i, and returns how many after it it took.
+func (g *globWriter) unit(glob units, i int) int {
+	c := glob[i]
+	if g.escaping {
+		g.escaped(c)
+		return 0
+	}
+	if c == '*' {
+		g.star()
+		return 0
+	}
+	g.inStar = false
+	switch c {
+	case '\\':
+		g.backslash(i == len(glob)-1)
+		return 0
+	case '[':
+		if n := g.class(glob, i); n > 0 {
+			return n - 1
+		}
+	case '?':
+		g.re = append(g.re, qmark...)
+		g.magic = true
+		return 0
+	}
+	g.re = append(g.re, regExpEscape(units{c})...)
+	return 0
+}
+
+// escaped writes c, which a backslash escapes: a regex special stays
+// escaped.
+func (g *globWriter) escaped(c rune) {
+	g.escaping = false
+	if slices.Contains([]rune(reSpecials), c) {
+		g.re = append(g.re, '\\')
+	}
+	g.re = append(g.re, c)
+}
+
+// star writes a *; a run of them is one.
+func (g *globWriter) star() {
+	if g.inStar {
+		return
+	}
+	g.inStar = true
+	if g.nonEmpty {
+		g.re = append(g.re, starNoEmpty...)
+	} else {
+		g.re = append(g.re, star...)
+	}
+	g.magic = true
+}
+
+// backslash escapes the next code unit, or is itself when it is the last.
+func (g *globWriter) backslash(last bool) {
+	if last {
+		g.re = append(g.re, '\\', '\\')
+	} else {
+		g.escaping = true
+	}
+}
+
+// class writes the class that opens at i, and returns how many code units
+// it took, or 0 when the [ opens none.
+func (g *globWriter) class(glob units, i int) int {
+	src, needU, consumed, isMagic := parseClass(glob, i)
+	if consumed > 0 {
+		g.re = append(g.re, src...)
+		g.uflag = g.uflag || needU
+		g.magic = g.magic || isMagic
+	}
+	return consumed
 }
 
 // unescape is minimatch's unescape with its defaults: a class of one
 // character becomes the character, and a backslash before anything but /
 // goes.
 func unescape(s units) units {
+	return dropBackslashes(unescapeClasses(s))
+}
+
+// unescapeClasses makes each class of one character, but / or \, the
+// character: ((?!\\).|^)\[([^/\\])\].
+func unescapeClasses(s units) units {
 	var a units
 	for i := 0; i < len(s); {
-		// ((?!\\).|^)\[([^/\\])\]
-		if i+3 < len(s) && s[i] != '\\' && !lineTerminator(s[i]) && s[i+1] == '[' && s[i+2] != '/' && s[i+2] != '\\' && s[i+3] == ']' {
+		if precededClass(s, i) {
 			a = append(a, s[i], s[i+2])
 			i += 4
 			continue
 		}
-		if i == 0 && i+2 < len(s) && s[0] == '[' && s[1] != '/' && s[1] != '\\' && s[2] == ']' {
+		if i == 0 && oneClass(s, 0) {
 			a = append(a, s[1])
 			i += 3
 			continue
@@ -797,6 +933,23 @@ func unescape(s units) units {
 		a = append(a, s[i])
 		i++
 	}
+	return a
+}
+
+// precededClass reports whether a class of one character follows s[i],
+// which is no backslash and no line terminator.
+func precededClass(s units, i int) bool {
+	return s[i] != '\\' && !lineTerminator(s[i]) && oneClass(s, i+1)
+}
+
+// oneClass reports whether s holds at j a class of one character that is
+// neither / nor \.
+func oneClass(s units, j int) bool {
+	return j+2 < len(s) && s[j] == '[' && s[j+1] != '/' && s[j+1] != '\\' && s[j+2] == ']'
+}
+
+// dropBackslashes drops each backslash before anything but /.
+func dropBackslashes(a units) units {
 	var out units
 	for i := 0; i < len(a); i++ {
 		if a[i] == '\\' && i+1 < len(a) && a[i+1] != '/' {

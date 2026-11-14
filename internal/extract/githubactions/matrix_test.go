@@ -427,13 +427,17 @@ func TestMatrixWorkLimit(t *testing.T) {
 // A report quotes 64 bytes of a condition, so a longer name writes the
 // values every job shares as ..., and a name past 256 bytes is cut on a
 // character's start. A long name: is cut, not the values. Planted breaks:
-// no elision; a shared value kept; a name of 64 bytes elided; the name
-// written whole; its room off by the "..." it takes; a name that fits cut;
-// one of 16 bytes cut.
+// no elision; a shared value kept; one an include: entry repeats not
+// shared; a name of 64 bytes elided; the name written whole; its room off
+// by the "..." it takes; a name that fits cut; one of 16 bytes cut.
 func TestMatrixLongNames(t *testing.T) {
 	long := strings.Repeat("monitoring-", 6)
 	body := "jobs:\n  j:\n    env: {V: '${{ matrix.a }}'}\n    strategy:\n      matrix:\n        x: [" + long + "]\n        a: [one, two]\n"
 	want(t, see(t, body, "j", "", "V"), "one@7[j (..., one)] two@7[j (..., two)]")
+	// An include: entry that repeats the value is shared too: two nodes,
+	// one text. Planted break: share testing v.Shape == core.Scalar.
+	body = "jobs:\n  j:\n    env: {V: '${{ matrix.a }}'}\n    strategy:\n      matrix:\n        x: [" + long + "]\n        a: [one]\n        include:\n          - {x: " + long + ", a: three}\n"
+	want(t, see(t, body, "j", "", "V"), "one@7[j (..., one)] three@9[j (..., three)]")
 	// A name of exactly 64 bytes is not long.
 	exact := strings.Repeat("s", 55)
 	body = "jobs:\n  j:\n    env: {V: '${{ matrix.a }}'}\n    strategy:\n      matrix:\n        x: [" + exact + "]\n        a: [one, two]\n"

@@ -363,11 +363,12 @@ slow:
 # tools of the build, and the packages named like httptest, extracttest and
 # coretest: only tests import them, and their failure branches run only
 # when a test fails. Gremlins leaves them out too (.gremlins.yaml).
-# Then scripts/crap scores each function of internal/ and scripts/ for CRAP
-# from the same profile and holds the scores to scripts/crap-baseline.txt:
-# below 10, or no higher than the function's row (CODING_STANDARDS.md). It
-# leaves out the helper packages as the total does, and -require refuses a
-# package of either directory that the run did not instrument.
+# Then scripts/crap scores each function of internal/ and scripts/, and
+# each function literal of a package level var, for CRAP from the same
+# profile and holds the scores to scripts/crap-baseline.txt: below 10, or
+# no higher than the function's row (CODING_STANDARDS.md). It leaves out
+# the helper packages as the total does, and -require refuses a package of
+# either directory that the run did not instrument.
 #
 # On a gate whose tests are scoped, the total is not judged, since the packages whose tests did
 # not run would count as uncovered; the push pipeline judges it. scripts/crap then scores only

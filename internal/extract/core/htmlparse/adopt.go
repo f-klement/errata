@@ -28,97 +28,160 @@ const adoptPasses = 8
 func (n *nest) adopt(j int) {
 	n.rebuilds++
 	at := n.afe[j].at
-	// The entries from j on, by id, their order in the list, and the
-	// elements from at on, each with the id of its entry or -1. Every
-	// element above the formatting element opened after it, so its entry,
-	// if any, is after j; no marker is among them, as no cell is open above
-	// an element in scope.
-	names := make([]string, 0, len(n.afe)-j+adoptPasses)
-	order := make([]int, 0, len(n.afe)-j+1)
+	a := n.agencyFrom(j, at)
+	a.run()
+	n.work += 2 * len(a.els) // popped and pushed again
+	closed := n.closedLine
+	n.popThrough(at)
+	n.afe = n.afe[:j]
+	a.reopen()
+	n.closedLine = closed || a.lineClosed
+}
+
+// agency is one run of the adoption agency over the list's entries from
+// j on and the stack's elements from the formatting element on. Each
+// entry has an id, its index in names; order is the ids in the list's
+// order, and els the elements, each with the id of its entry or -1.
+type agency struct {
+	n          *nest
+	names      []string
+	order      []int
+	els        []adoptElement
+	lineClosed bool // whether an element dropped closes a line (LineTag)
+}
+
+// adoptElement is an element of the stack in the adoption agency.
+type adoptElement struct {
+	name string
+	id   int
+	d    draw // kept as it was: a switch's choice is the element's own
+}
+
+// agencyFrom is the agency for the afe entry j, whose element is at at.
+// Every element above the formatting element opened after it, so its
+// entry, if any, is after j; no marker is among them, as no cell is open
+// above an element in scope.
+func (n *nest) agencyFrom(j, at int) *agency {
+	a := &agency{
+		n:     n,
+		names: make([]string, 0, len(n.afe)-j+adoptPasses),
+		order: make([]int, 0, len(n.afe)-j+1),
+		els:   make([]adoptElement, 0, len(n.stack)-at+1),
+	}
 	for k := j; k < len(n.afe); k++ {
-		names = append(names, n.afe[k].name)
-		order = append(order, k-j)
+		a.names = append(a.names, n.afe[k].name)
+		a.order = append(a.order, k-j)
 	}
-	type element struct {
-		name string
-		id   int
-		d    draw // kept as it was: a switch's choice is the element's own
-	}
-	els := make([]element, 0, len(n.stack)-at+1)
 	for i := at; i < len(n.stack); i++ {
 		id := -1
 		if k := n.afeAt[i]; k >= j {
 			id = k - j
 		}
-		els = append(els, element{n.stack[i], id, n.drawn[i]})
+		a.els = append(a.els, adoptElement{n.stack[i], id, n.drawn[i]})
 	}
-	unlist := func(id int) { order = slices.DeleteFunc(order, func(o int) bool { return o == id }) }
-	lineClosed := false
-	drop := func(k int) {
-		lineClosed = lineClosed || LineTag(els[k].name)
-		els = slices.Delete(els, k, k+1)
-	}
-	fe, feID, name := 0, 0, names[0]
+	return a
+}
+
+// run runs the agency's outer loop, at most adoptPasses times.
+func (a *agency) run() {
+	fe, feID, name := 0, 0, a.names[0]
 	for range adoptPasses {
-		n.work += len(els) + len(order)
-		fb := furthestBlock(fe, len(els), func(k int) string { return els[k].name })
+		a.n.work += len(a.els) + len(a.order)
+		fb := furthestBlock(fe, len(a.els), func(k int) string { return a.els[k].name })
 		if fb < 0 {
-			for k := len(els) - 1; k >= fe; k-- {
-				drop(k)
-			}
-			unlist(feID)
-			break
+			a.closeFrom(fe, feID)
+			return
 		}
-		count, bookmark := 0, -1
-		for k := fb - 1; k > fe; k-- {
-			count++
-			id := els[k].id
-			if count > 3 && id >= 0 {
-				// The standard takes it off the list and then, as it is off
-				// the list, off the stack; x/net v0.62.0 leaves it on the
-				// stack (parse.go, inBodyEndTagFormatting), and errata
-				// follows the standard, as browsers do.
-				unlist(id)
-				id = -1
-				n.standardOnly = true
-				if n.xnet {
-					els[k].id = -1 // x/net's way: off the list, on the stack
-					els[k].d |= kept
-					continue
-				}
-			}
-			if id < 0 {
-				drop(k)
-				fb--
+		fb, bookmark := a.clearBetween(fe, fb)
+		fe, feID = a.moveClone(fe, feID, fb, bookmark, name)
+	}
+}
+
+// closeFrom closes the formatting element at fe, whose entry is feID, and
+// everything above it, as a pass that finds no furthest block does.
+func (a *agency) closeFrom(fe, feID int) {
+	for k := len(a.els) - 1; k >= fe; k-- {
+		a.drop(k)
+	}
+	a.unlist(feID)
+}
+
+// clearBetween takes off the stack each element between the formatting
+// element at fe and the furthest block at fb that is not on the list,
+// and the fourth and later of those that are. It is the furthest block's
+// index after, and the id of the nearest element kept below it, or -1:
+// the bookmark.
+func (a *agency) clearBetween(fe, fb int) (int, int) {
+	count, bookmark := 0, -1
+	for k := fb - 1; k > fe; k-- {
+		count++
+		id := a.els[k].id
+		if count > 3 && id >= 0 {
+			// The standard takes it off the list and then, as it is off
+			// the list, off the stack; x/net v0.62.0 leaves it on the
+			// stack (parse.go, inBodyEndTagFormatting), and errata
+			// follows the standard, as browsers do.
+			a.unlist(id)
+			id = -1
+			a.n.standardOnly = true
+			if a.n.xnet {
+				a.els[k].id = -1 // x/net's way: off the list, on the stack
+				a.els[k].d |= kept
 				continue
 			}
-			if bookmark < 0 {
-				bookmark = id // the bookmark moves after the first one kept
-			}
 		}
-		clone := len(names)
-		names = append(names, name)
-		place := slices.Index(order, feID)
-		if bookmark >= 0 {
-			place = slices.Index(order, bookmark) + 1
+		if id < 0 {
+			a.drop(k)
+			fb--
+			continue
 		}
-		order = slices.Insert(order, place, clone)
-		unlist(feID)
-		els = slices.Delete(els, fe, fe+1)
-		fb--
-		els = slices.Insert(els, fb+1, element{name, clone, drawsText | els[fb].d&kept}) // a kept block keeps its clone in x/net's tree
-		fe, feID = fb+1, clone
+		if bookmark < 0 {
+			bookmark = id // the bookmark moves after the first one kept
+		}
 	}
-	n.work += 2 * len(els) // popped and pushed again
-	closed := n.closedLine
-	n.popThrough(at)
-	n.afe = n.afe[:j]
-	index := make(map[int]int, len(order))
-	for _, id := range order {
+	return fb, bookmark
+}
+
+// moveClone moves the formatting element at fe, whose entry is feID, as
+// a clone of name to just above the furthest block at fb, its entry
+// after bookmark's or in its own place when there is none. It is the
+// clone's index and id.
+func (a *agency) moveClone(fe, feID, fb, bookmark int, name string) (int, int) {
+	clone := len(a.names)
+	a.names = append(a.names, name)
+	place := slices.Index(a.order, feID)
+	if bookmark >= 0 {
+		place = slices.Index(a.order, bookmark) + 1
+	}
+	a.order = slices.Insert(a.order, place, clone)
+	a.unlist(feID)
+	a.els = slices.Delete(a.els, fe, fe+1)
+	fb--
+	a.els = slices.Insert(a.els, fb+1, adoptElement{name, clone, drawsText | a.els[fb].d&kept}) // a kept block keeps its clone in x/net's tree
+	return fb + 1, clone
+}
+
+// unlist takes the entry id off the list.
+func (a *agency) unlist(id int) {
+	a.order = slices.DeleteFunc(a.order, func(o int) bool { return o == id })
+}
+
+// drop takes the element at k off the stack.
+func (a *agency) drop(k int) {
+	a.lineClosed = a.lineClosed || LineTag(a.els[k].name)
+	a.els = slices.Delete(a.els, k, k+1)
+}
+
+// reopen enters the agency's list after the entries before its first,
+// and pushes its elements again, each linked to its entry.
+func (a *agency) reopen() {
+	n := a.n
+	index := make(map[int]int, len(a.order))
+	for _, id := range a.order {
 		index[id] = len(n.afe)
-		n.afe = append(n.afe, afeEntry{name: names[id], at: -1})
+		n.afe = append(n.afe, afeEntry{name: a.names[id], at: -1})
 	}
-	for _, e := range els {
+	for _, e := range a.els {
 		i := n.pushElement(e.name)
 		if n.drawn[i]&veils != 0 {
 			n.veiled--
@@ -131,7 +194,6 @@ func (n *nest) adopt(j int) {
 			n.afe[k].at, n.afeAt[i] = i, k
 		}
 	}
-	n.closedLine = closed || lineClosed
 }
 
 // furthestBlock is the first of the elements after fe, of the n elements

@@ -34,13 +34,20 @@ func (s *Scanner) templateTag(selfClosing bool) bool {
 	case s.closing:
 		t.end(s.name) // inert: no refusal
 	default:
-		name, opens := s.name, true
-		if name == "svg" || name == "math" {
-			name, opens = foreignKey(name, name), !selfClosing
-		}
-		if err := t.start(name, opens && !void[name]); err != "" {
-			s.err = &NestError{At: s.start, msg: err}
-		}
+		s.templateStart(selfClosing)
 	}
 	return false
+}
+
+// templateStart follows a start tag read as HTML's inside a template's
+// content, which opens its element in the content's nest. An svg or a
+// math opens foreign content, unless it is self closing.
+func (s *Scanner) templateStart(selfClosing bool) {
+	name, opens := s.name, true
+	if name == "svg" || name == "math" {
+		name, opens = foreignKey(name, name), !selfClosing
+	}
+	if err := s.tmpl.start(name, opens && !void[name]); err != "" {
+		s.err = &NestError{At: s.start, msg: err}
+	}
 }
