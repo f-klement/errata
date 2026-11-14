@@ -530,8 +530,11 @@ endif
 ifneq ($(filter-out changed,$(CI_TEST_SELECT)),)
 $(error CI_TEST_SELECT is '$(CI_TEST_SELECT)': it takes changed, or nothing for every suite)
 endif
+# The planner, ci/autopatch, is a module of its own, which make cover does not reach: its tests
+# write a profile of their own, and scripts/crap holds every function of it below CRAP 10 with
+# no baseline, as CODING_STANDARDS.md asks of every function.
 ci-test:$(BIN)/gremlins $(BIN)/jq $(BIN)/cosign
-	cd ci/autopatch && $(GO) vet ./... && $(GO) test -count=1 ./...
+	cd ci/autopatch && prof=$$(mktemp) && $(GO) vet ./... && $(GO) test -count=1 -coverprofile="$$prof" ./... && cd "$(CURDIR)" && $(GO) run ./scripts/crap -root ci/autopatch "$$prof"; s=$$?; rm -f "$$prof"; exit $$s
 	$(if $(GATE_BASE),CI_TEST_BASE=$(GATE_BASE) )GREMLINS=$(BIN)/gremlins JQ=$(BIN)/jq COSIGN=$(BIN)/cosign ci/test-ci.sh$(if $(CI_TEST_SELECT), --changed)
 
 # The release image, built by ko with .goreleaser.yaml's base image and user

@@ -39,16 +39,32 @@ checks:
 
   - id: go-toolchain-agrees
     reason: >
-      go.mod names the toolchain the release binaries are built with, and the Dockerfile builds
-      the image with its own golang tag. When the tag differs, `docker build` ships a binary from
-      another toolchain than the release, and a Go security fix that reached go.mod never reaches
-      that image. The pattern takes three numbers, so a go.mod or a tag that names only a minor
-      version, and so floats, finds no value and is unknown.
+      go.mod names the toolchain the release binaries are built with: its toolchain line, or its
+      go line when it has none. The Dockerfile builds the image with its own golang tag, and the
+      golang image sets GOTOOLCHAIN=local, so `docker build` uses the tag's Go whatever go.mod's
+      toolchain line asks for. When the two differ, the image ships a binary from another
+      toolchain than the release, and a Go security fix that reached go.mod never reaches it. The
+      nightly autopatch moves the toolchain line and both golang images together for a stdlib
+      advisory, and its gate runs this check. Renovate's group "go toolchain" moves the line and
+      the images in one merge request but drops an upgrade that has not aged, so it can move the
+      line alone; this check fails that merge request.
+      ci/tests/pipeline.sh holds ci/image/Dockerfile's FROM to the Dockerfile's build stage, so
+      the CI image agrees too; ci/ is not on the public mirror, so the check cannot read it here.
+      The toolchain line is read whole, so one such as go1.28rc1 or go1.27 is compared and differs
+      from every tag; with a toolchain line, the go line may name a minor version alone. Without
+      one, a go line that names only a minor version floats, finds no value and is false. Each
+      golang tag is read whole too, up to its suffix or digest, so a stage on a tag that floats,
+      such as golang:1.27-trixie, is compared and differs: every golang stage of the Dockerfile
+      must name the version.
     scope: repo
     extract:
-      gomod: {regex: {file: go.mod, pattern: '^go (\d+\.\d+\.\d+)$'}}
-      dockerfile: {regex: {file: Dockerfile, pattern: '^FROM golang:(\d+\.\d+\.\d+)-'}}
-    agree: [gomod, dockerfile]
+      go: {regex: {file: go.mod, pattern: '^go (\d+\.\d+\.\d+)$'}}
+      toolchain: {regex: {file: go.mod, pattern: '^toolchain go(\S+)$'}}
+      dockerfile: {regex: {file: Dockerfile, pattern: '^FROM golang:([^-@\s]+)'}}
+    allow_empty: [go, toolchain]
+    assert: |
+      size(toolchain) + size(go) > 0 &&
+      dockerfile.all(d, d == (size(toolchain) == 0 ? go : toolchain)[0])
 
   - id: dockerfile-base-is-the-release-base
     reason: >
