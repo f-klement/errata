@@ -126,7 +126,9 @@ precheck:
 # against SEAT_BASE, by default the merge base with main. Their findings go to the reviewer and
 # never fail seat-check. A runner's pod has no main, so through ci/run-suite.sh pass SEAT_BASE
 # and ERRATA_CI_HISTORY=1 (docs/agents/waves.md, item 7). The public mirror has no ci/, so there
-# seat-check ends with cover.
+# seat-check ends with cover. SEAT_TEST_TIMEOUT, from the environment, is make test's -timeout
+# in cover: ci/run-on-node.sh sets it in the pod on a node slower than the gate's, and empty
+# leaves TEST_BOUND.
 # canon_dirs: each directory with a leading ./, a trailing / or /. and a doubled / taken off, so
 # it is spelled as the fuzz recipe and FUZZ_TARGETS spell a package. What is left is checked
 # where it is used.
@@ -143,7 +145,7 @@ seat-check:
 	$(GO) test -count=1 ./scripts/slowtests/
 	$(MAKE) --no-print-directory precheck
 	$(MAKE) --no-print-directory fuzz FUZZTIME=60s MUTATION_SCOPE="$(SEAT_PKGS)"
-	$(MAKE) --no-print-directory cover
+	$(MAKE) --no-print-directory cover$(if $(SEAT_TEST_TIMEOUT), TEST_TIMEOUT=$(SEAT_TEST_TIMEOUT))
 	$(if $(wildcard ci/seat-review.sh),GO=$(GO) sh ci/seat-review.sh "$(SEAT_BASE)")
 
 build:
@@ -329,9 +331,31 @@ reach_of = $(if $(filter all,$(1)),every package,$(words $(1)) packages: $(1))
 # judges, and scripts/, whose tools `cover` holds to CRAP below 10 as well.
 # cmd/errata has no tests of its own and is left out.
 # On a gate, only the packages whose tests reach the change run (above).
+#
+# TEST_BOUND is the -timeout the gate holds every package to, sized for the node the gate runs
+# on. TEST_TIMEOUT replaces it only from make's command line, which seat-check does on a slower
+# node (below); a value from the environment is dropped. With a TEST_TIMEOUT other than
+# TEST_BOUND, make test keeps its output in .cache/test.out and, once go test ends, names each
+# package that ran past TEST_BOUND, so a run there cannot pass a package over the gate's bound
+# without saying so. Its status is go test's.
+TEST_BOUND := 2m
+TEST_BOUND_SECONDS := 120
+ifneq ($(origin TEST_TIMEOUT),command line)
+override TEST_TIMEOUT := $(TEST_BOUND)
+endif
+TEST_CMD = $(GO) test -race -shuffle=on -timeout $(TEST_TIMEOUT) -count=1 -coverprofile=coverage.out -coverpkg=./internal/...,./scripts/... $(call in_scope,$(TEST_RUN))
+# over_bound <file>: a line for each package go test's output in <file> reports slower than
+# TEST_BOUND_SECONDS, and a count.
+over_bound = awk -v b=$(TEST_BOUND_SECONDS) -v t='$(TEST_TIMEOUT)' '($$1 == "ok" || $$1 == "FAIL") && $$3 ~ /^[0-9.]+s$$/ { s = $$3; sub("s$$", "", s); if (s + 0 > b) { n++; printf "==> over the gate'"'"'s bound: %s took %s s here, past %d s; only a run on the gate'"'"'s node shows it holds there\n", $$2, s, b } } END { printf "==> -timeout was %s here, against the gate'"'"'s %d s: %d packages ran past %d s\n", t, b, n + 0, b }' $(1)
 test:
 	@echo '==> reach test: $(call reach_of,$(TEST_RUN)); $(TEST_WHY)'
-	$(GO) test -race -shuffle=on -timeout 2m -count=1 -coverprofile=coverage.out -coverpkg=./internal/...,./scripts/... $(call in_scope,$(TEST_RUN))
+ifeq ($(TEST_TIMEOUT),$(TEST_BOUND))
+	$(TEST_CMD)
+else
+	@mkdir -p .cache && rm -f .cache/test.out .cache/test.rc
+	{ $(TEST_CMD); echo $$? >.cache/test.rc; } 2>&1 | tee .cache/test.out
+	@$(call over_bound,.cache/test.out); exit "$$(cat .cache/test.rc 2>/dev/null || echo 1)"
+endif
 
 # Tests too slow for the race detector or for a rerun per mutant: each calls
 # slowOnly, which skips under -race, -short and the mutation tag (except
