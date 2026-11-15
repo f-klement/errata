@@ -475,11 +475,14 @@ func TestRunSendsANarrowedIOWaitToTheWholeRun(t *testing.T) {
 	}
 }
 
-func TestRunGivesABuildFailureGoTestsStatus(t *testing.T) {
+// A mutant that does not compile exits 2, which gremlins counts as not
+// viable, not go's 1, which it would count as a kill. The planted break:
+// the build's own status returned.
+func TestRunGivesABuildFailureNotViablesStatus(t *testing.T) {
 	w := newWorld(t)
 	t.Setenv("BUILD_RC", "1")
-	if rc := run(w.goBin, w.root, w.index, mutantRun); rc != 1 {
-		t.Fatalf("exit %d, want go test -c's 1", rc)
+	if rc := run(w.goBin, w.root, w.index, mutantRun); rc != 2 {
+		t.Fatalf("exit %d, want 2, which gremlins reads as not viable", rc)
 	}
 	if got := logLines(t, w); got != build {
 		t.Fatalf("ran %q after a failed build", got)

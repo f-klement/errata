@@ -233,3 +233,27 @@ internal/provider                  85        85      5
 internal/report                    85        85      5      mutant 8.7 measuring 29 measured 3010608824
 internal/rule                      85        85      5      mutant 15.7 measuring 59 measured 3010608824
 internal/semver                    85        85      5
+# The gate's tools under scripts/, in scope since a mutant of package main
+# builds against its own package (scripts/goshim.sh). Each measured alone on
+# builder on 2026-11-14, whole, with case expressions covered; the times are
+# that run's.
+# casecover: 94.87%, 2 of its 39 not covered, efficacy 91.89%.
+# changedtests: 100%, efficacy 87.25%.
+# clidoc: 100%, efficacy 100%.
+# crap: 100%, efficacy 87.80%. With every assertion of its tests removed it
+# read 17.07% (102 of 123 lived), where before the shim it read 100%.
+# loccensus: 100%, efficacy 93.07%. It read 82.18% (18 of 101 not covered)
+# until tests ran its census on a repository of their own: the ones that
+# read the real tree skip where it has no .git, as in mutation's copy.
+# slowtests: 88.89%, 2 of its 18 not covered, efficacy 100%.
+# testreach: 89.10%, 23 of its 211 not covered, efficacy 90.96%; the pass took
+# 10 minutes 40 seconds, its tests run real child processes.
+# weakened: 100%, efficacy 91.62%.
+scripts/casecover                  85        85      5      mutant 0.2 pass 0.2 measuring 3 measured 2026-11-14
+scripts/changedtests               85        85      5      mutant 0.7 pass 0.4 measuring 4 measured 2026-11-14
+scripts/clidoc                     85        85      5      mutant 0.6 pass 0.5 measuring 25 measured 2026-11-14
+scripts/crap                       85        85      5      mutant 0.3 pass 0.2 measuring 11 measured 2026-11-14
+scripts/loccensus                  85        85      5      mutant 0.4 pass 0.3 measuring 11 measured 2026-11-14
+scripts/slowtests                  85        85      5      mutant 0.3 pass 0.2 measuring 3 measured 2026-11-14
+scripts/testreach                  85        85      5      mutant 16.4 pass 16.2 measuring 68 measured 2026-11-14
+scripts/weakened                   85        85      5      mutant 0.4 pass 0.2 measuring 3 measured 2026-11-14

@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -421,6 +423,16 @@ func TestMakeLocPrintsTheCensus(t *testing.T) {
 	}
 }
 
+// notARepository is a temporary directory that git does not take for part of
+// a repository: git stops looking above it, so a TMPDIR inside a work tree
+// still gives git's refusal.
+func notARepository(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("GIT_CEILING_DIRECTORIES", filepath.Dir(dir))
+	return dir
+}
+
 // A wrong call is refused with the usage, and a directory git does not track
 // with git's refusal.
 func TestRunRefuses(t *testing.T) {
@@ -429,10 +441,111 @@ func TestRunRefuses(t *testing.T) {
 		t.Errorf("no argument: exit %d, stderr %q", code, errs.String())
 	}
 	errs.Reset()
-	if code := run([]string{t.TempDir()}, &out, &errs); code != 1 || !strings.Contains(errs.String(), "git ls-files in") {
+	if code := run([]string{notARepository(t)}, &out, &errs); code != 1 || !strings.Contains(errs.String(), "git ls-files in") {
 		t.Errorf("not a repository: exit %d, stderr %q", code, errs.String())
 	}
 	if out.Len() != 0 {
 		t.Errorf("a refusal printed %q", out.String())
+	}
+}
+
+// repo is a git repository in a temporary directory with files staged, so
+// git ls-files lists them. The tests that read the real tree skip where it
+// has no .git, as in the copy mutation testing runs in, so these are what
+// reach tracked, census and render there.
+func repo(t *testing.T, files map[string]string) string {
+	t.Helper()
+	dir := t.TempDir()
+	gitIn(t, dir, "init", "-q")
+	for name, src := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(src), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(files) > 0 {
+		gitIn(t, dir, "add", ".")
+	}
+	return dir
+}
+
+func gitIn(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.CommandContext(context.Background(), "git", append([]string{"-C", dir}, args...)...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
+// The census of a small repository, whole: a row per bucket that holds a
+// file, its total, the rule between buckets as wide as the header, and the
+// total of all. A bucket with no file prints nothing. The planted breaks: an
+// empty bucket printed, and the rule one column short.
+func TestRunPrintsTheCensusOfARepository(t *testing.T) {
+	dir := repo(t, map[string]string{
+		"main.go":   "package main\n\nfunc main() {}\n",
+		"util.go":   "package main\n",
+		"README.md": "# T\n\ntext\n",
+	})
+	var out, errs bytes.Buffer
+	if code := run([]string{dir}, &out, &errs); code != 0 {
+		t.Fatalf("exit %d, stderr %q", code, errs.String())
+	}
+	rule := strings.Repeat("-", 57) + "\n"
+	want := "bucket     language      files      raw     code  +docstr\n" +
+		rule +
+		"source     go                2        4        3        3\n" +
+		"SOURCE     all               2        4        3        3\n" +
+		rule +
+		"docs       markdown          1        3        2        2\n" +
+		"DOCS       all               1        3        2        2\n" +
+		rule +
+		"TOTAL      all               3        7        5        5\n"
+	if out.String() != want {
+		t.Errorf("got:\n%s\nwant:\n%s", out.String(), want)
+	}
+}
+
+// A repository that tracks no file is refused for that, apart from a
+// directory that is no repository, which git refuses; and a tracked file that
+// cannot be read is refused with the read's error. The planted breaks: the
+// check of git's error dropped, so an empty listing reads as no file, and
+// census's read error ignored.
+func TestRunRefusesARepositoryItCannotCount(t *testing.T) {
+	var out, errs bytes.Buffer
+	if code := run([]string{repo(t, nil)}, &out, &errs); code != 1 || !strings.Contains(errs.String(), "lists no file") {
+		t.Errorf("an empty repository: exit %d, stderr %q", code, errs.String())
+	}
+	errs.Reset()
+	if code := run([]string{notARepository(t)}, &out, &errs); code != 1 || strings.Contains(errs.String(), "lists no file") {
+		t.Errorf("not a repository: exit %d, stderr %q", code, errs.String())
+	}
+	errs.Reset()
+	dir := repo(t, map[string]string{"gone.go": "package gone\n"})
+	if err := os.Remove(filepath.Join(dir, "gone.go")); err != nil {
+		t.Fatal(err)
+	}
+	if code := run([]string{dir}, &out, &errs); code != 1 || !strings.Contains(errs.String(), "loccensus:") || !strings.Contains(errs.String(), "gone.go") {
+		t.Errorf("a tracked file gone: exit %d, stderr %q", code, errs.String())
+	}
+	if out.Len() != 0 {
+		t.Errorf("a refusal printed %q", out.String())
+	}
+}
+
+// A backslash before CRLF joins Python's lines as before LF, so a string
+// continued that way is still one statement, a docstring. The planted break:
+// the CRLF arm removed, and the backslash ends the statement as code.
+func TestPythonJoinsLinesAcrossCRLF(t *testing.T) {
+	src := "def f():\r\n    \"a\" \\\r\n    \"b\"\r\n    pass\r\n"
+	if got, want := python(t, src), python(t, strings.ReplaceAll(src, "\r\n", "\n")); got != want {
+		t.Errorf("with CRLF (code, +docstr) = %v, with LF %v", got, want)
+	}
+}
+
+// A template's Text span, the HTML around PHP's code, marks only its lines
+// that are not blank. The planted break: Text marked whole, as code is.
+func TestATemplatesTextMarksOnlyItsNonBlankLines(t *testing.T) {
+	if got := code(t, "a.php", "<p>a</p>\n\n<?php echo 1; ?>\n\n<p>b</p>\n"); got != 3 {
+		t.Errorf("%d code lines, want 3", got)
 	}
 }

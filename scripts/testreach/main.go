@@ -43,8 +43,9 @@
 //     test in the index reaches the line, when every test does, or when the
 //     reaching tests fail together on the original code.
 //
-// A build that fails ends testreach with go test -c's status, the one go test
-// gives for it.
+// A build that fails ends testreach with exit 2, which gremlins counts as not
+// viable. go test gives 1 for it, the status of a failing test, which gremlins
+// would count as a kill.
 //
 // The limit. scripts/mutation.sh gives gremlins a coefficient half again the
 // one it planned, and writes both to <index dir>/limits. testreach reads
@@ -600,9 +601,11 @@ func run(goBin, root, indexDir string, args []string) int {
 		raise(b.sig)
 		return 3
 	case b.code != 0:
-		// go test exits with go test -c's status when the build fails.
+		// go test -c builds and runs no test, so its failure is the build's:
+		// the mutant does not compile. Exit 2, which gremlins counts as not
+		// viable; go test's own 1 would count it as killed.
 		logf(outcome{}, false, b, true, "the build failed")
-		return b.code
+		return 2
 	}
 	if _, err := os.Stat(bin); err != nil {
 		logf(outcome{}, false, outcome{code: 2}, true, "the build wrote no test binary")

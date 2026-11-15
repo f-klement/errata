@@ -27,13 +27,14 @@
 #
 # Each package is one pass, `gremlins unleash <package directory>`, judged alone against its
 # floors (scripts/mutation-floors.txt, read below). A package directory is one under internal/
-# that holds Go files, nested or not: internal/config, internal/extract, internal/extract/ini.
+# or scripts/ that holds Go files, nested or not: internal/config, internal/extract,
+# internal/extract/ini, scripts/crap. The packages of scripts/ are the gate's own tools, package
+# main each, and a mutant of one that lives is a check that passes what it should refuse.
 # The path scopes gremlins' coverage pass, its mutants and so its timeout per mutant to that
-# package. `all` is every package
-# `go list` finds under internal/, so the weekly pass judges each package exactly as a run by
-# hand does. `none` mutates nothing and passes. CI's mutation job passes the scope
-# ci/mutation-scope.sh computes, with --diff (ci/push-mutation.sh); that script says which
-# packages a pipeline puts in it. A
+# package. `all` is every package `go list` finds under internal/ and scripts/, so the weekly
+# pass judges each package exactly as a run by hand does. `none` mutates nothing and passes.
+# CI's mutation job passes the scope ci/mutation-scope.sh computes, with --diff
+# (ci/push-mutation.sh); that script says which packages a pipeline puts in it. A
 # package .gremlins.yaml excludes whole, or one under a directory it excludes whole, such as
 # internal/heapcap, is listed and skipped.
 #
@@ -201,7 +202,7 @@ case "$*" in
             case "$p" in
                 all|none) refuse "'$p' stands alone; the scope was: $*" ;;
                 */|*//*|./*|*/./*|*/.|../*|*/../*|*/..) refuse "'$p' is not a package directory such as internal/config" ;;
-                internal/*)
+                internal/*|scripts/*)
                     [ -d "$p" ] || refuse "$p is not a package directory in this tree"
                     has_go "$p" || refuse "$p holds no Go file, so it is not a package directory" ;;
                 *) refuse "'$p' is not a package directory such as internal/config" ;;
@@ -413,6 +414,8 @@ write_goshim() {
     goshim_dir=$1
 }
 write_goshim "$work/goshim"
+# The module's path, which run_gremlins puts before a package directory for the go shim.
+module_path=$(go list -m) || refuse "go list -m could not name the module"
 # Gremlins' own working copies go under the same directory, and leave with it.
 TMPDIR=$work
 export TMPDIR
@@ -457,6 +460,28 @@ export GOFLAGS
 # mutant not covered on a diff run (-S ltc).
 MCOVER_MIN_DIFF=10
 
+# A pass in which no mutant built judges nothing: no test ran against any of them. Until scrmut a
+# mutant that did not compile counted as killed, so such a pass read 100% and went green; commit
+# 054d7a41 made it fail instead (crapclos review, finding 3). Now such mutants are not viable and
+# the figures leave them out, so the failure stays only where it still tells something: at
+# UNBUILT_MIN mutants or more, a pass with none built points to a broken build environment
+# (GOFLAGS, a missing tool, the go shim), and the package fails. Below it, a package whose few
+# mutants all fail to build is code gremlins cannot mutate into Go that compiles (the one mutant
+# of internal/provider, a string + turned -), and it passes with a verdict that says so. The
+# threshold is MCOVER_MIN_DIFF's ten, the count below which a diff run already holds mutants too
+# few to judge coverage by.
+#
+# The two kinds of run differ. On a whole pass, a broken build breaks every package, and all but
+# three hold ten mutants or more (internal/provider 1, extract/literal 7, extract/filestat 8),
+# so the run fails. On a push's diff run, fewer than ten mutants on the changed lines is
+# ordinary, so the guard does not see a broken build there: a package passes with "none of its
+# 4 mutants builds" even when no mutant could have built. Two other checks catch that break:
+# ci/tests/mutation.sh's real gremlins checks, run by ci-test on any change to the mutation
+# machinery or the Makefile, where GREMLINS_VERSION lives; and the weekly whole passes. The
+# threshold also ends a false failure: under 054d7a41, a push whose changed lines held only
+# mutants that do not compile, such as string concatenations, failed with every test sound.
+UNBUILT_MIN=$MCOVER_MIN_DIFF
+
 # The floors themselves sit in one table, scripts/mutation-floors.txt: one row a package, its
 # efficacy floor, its mutant coverage floor and its least timeout coefficient, each with its
 # reason. floors_for reads a package's row; a package with no row is refused before any pass
@@ -478,12 +503,12 @@ floors_table=$(sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "$FLOORS_FILE")
 # a malformed row anywhere in the table refuses every run, the tests' among them.
 FLOORS_FORM="a row is a package and three whole numbers, then, once each and in any order, 'from <package>' and the three fields 'mutant <seconds>', 'measuring <seconds>' and 'measured <pipeline id or YYYY-MM-DD>', which come together or not at all, and with those three 'pass <seconds>'"
 bad_rows=$(printf '%s\n' "$floors_table" | awk '{
-    ok = (NF >= 4 && (NF - 4) % 2 == 0 && $1 ~ /^internal\/[^ ]*[^\/]$/ && $2 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/ && $4 ~ /^[0-9]+$/)
+    ok = (NF >= 4 && (NF - 4) % 2 == 0 && $1 ~ /^(internal|scripts)\/[^ ]*[^\/]$/ && $2 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/ && $4 ~ /^[0-9]+$/)
     split("", had); timed = 0; pass = 0
     for (i = 5; i < NF; i += 2) {
         if ($i in had) ok = 0
         had[$i] = 1
-        if ($i == "from") { if ($(i + 1) !~ /^internal\/[^ ]*[^\/]$/) ok = 0 }
+        if ($i == "from") { if ($(i + 1) !~ /^(internal|scripts)\/[^ ]*[^\/]$/) ok = 0 }
         else if ($i == "pass") { if ($(i + 1) !~ /^[0-9]+(\.[0-9]+)?$/) ok = 0; pass = 1 }
         else if ($i == "mutant" || $i == "measuring") { if ($(i + 1) !~ /^[0-9]+(\.[0-9]+)?$/) ok = 0; timed++ }
         else if ($i == "measured") { if ($(i + 1) !~ /^([0-9]+|[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9])$/) ok = 0; timed++ }
@@ -990,7 +1015,7 @@ narrow_coefficient() {
 # third of the measured mutant (review of #264, owner question 1; the conservative reading until
 # the owner decides).
 narrow_or_not() {
-    reach_ok=""
+    reach_ok="" reach_failed=""
     [ -n "$narrow" ] || return 0
     # The floors row's pair when it has both, timed in one weekly run with one worker; this
     # run's otherwise. A probe under load (61.9 s for core on 2026-11-06, against 9 s) would
@@ -1019,6 +1044,11 @@ narrow_or_not() {
 
 # build_reach <package> <limit seconds>: reach_ok set when the index of the package's tests is
 # built in $pw/reach, each test bounded at the planned limit; a log line either way.
+# reach_failed is set when building the index failed: the package's tests did not build or run
+# under testreach, so its mutants' builds may fail the same way, and the pass that follows, not
+# narrowed, writes no log to tell (crapclos verify). The package is then INCONCLUSIVE and fails
+# before its gremlins pass (unleash), which would spend the deadline on a verdict already known.
+# Exit 3 is testreach's own reason not to narrow, not a failure.
 build_reach() {
     reach_ok=""
     rm -rf "$pw/reach"
@@ -1033,8 +1063,13 @@ build_reach() {
         echo "==> mutation: $1: narrowing: the index of the lines its $(grep -c '^test ' "$pw/reach/index") tests run took $took s"
     elif [ "$rrc" -eq 3 ]; then
         echo "==> mutation: $1: not narrowed: $(head -n 1 "$pw/reach.out"); every mutant runs the whole package's tests"
+    elif [ "$rrc" -eq 0 ]; then
+        reach_failed="testreach exited 0 and wrote no index"
+        echo "==> mutation: $1: not narrowed: testreach exited 0 after $took s but wrote no index of its tests, and the package is INCONCLUSIVE:"
+        sed 's/^/==>     /' "$pw/reach.out" | head -n 20
     else
-        echo "==> mutation: $1: not narrowed: building the index of its tests failed (exit $rrc) after $took s; every mutant runs the whole package's tests:"
+        reach_failed="exit $rrc"
+        echo "==> mutation: $1: not narrowed: building the index of its tests failed (exit $rrc) after $took s, and the package is INCONCLUSIVE:"
         sed 's/^/==>     /' "$pw/reach.out" | head -n 20
     fi
 }
@@ -1042,7 +1077,7 @@ build_reach() {
 # reach_line <package>: after a pass, how its mutants ran, from testreach's log, which the next
 # pass starts afresh.
 reach_line() {
-    reach_bad="" reach_unbuilt=""
+    reach_bad=""
     if [ -z "$reach_ok" ]; then
         no_list "$1" "the package has no index of its tests, for the reason above"
         return 0
@@ -1057,17 +1092,10 @@ reach_line() {
     # to go unchecked: the package fails (judge_pass).
     reach_bad=$(grep -c '^- 0/0 - - - - limits unreadable' "$pw/reach/log" || true)
     [ "$reach_bad" != 0 ] || reach_bad=""
-    # A mutant whose build fails counts as killed, since go exits 1 as for a failing test. When
-    # every mutant testreach ran failed to build, no test ran against any, and a pass at 100%
-    # judges nothing: the package fails (judge_pass). A pass of scripts/crap, in a copy whose
-    # scope admitted scripts/, went green that way (crapclos review, finding 3). A pass that is
-    # not narrowed writes no log, and go's exit status cannot tell a failed build from a failed
-    # test, so that pass goes unchecked. A pass is not narrowed under `--narrow off`, which only a
-    # manual run sets, or when the test index fails to build and the pass falls back to a whole
-    # one. Gremlins' own "Not viable" count is no substitute: it printed 0 while all 124 mutants
-    # of that scripts/crap pass failed to build. The weekly pass is the backstop, since a broken
-    # build path there fails the narrowed packages too.
-    reach_unbuilt=$(awk '{ why = $7; for (i = 8; i <= NF; i++) why = why " " $i } why == "the build failed" { n++ } END { if (n == NR) print n }' "$pw/reach/log")
+    # A mutant whose build fails is not viable: testreach and the go shim exit 2 for it, and
+    # gremlins counts it so, narrowed or not. judge_pass reads the case where none built from
+    # gremlins' counts alone. A package whose test index fails to build is INCONCLUSIVE and fails
+    # before any pass (build_reach, unleash).
     awk -v p="$1" '
         # A timeout, which holds the worker past the planned limit until the limit gremlins has: counted
         # with that time, and the line kept whole, so a later comparison can tell the load from
@@ -1125,12 +1153,16 @@ run_gremlins() {
     shift
     reach=""
     [ -z "$reach_ok" ] || reach=$pw/reach
+    # The package is the last argument. The go shim gives each mutant's go test its import path,
+    # which gremlins gets wrong for package main (scripts/goshim.sh says how).
+    for pkg_dir do :; done
     if [ -n "$d" ]; then
         PATH="$goshim_dir:$work/shim:$PATH" ERRATA_MUTATION_BASE=$diff_base ERRATA_MUTATION_DIFF=$d \
-            ERRATA_MUTATION_ASKED="$pw/asked" ERRATA_MUTATION_REACH=$reach \
+            ERRATA_MUTATION_ASKED="$pw/asked" ERRATA_MUTATION_REACH=$reach ERRATA_MUTATION_PKG="$module_path/$pkg_dir" \
             bounded "$GREMLINS" unleash --config "$pw/gremlins.yaml" --diff "$diff_base" "$@"
     else
-        PATH="$goshim_dir:$PATH" ERRATA_MUTATION_REACH=$reach bounded "$GREMLINS" unleash --config "$pw/gremlins.yaml" "$@"
+        PATH="$goshim_dir:$PATH" ERRATA_MUTATION_REACH=$reach ERRATA_MUTATION_PKG="$module_path/$pkg_dir" \
+            bounded "$GREMLINS" unleash --config "$pw/gremlins.yaml" "$@"
     fi
 }
 
@@ -1154,7 +1186,7 @@ pass_once() {
         ran_out=yes
     fi
     killed=$(count Killed) lived=$(count Lived) timedout=$(count "Timed out") uncovered=$(count "Not covered")
-    skipped=$(count Skipped)
+    skipped=$(count Skipped) notviable=$(count "Not viable")
     ran=$((killed + lived + timedout))
     reach_line "$1"
 }
@@ -1207,8 +1239,20 @@ scope_note() {
 # timeouts, since a timed out mutant counts as covered and killed.
 judge_pass() {
     all=$((ran + uncovered))
+    # unbuilt: the count of mutants when none of them built: gremlins ran none, found some not
+    # viable, which is how a mutant that does not compile reads, narrowed or not (reach_line), and
+    # found none that no test reaches. A pass with mutants no test reaches fails on mutant
+    # coverage, or on no test reaching its changed lines, and its verdict names that, not a
+    # broken build (scrmut verify 2). Until scrmut a narrowed pass read this from testreach's log,
+    # since gremlins then counted such a mutant as killed.
+    unbuilt=""
+    if [ "$ran" -eq 0 ] && [ "$uncovered" -eq 0 ] && [ "${notviable:-0}" -gt 0 ]; then
+        unbuilt=$notviable
+    fi
     if [ "$all" -gt 0 ]; then
         figures="Mutant coverage: $(percent "$ran" "$all")."
+    elif [ -n "$unbuilt" ]; then
+        figures="No mutant built."
     else
         figures="No mutants."
     fi
@@ -1224,8 +1268,8 @@ judge_pass() {
     elif ! grep -q 'Killed: [0-9]' "$pw/out"; then
         verdict="FAILED, gremlins printed no counts"
         rc=1
-    elif [ -n "${reach_unbuilt:-}" ]; then
-        verdict="FAILED, none of its $reach_unbuilt mutants built, so no test ran against any and its figures judge nothing"
+    elif [ -n "$unbuilt" ] && [ "$unbuilt" -ge "$UNBUILT_MIN" ]; then
+        verdict="FAILED, none of its $unbuilt mutants built, so no test ran against any and its figures judge nothing; at $UNBUILT_MIN or more that points to a broken build"
         rc=1
     elif [ -n "$diff" ] && [ "$ran" -eq 0 ] && [ "$uncovered" -gt 0 ]; then
         lines=$(sed -n 's/.*NOT COVERED .* at \([^ ]*\):[0-9]*$/\1/p' "$pw/out" | sort -u | head -n 10 | tr '\n' ' ' | sed 's/ $//; s/ /, /g')
@@ -1248,6 +1292,17 @@ judge_pass() {
         # lines: it no longer calls git as the shim expects.
         verdict="FAILED, gremlins never asked the git shim for the diff"
         rc=1
+    elif [ -n "$unbuilt" ]; then
+        verdict="passed, $(unbuilt_verdict "$unbuilt")"
+    fi
+}
+
+# unbuilt_verdict <n>: why a pass of n mutants, none of which built, passed.
+unbuilt_verdict() {
+    if [ "$1" -eq 1 ]; then
+        echo "its 1 mutant does not build, so it has none to judge"
+    else
+        echo "none of its $1 mutants builds, so it has none to judge"
     fi
 }
 
@@ -1275,6 +1330,11 @@ unleash() {
     # After the timed mutant, whose edit is put back by then, and with the planned limit; the
     # index's time counts in the measuring.
     narrow_or_not "$p"
+    # A failed index settles the verdict, so the package spends none of the deadline on a pass.
+    if [ -n "$reach_failed" ]; then
+        echo "$p: FAILED, INCONCLUSIVE: building the index of its tests failed ($reach_failed), so its mutants may not have built; no pass ran" >>"$pw/summary"
+        return 1
+    fi
     if [ -n "$pass_s" ]; then
         limit="limit per mutant $(seconds "$coef" "$pass_s") s: coefficient $coef times a pass of $pass_s s"
         [ -z "$reach_ok" ] || limit="$limit, and gremlins coefficient $(narrow_coefficient "$coef") to leave a narrowed run the rest"
@@ -1379,9 +1439,9 @@ unleash() {
 
 if [ "$1" = all ]; then
     mod=$(go list -m)
-    go list ./internal/... >"$work/packages"
+    go list ./internal/... ./scripts/... >"$work/packages"
     set -- $(sed "s|^$mod/||" "$work/packages")
-    [ "$#" -gt 0 ] || refuse "go list found no package under internal/"
+    [ "$#" -gt 0 ] || refuse "go list found no package under internal/ or scripts/"
     echo "==> mutation: every package: $*"
 fi
 
