@@ -153,25 +153,19 @@ func (x extractor) ExtractWith(ctx context.Context, root string, _ map[string][]
 // file that files: names must exist. The files hold at most max_bytes in
 // all, as one file does.
 func (x extractor) Extract(ctx context.Context, root string) ([]check.Value, error) {
-	out := []check.Value{}
-	var present map[string]bool
-	if !x.explicit {
-		var err error
-		if present, err = rootNames(ctx, root); err != nil {
-			return nil, err
-		}
+	present, err := x.present(ctx, root)
+	if err != nil {
+		return nil, err
 	}
+	out := []check.Value{}
 	var read int64
 	for _, f := range x.files {
-		if !x.explicit && !present[f.File] {
-			continue
-		}
-		data, err := f.Read(ctx, root)
-		if !x.explicit && (errors.Is(err, fs.ErrNotExist) || errors.Is(err, core.ErrDirectory)) {
-			continue
-		}
+		data, ok, err := x.read(ctx, root, f, present)
 		if err != nil {
 			return nil, err
+		}
+		if !ok {
+			continue
 		}
 		if read += int64(len(data)); read > f.Limit {
 			return nil, fmt.Errorf("%s: the files the extractor reads hold more than %d bytes in all, the extractor's max_bytes; name fewer files in files, or set max_bytes: higher", f.File, f.Limit)
@@ -187,6 +181,29 @@ func (x extractor) Extract(ctx context.Context, root string) ([]check.Value, err
 	}
 	tags, err := x.tags(ctx, root)
 	return append(out, tags...), err
+}
+
+// present is the names of the table that root holds, nil when files: names
+// the files to read.
+func (x extractor) present(ctx context.Context, root string) (map[string]bool, error) {
+	if x.explicit {
+		return nil, nil
+	}
+	return rootNames(ctx, root)
+}
+
+// read reads f under root. ok is false, with no error, for a file that
+// files: does not name and the root does not hold under that exact name, or
+// that is gone or a directory when it is read.
+func (x extractor) read(ctx context.Context, root string, f file, present map[string]bool) (data []byte, ok bool, err error) {
+	if !x.explicit && !present[f.File] {
+		return nil, false, nil
+	}
+	data, err = f.Read(ctx, root)
+	if !x.explicit && (errors.Is(err, fs.ErrNotExist) || errors.Is(err, core.ErrDirectory)) {
+		return nil, false, nil
+	}
+	return data, true, err
 }
 
 // tags are the versions the git tags on HEAD give that start with the

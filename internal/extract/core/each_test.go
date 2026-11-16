@@ -163,3 +163,39 @@ func TestEachAddSharesTheTimeLimit(t *testing.T) {
 		t.Fatalf("Add: %v, values %q; want the value's refusal and no value", err, e.values)
 	}
 }
+
+// An each extractor keeps only the matches that have its context, the
+// lines counted once CRLF is read as LF. Planted break: the context not
+// asked.
+func TestEachKeepsTheMatchesWithItsContext(t *testing.T) {
+	a, err := CompileContext("regex", Context{Before: 1, With: `^a$`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	vs, err := mustEach(t, "f", 0, "(", ")", `x\d`).Around(a).FromData([]byte("a\r\nx1\nb\nx2\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := extracttest.Texts(vs); got != "x1@2" {
+		t.Errorf("got %q", got)
+	}
+}
+
+// The search of an each extractor's context shares the limit of its
+// values' searches, and a context that runs past it is refused with the
+// each extractor's words. The value's pattern has a literal prefix, so its
+// own search is a byte scan; the line of 'a's ends in the c the context
+// needs, so the context's search reads the whole line at about 60
+// microseconds a rune, a minute unstopped. Planted break: the context's
+// refusal dropped, which returned k1.
+func TestEachRefusesAContextPastItsLimit(t *testing.T) {
+	a, err := CompileContext("regex", Context{After: 1, With: `[ab]{0,1000}c`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := newEach("regex", "(", ")", 100*time.Millisecond)
+	add(t, &e, "k1")
+	data := "k1\n" + strings.Repeat("a", 1<<20) + "c\n"
+	_, err = e.In(Source{File: "f", Limit: DefaultMaxBytes}).Around(a).FromData([]byte(data))
+	extracttest.WantError(t, err, "f: matching took more than 100ms, "+eachLimit+", and stopped in the search of the context's with pattern")
+}

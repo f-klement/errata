@@ -53,6 +53,17 @@ func composerAlternative(alt string) string {
 	if len(fields) == 3 && fields[1] == "-" {
 		return alt
 	}
+	tokens := composerTokens(fields)
+	for i, t := range tokens {
+		tokens[i] = composerToken(t)
+	}
+	return strings.Join(tokens, " ")
+}
+
+// composerTokens are the comparators of an alternative's fields, each with
+// its stability flag cut and an operator written apart joined to the
+// version after it.
+func composerTokens(fields []string) []string {
 	var tokens []string
 	for _, f := range fields {
 		f, _, _ = strings.Cut(f, "@")
@@ -67,17 +78,22 @@ func composerAlternative(alt string) string {
 		}
 		tokens = append(tokens, f)
 	}
-	for i, t := range tokens {
-		switch {
-		case bare(t):
-			tokens[i] = "==" + t
-		case strings.HasPrefix(t, "=") && !strings.HasPrefix(t, "==") && bare(t[1:]):
-			tokens[i] = "=" + t
-		case strings.HasPrefix(t, "~") && !strings.HasPrefix(t, "~>") && bare(t[1:]) && strings.Count(t, ".") == 1:
-			tokens[i] = "~>" + t[1:]
-		}
+	return tokens
+}
+
+// composerToken is one comparator in the syntax errata's semver reads: a
+// bare version or one after a single = is exact, and a tilde of two numbers
+// is ~>.
+func composerToken(t string) string {
+	switch {
+	case bare(t):
+		return "==" + t
+	case strings.HasPrefix(t, "=") && !strings.HasPrefix(t, "==") && bare(t[1:]):
+		return "=" + t
+	case strings.HasPrefix(t, "~") && !strings.HasPrefix(t, "~>") && bare(t[1:]) && strings.Count(t, ".") == 1:
+		return "~>" + t[1:]
 	}
-	return strings.Join(tokens, " ")
+	return t
 }
 
 // operators are the operators a range may write apart from its version, as

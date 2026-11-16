@@ -50,34 +50,7 @@ type junitProblem struct {
 func (JUnit) Write(w io.Writer, r check.Report) error {
 	s := junitSuite{Name: "errata", Tests: len(r.Results)}
 	for _, res := range r.Results {
-		c := junitCase{
-			Name:      res.Name(),
-			Classname: "errata." + string(res.Check.Scope),
-			Time:      res.Duration.Seconds(),
-		}
-		problem := &junitProblem{Message: res.Message, Body: res.Check.Reason}
-		switch {
-		case res.Skipped() && r.SkipsFail:
-			s.Errors++
-			c.Error = &junitProblem{Message: "skipped: " + res.Gap, Body: res.Check.Reason}
-		case res.Skipped():
-			s.Skipped++
-			c.Skipped = &junitProblem{Message: res.Gap}
-		case res.Verdict == check.VerdictFalse:
-			s.Failures++
-			c.Failure = problem
-		case res.Verdict == check.VerdictUnknown:
-			s.Errors++
-			c.Error = problem
-		}
-		if left := leftOut(res); len(left) > 0 {
-			lines := []string{"skip_not_literal left out these values, which are not literal:"}
-			for _, f := range left {
-				lines = append(lines, "  "+where(f))
-			}
-			c.SystemOut = strings.Join(lines, "\n")
-		}
-		s.Cases = append(s.Cases, c)
+		s.add(res, r.SkipsFail)
 	}
 
 	var buf bytes.Buffer
@@ -93,4 +66,46 @@ func (JUnit) Write(w io.Writer, r check.Report) error {
 	// references, which XML 1.0 allows for each of them.
 	_, err := w.Write(escapeActedOn(buf.Bytes(), func(r rune) string { return fmt.Sprintf("&#x%X;", r) }))
 	return err
+}
+
+// add adds res as a test case, counted by its verdict: a skip as an error
+// when skips fail the run, else as skipped, false as a failure, unknown as
+// an error.
+func (s *junitSuite) add(res check.Result, skipsFail bool) {
+	c := junitCase{
+		Name:      res.Name(),
+		Classname: "errata." + string(res.Check.Scope),
+		Time:      res.Duration.Seconds(),
+		SystemOut: leftOutText(res),
+	}
+	problem := &junitProblem{Message: res.Message, Body: res.Check.Reason}
+	switch {
+	case res.Skipped() && skipsFail:
+		s.Errors++
+		c.Error = &junitProblem{Message: "skipped: " + res.Gap, Body: res.Check.Reason}
+	case res.Skipped():
+		s.Skipped++
+		c.Skipped = &junitProblem{Message: res.Gap}
+	case res.Verdict == check.VerdictFalse:
+		s.Failures++
+		c.Failure = problem
+	case res.Verdict == check.VerdictUnknown:
+		s.Errors++
+		c.Error = problem
+	}
+	s.Cases = append(s.Cases, c)
+}
+
+// leftOutText is the test case's output that names the values
+// skip_not_literal left out of res, empty when it left out none.
+func leftOutText(res check.Result) string {
+	left := leftOut(res)
+	if len(left) == 0 {
+		return ""
+	}
+	lines := []string{"skip_not_literal left out these values, which are not literal:"}
+	for _, f := range left {
+		lines = append(lines, "  "+where(f))
+	}
+	return strings.Join(lines, "\n")
 }

@@ -98,6 +98,7 @@ func TestRegexRecordBoundsNodesAndBytes(t *testing.T) {
 		"many": strings.Repeat("ab\n", under+1),
 		"fits": strings.Repeat("ab\n", under),
 		"long": strings.Repeat("ab\n", 10),
+		"even": strings.Repeat("a\n", core.MaxValues/2),
 		"s/1":  strings.Repeat("ab\n", under/2+1),
 		"s/2":  strings.Repeat("ab\n", under/2+1),
 	})
@@ -107,6 +108,12 @@ func TestRegexRecordBoundsNodesAndBytes(t *testing.T) {
 	if got := mustRun(t, spec("fits", 0), root); len(got) != under {
 		t.Errorf("%d records of 3 nodes: %d", under, len(got))
 	}
+	// Records of x alone are 2 nodes each, so MaxValues/2 of them sit
+	// exactly on the limit, which they may reach and not pass.
+	even := extract.Of(regex.Kind, regex.Spec{File: "even", Pattern: `(?P<x>a)`, As: "record"})
+	if got := mustRun(t, even, root); len(got) != core.MaxValues/2 {
+		t.Errorf("%d records of 2 nodes: %d", core.MaxValues/2, len(got))
+	}
 	_, err := run(t, spec("many", 0), root)
 	extracttest.WantError(t, err, fmt.Sprintf("many: the records the pattern matches hold more than %d nodes in all, each record and each field one", core.MaxValues))
 	// Each record holds x, a, y and b: 4 bytes, so 10 hold 40.
@@ -115,6 +122,16 @@ func TestRegexRecordBoundsNodesAndBytes(t *testing.T) {
 	}
 	_, err = run(t, spec("long", 39), root)
 	extracttest.WantError(t, err, "long: the records the pattern matches hold more than 39 bytes of field names and text in all, the extractor's max_bytes")
+	// first ends before the match does, so each record holds first and a:
+	// 6 bytes, and 10 hold 60, more than the file's 30.
+	short := func(maxBytes int64) extract.Spec {
+		return extract.Of(regex.Kind, regex.Spec{File: "long", Pattern: `(?P<first>a)b`, As: "record", MaxBytes: maxBytes})
+	}
+	if got := mustRun(t, short(60), root); len(got) != 10 {
+		t.Errorf("60 bytes under 60: %d", len(got))
+	}
+	_, err = run(t, short(59), root)
+	extracttest.WantError(t, err, "long: the records the pattern matches hold more than 59 bytes of field names and text in all, the extractor's max_bytes")
 	_, err = run(t, extract.Of(regex.Kind, regex.Spec{Files: []string{"s/1", "s/2"}, Pattern: `(?P<x>a)(?P<y>b)`, As: "record"}), root)
 	extracttest.WantError(t, err, fmt.Sprintf("regex: the files hold more than %d values, the limit, each node of a mapping one", core.MaxValues))
 }
@@ -247,13 +264,16 @@ func TestRecordReadsEmbeddedDocumentsAndFileSets(t *testing.T) {
 
 // The records a path extractor returns count against MaxValues, the
 // record and each field's nodes, and the bytes of the field names, keys
-// and scalars against max_bytes. Planted breaks: the record itself not
-// counted, which returned 50000 records of one field; the field names'
-// bytes left out.
+// and scalars against max_bytes. A field's path that selects more than
+// MaxValues nodes in one element is refused with that field's name, the
+// file named once. Planted breaks: the record itself not counted, which
+// returned 50000 records of one field; the field names' bytes left out; a
+// field's refusal dropped; the file named again before the reason.
 func TestRecordBoundsNodesAndBytes(t *testing.T) {
 	half := core.MaxValues / 2
 	list := func(n int) string { return "[" + strings.TrimSuffix(strings.Repeat(`{"k": "v"}, `, n), ", ") + "]" }
-	root := extracttest.Repo(t, map[string]string{"many.json": list(half + 1), "fits.json": list(half), "long.json": list(2)})
+	wide := `[{"k": [` + strings.TrimSuffix(strings.Repeat("1, ", core.MaxValues+1), ", ") + "]}]"
+	root := extracttest.Repo(t, map[string]string{"many.json": list(half + 1), "fits.json": list(half), "long.json": list(2), "wide.json": wide})
 	spec := func(file string, maxBytes int64, name string) extract.Spec {
 		return extract.Of(json.Kind, json.Spec{File: file, Path: "[*]", As: "record", Fields: map[string]string{name: "k"}, MaxBytes: maxBytes})
 	}
@@ -270,6 +290,15 @@ func TestRecordBoundsNodesAndBytes(t *testing.T) {
 	}
 	_, err = run(t, spec("long.json", 201, name), root)
 	extracttest.WantError(t, err, "long.json: the mappings the path selects hold more than 201 bytes of keys and scalars in all")
+	// At 200 the second record's name alone passes the limit, before its
+	// scalar is counted.
+	_, err = run(t, spec("long.json", 200, name), root)
+	extracttest.WantError(t, err, "long.json: the mappings the path selects hold more than 200 bytes of keys and scalars in all")
+	_, err = run(t, extract.Of(json.Kind, json.Spec{File: "wide.json", Path: "[*]", As: "record", Fields: map[string]string{"f": "k[*]"}}), root)
+	want := fmt.Sprintf(`wide.json: path "[*]", field "f": the extractor selects more than %d values, the limit; narrow the path or the pattern so it selects fewer`, core.MaxValues)
+	if err == nil || err.Error() != want {
+		t.Errorf("a field over MaxValues: %v, want %q", err, want)
+	}
 }
 
 // A field name is none of the words CEL's language definition reserves,

@@ -72,41 +72,60 @@ func (t tree) at(rel string) (*os.Root, string) {
 	}
 	dirs := names[:len(names)-1]
 	c := t.dirs
+	c.partFrom(dirs)
+	t.extend(c, dirs)
+	held := min(len(dirs), len(c.names)) // rel's directories the chain holds
+	return t.dirAt(c, held), filepath.Join(names[held:]...)
+}
+
+// shared is how many of dirs, from the first, the chain holds.
+func (c *chain) shared(dirs []string) int {
 	keep := 0
 	for keep < len(c.names) && keep < len(dirs) && c.names[keep] == dirs[keep] {
 		keep++
 	}
-	// Where the chain parts from rel's directories, what lies past is
-	// closed; a chain that ends on the way holds nothing past, so nothing
-	// closes. A chain that runs on below them is kept: resolve looks at
-	// each prefix of a path in turn, and the next look goes deeper again.
-	if keep < len(dirs) {
-		for _, r := range c.roots[keep:] {
-			_ = r.Close()
-		}
-		c.names, c.roots = c.names[:keep], c.roots[:keep]
+	return keep
+}
+
+// partFrom closes the directories of the chain past where it parts from
+// dirs, a path's directories. Where the chain parts from them, what lies
+// past is closed; a chain that ends on the way holds nothing past, so
+// nothing closes. A chain that runs on below them is kept: resolve looks
+// at each prefix of a path in turn, and the next look goes deeper again.
+func (c *chain) partFrom(dirs []string) {
+	keep := c.shared(dirs)
+	if keep == len(dirs) {
+		return
 	}
+	for _, r := range c.roots[keep:] {
+		_ = r.Close()
+	}
+	c.names, c.roots = c.names[:keep], c.roots[:keep]
+}
+
+// extend opens dirs onto the chain, below what it holds of them, to
+// maxChain deep, and stops at a directory that cannot be opened.
+func (t tree) extend(c *chain, dirs []string) {
 	for len(c.names) < min(len(dirs), maxChain) {
-		parent := t.Root
-		if n := len(c.roots); n > 0 {
-			parent = c.roots[n-1]
-		}
 		name := dirs[len(c.names)]
-		r, err := parent.OpenRoot(name)
+		r, err := t.dirAt(c, len(c.roots)).OpenRoot(name)
 		if err != nil {
 			// The look below goes through the rest of the path, and
 			// gives the error the file system gives it there, such as
 			// ENOTDIR for a name below a file.
-			break
+			return
 		}
 		c.names, c.roots = append(c.names, name), append(c.roots, r)
 	}
-	held := min(len(dirs), len(c.names)) // rel's directories the chain holds
-	parent := t.Root
+}
+
+// dirAt is the deepest of the first held directories of the chain, or the
+// root when held is 0.
+func (t tree) dirAt(c *chain, held int) *os.Root {
 	if held > 0 {
-		parent = c.roots[held-1]
+		return c.roots[held-1]
 	}
-	return parent, filepath.Join(names[held:]...)
+	return t.Root
 }
 
 // lstat is Lstat of rel in t, through the directory that holds it.
@@ -237,21 +256,36 @@ func (t tree) form(file, at string, disk fs.FileMode, found, last bool) error {
 	if !listed {
 		return nil
 	}
-	link := disk&fs.ModeSymlink != 0
-	var holds bool
-	what := "a file"
+	if holds, what := holdsEntry(e, disk, found, last); !holds {
+		return notIndexed{file: file, entry: filepath.ToSlash(at), missing: what}
+	}
+	return nil
+}
+
+// holdsEntry reports whether the disk holds what the index entry e lists,
+// as form says, and names what it lists.
+func holdsEntry(e gitindex.Entry, disk fs.FileMode, found, last bool) (bool, string) {
 	switch {
 	case e.Dir():
-		holds, what = found && disk.IsDir(), "a directory"
+		return found && disk.IsDir(), "a directory"
 	case e.Symlink():
-		holds, what = found && (link || last && disk.IsRegular()), "a symlink"
-	default:
-		holds = !last || found && !link && !disk.IsDir()
+		return holdsLink(disk, found, last), "a symlink"
 	}
-	if holds {
-		return nil
-	}
-	return notIndexed{file: file, entry: filepath.ToSlash(at), missing: what}
+	return holdsFile(disk, found, last), "a file"
+}
+
+// holdsLink reports whether the disk holds where the index lists a symlink
+// what form passes: a link, or a file put in its place at the end, which
+// indexed refuses.
+func holdsLink(disk fs.FileMode, found, last bool) bool {
+	return found && (disk&fs.ModeSymlink != 0 || last && disk.IsRegular())
+}
+
+// holdsFile reports whether the disk holds where the index lists a file
+// what form passes: a file that is no link at the end, and anything on
+// the way.
+func holdsFile(disk fs.FileMode, found, last bool) bool {
+	return !last || found && disk&fs.ModeSymlink == 0 && !disk.IsDir()
 }
 
 // indexed refuses rel, where a read of file lands once resolve has
@@ -429,42 +463,77 @@ func (t tree) leftOut(file string, err error) error {
 	if !errors.Is(err, fs.ErrNotExist) && !errors.Is(err, syscall.ENOTDIR) {
 		return err
 	}
-	ix, below := t.index, ""
-	if ix == nil {
-		g := t.git
-		if g == nil {
-			g = &gitIndexOnce{}
-		}
-		if !g.read {
-			g.top, g.below = repositoryOf(t.real)
-			g.ix, g.err = readIndex(g.top)
-			g.read = true
-		}
-		if errors.Is(g.err, gitindex.ErrNoRepository) {
-			return err
-		}
-		if g.err != nil {
-			return fmt.Errorf("it is not in the working tree, and git's index, which says whether a sparse checkout leaves it out, cannot be read: %w", g.err)
-		}
-		ix, below = &g.ix, g.below
+	ix, below, ixErr := t.sparseIndex()
+	if ixErr != nil {
+		return ixErr
 	}
+	if ix == nil {
+		return err
+	}
+	for _, p := range missedPaths(file, err) {
+		if left := leftOutError(ix, below, p); left != nil {
+			return left
+		}
+	}
+	return err
+}
+
+// sparseIndex is the index that says what a sparse checkout leaves out of
+// t, and the root's path below the top of its repository: the fixture's on
+// a witness, and else the repository's, read once for the tree. It is nil
+// for a root that no repository holds.
+func (t tree) sparseIndex() (*gitindex.Index, string, error) {
+	if t.index != nil {
+		return t.index, "", nil
+	}
+	g := t.git
+	if g == nil {
+		g = &gitIndexOnce{}
+	}
+	g.load(t.real)
+	if errors.Is(g.err, gitindex.ErrNoRepository) {
+		return nil, "", nil
+	}
+	if g.err != nil {
+		return nil, "", fmt.Errorf("it is not in the working tree, and git's index, which says whether a sparse checkout leaves it out, cannot be read: %w", g.err)
+	}
+	return &g.ix, g.below, nil
+}
+
+// load reads the index of the repository that holds root, the first time.
+func (g *gitIndexOnce) load(root string) {
+	if !g.read {
+		g.top, g.below = repositoryOf(root)
+		g.ix, g.err = readIndex(g.top)
+		g.read = true
+	}
+}
+
+// missedPaths are the paths a read of file that failed with err may have
+// missed, relative to the root: file, and where the read reached once it
+// followed the links on the way, when that differs.
+func missedPaths(file string, err error) []string {
 	paths := []string{filepath.Clean(file)}
 	var missed missedAt
 	if errors.As(err, &missed) && missed.at != paths[0] {
 		paths = append(paths, missed.at)
 	}
-	for _, p := range paths {
-		at, left := ix.LeftOut(path.Join(below, filepath.ToSlash(p)))
-		if !left {
-			continue
-		}
-		named := rootRelative(at, below)
-		if strings.HasSuffix(at, "/") {
-			return fmt.Errorf("the sparse checkout leaves out %s, the directory that holds it, which git's sparse index lists as one entry, so errata cannot read what a clone holds there; add the directory to the sparse checkout (git sparse-checkout add), or run errata in a full checkout", named)
-		}
-		return fmt.Errorf("git marks %s skip-worktree and the working tree does not hold it, as a sparse checkout leaves a file out, so errata cannot read what a clone holds there; add it to the sparse checkout (git sparse-checkout add), or run errata in a full checkout", named)
+	return paths
+}
+
+// leftOutError refuses p, a path below the root, which is below the
+// repository's top, when the index ix says a sparse checkout leaves it out,
+// itself or the directory that holds it; nil otherwise.
+func leftOutError(ix *gitindex.Index, below, p string) error {
+	at, left := ix.LeftOut(path.Join(below, filepath.ToSlash(p)))
+	if !left {
+		return nil
 	}
-	return err
+	named := rootRelative(at, below)
+	if strings.HasSuffix(at, "/") {
+		return fmt.Errorf("the sparse checkout leaves out %s, the directory that holds it, which git's sparse index lists as one entry, so errata cannot read what a clone holds there; add the directory to the sparse checkout (git sparse-checkout add), or run errata in a full checkout", named)
+	}
+	return fmt.Errorf("git marks %s skip-worktree and the working tree does not hold it, as a sparse checkout leaves a file out, so errata cannot read what a clone holds there; add it to the sparse checkout (git sparse-checkout add), or run errata in a full checkout", named)
 }
 
 // rootRelative is at, a path of git's index what a sparse checkout leaves
@@ -501,24 +570,41 @@ func repositoryOf(root string) (string, string) {
 	dev, known := deviceOf(root)
 	dir := root
 	for range maxAbove + 1 {
-		dot := filepath.Join(dir, ".git")
-		if info, err := os.Lstat(dot); err == nil && (!info.IsDir() || gitindex.IsGitDir(dot, indexLimits)) {
-			rel, err := filepath.Rel(dir, root)
-			if err != nil || rel == "." {
-				return dir, ""
-			}
-			return dir, filepath.ToSlash(rel)
+		if holdsGitDir(dir) {
+			return dir, pathBelow(dir, root)
 		}
 		up := filepath.Dir(dir)
-		if up == dir {
-			break
-		}
-		if d, ok := deviceOf(up); known && ok && d != dev {
+		if up == dir || otherDevice(up, dev, known) {
 			break
 		}
 		dir = up
 	}
 	return root, ""
+}
+
+// holdsGitDir reports whether dir holds a .git that stops the look: a
+// file, or a directory that is a git directory.
+func holdsGitDir(dir string) bool {
+	dot := filepath.Join(dir, ".git")
+	info, err := os.Lstat(dot)
+	return err == nil && (!info.IsDir() || gitindex.IsGitDir(dot, indexLimits))
+}
+
+// pathBelow is root's path below top, written with slashes, or "" when
+// root is top.
+func pathBelow(top, root string) string {
+	rel, err := filepath.Rel(top, root)
+	if err != nil || rel == "." {
+		return ""
+	}
+	return filepath.ToSlash(rel)
+}
+
+// otherDevice reports whether dir is on a file system other than dev, when
+// the OS gives both devices (known for dev).
+func otherDevice(dir string, dev any, known bool) bool {
+	d, ok := deviceOf(dir)
+	return known && ok && d != dev
 }
 
 // deviceOf is the device of the file system that holds dir, as the OS's
@@ -673,75 +759,99 @@ func (d indexEntry) Info() (fs.FileInfo, error) {
 // above the root. A .. in file itself is resolved by name first, by Clean,
 // before any link.
 func (t tree) resolve(file string) (string, fs.FileMode, error) {
-	realRoot := t.real
-	todo := splitPath(filepath.Clean(file))
-	cur := realRoot
-	mode := fs.ModeDir // of cur
-	links := 0
-	for len(todo) > 0 {
-		name := todo[0]
-		todo = todo[1:]
-		if name == ".." {
-			cur, mode = filepath.Dir(cur), fs.ModeDir // cur holds no link, so .. is its parent
-			continue
-		}
-		next := filepath.Join(cur, name)
-		if !within(realRoot, next) {
-			if !within(next, realRoot) {
-				return "", 0, errOutside
-			}
-			cur, mode = next, fs.ModeDir // a directory above the root, on the way back to it
-			continue
-		}
-		at, err := filepath.Rel(realRoot, next)
-		if err != nil {
+	r := route{todo: splitPath(filepath.Clean(file)), cur: t.real, mode: fs.ModeDir}
+	for len(r.todo) > 0 {
+		name := r.todo[0]
+		r.todo = r.todo[1:]
+		if err := t.step(file, &r, name); err != nil {
 			return "", 0, err
 		}
-		info, err := t.lstat(at)
-		if err != nil {
-			// ENOTDIR needs no form check: the name before at is a file on
-			// disk, which form looked at on the step before, and refused
-			// there when the index lists a directory; where the index
-			// lists a file, nothing below it is listed (Below refuses the
-			// pair).
-			if errors.Is(err, fs.ErrNotExist) {
-				if err := t.form(file, at, 0, false, len(todo) == 0); err != nil {
-					return "", 0, err
-				}
-			}
-			return "", 0, missedAt{err: bare(err), at: filepath.Join(append([]string{at}, todo...)...)}
-		}
-		if err := t.form(file, at, info.Mode(), true, len(todo) == 0); err != nil {
-			return "", 0, err
-		}
-		if info.Mode()&fs.ModeSymlink == 0 {
-			cur, mode = next, info.Mode()
-			continue
-		}
-		if links++; links > maxLinks {
-			return "", 0, errors.New("too many levels of symbolic links")
-		}
-		// On a witness a link the fixture does not commit as a symlink is
-		// not in a clone, so nothing is followed through it. git's index
-		// lists a symlink as an entry of its own, with its mode, so a
-		// committed one is followed.
-		if err := t.linked(file, at); err != nil {
-			return "", 0, err
-		}
-		target, err := t.readlink(at)
-		if err != nil {
-			return "", 0, bare(err)
-		}
-		if filepath.IsAbs(target) {
-			cur = filepath.VolumeName(target) + string(filepath.Separator)
-		}
-		todo = append(splitPath(target), todo...)
 	}
-	if !within(realRoot, cur) {
+	if !within(t.real, r.cur) {
 		return "", 0, errOutside
 	}
-	rel, err := filepath.Rel(realRoot, cur)
-	return rel, mode, err
+	rel, err := filepath.Rel(t.real, r.cur)
+	return rel, r.mode, err
+}
+
+// route is where resolve stands on its way to a file.
+type route struct {
+	todo  []string    // the names still to take
+	cur   string      // the path reached, which holds no link
+	mode  fs.FileMode // of cur
+	links int         // the links followed so far
+}
+
+// step takes the next name, name, of the route to file, which ends at
+// t.real or below it.
+func (t tree) step(file string, r *route, name string) error {
+	if name == ".." {
+		r.cur, r.mode = filepath.Dir(r.cur), fs.ModeDir // cur holds no link, so .. is its parent
+		return nil
+	}
+	next := filepath.Join(r.cur, name)
+	if !within(t.real, next) {
+		if !within(next, t.real) {
+			return errOutside
+		}
+		r.cur, r.mode = next, fs.ModeDir // a directory above the root, on the way back to it
+		return nil
+	}
+	at, err := filepath.Rel(t.real, next)
+	if err != nil {
+		return err
+	}
+	info, err := t.lstat(at)
+	if err != nil {
+		return t.missed(file, at, err, r.todo)
+	}
+	if err := t.form(file, at, info.Mode(), true, len(r.todo) == 0); err != nil {
+		return err
+	}
+	if info.Mode()&fs.ModeSymlink == 0 {
+		r.cur, r.mode = next, info.Mode()
+		return nil
+	}
+	return t.throughLink(file, at, r)
+}
+
+// missed is the error of a route to file that found nothing at at, with
+// the names todo still to take, after form has looked at the miss. ENOTDIR
+// needs no form check: the name before at is a file on disk, which form
+// looked at on the step before, and refused there when the index lists a
+// directory; where the index lists a file, nothing below it is listed
+// (Below refuses the pair).
+func (t tree) missed(file, at string, err error, todo []string) error {
+	if errors.Is(err, fs.ErrNotExist) {
+		if err := t.form(file, at, 0, false, len(todo) == 0); err != nil {
+			return err
+		}
+	}
+	return missedAt{err: bare(err), at: filepath.Join(append([]string{at}, todo...)...)}
+}
+
+// throughLink puts the target of the link at at, on the route to file, in
+// front of the names still to take.
+func (t tree) throughLink(file, at string, r *route) error {
+	if r.links++; r.links > maxLinks {
+		return errors.New("too many levels of symbolic links")
+	}
+	// On a witness a link the fixture does not commit as a symlink is
+	// not in a clone, so nothing is followed through it. git's index
+	// lists a symlink as an entry of its own, with its mode, so a
+	// committed one is followed.
+	if err := t.linked(file, at); err != nil {
+		return err
+	}
+	target, err := t.readlink(at)
+	if err != nil {
+		return bare(err)
+	}
+	if filepath.IsAbs(target) {
+		r.cur = filepath.VolumeName(target) + string(filepath.Separator)
+	}
+	r.todo = append(splitPath(target), r.todo...)
+	return nil
 }
 
 // splitPath lists the names in p, without the empty ones and ".".

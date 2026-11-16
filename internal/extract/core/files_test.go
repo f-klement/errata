@@ -538,6 +538,17 @@ func TestAReadMissesWhereTheIndexCannotBeRead(t *testing.T) {
 	extracttest.WantError(t, err, "stat gone: it is not in the working tree, and git's index, which says whether a sparse checkout leaves it out, cannot be read: read git's index: it does not start with DIRC")
 }
 
+// A tree that holds no index of its own, such as one built outside
+// openTree, reads the index of the repository that holds its root when a
+// read misses, and refuses one that cannot be read as openTree's tree does.
+// Planted break: the tree's cache taken as it is, nil, which panicked.
+func TestATreeWithNoIndexReadsTheRepositorys(t *testing.T) {
+	root := repo(t, map[string]string{"a": ""})
+	writeFile(t, root, ".git/index", "not an index")
+	_, _, err := tree{real: root}.sparseIndex()
+	extracttest.WantError(t, err, "it is not in the working tree, and git's index, which says whether a sparse checkout leaves it out, cannot be read: read git's index: it does not start with DIRC")
+}
+
 // Tracked lists each files: key as List does, against the index it read at
 // its first glob: a .git taken away after that changes nothing, where List
 // reads the index again. Planted break: Tracked reading the index for each
@@ -943,6 +954,27 @@ func TestTheRepositoryAboveARootIsAtMost64Up(t *testing.T) {
 		realTop, _ := filepath.EvalSymlinks(top)
 		if found := got == realTop; found != (up == maxAbove) {
 			t.Errorf("a .git %d up: found %v", up, found)
+		}
+	}
+}
+
+// starLen weighs a segment's bytes, a class's three times, and a byte after
+// a \ twice with the \ taking its weight, so \[ opens no class and \] in a
+// class closes none. The values follow from the rule, worked by hand.
+func TestStarLen(t *testing.T) {
+	for seg, want := range map[string]int{
+		"ab":     2,
+		`a\`:     2,
+		`\[a`:    3,
+		"]a":     2,
+		"[ab]":   12,
+		`[\]]`:   12,
+		"[a]b":   10,
+		`[a\`:    9,
+		`x[\a]y`: 1 + 3 + 6 + 3 + 1,
+	} {
+		if got := starLen(seg); got != want {
+			t.Errorf("starLen(%q) = %d, want %d", seg, got, want)
 		}
 	}
 }

@@ -124,3 +124,15 @@ func TestSimpleCellLines(t *testing.T) {
 		t.Fatal("the body lost its middle line")
 	}
 }
+
+// A simple table with no header whose bottom border is the file's last
+// line, with no line break after it, ends there and gives no value. The
+// planted break looks past the last line for one after the border.
+func TestSimpleTableEndsAtTheLastLine(t *testing.T) {
+	body := "=====  =====\nx      y\n=====  ====="
+	if got := read(t, sel("table", "column", "x"), body); len(got) != 0 {
+		t.Errorf("got %q, want no value", got)
+	}
+	got := read(t, sel("comment"), ".. c\n\n"+body)
+	want(t, "comment before", got, "1:c")
+}

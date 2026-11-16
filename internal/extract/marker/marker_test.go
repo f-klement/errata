@@ -106,6 +106,7 @@ func TestCodeMarkers(t *testing.T) {
 		{"no blank after //", "a.go", "//<!-- errata: p -->1<!-- /errata -->\n", "p=1@1"},
 		{"wrapped with no blanks", "a.go", "//a <!-- errata: p -->80\n//81<!-- /errata -->\n", "p=80 81@1"},
 		{"a value starting in the next comment", "a.go", "x := 1\n// <!-- errata: p -->\n// 8080<!-- /errata -->\n", "p=8080@3"},
+		{"a value at the start of the next block comment", "a.go", "/* <!-- errata: p --> */\n/*8080<!-- /errata --> */\n", "p=8080@2"},
 	} {
 		if got := scanned(t, c.file, c.src); got != c.want {
 			t.Errorf("%s: %q gives %q, want %q", c.name, c.src, got, c.want)

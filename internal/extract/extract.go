@@ -348,34 +348,43 @@ func (s *Spec) UnmarshalJSON(raw []byte) error {
 	}
 	got := map[*kind]any{}
 	for d.More() {
-		key, err := d.Token()
-		if err != nil {
+		if err := readEntry(d, got); err != nil {
 			return err
 		}
-		var value json.RawMessage
-		if err := d.Decode(&value); err != nil {
-			return err
-		}
-		name, _ := key.(string)
-		k, ok := kinds.byKey[name]
-		if !ok {
-			return fmt.Errorf("json: unknown field %q", name)
-		}
-		if bytes.Equal(value, []byte("null")) {
-			delete(got, k)
-			continue
-		}
-		spec, err := k.Decode(value)
-		if err != nil {
-			return err
-		}
-		got[k] = spec
 	}
 	for _, k := range kinds.order {
 		if spec, ok := got[k]; ok {
 			s.set = append(s.set, entry{k, spec})
 		}
 	}
+	return nil
+}
+
+// readEntry reads the next key of an extract: entry from d and the kind's
+// spec under it into got. A key written null takes the kind out of got.
+func readEntry(d *json.Decoder, got map[*kind]any) error {
+	key, err := d.Token()
+	if err != nil {
+		return err
+	}
+	var value json.RawMessage
+	if err := d.Decode(&value); err != nil {
+		return err
+	}
+	name, _ := key.(string)
+	k, ok := kinds.byKey[name]
+	if !ok {
+		return fmt.Errorf("json: unknown field %q", name)
+	}
+	if bytes.Equal(value, []byte("null")) {
+		delete(got, k)
+		return nil
+	}
+	spec, err := k.Decode(value)
+	if err != nil {
+		return err
+	}
+	got[k] = spec
 	return nil
 }
 

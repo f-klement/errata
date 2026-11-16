@@ -93,33 +93,74 @@ func (r *reader) found() string {
 func (r *reader) space() error {
 	for r.i < len(r.data) {
 		c := r.data[r.i]
+		// The order of the cases matters: comment and json5Space read past
+		// what they find, so json5Space runs only on what is neither JSON's
+		// space nor a /.
 		switch {
-		case c == ' ' || c == '\t' || c == '\n' || c == '\r':
+		case jsonSpace(c):
 			r.i++
-		case c == '/' && r.i+1 < len(r.data) && r.data[r.i+1] == '/':
-			r.i += 2
-			for r.i < len(r.data) && !r.lineEnd() {
-				r.i++
+		case c == '/':
+			if read, err := r.comment(); !read || err != nil {
+				return err
 			}
-		case c == '/' && r.i+1 < len(r.data) && r.data[r.i+1] == '*':
-			end := bytes.Index(r.data[r.i+2:], []byte("*/"))
-			if end < 0 {
-				return r.fail("the comment that opens here is not closed")
-			}
-			r.i += 2 + end + 2
-		case r.json5 && (c == '\v' || c == '\f'):
-			r.i++
-		case r.json5 && c >= utf8.RuneSelf:
-			ru, size := utf8.DecodeRune(r.data[r.i:])
-			if ru != '\ufeff' && ru != '\u2028' && ru != '\u2029' && !unicode.Is(unicode.Zs, ru) {
-				return nil
-			}
-			r.i += size
-		default:
+		case !r.json5Space():
 			return nil
 		}
 	}
 	return nil
+}
+
+// jsonSpace reports whether c is white space in JSON.
+func jsonSpace(c byte) bool { return c == ' ' || c == '\t' || c == '\n' || c == '\r' }
+
+// comment skips the comment that starts at the reader's offset, at a /, and
+// reports whether one starts there.
+func (r *reader) comment() (bool, error) {
+	if r.i+1 >= len(r.data) {
+		return false, nil
+	}
+	switch r.data[r.i+1] {
+	case '/':
+		r.i += 2
+		for r.i < len(r.data) && !r.lineEnd() {
+			r.i++
+		}
+	case '*':
+		end := bytes.Index(r.data[r.i+2:], []byte("*/"))
+		if end < 0 {
+			return false, r.fail("the comment that opens here is not closed")
+		}
+		r.i += 2 + end + 2
+	default:
+		return false, nil
+	}
+	return true, nil
+}
+
+// json5Space reads the white space JSON5 adds to JSON's at the reader's
+// offset, and reports whether there is any.
+func (r *reader) json5Space() bool {
+	if !r.json5 {
+		return false
+	}
+	if c := r.data[r.i]; c == '\v' || c == '\f' {
+		r.i++
+		return true
+	}
+	if r.data[r.i] < utf8.RuneSelf {
+		return false
+	}
+	ru, size := utf8.DecodeRune(r.data[r.i:])
+	if !json5SpaceRune(ru) {
+		return false
+	}
+	r.i += size
+	return true
+}
+
+// json5SpaceRune reports whether ru, no ASCII, is white space in JSON5.
+func json5SpaceRune(ru rune) bool {
+	return ru == '\ufeff' || ru == '\u2028' || ru == '\u2029' || unicode.Is(unicode.Zs, ru)
 }
 
 // lineEnd reports whether a line terminator starts at the reader's offset:
@@ -132,32 +173,57 @@ func (r *reader) lineEnd() bool {
 	return r.json5 && c == 0xe2 && r.i+2 < len(r.data) && r.data[r.i+1] == 0x80 && (r.data[r.i+2] == 0xa8 || r.data[r.i+2] == 0xa9)
 }
 
+// endsEarly is the refusal of a file that ends inside a value.
+const endsEarly = "the file ends before the value is complete"
+
 func (r *reader) value(depth int) (*core.Node, error) {
 	line := r.lines.At(r.i)
 	if depth > core.MaxDepth {
 		return nil, core.TooDeep(line)
 	}
 	if r.i >= len(r.data) {
-		return nil, r.fail("the file ends before the value is complete")
+		return nil, r.fail(endsEarly)
 	}
-	switch c := r.data[r.i]; {
-	case c == '{':
+	switch r.data[r.i] {
+	case '{':
 		return r.object(line, depth)
-	case c == '[':
+	case '[':
 		return r.array(line, depth)
-	case c == '"' || (r.json5 && c == '\''):
+	}
+	return r.scalar(line)
+}
+
+// scalar reads a string, a number, true, false or null.
+func (r *reader) scalar(line int) (*core.Node, error) {
+	c := r.data[r.i]
+	if r.opensString(c) {
 		s, err := r.str()
 		if err != nil {
 			return nil, err
 		}
 		return &core.Node{Text: s, Line: line}, nil
-	case c == '-' || (c >= '0' && c <= '9') || (r.json5 && (c == '+' || c == '.' || c == 'I' || c == 'N')):
+	}
+	if r.opensNumber(c) {
 		text, err := r.number()
 		if err != nil {
 			return nil, err
 		}
 		return &core.Node{Type: core.TypeNumber, Text: text, Line: line}, nil
 	}
+	return r.literal(line)
+}
+
+// opensString reports whether c opens a string: ", and in JSON5 ' too.
+func (r *reader) opensString(c byte) bool { return c == '"' || (r.json5 && c == '\'') }
+
+// opensNumber reports whether c starts a number: a minus or a digit, and in
+// JSON5 a plus, a point, Infinity or NaN too.
+func (r *reader) opensNumber(c byte) bool {
+	return c == '-' || (c >= '0' && c <= '9') || (r.json5 && (c == '+' || c == '.' || c == 'I' || c == 'N'))
+}
+
+// literal reads true, false or null.
+func (r *reader) literal(line int) (*core.Node, error) {
 	for _, w := range []struct {
 		word string
 		typ  core.ScalarType
@@ -192,26 +258,11 @@ func (r *reader) object(line, depth int) (*core.Node, error) {
 		if err := r.space(); err != nil {
 			return nil, err
 		}
-		if r.i < len(r.data) && r.data[r.i] == '}' {
-			r.i++
+		if r.consume('}') {
 			return n, nil
 		}
-		keyLine := r.lines.At(r.i)
-		key, err := r.key()
+		key, err := r.memberKey(n)
 		if err != nil {
-			return nil, err
-		}
-		if _, dup := n.Field[key]; dup {
-			return nil, fmt.Errorf("line %d: key %s is repeated", keyLine, core.Quote(key))
-		}
-		if err := r.space(); err != nil {
-			return nil, err
-		}
-		if r.i >= len(r.data) || r.data[r.i] != ':' {
-			return nil, r.fail("a key is followed by :, not %s", r.found())
-		}
-		r.i++
-		if err := r.space(); err != nil {
 			return nil, err
 		}
 		v, err := r.value(depth + 1)
@@ -225,6 +276,37 @@ func (r *reader) object(line, depth int) (*core.Node, error) {
 	}
 }
 
+// memberKey reads a member's key, no key n holds already, and the : after
+// it, through the space that follows.
+func (r *reader) memberKey(n *core.Node) (string, error) {
+	keyLine := r.lines.At(r.i)
+	key, err := r.key()
+	if err != nil {
+		return "", err
+	}
+	if _, dup := n.Field[key]; dup {
+		return "", fmt.Errorf("line %d: key %s is repeated", keyLine, core.Quote(key))
+	}
+	if err := r.space(); err != nil {
+		return "", err
+	}
+	if r.i >= len(r.data) || r.data[r.i] != ':' {
+		return "", r.fail("a key is followed by :, not %s", r.found())
+	}
+	r.i++
+	return key, r.space()
+}
+
+// consume reads c when it is at the reader's offset, and reports whether it
+// is.
+func (r *reader) consume(c byte) bool {
+	if r.i < len(r.data) && r.data[r.i] == c {
+		r.i++
+		return true
+	}
+	return false
+}
+
 func (r *reader) array(line, depth int) (*core.Node, error) {
 	n := &core.Node{Shape: core.Sequence, Line: line}
 	r.i++ // the [
@@ -232,8 +314,7 @@ func (r *reader) array(line, depth int) (*core.Node, error) {
 		if err := r.space(); err != nil {
 			return nil, err
 		}
-		if r.i < len(r.data) && r.data[r.i] == ']' {
-			r.i++
+		if r.consume(']') {
 			return n, nil
 		}
 		v, err := r.value(depth + 1)
@@ -255,7 +336,7 @@ func (r *reader) next(close byte) (bool, error) {
 	}
 	switch {
 	case r.i >= len(r.data):
-		return false, r.fail("the file ends before the value is complete")
+		return false, r.fail(endsEarly)
 	case r.data[r.i] == close:
 		r.i++
 		return true, nil
@@ -269,9 +350,9 @@ func (r *reader) next(close byte) (bool, error) {
 // key reads an object's key: a string, or in JSON5 an identifier name.
 func (r *reader) key() (string, error) {
 	if r.i >= len(r.data) {
-		return "", r.fail("the file ends before the value is complete")
+		return "", r.fail(endsEarly)
 	}
-	if c := r.data[r.i]; c == '"' || (r.json5 && c == '\'') {
+	if r.opensString(r.data[r.i]) {
 		return r.str()
 	}
 	if r.json5 {
@@ -288,34 +369,60 @@ func (r *reader) key() (string, error) {
 func (r *reader) ident() (string, bool, error) {
 	var b strings.Builder
 	for first := true; r.i < len(r.data); first = false {
-		c, size := utf8.DecodeRune(r.data[r.i:])
-		at := r.i
-		if c == '\\' {
-			if r.i+1 >= len(r.data) || r.data[r.i+1] != 'u' {
-				return "", false, r.fail("a name holds \\ only before u and four hex digits")
-			}
-			r.i += 2
-			u, ok := r.hex(4)
-			if !ok {
-				return "", false, r.fail("\\u takes four hex digits")
-			}
-			c = u
-			if !identStart(c) && (first || !identPart(c)) {
-				r.i = at
-				return "", false, r.fail("the escape \\u%04X is no character of a name", u)
-			}
-		} else {
-			if (first && !identStart(c)) || (!first && !identPart(c)) {
-				if first {
-					return "", false, nil
-				}
-				break
-			}
-			r.i += size
+		c, ok, err := r.identChar(first)
+		if err != nil || (!ok && first) {
+			return "", false, err
+		}
+		if !ok {
+			break
 		}
 		b.WriteRune(c)
 	}
 	return b.String(), true, nil
+}
+
+// identChar reads the next character of a name, first or not, written or
+// escaped. ok is false, and nothing read, when the character there is no
+// character of a name and no escape.
+func (r *reader) identChar(first bool) (rune, bool, error) {
+	c, size := utf8.DecodeRune(r.data[r.i:])
+	if c == '\\' {
+		u, err := r.identEscape(first)
+		return u, err == nil, err
+	}
+	if !identFits(c, first) {
+		return 0, false, nil
+	}
+	r.i += size
+	return c, true, nil
+}
+
+// identEscape reads the \u escape of a character of a name at the reader's
+// offset.
+func (r *reader) identEscape(first bool) (rune, error) {
+	at := r.i
+	if r.i+1 >= len(r.data) || r.data[r.i+1] != 'u' {
+		return 0, r.fail("a name holds \\ only before u and four hex digits")
+	}
+	r.i += 2
+	u, ok := r.hex(4)
+	if !ok {
+		return 0, r.fail("\\u takes four hex digits")
+	}
+	if !identFits(u, first) {
+		r.i = at
+		return 0, r.fail("the escape \\u%04X is no character of a name", u)
+	}
+	return u, nil
+}
+
+// identFits reports whether c may be the first character of a name, or a
+// later one.
+func identFits(c rune, first bool) bool {
+	if first {
+		return identStart(c)
+	}
+	return identPart(c)
 }
 
 func identStart(c rune) bool {
@@ -367,28 +474,34 @@ func (r *reader) str() (string, error) {
 		if r.i >= len(r.data) {
 			return "", r.unclosed()
 		}
-		c := r.data[r.i]
-		switch {
-		case c == quote:
-			r.i++
+		if r.consume(quote) {
 			return b.String(), nil
-		case c == '\\':
-			if err := r.escape(&b); err != nil {
-				return "", err
-			}
-		case c == '\n' || c == '\r':
-			return "", r.fail("a string does not hold a line end; write \\n")
-		case c < 0x20 && !r.json5:
-			return "", r.fail("a string does not hold the control character %q; write it as an escape", c)
-		case c < utf8.RuneSelf:
-			b.WriteByte(c)
-			r.i++
-		default:
-			ru, size := utf8.DecodeRune(r.data[r.i:])
-			b.WriteRune(ru)
-			r.i += size
+		}
+		if err := r.strChar(&b); err != nil {
+			return "", err
 		}
 	}
+}
+
+// strChar reads the character or escape of a string at the reader's offset
+// into b.
+func (r *reader) strChar(b *strings.Builder) error {
+	switch c := r.data[r.i]; {
+	case c == '\\':
+		return r.escape(b)
+	case c == '\n' || c == '\r':
+		return r.fail("a string does not hold a line end; write \\n")
+	case c < 0x20 && !r.json5:
+		return r.fail("a string does not hold the control character %q; write it as an escape", c)
+	case c < utf8.RuneSelf:
+		b.WriteByte(c)
+		r.i++
+	default:
+		ru, size := utf8.DecodeRune(r.data[r.i:])
+		b.WriteRune(ru)
+		r.i += size
+	}
+	return nil
 }
 
 // escape reads the escape at the reader's offset into b.
@@ -403,52 +516,80 @@ func (r *reader) escape(b *strings.Builder) error {
 		r.i++
 		return nil
 	}
-	switch {
-	case c == 'u':
-		r.i++
-		u, ok := r.hex(4)
-		if !ok {
-			return r.fail("\\u takes four hex digits")
-		}
-		ru := u
-		if utf16.IsSurrogate(ru) {
-			ru = r.lowHalf(ru)
-		}
-		b.WriteRune(ru)
-		return nil
-	case !r.json5:
+	if c == 'u' {
+		return r.unicodeEscape(b)
+	}
+	if !r.json5 {
 		return r.fail("\\%c is no escape of JSON", c)
+	}
+	return r.json5Escape(b, c)
+}
+
+// unicodeEscape reads a \u escape, whose u is at the reader's offset, into
+// b, with the low surrogate escape after it when it is a high one.
+func (r *reader) unicodeEscape(b *strings.Builder) error {
+	r.i++
+	u, ok := r.hex(4)
+	if !ok {
+		return r.fail("\\u takes four hex digits")
+	}
+	if utf16.IsSurrogate(u) {
+		u = r.lowHalf(u)
+	}
+	b.WriteRune(u)
+	return nil
+}
+
+// json5Escape reads an escape of JSON5's own, c, at the reader's offset,
+// into b: \x, \0, a line continuation, or any other character escaped,
+// which is itself.
+func (r *reader) json5Escape(b *strings.Builder, c byte) error {
+	switch {
 	case c == 'x':
-		r.i++
-		u, ok := r.hex(2)
-		if !ok {
-			return r.fail("\\x takes two hex digits")
-		}
-		b.WriteRune(u)
-		return nil
+		return r.hexEscape(b)
 	case c == '0':
-		r.i++
-		if r.i < len(r.data) && r.data[r.i] >= '0' && r.data[r.i] <= '9' {
-			return r.fail("\\0 is not followed by a digit")
-		}
-		b.WriteByte(0)
-		return nil
+		return r.nulEscape(b)
 	case c >= '1' && c <= '9':
 		return r.fail("\\%c is no escape of JSON5", c)
 	case r.lineEnd():
-		// A line continuation: the line end is no part of the string.
-		if c == '\r' && r.i+1 < len(r.data) && r.data[r.i+1] == '\n' {
-			r.i++
-		}
-		_, size := utf8.DecodeRune(r.data[r.i:])
-		r.i += size
+		r.lineContinuation(c)
 		return nil
 	}
-	// Any other character escaped is itself.
 	ru, size := utf8.DecodeRune(r.data[r.i:])
 	b.WriteRune(ru)
 	r.i += size
 	return nil
+}
+
+// hexEscape reads a \x escape, whose x is at the reader's offset, into b.
+func (r *reader) hexEscape(b *strings.Builder) error {
+	r.i++
+	u, ok := r.hex(2)
+	if !ok {
+		return r.fail("\\x takes two hex digits")
+	}
+	b.WriteRune(u)
+	return nil
+}
+
+// nulEscape reads a \0 escape, whose 0 is at the reader's offset, into b.
+func (r *reader) nulEscape(b *strings.Builder) error {
+	r.i++
+	if r.i < len(r.data) && r.data[r.i] >= '0' && r.data[r.i] <= '9' {
+		return r.fail("\\0 is not followed by a digit")
+	}
+	b.WriteByte(0)
+	return nil
+}
+
+// lineContinuation reads past the line end c starts at the reader's
+// offset, which is no part of the string.
+func (r *reader) lineContinuation(c byte) {
+	if c == '\r' && r.i+1 < len(r.data) && r.data[r.i+1] == '\n' {
+		r.i++
+	}
+	_, size := utf8.DecodeRune(r.data[r.i:])
+	r.i += size
 }
 
 // singleEscape is the character a one character escape stands for: JSON's,
@@ -500,21 +641,31 @@ func (r *reader) number() (string, error) {
 	if c := r.data[r.i]; c == '-' || (r.json5 && c == '+') {
 		r.i++
 	}
-	ok := false
-	if r.json5 {
-		ok = r.word("Infinity") || r.word("NaN") || r.hexNumber() || r.decimal5()
-	} else {
-		ok = r.decimal()
-	}
-	if !ok {
+	if !r.unsigned() {
 		return "", r.fail("a number cannot hold %s here", r.found())
 	}
-	if r.i < len(r.data) {
-		if c, _ := utf8.DecodeRune(r.data[r.i:]); identPart(c) || c == '\\' || c == '.' {
-			return "", r.fail("a number cannot be followed by %s", r.found())
-		}
+	if r.joinedToNumber() {
+		return "", r.fail("a number cannot be followed by %s", r.found())
 	}
 	return string(r.data[start:r.i]), nil
+}
+
+// unsigned reads a number after its sign, and reports whether one is there.
+func (r *reader) unsigned() bool {
+	if r.json5 {
+		return r.word("Infinity") || r.word("NaN") || r.hexNumber() || r.decimal5()
+	}
+	return r.decimal()
+}
+
+// joinedToNumber reports whether the character after a number would join
+// it: a character of a name, a \ or a point.
+func (r *reader) joinedToNumber() bool {
+	if r.i >= len(r.data) {
+		return false
+	}
+	c, _ := utf8.DecodeRune(r.data[r.i:])
+	return identPart(c) || c == '\\' || c == '.'
 }
 
 // digits reads decimal digits and reports how many it read.

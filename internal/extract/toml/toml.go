@@ -184,28 +184,40 @@ func (b *tomlBuilder) header(keys unstable.Iterator, array bool) error {
 		if depth++; depth > core.MaxDepth {
 			return core.TooDeep(line)
 		}
-		child := t.Field[name]
 		if keys.IsLast() && array {
-			return b.arrayTable(t, child, name, line, depth)
+			return b.arrayTable(t, t.Field[name], name, line, depth)
 		}
-		kind := b.made[child]
-		switch {
-		case child == nil && keys.IsLast():
-			child = b.add(t, name, core.NewMapping(line), tomlHeader)
-		case child == nil:
-			child = b.add(t, name, core.NewMapping(line), tomlImplicit)
-		case keys.IsLast() && kind == tomlImplicit:
-			b.made[child] = tomlHeader
-		case keys.IsLast() || kind == tomlValue:
-			return fmt.Errorf("line %d: %s is already defined, as %s", line, core.Clip(name), kind)
-		case kind == tomlArray:
-			child = child.Items[len(child.Items)-1]
-			depth++
+		var err error
+		if t, depth, err = b.headerKey(t, name, line, depth, keys.IsLast()); err != nil {
+			return err
 		}
-		t = child
 	}
 	b.table, b.depth = t, depth
 	return nil
+}
+
+// headerKey is the table the key name of a [table] header names in t, at
+// depth, and its depth: made when there is none, the header's own when last,
+// else implicit. It refuses a table defined before, by a header or as a
+// value, and goes on in the last table of an array of tables.
+func (b *tomlBuilder) headerKey(t *core.Node, name string, line, depth int, last bool) (*core.Node, int, error) {
+	child := t.Field[name]
+	if child == nil {
+		kind := tomlImplicit
+		if last {
+			kind = tomlHeader
+		}
+		return b.add(t, name, core.NewMapping(line), kind), depth, nil
+	}
+	switch kind := b.made[child]; {
+	case last && kind == tomlImplicit:
+		b.made[child] = tomlHeader
+	case last || kind == tomlValue:
+		return nil, 0, fmt.Errorf("line %d: %s is already defined, as %s", line, core.Clip(name), kind)
+	case kind == tomlArray:
+		return child.Items[len(child.Items)-1], depth + 1, nil
+	}
+	return child, depth, nil
 }
 
 // arrayTable adds a table to the array of tables name in t, or makes the
@@ -261,31 +273,47 @@ func (b *tomlBuilder) value(v *unstable.Node, keyLine, depth int) (*core.Node, e
 	}
 	switch v.Kind {
 	case unstable.Array:
-		n := &core.Node{Shape: core.Sequence, Line: keyLine}
-		it := v.Children()
-		for it.Next() {
-			item, err := b.value(it.Node(), keyLine, depth+1)
-			if err != nil {
-				return nil, err
-			}
-			n.Items = append(n.Items, item)
-		}
-		return n, nil
+		return b.array(v, keyLine, depth)
 	case unstable.InlineTable:
-		n := core.NewMapping(b.line(v))
-		it := v.Children()
-		for it.Next() {
-			if err := b.keyValue(n, depth, it.Node()); err != nil {
-				return nil, err
-			}
-		}
-		return n, nil
+		return b.inlineTable(v, depth)
 	default:
-		if err := checkScalar(v.Kind, v.Data); err != nil {
-			return nil, fmt.Errorf("line %d: %s is not a valid %s: %w", b.line(v), core.Clip(string(v.Data)), scalarNames[v.Kind], err)
-		}
-		return &core.Node{Type: tomlTypes[v.Kind], Form: tomlForms[v.Kind], Text: string(v.Data), Line: b.line(v)}, nil
+		return b.scalar(v)
 	}
+}
+
+// array converts an array at depth, at keyLine, each item one level deeper.
+func (b *tomlBuilder) array(v *unstable.Node, keyLine, depth int) (*core.Node, error) {
+	n := &core.Node{Shape: core.Sequence, Line: keyLine}
+	it := v.Children()
+	for it.Next() {
+		item, err := b.value(it.Node(), keyLine, depth+1)
+		if err != nil {
+			return nil, err
+		}
+		n.Items = append(n.Items, item)
+	}
+	return n, nil
+}
+
+// inlineTable converts an inline table at depth, each of its key = value
+// pairs as one in a table is.
+func (b *tomlBuilder) inlineTable(v *unstable.Node, depth int) (*core.Node, error) {
+	n := core.NewMapping(b.line(v))
+	it := v.Children()
+	for it.Next() {
+		if err := b.keyValue(n, depth, it.Node()); err != nil {
+			return nil, err
+		}
+	}
+	return n, nil
+}
+
+// scalar converts a scalar, refused when go-toml's decode would refuse it.
+func (b *tomlBuilder) scalar(v *unstable.Node) (*core.Node, error) {
+	if err := checkScalar(v.Kind, v.Data); err != nil {
+		return nil, fmt.Errorf("line %d: %s is not a valid %s: %w", b.line(v), core.Clip(string(v.Data)), scalarNames[v.Kind], err)
+	}
+	return &core.Node{Type: tomlTypes[v.Kind], Form: tomlForms[v.Kind], Text: string(v.Data), Line: b.line(v)}, nil
 }
 
 // tomlTypes is the type a filter compares a TOML scalar as; a string, a date
@@ -370,12 +398,18 @@ func checkDateTime(b []byte) error {
 		return new(toml.LocalDateTime).UnmarshalText(b[:len(b)-1])
 	}
 	local, offset := b[:len(b)-6], b[len(b)-6:]
-	hours, okH := twoDigits(offset[1:3])
-	minutes, okM := twoDigits(offset[4:6])
-	if (offset[0] != '+' && offset[0] != '-') || offset[3] != ':' || !okH || !okM || hours > 23 || minutes > 59 {
+	if !validOffset(offset) {
 		return errors.New("the offset is not +hh:mm or -hh:mm")
 	}
 	return new(toml.LocalDateTime).UnmarshalText(local)
+}
+
+// validOffset reports whether the six bytes of offset are +hh:mm or -hh:mm,
+// with hours to 23 and minutes to 59.
+func validOffset(offset []byte) bool {
+	hours, okH := twoDigits(offset[1:3])
+	minutes, okM := twoDigits(offset[4:6])
+	return (offset[0] == '+' || offset[0] == '-') && offset[3] == ':' && okH && okM && hours <= 23 && minutes <= 59
 }
 
 func twoDigits(b []byte) (int, bool) {

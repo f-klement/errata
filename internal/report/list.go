@@ -118,25 +118,44 @@ func (ListText) WriteList(w io.Writer, checks []check.Check, required []string) 
 	kinds := slices.Clone(countedFirst)
 	count := map[string]int{}
 	for _, c := range checks {
-		one, _ := c.Kind.Nouns()
 		if !slices.ContainsFunc(kinds, func(k check.Kind) bool { return k.Name() == c.Kind.Name() }) {
 			kinds = append(kinds, c.Kind)
 		}
 		count[c.Kind.Name()]++
-		fmt.Fprintf(&b, "%s (%s) %s\n", c.ID, c.Scope, one)
-		writeField(&b, "why:", c.Reason)
-		for _, l := range c.Kind.ListLines(c, listQuoter{}) {
-			writeField(&b, l.Label, l.Text)
-		}
-		if len(c.Witness) > 0 {
-			names := make([]string, len(c.Witness))
-			for i, w := range c.Witness {
-				names[i] = textValue(w)
-			}
-			writeField(&b, "witness:", strings.Join(names, ", "))
-		}
-		b.WriteString("\n")
+		writeListEntry(&b, c)
 	}
+	fmt.Fprintf(&b, "%s: %s", plural(len(checks), "check", "checks"), kindCounts(kinds, count))
+	if len(required) > 0 {
+		// The loader refuses a required list that is not the checks' ids.
+		b.WriteString("; required lists every one")
+	}
+	b.WriteString(".\n")
+	_, err := io.WriteString(w, QuoteControls(b.String()))
+	return err
+}
+
+// writeListEntry writes one check of the listing: its id, scope and kind,
+// then its reason, its kind's lines and its witnesses, and a blank line.
+func writeListEntry(b *strings.Builder, c check.Check) {
+	one, _ := c.Kind.Nouns()
+	fmt.Fprintf(b, "%s (%s) %s\n", c.ID, c.Scope, one)
+	writeField(b, "why:", c.Reason)
+	for _, l := range c.Kind.ListLines(c, listQuoter{}) {
+		writeField(b, l.Label, l.Text)
+	}
+	if len(c.Witness) > 0 {
+		names := make([]string, len(c.Witness))
+		for i, w := range c.Witness {
+			names[i] = textValue(w)
+		}
+		writeField(b, "witness:", strings.Join(names, ", "))
+	}
+	b.WriteString("\n")
+}
+
+// kindCounts is the count of checks of each of kinds, joined with commas:
+// the kinds of countedFirst always, every other kind once a check is of it.
+func kindCounts(kinds []check.Kind, count map[string]int) string {
 	counts := make([]string, 0, len(kinds))
 	for i, k := range kinds {
 		n := count[k.Name()]
@@ -146,14 +165,7 @@ func (ListText) WriteList(w io.Writer, checks []check.Check, required []string) 
 		one, many := k.Nouns()
 		counts = append(counts, plural(n, one, many))
 	}
-	fmt.Fprintf(&b, "%s: %s", plural(len(checks), "check", "checks"), strings.Join(counts, ", "))
-	if len(required) > 0 {
-		// The loader refuses a required list that is not the checks' ids.
-		b.WriteString("; required lists every one")
-	}
-	b.WriteString(".\n")
-	_, err := io.WriteString(w, QuoteControls(b.String()))
-	return err
+	return strings.Join(counts, ", ")
 }
 
 // listQuoter writes the values of the text listing with textValue and
@@ -224,47 +236,58 @@ func writeSpecValue(b *strings.Builder, dec *json.Decoder, depth int) {
 	}
 	switch t := tok.(type) {
 	case json.Delim:
-		// A list is its values, each written as a value here is, between
-		// brackets, such as the embedded steps of a yaml, json or toml
-		// extractor: [{format toml, path x}].
 		if t == '[' {
-			b.WriteString("[")
-			for i := 0; dec.More(); i++ {
-				if i > 0 {
-					b.WriteString(", ")
-				}
-				writeSpecValue(b, dec, 2)
-			}
-			_, _ = dec.Token()
-			b.WriteString("]")
+			writeSpecList(b, dec)
 			return
 		}
-		sep := ", "
-		if depth == 0 {
-			sep = "; "
-		}
-		if depth > 1 {
-			b.WriteString("{")
-		}
-		for i := 0; dec.More(); i++ {
-			if i > 0 {
-				b.WriteString(sep)
-			}
-			key, _ := dec.Token()
-			k, _ := key.(string)
-			b.WriteString(textValue(k) + " ")
-			writeSpecValue(b, dec, depth+1)
-		}
-		_, _ = dec.Token()
-		if depth > 1 {
-			b.WriteString("}")
-		}
+		writeSpecObject(b, dec, depth)
 	case string:
 		b.WriteString(textValue(t))
 	case nil:
 		b.WriteString("null")
 	default:
 		fmt.Fprint(b, t)
+	}
+}
+
+// writeSpecList writes the rest of a list of dec, past its "[": its values,
+// each written as a value is at depth 2, between brackets, such as the
+// embedded steps of a yaml, json or toml extractor: [{format toml, path x}].
+func writeSpecList(b *strings.Builder, dec *json.Decoder) {
+	b.WriteString("[")
+	for i := 0; dec.More(); i++ {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		writeSpecValue(b, dec, 2)
+	}
+	_, _ = dec.Token()
+	b.WriteString("]")
+}
+
+// writeSpecObject writes the rest of a map of dec at depth, past its "{":
+// each key and its value, joined with semicolons at 0 and commas further
+// in, between braces past 1.
+func writeSpecObject(b *strings.Builder, dec *json.Decoder, depth int) {
+	sep := ", "
+	if depth == 0 {
+		sep = "; "
+	}
+	if depth > 1 {
+		b.WriteString("{")
+	}
+	for i := 0; dec.More(); i++ {
+		if i > 0 {
+			b.WriteString(sep)
+		}
+		key, _ := dec.Token()
+		k, _ := key.(string)
+		b.WriteString(textValue(k) + " ")
+		writeSpecValue(b, dec, depth+1)
+	}
+	_, _ = dec.Token()
+	if depth > 1 {
+		b.WriteString("}")
 	}
 }
 

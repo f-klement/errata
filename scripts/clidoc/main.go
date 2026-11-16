@@ -40,13 +40,23 @@ func run(args []string, stdout, stderr io.Writer, reference func() ([]byte, erro
 		return 1
 	}
 	if !check {
-		if err := os.WriteFile(file, want, 0o644); err != nil { //nolint:gosec // the file make cli-doc names, docs/cli.md, readable by all as every file in the tree
-			fmt.Fprintln(stderr, "clidoc:", err)
-			return 1
-		}
-		fmt.Fprintln(stdout, "clidoc: wrote", file)
-		return 0
+		return write(file, want, stdout, stderr)
 	}
+	return checkFile(file, want, stdout, stderr)
+}
+
+// write writes the reference want to file.
+func write(file string, want []byte, stdout, stderr io.Writer) int {
+	if err := os.WriteFile(file, want, 0o644); err != nil { //nolint:gosec // the file make cli-doc names, docs/cli.md, readable by all as every file in the tree
+		fmt.Fprintln(stderr, "clidoc:", err)
+		return 1
+	}
+	fmt.Fprintln(stdout, "clidoc: wrote", file)
+	return 0
+}
+
+// checkFile refuses a file that is not the reference want.
+func checkFile(file string, want []byte, stdout, stderr io.Writer) int {
 	got, err := os.ReadFile(file) //nolint:gosec // the file make cli-doc-check names
 	if err != nil || !bytes.Equal(got, want) {
 		reason := "differs from the help this commit's errata prints"

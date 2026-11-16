@@ -169,84 +169,126 @@ type propertiesReader struct {
 
 func isPropertiesSpace(c byte) bool { return c == ' ' || c == '\t' || c == '\f' }
 
+// lineState is where logicalLine is in the logical line it reads.
+type lineState struct {
+	skipSpace bool // space, and line breaks unless joined, are skipped before the next character
+	joined    bool // a continuation joined the next physical line, whose line break ends the line
+	backslash bool // the last character read is a \ that escapes the next
+	sized     bool // buf has room for the rest of the physical line
+}
+
 // logicalLine reports whether there is another logical line, and reads it.
 func (r *propertiesReader) logicalLine() bool {
 	r.buf = r.buf[:0]
-	skipSpace, joined, backslash := true, false, false
-	sized := false // buf has room for the rest of the physical line
-	for {
-		if r.pos >= len(r.data) {
-			if len(r.buf) == 0 {
-				return false
-			}
-			if backslash {
-				r.buf = r.buf[:len(r.buf)-1]
-			}
-			return true
-		}
+	st := lineState{skipSpace: true}
+	for r.pos < len(r.data) {
 		c := r.data[r.pos]
 		r.pos++
-		if skipSpace {
-			if isPropertiesSpace(c) || (!joined && (c == '\r' || c == '\n')) {
-				continue
-			}
-			skipSpace, joined = false, false
-		}
-		if len(r.buf) == 0 && (c == '#' || c == '!') {
-			r.skipComment()
-			skipSpace = true
-			continue
-		}
-		if c != '\n' && c != '\r' {
-			if len(r.buf) == 0 {
-				r.start = r.lines.At(r.pos - 1)
-			}
-			if !sized {
-				// One allocation for the physical line as Java decodes it,
-				// so a line of bytes that are not UTF-8, three bytes each
-				// as U+FFFD, is not grown into by appends.
-				sized = true
-				rest := r.data[r.pos-1:]
-				if i := bytes.IndexAny(rest, "\r\n"); i >= 0 {
-					rest = rest[:i]
-				}
-				if need := javaLen(rest); cap(r.buf)-len(r.buf) < need {
-					// At least doubled, for a value joined over many
-					// lines; make and copy, not slices.Grow, whose make is
-					// a second allocation under the race detector.
-					grown := make([]byte, len(r.buf), max(len(r.buf)+need, 2*cap(r.buf)))
-					copy(grown, r.buf)
-					r.buf = grown
-				}
-			}
-			if c < utf8.RuneSelf {
-				r.buf = append(r.buf, c)
-			} else {
-				var n int
-				r.buf, n = appendJava(r.buf, r.data[r.pos-1:])
-				r.pos += n - 1
-			}
-			backslash = c == '\\' && !backslash
-			continue
-		}
+		// The order of the cases matters: skip ends the skipping at the
+		// first character it does not skip, and lineBreak moves pos and
+		// the state, so each runs only when no case before it took c.
 		switch {
-		case len(r.buf) == 0:
-			skipSpace = true
-		case r.pos >= len(r.data):
-			if backslash {
-				r.buf = r.buf[:len(r.buf)-1]
-			}
-			return true
-		case backslash:
-			r.buf = r.buf[:len(r.buf)-1]
-			skipSpace, joined, backslash, sized = true, true, false, false
-			if c == '\r' && r.data[r.pos] == '\n' {
-				r.pos++
-			}
-		default:
+		case st.skip(c):
+		case r.commentStart(c):
+			r.skipComment()
+			st.skipSpace = true
+		case c != '\n' && c != '\r':
+			r.appendChar(c, &st)
+		case r.lineBreak(c, &st):
 			return true
 		}
 	}
+	return r.lastLine(st.backslash)
+}
+
+// skip reports whether c is space to skip before the line's next
+// character, and stops the skipping at the first character that is not.
+func (st *lineState) skip(c byte) bool {
+	if !st.skipSpace {
+		return false
+	}
+	if isPropertiesSpace(c) || (!st.joined && (c == '\r' || c == '\n')) {
+		return true
+	}
+	st.skipSpace, st.joined = false, false
+	return false
+}
+
+// commentStart reports whether c, read where no logical line has begun,
+// starts a comment.
+func (r *propertiesReader) commentStart(c byte) bool {
+	return len(r.buf) == 0 && (c == '#' || c == '!')
+}
+
+// appendChar appends c, the character read before pos and no line break, as
+// Java decodes it.
+func (r *propertiesReader) appendChar(c byte, st *lineState) {
+	if len(r.buf) == 0 {
+		r.start = r.lines.At(r.pos - 1)
+	}
+	if !st.sized {
+		st.sized = true
+		r.reserve()
+	}
+	if c < utf8.RuneSelf {
+		r.buf = append(r.buf, c)
+	} else {
+		var n int
+		r.buf, n = appendJava(r.buf, r.data[r.pos-1:])
+		r.pos += n - 1
+	}
+	st.backslash = c == '\\' && !st.backslash
+}
+
+// reserve makes room in buf for the physical line from pos-1 on, as Java
+// decodes it, in one allocation, so a line of bytes that are not UTF-8,
+// three bytes each as U+FFFD, is not grown into by appends.
+func (r *propertiesReader) reserve() {
+	rest := r.data[r.pos-1:]
+	if i := bytes.IndexAny(rest, "\r\n"); i >= 0 {
+		rest = rest[:i]
+	}
+	if need := javaLen(rest); cap(r.buf)-len(r.buf) < need {
+		// At least doubled, for a value joined over many lines; make and
+		// copy, not slices.Grow, whose make is a second allocation under
+		// the race detector.
+		grown := make([]byte, len(r.buf), max(len(r.buf)+need, 2*cap(r.buf)))
+		copy(grown, r.buf)
+		r.buf = grown
+	}
+}
+
+// lineBreak reads c, a line break, and reports whether it ends the logical
+// line. A break after a \ joins the next physical line, and a break before
+// the line's first character is skipped.
+func (r *propertiesReader) lineBreak(c byte, st *lineState) bool {
+	switch {
+	case len(r.buf) == 0:
+		st.skipSpace = true
+		return false
+	case r.pos >= len(r.data):
+		return r.lastLine(st.backslash)
+	case st.backslash:
+		r.buf = r.buf[:len(r.buf)-1]
+		*st = lineState{skipSpace: true, joined: true}
+		if c == '\r' && r.data[r.pos] == '\n' {
+			r.pos++
+		}
+		return false
+	}
+	return true
+}
+
+// lastLine reports whether the data's end leaves a logical line in buf, and
+// drops a \ at its end, which escapes nothing.
+func (r *propertiesReader) lastLine(backslash bool) bool {
+	if len(r.buf) == 0 {
+		return false
+	}
+	if backslash {
+		r.buf = r.buf[:len(r.buf)-1]
+	}
+	return true
 }
 
 // skipComment reads to the end of the line, through its \r or \n.
@@ -263,32 +305,42 @@ func (r *propertiesReader) skipComment() {
 // splitProperty finds where the key of a logical line ends and its value
 // starts, as Properties.load0 does.
 func splitProperty(line []byte) (keyEnd, valueStart int) {
-	valueStart = len(line)
-	sep, backslash := false, false
-	for keyEnd < len(line) {
+	keyEnd, valueStart, sep := keyBound(line)
+	return keyEnd, skipSeparator(line, valueStart, sep)
+}
+
+// keyBound finds where the key of line ends: at the first = or : or space
+// that no \ escapes. valueStart is just past it, and sep reports whether it
+// is a separator rather than a space.
+func keyBound(line []byte) (keyEnd, valueStart int, sep bool) {
+	backslash := false
+	for ; keyEnd < len(line); keyEnd++ {
 		c := line[keyEnd]
 		if !backslash && (c == '=' || c == ':') {
-			valueStart, sep = keyEnd+1, true
-			break
+			return keyEnd, keyEnd + 1, true
 		}
 		if !backslash && isPropertiesSpace(c) {
-			valueStart = keyEnd + 1
-			break
+			return keyEnd, keyEnd + 1, false
 		}
 		backslash = c == '\\' && !backslash
-		keyEnd++
 	}
-	for valueStart < len(line) {
-		c := line[valueStart]
-		if !isPropertiesSpace(c) {
-			if sep || (c != '=' && c != ':') {
-				break
-			}
-			sep = true
+	return keyEnd, len(line), false
+}
+
+// skipSeparator skips the space after a key from i, and the one = or : in
+// it unless sep says the key ended at one, to where the value starts.
+func skipSeparator(line []byte, i int, sep bool) int {
+	for ; i < len(line); i++ {
+		c := line[i]
+		if isPropertiesSpace(c) {
+			continue
 		}
-		valueStart++
+		if sep || (c != '=' && c != ':') {
+			break
+		}
+		sep = true
 	}
-	return keyEnd, valueStart
+	return i
 }
 
 var errUnicodeEscape = errors.New("a \\u is not followed by four hex digits, which Properties.load refuses")
@@ -307,35 +359,51 @@ func unescape(out, in []byte) ([]byte, error) {
 		if i++; i == len(in) {
 			break
 		}
-		switch c = in[i]; c {
-		case 'u':
-			u, ok := hex4(in[i+1:])
-			if !ok {
-				return out, errUnicodeEscape
-			}
-			i += 4
-			r := rune(u)
-			if utf16.IsSurrogate(r) {
-				r = utf8.RuneError
-				if low, ok := lowSurrogate(in[i+1:]); ok && u < 0xdc00 {
-					r = utf16.DecodeRune(rune(u), rune(low))
-					i += 6
-				}
-			}
-			out = utf8.AppendRune(out, r)
+		if in[i] != 'u' {
+			out = append(out, escaped(in[i]))
 			continue
-		case 't':
-			c = '\t'
-		case 'r':
-			c = '\r'
-		case 'n':
-			c = '\n'
-		case 'f':
-			c = '\f'
 		}
-		out = append(out, c)
+		var err error
+		if out, i, err = appendUnicode(out, in, i); err != nil {
+			return out, err
+		}
 	}
 	return out, nil
+}
+
+// escaped is the character that c, after a \ and no u, stands for.
+func escaped(c byte) byte {
+	switch c {
+	case 't':
+		return '\t'
+	case 'r':
+		return '\r'
+	case 'n':
+		return '\n'
+	case 'f':
+		return '\f'
+	}
+	return c
+}
+
+// appendUnicode appends the \u escape whose u is in[i], and a low surrogate
+// escape after it that completes a pair, to out, and returns the index of
+// the escape's last byte.
+func appendUnicode(out, in []byte, i int) ([]byte, int, error) {
+	u, ok := hex4(in[i+1:])
+	if !ok {
+		return out, i, errUnicodeEscape
+	}
+	i += 4
+	r := rune(u)
+	if utf16.IsSurrogate(r) {
+		r = utf8.RuneError
+		if low, ok := lowSurrogate(in[i+1:]); ok && u < 0xdc00 {
+			r = utf16.DecodeRune(rune(u), rune(low))
+			i += 6
+		}
+	}
+	return utf8.AppendRune(out, r), i, nil
 }
 
 // hex4 reads four hex digits at the start of b.
@@ -345,20 +413,26 @@ func hex4(b []byte) (uint16, bool) {
 	}
 	var u uint16
 	for _, c := range b[:4] {
-		var d byte
-		switch {
-		case '0' <= c && c <= '9':
-			d = c - '0'
-		case 'a' <= c && c <= 'f':
-			d = c - 'a' + 10
-		case 'A' <= c && c <= 'F':
-			d = c - 'A' + 10
-		default:
+		d, ok := hexDigit(c)
+		if !ok {
 			return 0, false
 		}
 		u = u<<4 | uint16(d)
 	}
 	return u, true
+}
+
+// hexDigit is the value of the hex digit c.
+func hexDigit(c byte) (byte, bool) {
+	switch {
+	case '0' <= c && c <= '9':
+		return c - '0', true
+	case 'a' <= c && c <= 'f':
+		return c - 'a' + 10, true
+	case 'A' <= c && c <= 'F':
+		return c - 'A' + 10, true
+	}
+	return 0, false
 }
 
 // lowSurrogate reads a \uXXXX escape of a low surrogate at the start of b.
@@ -405,41 +479,58 @@ func isCont(b byte) bool { return b&0xc0 == 0x80 }
 // javaMalformed is how many bytes of b, which starts with no valid UTF-8,
 // Java's decoder reads as one malformed sequence.
 func javaMalformed(b []byte) int {
-	b1 := b[0]
-	switch {
+	switch b1 := b[0]; {
 	case b1 >= 0xe0 && b1 <= 0xef:
-		bad2 := func(b2 byte) bool { return (b1 == 0xe0 && b2&0xe0 == 0x80) || !isCont(b2) }
-		switch {
-		case len(b) < 3:
-			if len(b) > 1 && bad2(b[1]) {
-				return 1
-			}
-			return len(b) // cut by the end of the file
-		case bad2(b[1]):
-			return 1
-		case !isCont(b[2]):
-			return 2
-		}
-		return 3 // an encoded surrogate
+		return malformed3(b)
 	case b1 >= 0xf0 && b1 <= 0xf4:
-		bad2 := func(b2 byte) bool {
-			return (b1 == 0xf0 && (b2 < 0x90 || b2 > 0xbf)) || (b1 == 0xf4 && b2&0xf0 != 0x80) || !isCont(b2)
-		}
-		switch {
-		case len(b) < 4:
-			if len(b) > 1 && bad2(b[1]) {
-				return 1
-			}
-			if len(b) > 2 && !isCont(b[2]) {
-				return 2
-			}
-			return len(b)
-		case bad2(b[1]):
-			return 1
-		case !isCont(b[2]):
-			return 2
-		}
-		return 3 // the fourth byte is no continuation
+		return malformed4(b)
 	}
 	return 1 // a byte no character starts with, or a two-byte lead cut short
+}
+
+// malformed3 is javaMalformed of b, which starts with the lead byte of a
+// three-byte character.
+func malformed3(b []byte) int {
+	switch {
+	case len(b) < 3:
+		if len(b) > 1 && bad3Second(b[0], b[1]) {
+			return 1
+		}
+		return len(b) // cut by the end of the file
+	case bad3Second(b[0], b[1]):
+		return 1
+	case !isCont(b[2]):
+		return 2
+	}
+	return 3 // an encoded surrogate
+}
+
+// bad3Second reports whether b2 cannot follow b1, the lead byte of a
+// three-byte character, as its second byte.
+func bad3Second(b1, b2 byte) bool { return (b1 == 0xe0 && b2&0xe0 == 0x80) || !isCont(b2) }
+
+// malformed4 is javaMalformed of b, which starts with the lead byte of a
+// four-byte character.
+func malformed4(b []byte) int {
+	switch {
+	case len(b) < 4:
+		if len(b) > 1 && bad4Second(b[0], b[1]) {
+			return 1
+		}
+		if len(b) > 2 && !isCont(b[2]) {
+			return 2
+		}
+		return len(b)
+	case bad4Second(b[0], b[1]):
+		return 1
+	case !isCont(b[2]):
+		return 2
+	}
+	return 3 // the fourth byte is no continuation
+}
+
+// bad4Second reports whether b2 cannot follow b1, the lead byte of a
+// four-byte character, as its second byte.
+func bad4Second(b1, b2 byte) bool {
+	return (b1 == 0xf0 && (b2 < 0x90 || b2 > 0xbf)) || (b1 == 0xf4 && b2&0xf0 != 0x80) || !isCont(b2)
 }

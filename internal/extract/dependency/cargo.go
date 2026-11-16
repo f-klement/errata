@@ -87,7 +87,7 @@ func (c *cargo) dep(v *core.Node, section string) error {
 		}
 		return c.rd.add(found{text: cargoRange(s), section: section, role: Range, line: v.Line})
 	}
-	if inherit := v.Member("workspace"); inherit != nil && inherit.Shape == core.Scalar && inherit.Type == core.TypeBool && inherit.Text == "true" {
+	if inherit := inherits(v); inherit != nil {
 		if c.shared {
 			return nil
 		}
@@ -102,6 +102,16 @@ func (c *cargo) dep(v *core.Node, section string) error {
 		return err
 	}
 	return c.rd.add(found{text: cargoRange(s), section: section, role: Range, line: version.Line})
+}
+
+// inherits is the workspace = true of the dependency table v, which takes
+// its range from [workspace.dependencies], nil when v has none.
+func inherits(v *core.Node) *core.Node {
+	inherit := v.Member("workspace")
+	if inherit != nil && inherit.Shape == core.Scalar && inherit.Type == core.TypeBool && inherit.Text == "true" {
+		return inherit
+	}
+	return nil
 }
 
 // readCargoLock reads a Cargo.lock: an array of package tables, each with

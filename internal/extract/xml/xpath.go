@@ -88,6 +88,9 @@ const maxXPathTerms = 32
 // xmlNamespace is the namespace the prefix xml names in every file.
 const xmlNamespace = "http://www.w3.org/XML/1998/namespace"
 
+// endsInPredicate refuses a path that ends before its predicate's ].
+const endsInPredicate = "the path ends inside a predicate"
+
 // xpathParser reads one path. ns binds the prefixes the path may use.
 type xpathParser struct {
 	s      string
@@ -100,58 +103,87 @@ type xpathParser struct {
 func parseXPath(s string, ns map[string]string) (xpath, error) {
 	p := &xpathParser{s: s, ns: ns}
 	out := xpath{text: s}
-	for i := 0; i < len(s); {
-		r, size := utf8.DecodeRuneInString(s[i:])
-		switch {
-		case r == utf8.RuneError && size == 1:
-			return out, p.fail(i, "the path is not valid UTF-8")
-		case r < 0x20 && r != '\t' && r != '\n' && r != '\r':
-			return out, p.fail(i, "control character U+%04X is not allowed in a path", r)
-		}
-		i += size
+	if err := p.checkText(); err != nil {
+		return out, err
 	}
-	p.space()
-	if p.i == len(s) {
-		return out, p.fail(p.i, "the path is empty; write one from the root, such as /project/version")
-	}
-	if s[p.i] != '/' {
-		if isXMLNameStart(firstRune(s[p.i:])) {
-			return out, p.fail(p.i, "a path starts at the root, with / or //; write /%s or //%s", core.Clip(s[p.i:]), core.Clip(s[p.i:]))
-		}
-		return out, p.unsupported("a path starting with / or //")
+	if err := p.start(); err != nil {
+		return out, err
 	}
 	for p.i < len(s) {
-		at := p.i
-		if !strings.HasPrefix(s[p.i:], "/") {
-			return out, p.unsupported("/ or // before the next step, or the end of the path")
-		}
-		if n := len(out.steps); n > 0 && out.steps[n-1].kind != xElement {
-			what := "text"
-			if out.steps[n-1].kind == xAttribute {
-				what = "an attribute"
-			}
-			return out, p.fail(at, "%s has no children, so its step ends the path", what)
-		}
-		var st xstep
-		p.i++
-		if strings.HasPrefix(s[p.i:], "/") {
-			st.descendant = true
-			p.i++
-		}
-		p.space()
-		switch {
-		case p.i == len(s):
-			return out, p.fail(p.i, "the path ends after /; name a step, such as an element")
-		case s[p.i] == '/':
-			return out, p.fail(at, "/// is not a separator; write / for a child or // for a descendant")
-		}
-		if err := p.step(&st); err != nil {
+		st, err := p.nextStep(out.steps)
+		if err != nil {
 			return out, err
 		}
 		out.steps = append(out.steps, st)
 		p.space()
 	}
 	return out, nil
+}
+
+// checkText refuses a path that is not valid UTF-8 or holds a control
+// character other than a blank.
+func (p *xpathParser) checkText() error {
+	for i := 0; i < len(p.s); {
+		r, size := utf8.DecodeRuneInString(p.s[i:])
+		switch {
+		case r == utf8.RuneError && size == 1:
+			return p.fail(i, "the path is not valid UTF-8")
+		case r < 0x20 && r != '\t' && r != '\n' && r != '\r':
+			return p.fail(i, "control character U+%04X is not allowed in a path", r)
+		}
+		i += size
+	}
+	return nil
+}
+
+// start reads the blanks before the path and refuses one that is empty or
+// does not start at the root.
+func (p *xpathParser) start() error {
+	p.space()
+	switch {
+	case p.i == len(p.s):
+		return p.fail(p.i, "the path is empty; write one from the root, such as /project/version")
+	case p.s[p.i] == '/':
+		return nil
+	case isXMLNameStart(firstRune(p.s[p.i:])):
+		return p.fail(p.i, "a path starts at the root, with / or //; write /%s or //%s", core.Clip(p.s[p.i:]), core.Clip(p.s[p.i:]))
+	default:
+		return p.unsupported("a path starting with / or //")
+	}
+}
+
+// nextStep reads / or // and the step after it, which follows steps.
+func (p *xpathParser) nextStep(steps []xstep) (xstep, error) {
+	var st xstep
+	at := p.i
+	if !strings.HasPrefix(p.s[p.i:], "/") {
+		return st, p.unsupported("/ or // before the next step, or the end of the path")
+	}
+	if n := len(steps); n > 0 && steps[n-1].kind != xElement {
+		return st, p.fail(at, "%s has no children, so its step ends the path", leafName(steps[n-1].kind))
+	}
+	p.i++
+	if strings.HasPrefix(p.s[p.i:], "/") {
+		st.descendant = true
+		p.i++
+	}
+	p.space()
+	switch {
+	case p.i == len(p.s):
+		return st, p.fail(p.i, "the path ends after /; name a step, such as an element")
+	case p.s[p.i] == '/':
+		return st, p.fail(at, "/// is not a separator; write / for a child or // for a descendant")
+	}
+	err := p.step(&st)
+	return st, err
+}
+
+// leafName names a step of kind, an attribute or text, in a message.
+func leafName(kind xstepKind) string {
+	if kind == xAttribute {
+		return "an attribute"
+	}
+	return "text"
 }
 
 func (p *xpathParser) fail(at int, format string, args ...any) error {
@@ -196,13 +228,12 @@ func (p *xpathParser) step(st *xstep) error {
 		}
 		st.name = name
 	}
-	for {
-		save := p.i
-		p.space()
-		if p.i == len(p.s) || p.s[p.i] != '[' {
-			p.i = save
-			return nil
-		}
+	return p.predicates(st)
+}
+
+// predicates reads the predicates after a step, each counted as a term.
+func (p *xpathParser) predicates(st *xstep) error {
+	for p.predicateNext() {
 		at := p.i
 		if err := p.count(at); err != nil {
 			return err
@@ -212,14 +243,31 @@ func (p *xpathParser) step(st *xstep) error {
 			return err
 		}
 		if pred.position == 0 && st.kind != xElement {
-			what := "text()"
-			if st.kind == xAttribute {
-				what = "an attribute"
-			}
-			return p.fail(at, "a comparison on %s is not supported; compare on the element that holds it, as [@name='value']", what)
+			return p.fail(at, "a comparison on %s is not supported; compare on the element that holds it, as [@name='value']", leafCall(st.kind))
 		}
 		st.preds = append(st.preds, pred)
 	}
+	return nil
+}
+
+// predicateNext reports whether a [ comes next after any blanks, and
+// stands on it if so.
+func (p *xpathParser) predicateNext() bool {
+	save := p.i
+	p.space()
+	if byteAt(p.s, p.i) == '[' {
+		return true
+	}
+	p.i = save
+	return false
+}
+
+// leafCall names a step of kind, an attribute or text(), in a message.
+func leafCall(kind xstepKind) string {
+	if kind == xAttribute {
+		return "an attribute"
+	}
+	return "text()"
 }
 
 // isCall reports whether the name name and then ( come next.
@@ -264,46 +312,62 @@ func (p *xpathParser) test(expected string) (xname, error) {
 	first := p.ncname()
 	// A name followed by ( is a function or a node test, and one followed
 	// by :: an axis, with or without blanks between.
+	switch {
+	case p.followedBy("::"):
+		return xname{}, p.fail(at, "the axis %s:: is not supported; the subset has child steps, // and @", core.Clip(first))
+	case p.followedBy("("):
+		return xname{}, p.callError(at, first)
+	case byteAt(p.s, p.i) == ':':
+		return p.prefixed(at, first)
+	}
+	return xname{local: first}, nil
+}
+
+// followedBy reports whether tok comes next, after any blanks.
+func (p *xpathParser) followedBy(tok string) bool {
 	j := p.i
 	for j < len(p.s) && isXMLSpace(p.s[j]) {
 		j++
 	}
-	switch {
-	case strings.HasPrefix(p.s[j:], "::"):
-		return xname{}, p.fail(at, "the axis %s:: is not supported; the subset has child steps, // and @", core.Clip(first))
-	case strings.HasPrefix(p.s[j:], "("):
-		return xname{}, p.callError(at, first)
-	case p.i < len(p.s) && p.s[p.i] == ':':
-	default:
-		return xname{local: first}, nil
-	}
+	return strings.HasPrefix(p.s[j:], tok)
+}
+
+// prefixed reads the local name of a QName at byte at, from the colon
+// after its prefix first, and binds the prefix.
+func (p *xpathParser) prefixed(at int, first string) (xname, error) {
 	p.i++
 	switch {
-	case p.i < len(p.s) && p.s[p.i] == '*':
+	case byteAt(p.s, p.i) == '*':
 		return xname{}, p.fail(at, "the wildcard %s:* is not supported; write * for any element", core.Clip(first))
 	case p.i == len(p.s) || !isXMLNameStart(firstRune(p.s[p.i:])):
 		return xname{}, p.fail(p.i, "expected a local name after %s:", core.Clip(first))
 	}
 	local := p.ncname()
-	j = p.i
-	for j < len(p.s) && isXMLSpace(p.s[j]) {
-		j++
-	}
-	if strings.HasPrefix(p.s[j:], "(") {
+	if p.followedBy("(") {
 		return xname{}, p.callError(at, p.s[at:p.i])
 	}
-	space, ok := p.ns[first]
-	switch {
-	case first == "xmlns":
-		// checkNamespaces refuses to bind it, so no binding is to suggest.
-		return xname{}, p.fail(at, "the prefix xmlns names namespace declarations, which are not nodes a path selects")
-	case ok:
-	case first == "xml":
-		space = xmlNamespace
-	default:
-		return xname{}, p.fail(at, "the prefix %s is not bound; bind it under namespaces:, as {%s: <namespace URI>}", core.Clip(first), core.Clip(first))
+	space, err := p.bind(at, first)
+	if err != nil {
+		return xname{}, err
 	}
 	return xname{space: space, local: local}, nil
+}
+
+// bind is the namespace the prefix at byte at names: its binding under
+// namespaces:, or the XML namespace for xml.
+func (p *xpathParser) bind(at int, prefix string) (string, error) {
+	space, ok := p.ns[prefix]
+	switch {
+	case prefix == "xmlns":
+		// checkNamespaces refuses to bind it, so no binding is to suggest.
+		return "", p.fail(at, "the prefix xmlns names namespace declarations, which are not nodes a path selects")
+	case ok:
+		return space, nil
+	case prefix == "xml":
+		return xmlNamespace, nil
+	default:
+		return "", p.fail(at, "the prefix %s is not bound; bind it under namespaces:, as {%s: <namespace URI>}", core.Clip(prefix), core.Clip(prefix))
+	}
 }
 
 // ncname reads a name without a colon, which the caller has seen start.
@@ -340,7 +404,7 @@ func (p *xpathParser) predicate() (xpredicate, error) {
 	var pred xpredicate
 	switch c := byteAt(p.s, p.i); {
 	case p.i == len(p.s):
-		return pred, p.fail(p.i, "the path ends inside a predicate")
+		return pred, p.fail(p.i, endsInPredicate)
 	case c == ']':
 		return pred, p.fail(p.i, "the predicate is empty; write a position, such as [1], or a comparison, such as [name='value']")
 	case isDigit(c):
@@ -350,6 +414,12 @@ func (p *xpathParser) predicate() (xpredicate, error) {
 	case c == '-':
 		return pred, p.fail(p.i, "a negative position is not supported; positions count from 1 at the start")
 	}
+	return p.comparisons()
+}
+
+// comparisons reads the comparisons of a predicate, joined by and, and its ].
+func (p *xpathParser) comparisons() (xpredicate, error) {
+	var pred xpredicate
 	for {
 		at := p.i
 		if len(pred.compares) == core.MaxComparisons {
@@ -362,7 +432,7 @@ func (p *xpathParser) predicate() (xpredicate, error) {
 		pred.compares = append(pred.compares, c)
 		p.space()
 		switch {
-		case p.i < len(p.s) && p.s[p.i] == ']':
+		case byteAt(p.s, p.i) == ']':
 			p.i++
 			return pred, nil
 		case p.isWord("and"):
@@ -396,13 +466,19 @@ func (p *xpathParser) position() (xpredicate, error) {
 	p.space()
 	switch c := byteAt(p.s, p.i); {
 	case p.i == len(p.s):
-		return xpredicate{}, p.fail(p.i, "the path ends inside a predicate")
+		return xpredicate{}, p.fail(p.i, endsInPredicate)
 	case c == '=':
 		return xpredicate{}, p.fail(at, "write the child or attribute before =, and the literal after it")
 	case c != ']':
 		return xpredicate{}, p.unsupported("] after a position")
 	}
 	p.i++
+	return p.positionOf(at, digits)
+}
+
+// positionOf is the position the digits at byte at write, refusing 0 and
+// one too large for an int.
+func (p *xpathParser) positionOf(at int, digits string) (xpredicate, error) {
 	n, err := strconv.Atoi(digits)
 	switch {
 	case err != nil:
@@ -418,7 +494,7 @@ func (p *xpathParser) compare() (xcompare, error) {
 	var c xcompare
 	start := p.i
 	switch {
-	case p.i < len(p.s) && p.s[p.i] == '@':
+	case byteAt(p.s, p.i) == '@':
 		c.attr = true
 		p.i++
 		p.space()
@@ -431,42 +507,76 @@ func (p *xpathParser) compare() (xcompare, error) {
 	}
 	c.name = name
 	p.space()
-	switch {
-	case p.i == len(p.s):
-		return c, p.fail(p.i, "the path ends inside a predicate")
-	case p.s[p.i] == '=':
-		p.i++
-	case p.s[p.i] == ']' || p.isWord("and") || p.isWord("or"):
-		return c, p.fail(p.i, "a predicate that a child or attribute exists is not supported; compare its value, as [%s='value']", core.Clip(strings.TrimRight(p.s[start:p.i], " \t\r\n")))
-	default:
-		return c, p.unsupported("= after the child or attribute")
+	if err := p.equals(start); err != nil {
+		return c, err
 	}
 	p.space()
+	c.lit, err = p.literal()
+	return c, err
+}
+
+// equals reads the = of a comparison whose child or attribute starts at
+// byte start, and refuses a comparison that has none.
+func (p *xpathParser) equals(start int) error {
+	switch {
+	case p.i == len(p.s):
+		return p.fail(p.i, endsInPredicate)
+	case p.s[p.i] == '=':
+		p.i++
+		return nil
+	case p.s[p.i] == ']' || p.isWord("and") || p.isWord("or"):
+		return p.fail(p.i, "a predicate that a child or attribute exists is not supported; compare its value, as [%s='value']", core.Clip(strings.TrimRight(p.s[start:p.i], " \t\r\n")))
+	default:
+		return p.unsupported("= after the child or attribute")
+	}
+}
+
+// literal reads the quoted literal after a comparison's =.
+func (p *xpathParser) literal() (string, error) {
 	switch q := byteAt(p.s, p.i); {
 	case p.i == len(p.s):
-		return c, p.fail(p.i, "the path ends inside a predicate")
+		return "", p.fail(p.i, endsInPredicate)
 	case q == '\'' || q == '"':
-		end := strings.IndexByte(p.s[p.i+1:], q)
-		if end < 0 {
-			return c, p.fail(p.i, "the literal is not closed; end it with %c", q)
-		}
-		c.lit = p.s[p.i+1 : p.i+1+end]
-		if len(c.lit) > core.MaxLiteral {
-			return c, p.fail(p.i, "the literal holds %d bytes, over the limit of %d", len(c.lit), core.MaxLiteral)
-		}
-		p.i += end + 2
-	case isDigit(q) || q == '-' || q == '.':
-		end := p.i + 1
-		for end < len(p.s) && (isDigit(p.s[end]) || p.s[end] == '.') {
-			end++
-		}
-		return c, p.fail(p.i, "values compare as strings; quote the number, as '%s'", core.Clip(p.s[p.i:end]))
-	case q == '@' || q == '*' || isXMLNameStart(firstRune(p.s[p.i:])):
-		return c, p.fail(p.i, "a comparison takes a quoted literal after =; comparing two nodes is not supported")
+		return p.quoted(q)
 	default:
-		return c, p.unsupported("a quoted literal after =")
+		return "", p.notLiteral(q)
 	}
-	return c, nil
+}
+
+// quoted reads a literal from its quote q, and refuses one that is not
+// closed or is over core.MaxLiteral.
+func (p *xpathParser) quoted(q byte) (string, error) {
+	end := strings.IndexByte(p.s[p.i+1:], q)
+	if end < 0 {
+		return "", p.fail(p.i, "the literal is not closed; end it with %c", q)
+	}
+	lit := p.s[p.i+1 : p.i+1+end]
+	if len(lit) > core.MaxLiteral {
+		return lit, p.fail(p.i, "the literal holds %d bytes, over the limit of %d", len(lit), core.MaxLiteral)
+	}
+	p.i += end + 2
+	return lit, nil
+}
+
+// notLiteral refuses what stands after = where a quoted literal belongs,
+// which starts with the byte q: a number, a node or anything else.
+func (p *xpathParser) notLiteral(q byte) error {
+	switch {
+	case isDigit(q) || q == '-' || q == '.':
+		return p.fail(p.i, "values compare as strings; quote the number, as '%s'", core.Clip(p.s[p.i:numberEnd(p.s, p.i+1)]))
+	case q == '@' || q == '*' || isXMLNameStart(firstRune(p.s[p.i:])):
+		return p.fail(p.i, "a comparison takes a quoted literal after =; comparing two nodes is not supported")
+	default:
+		return p.unsupported("a quoted literal after =")
+	}
+}
+
+// numberEnd is the end of the digits and dots of s from byte i.
+func numberEnd(s string, i int) int {
+	for i < len(s) && (isDigit(s[i]) || s[i] == '.') {
+		i++
+	}
+	return i
 }
 
 // unsupported refuses what comes next, where the path needed expected,
@@ -476,35 +586,64 @@ func (p *xpathParser) unsupported(expected string) error {
 	if rest == "" {
 		return p.fail(p.i, "expected %s but the path ends", expected)
 	}
-	for _, op := range []string{"!=", "<=", ">=", "<", ">"} {
-		if strings.HasPrefix(rest, op) {
-			return p.fail(p.i, "the operator %s is not supported; a predicate compares with =", op)
+	for _, r := range refusals {
+		if p.refuses(r) {
+			return p.fail(p.i, "%s", r.msg)
 		}
 	}
-	switch {
-	case strings.HasPrefix(rest, ".."):
-		return p.fail(p.i, "the parent step (..) is not supported")
-	case rest[0] == '.':
-		return p.fail(p.i, "the self step (.) is not supported")
-	case rest[0] == '|':
-		return p.fail(p.i, "a union (|) is not supported; write one path for each extractor")
-	case rest[0] == '$':
-		return p.fail(p.i, "a variable ($) is not supported")
-	case rest[0] == '(' || rest[0] == ')':
-		return p.fail(p.i, "a parenthesised expression is not supported")
-	case rest[0] == '+' || rest[0] == '-' || rest[0] == '*' || p.isWord("div") || p.isWord("mod"):
-		return p.fail(p.i, "arithmetic is not supported")
-	case p.isWord("or"):
-		return p.fail(p.i, "or is not supported; a predicate joins comparisons with and")
-	case rest[0] == '/' && p.inPred:
-		return p.fail(p.i, "a path inside a predicate is not supported; a comparison takes one child or attribute")
-	case rest[0] == '[' && p.inPred:
-		return p.fail(p.i, "a predicate on a comparison's child is not supported")
-	case rest[0] == '\'' || rest[0] == '"':
-		return p.fail(p.i, "a literal is not supported here; a comparison takes it after =")
-	default:
-		return p.fail(p.i, "expected %s but found %q", expected, firstRune(rest))
+	return p.fail(p.i, "expected %s but found %q", expected, firstRune(rest))
+}
+
+// refusal is a construct XPath has and the subset does not, which starts
+// with any of starts, and the message that names it.
+type refusal struct {
+	starts []string
+	word   bool // each of starts is a name, and a longer name refuses nothing
+	inPred bool // refused by name only inside [ ]
+	msg    string
+}
+
+// refusals are the constructs unsupported names, tried in turn, a longer
+// start before a shorter one it begins with.
+var refusals = []refusal{
+	{starts: []string{"!="}, msg: "the operator != is not supported; a predicate compares with ="},
+	{starts: []string{"<="}, msg: "the operator <= is not supported; a predicate compares with ="},
+	{starts: []string{">="}, msg: "the operator >= is not supported; a predicate compares with ="},
+	{starts: []string{"<"}, msg: "the operator < is not supported; a predicate compares with ="},
+	{starts: []string{">"}, msg: "the operator > is not supported; a predicate compares with ="},
+	{starts: []string{".."}, msg: "the parent step (..) is not supported"},
+	{starts: []string{"."}, msg: "the self step (.) is not supported"},
+	{starts: []string{"|"}, msg: "a union (|) is not supported; write one path for each extractor"},
+	{starts: []string{"$"}, msg: "a variable ($) is not supported"},
+	{starts: []string{"(", ")"}, msg: "a parenthesised expression is not supported"},
+	{starts: []string{"+", "-", "*"}, msg: "arithmetic is not supported"},
+	{starts: []string{"div", "mod"}, word: true, msg: "arithmetic is not supported"},
+	{starts: []string{"or"}, word: true, msg: "or is not supported; a predicate joins comparisons with and"},
+	{starts: []string{"/"}, inPred: true, msg: "a path inside a predicate is not supported; a comparison takes one child or attribute"},
+	{starts: []string{"["}, inPred: true, msg: "a predicate on a comparison's child is not supported"},
+	{starts: []string{"'", `"`}, msg: "a literal is not supported here; a comparison takes it after ="},
+}
+
+// refuses reports whether r's construct comes next.
+func (p *xpathParser) refuses(r refusal) bool {
+	if r.inPred && !p.inPred {
+		return false
 	}
+	for _, start := range r.starts {
+		if p.startsWith(start, r.word) {
+			return true
+		}
+	}
+	return false
+}
+
+// startsWith reports whether s comes next, as a whole name when word is
+// set.
+func (p *xpathParser) startsWith(s string, word bool) bool {
+	if word {
+		return p.isWord(s)
+	}
+	return strings.HasPrefix(p.s[p.i:], s)
 }
 
 // byteAt is s[i], or 0 past its end.
@@ -520,26 +659,44 @@ func isXMLSpace(b byte) bool {
 	return b == ' ' || b == '\t' || b == '\n' || b == '\r'
 }
 
+// xmlNameStarts is NameStartChar of XML 1.0 fifth edition and XML
+// Namespaces, without the colon, as ranges in ascending order.
+var xmlNameStarts = [][2]rune{
+	{'A', 'Z'}, {'_', '_'}, {'a', 'z'},
+	{0xC0, 0xD6}, {0xD8, 0xF6}, {0xF8, 0x2FF}, {0x370, 0x37D}, {0x37F, 0x1FFF},
+	{0x200C, 0x200D}, {0x2070, 0x218F}, {0x2C00, 0x2FEF}, {0x3001, 0xD7FF},
+	{0xF900, 0xFDCF}, {0xFDF0, 0xFFFD}, {0x10000, 0xEFFFF},
+}
+
+// xmlNameRunes is what NameChar adds to NameStartChar, as ranges in
+// ascending order.
+var xmlNameRunes = [][2]rune{
+	{'-', '.'}, {'0', '9'}, {0xB7, 0xB7}, {0x300, 0x36F}, {0x203F, 0x2040},
+}
+
+// inRanges reports whether r lies in one of ranges, which ascend.
+func inRanges(r rune, ranges [][2]rune) bool {
+	for _, rg := range ranges {
+		if r < rg[0] {
+			return false
+		}
+		if r <= rg[1] {
+			return true
+		}
+	}
+	return false
+}
+
 // isXMLNameStart reports whether r may start a name without a colon
 // (NCName), as XML 1.0 fifth edition and XML Namespaces define it.
 func isXMLNameStart(r rune) bool {
-	switch {
-	case r == '_' || ('A' <= r && r <= 'Z') || ('a' <= r && r <= 'z'):
-		return true
-	case r < 0xC0:
-		return false
-	}
-	return r <= 0xD6 || (0xD8 <= r && r <= 0xF6) || (0xF8 <= r && r <= 0x2FF) ||
-		(0x370 <= r && r <= 0x37D) || (0x37F <= r && r <= 0x1FFF) || (0x200C <= r && r <= 0x200D) ||
-		(0x2070 <= r && r <= 0x218F) || (0x2C00 <= r && r <= 0x2FEF) || (0x3001 <= r && r <= 0xD7FF) ||
-		(0xF900 <= r && r <= 0xFDCF) || (0xFDF0 <= r && r <= 0xFFFD) || (0x10000 <= r && r <= 0xEFFFF)
+	return inRanges(r, xmlNameStarts)
 }
 
 // isXMLNameRune reports whether r may follow the start of a name without a
 // colon.
 func isXMLNameRune(r rune) bool {
-	return isXMLNameStart(r) || r == '-' || r == '.' || ('0' <= r && r <= '9') || r == 0xB7 ||
-		(0x300 <= r && r <= 0x36F) || (0x203F <= r && r <= 0x2040)
+	return isXMLNameStart(r) || inRanges(r, xmlNameRunes)
 }
 
 // isNCName reports whether s is a name without a colon.
@@ -655,7 +812,7 @@ func (p xpath) eval(d *xmlDoc) (xstepKind, []int32, error) {
 // every element inside it, each once, which a path does at most once, since
 // either step ends it.
 func (d *xmlDoc) step(st *rstep, ctx []int32, work *int64) ([]int32, error) {
-	if st.descendant && (st.kind == xElement || (st.kind == xAttribute && len(st.preds) == 0)) {
+	if st.descends() {
 		return d.descend(st, ctx, work)
 	}
 	var out, cand []int32
@@ -669,27 +826,12 @@ func (d *xmlDoc) step(st *rstep, ctx []int32, work *int64) ([]int32, error) {
 		}
 		return nil
 	}
-	covered := int32(-2) // the last node a // step has visited the children of
-	for _, c := range ctx {
-		if !st.descendant {
-			if err := visit(c); err != nil {
-				return nil, err
-			}
-			continue
-		}
-		if c <= covered {
-			continue // inside a node visited before
-		}
-		last := i32(len(d.elems) - 1)
-		if c >= 0 {
-			last = d.elems[c].last
-		}
-		for x := c; x <= last; x++ {
-			if err := visit(x); err != nil {
-				return nil, err
-			}
-		}
-		covered = last
+	walk := eachOf
+	if st.descendant {
+		walk = d.eachInside
+	}
+	if err := walk(ctx, visit); err != nil {
+		return nil, err
 	}
 	// A node's children come after those of a node before it that it is
 	// inside, so a child step over nested nodes selects out of order.
@@ -697,6 +839,50 @@ func (d *xmlDoc) step(st *rstep, ctx []int32, work *int64) ([]int32, error) {
 		slices.Sort(out)
 	}
 	return out, nil
+}
+
+// descends reports whether the step is descend's: a // step to elements,
+// or to attributes without a position.
+func (st *rstep) descends() bool {
+	return st.descendant && (st.kind == xElement || (st.kind == xAttribute && len(st.preds) == 0))
+}
+
+// eachOf visits each context node, for a child step.
+func eachOf(ctx []int32, visit func(int32) error) error {
+	for _, c := range ctx {
+		if err := visit(c); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// eachInside visits each context node and every element inside it, each
+// once, for a // step.
+func (d *xmlDoc) eachInside(ctx []int32, visit func(int32) error) error {
+	covered := int32(-2) // the last node a // step has visited the children of
+	for _, c := range ctx {
+		if c <= covered {
+			continue // inside a node visited before
+		}
+		last := d.lastInside(c)
+		for x := c; x <= last; x++ {
+			if err := visit(x); err != nil {
+				return err
+			}
+		}
+		covered = last
+	}
+	return nil
+}
+
+// lastInside is the last element inside node c, or of the file for the
+// root.
+func (d *xmlDoc) lastInside(c int32) int32 {
+	if c >= 0 {
+		return d.elems[c].last
+	}
+	return i32(len(d.elems) - 1)
 }
 
 // descend is a // step to elements or attributes. Its nodes lie in one
@@ -711,52 +897,73 @@ func (d *xmlDoc) step(st *rstep, ctx []int32, work *int64) ([]int32, error) {
 // children the predicates before it kept.
 func (d *xmlDoc) descend(st *rstep, ctx []int32, work *int64) ([]int32, error) {
 	var out []int32
-	var stack []openRange
-	var counts []int32 // the counters of each open element, len(st.preds) for each
-	n := len(st.preds)
+	var r descent
 	covered := int32(-2) // the last element a range so far has held
 	for _, c := range ctx {
 		if c <= covered {
 			continue // inside a range read before
 		}
-		hi := i32(len(d.elems) - 1)
-		if c >= 0 {
-			hi = d.elems[c].last
-		}
+		hi := d.lastInside(c)
 		covered = hi
+		var err error
 		if st.kind == xAttribute {
-			var err error
-			if out, err = d.descendAttrs(st, max(c, 0), hi, out); err != nil {
-				return nil, err
-			}
-			continue
+			out, err = d.descendAttrs(st, max(c, 0), hi, out)
+		} else {
+			out, err = d.descendElems(st, c, hi, out, work, &r)
 		}
-		stack = append(stack[:0], openRange{last: hi})
-		counts = append(counts[:0], make([]int32, n)...)
-		for e := c + 1; e <= hi; e++ {
-			for stack[len(stack)-1].last < e {
-				counts = counts[:stack[len(stack)-1].counts]
-				stack = stack[:len(stack)-1]
-			}
-			parent := stack[len(stack)-1].counts
-			if st.rname.matches(d.elems[e].space, d.elems[e].name) {
-				ok, err := d.stage(st, e, counts[parent:parent+n], work)
-				if err != nil {
-					return nil, err
-				}
-				if ok {
-					if out = append(out, e); len(out) > d.valuesAllowed() {
-						return nil, core.ErrTooManyValues
-					}
-				}
-			}
-			if d.elems[e].kid >= 0 {
-				stack = append(stack, openRange{last: d.elems[e].last, counts: len(counts)})
-				counts = append(counts, make([]int32, n)...)
-			}
+		if err != nil {
+			return nil, err
 		}
 	}
 	return out, nil
+}
+
+// descent is the stack of open elements descendElems keeps, kept from one
+// range to the next so their storage is reused.
+type descent struct {
+	stack  []openRange
+	counts []int32 // the counters of each open element, len(st.preds) for each
+}
+
+// descendElems appends the elements after c up to hi that the step keeps.
+func (d *xmlDoc) descendElems(st *rstep, c, hi int32, out []int32, work *int64, r *descent) ([]int32, error) {
+	n := len(st.preds)
+	r.stack = append(r.stack[:0], openRange{last: hi})
+	r.counts = append(r.counts[:0], make([]int32, n)...)
+	for e := c + 1; e <= hi; e++ {
+		r.closeBefore(e)
+		parent := r.stack[len(r.stack)-1].counts
+		ok, err := d.keeps(st, e, r.counts[parent:parent+n], work)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			if out = append(out, e); len(out) > d.valuesAllowed() {
+				return nil, core.ErrTooManyValues
+			}
+		}
+		if d.elems[e].kid >= 0 {
+			r.stack = append(r.stack, openRange{last: d.elems[e].last, counts: len(r.counts)})
+			r.counts = append(r.counts, make([]int32, n)...)
+		}
+	}
+	return out, nil
+}
+
+// closeBefore pops the open elements that end before element e.
+func (r *descent) closeBefore(e int32) {
+	for r.stack[len(r.stack)-1].last < e {
+		r.counts = r.counts[:r.stack[len(r.stack)-1].counts]
+		r.stack = r.stack[:len(r.stack)-1]
+	}
+}
+
+// keeps reports whether element e passes the step's test and predicates.
+func (d *xmlDoc) keeps(st *rstep, e int32, counts []int32, work *int64) (bool, error) {
+	if !st.rname.matches(d.elems[e].space, d.elems[e].name) {
+		return false, nil
+	}
+	return d.stage(st, e, counts, work)
 }
 
 // openRange is an element of a range descend reads whose children are still
@@ -809,19 +1016,35 @@ func (d *xmlDoc) candidates(st *rstep, x int32, out []int32) []int32 {
 	case x < 0 && st.kind != xElement:
 		return out // the root has no attribute, and no text the subset keeps
 	case st.kind == xAttribute:
-		a0, a1 := d.attrsOf(x)
-		for a := a0; a < a1; a++ {
-			if st.rname.matches(d.attrs[a].space, d.attrs[a].name) {
-				out = append(out, a)
-			}
-		}
-		return out
+		return d.attrCandidates(st, x, out)
 	case st.kind == xText:
-		for t := d.elems[x].text; t >= 0; t = d.texts[t].next {
-			out = append(out, t)
-		}
-		return out
+		return d.textCandidates(x, out)
 	}
+	return d.childCandidates(st, x, out)
+}
+
+// attrCandidates appends the attributes of element x the step's test
+// selects.
+func (d *xmlDoc) attrCandidates(st *rstep, x int32, out []int32) []int32 {
+	a0, a1 := d.attrsOf(x)
+	for a := a0; a < a1; a++ {
+		if st.rname.matches(d.attrs[a].space, d.attrs[a].name) {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// textCandidates appends the text nodes of element x.
+func (d *xmlDoc) textCandidates(x int32, out []int32) []int32 {
+	for t := d.elems[x].text; t >= 0; t = d.texts[t].next {
+		out = append(out, t)
+	}
+	return out
+}
+
+// childCandidates appends the child elements of x the step's test selects.
+func (d *xmlDoc) childCandidates(st *rstep, x int32, out []int32) []int32 {
 	kid := int32(0) // the root element, the root's one child
 	if x >= 0 {
 		kid = d.elems[x].kid
@@ -864,35 +1087,55 @@ func (d *xmlDoc) filter(st *rstep, cand []int32, work *int64) ([]int32, error) {
 // holds reports whether every comparison holds on element e: some child or
 // attribute it names has the literal as its value.
 func (d *xmlDoc) holds(compares []rcompare, e int32, work *int64) (bool, error) {
-	el := d.elems[e]
-	a0, a1 := d.attrsOf(e)
 	for _, c := range compares {
-		found := false
-		if c.attr {
-			for a := a0; a < a1 && !found; a++ {
-				at := d.attrs[a]
-				match := c.name.matches(at.space, at.name)
-				if err := d.charge(work, match && len(at.value) == len(c.lit), len(c.lit)); err != nil {
-					return false, err
-				}
-				found = match && at.value == c.lit
-			}
-		} else {
-			for k := el.kid; k >= 0 && !found; k = d.elems[k].next {
-				kid := d.elems[k]
-				text := d.buf[kid.trim0:kid.trim1]
-				match := c.name.matches(kid.space, kid.name)
-				if err := d.charge(work, match && len(text) == len(c.lit), len(c.lit)); err != nil {
-					return false, err
-				}
-				found = match && string(text) == c.lit
-			}
-		}
-		if !found {
-			return false, nil
+		found, err := d.holdsOne(c, e, work)
+		if !found || err != nil {
+			return false, err
 		}
 	}
 	return true, nil
+}
+
+// holdsOne reports whether one comparison holds on element e.
+func (d *xmlDoc) holdsOne(c rcompare, e int32, work *int64) (bool, error) {
+	if c.attr {
+		return d.attrHolds(c, e, work)
+	}
+	return d.childHolds(c, e, work)
+}
+
+// attrHolds reports whether an attribute of element e that c names has
+// c's literal as its value.
+func (d *xmlDoc) attrHolds(c rcompare, e int32, work *int64) (bool, error) {
+	a0, a1 := d.attrsOf(e)
+	for a := a0; a < a1; a++ {
+		at := d.attrs[a]
+		match := c.name.matches(at.space, at.name)
+		if err := d.charge(work, match && len(at.value) == len(c.lit), len(c.lit)); err != nil {
+			return false, err
+		}
+		if match && at.value == c.lit {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// childHolds reports whether a child of element e that c names has c's
+// literal as its trimmed text.
+func (d *xmlDoc) childHolds(c rcompare, e int32, work *int64) (bool, error) {
+	for k := d.elems[e].kid; k >= 0; k = d.elems[k].next {
+		kid := d.elems[k]
+		text := d.buf[kid.trim0:kid.trim1]
+		match := c.name.matches(kid.space, kid.name)
+		if err := d.charge(work, match && len(text) == len(c.lit), len(c.lit)); err != nil {
+			return false, err
+		}
+		if match && string(text) == c.lit {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // charge counts one node a comparison looks at, and the bytes of its

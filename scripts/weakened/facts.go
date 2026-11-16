@@ -55,12 +55,15 @@ type call struct {
 
 // want is a want value: a variable or a row's field named want, expect or
 // golden, or a literal an if compares with before it fails the test. what
-// says which, and text is the value's text.
+// says which, and text is the value's text. alt is the key of a row's want by
+// the row's name and inputs, for a row whose name keys it at one side and not
+// at the other.
 type want struct {
 	pos  position
 	what string
 	decl string
 	text string
+	alt  string
 }
 
 // skip is a call that can skip a test, in decl, under guard, and the lines
@@ -92,6 +95,7 @@ type facts struct {
 	bySeq   map[string]*table
 	rows    map[string]bool
 	wants   map[string]want
+	alts    map[string]want
 	skips   []skip
 	calls   []call
 	builds  map[string]build
@@ -104,7 +108,7 @@ type facts struct {
 func collect(files map[string][]byte, side string) *facts {
 	f := &facts{files: map[string]bool{}, tests: map[string]test{}, helpers: map[string]helper{}, bodies: map[string]bool{},
 		decls: map[string]bool{}, tables: map[string]*table{}, bySeq: map[string]*table{}, rows: map[string]bool{},
-		wants: map[string]want{}, builds: map[string]build{}}
+		wants: map[string]want{}, alts: map[string]want{}, builds: map[string]build{}}
 	names := make([]string, 0, len(files))
 	for name := range files {
 		names = append(names, name)
@@ -394,13 +398,19 @@ func (r *reader) assigned(lhs, rhs []ast.Expr) {
 	}
 	for i, l := range lhs {
 		if id, ok := l.(*ast.Ident); ok && isWant(id.Name) {
-			r.want(fmt.Sprintf("%s #%d", id.Name, r.next("var "+id.Name)), id.Name, rhs[i])
+			r.want(fmt.Sprintf("%s #%d", id.Name, r.next("var "+id.Name)), "", id.Name, rhs[i])
 		}
 	}
 }
 
-func (r *reader) want(key, what string, value ast.Expr) {
-	r.f.wants[r.key(r.decl+" "+key)] = want{pos: r.pos(value.Pos()), what: what, decl: r.decl, text: r.print(value)}
+// want records a want value under its key and, for a row's, under alt too.
+func (r *reader) want(key, alt, what string, value ast.Expr) {
+	w := want{pos: r.pos(value.Pos()), what: what, decl: r.decl, text: r.print(value)}
+	if alt != "" {
+		w.alt = r.key(r.decl + " " + alt)
+		r.f.alts[w.alt] = w
+	}
+	r.f.wants[r.key(r.decl+" "+key)] = w
 }
 
 // isWant: a name that holds what a test expects.

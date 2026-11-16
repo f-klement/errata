@@ -104,26 +104,44 @@ func oneLine(re *syntax.Regexp) *syntax.Regexp {
 	switch re.Op {
 	case syntax.OpCapture:
 		return re.Sub[0]
-	case syntax.OpAnyChar:
-		re.Op = syntax.OpAnyCharNotNL
-	case syntax.OpBeginText:
-		re.Op = syntax.OpBeginLine
-	case syntax.OpEndText:
-		re.Op, re.Flags = syntax.OpEndLine, re.Flags&^syntax.WasDollar
 	case syntax.OpLiteral:
-		for _, r := range re.Rune {
-			if r == '\n' || re.Flags&syntax.FoldCase != 0 && unicode.SimpleFold(r) == '\n' {
-				return &syntax.Regexp{Op: syntax.OpNoMatch}
-			}
+		if holdsNewline(re) {
+			return &syntax.Regexp{Op: syntax.OpNoMatch}
 		}
 	case syntax.OpCharClass:
 		re.Rune = withoutNewline(re.Rune)
 		if len(re.Rune) == 0 {
 			return &syntax.Regexp{Op: syntax.OpNoMatch}
 		}
-	default: // every other op matches no newline of its own
+	default:
+		toLineOp(re)
 	}
 	return re
+}
+
+// toLineOp rewrites an op that matches at a newline, ., \A or \z, to the
+// op of a line alone.
+func toLineOp(re *syntax.Regexp) {
+	switch re.Op {
+	case syntax.OpAnyChar:
+		re.Op = syntax.OpAnyCharNotNL
+	case syntax.OpBeginText:
+		re.Op = syntax.OpBeginLine
+	case syntax.OpEndText:
+		re.Op, re.Flags = syntax.OpEndLine, re.Flags&^syntax.WasDollar
+	default: // every other op matches no newline of its own
+	}
+}
+
+// holdsNewline reports whether the literal re holds a newline, or a
+// character that matches one when re folds case.
+func holdsNewline(re *syntax.Regexp) bool {
+	for _, r := range re.Rune {
+		if r == '\n' || re.Flags&syntax.FoldCase != 0 && unicode.SimpleFold(r) == '\n' {
+			return true
+		}
+	}
+	return false
 }
 
 // emptyAtEveryLine reports whether re, rewritten by oneLine, matches the
@@ -148,27 +166,44 @@ func emptyAt(re *syntax.Regexp, start bool) bool {
 		return start
 	case syntax.OpEndLine, syntax.OpEndText:
 		return !start
-	case syntax.OpCapture, syntax.OpPlus:
-		return emptyAt(re.Sub[0], start)
-	case syntax.OpRepeat:
-		return re.Min == 0 || emptyAt(re.Sub[0], start)
+	case syntax.OpCapture, syntax.OpPlus, syntax.OpRepeat:
+		return subEmptyAt(re, start)
 	case syntax.OpConcat:
-		for _, sub := range re.Sub {
-			if !emptyAt(sub, start) {
-				return false
-			}
-		}
-		return true
+		return allEmptyAt(re.Sub, start)
 	case syntax.OpAlternate:
-		for _, sub := range re.Sub {
-			if emptyAt(sub, start) {
-				return true
-			}
-		}
-		return false
+		return anyEmptyAt(re.Sub, start)
 	default: // a character, a class, \b, \B or no match needs what the line holds
 		return false
 	}
+}
+
+// subEmptyAt reports whether re, a group, x+ or a counted repeat, matches
+// the empty text at the start of a line, for start, or at its end: a
+// repeat that may take nothing does, and else its one sub must.
+func subEmptyAt(re *syntax.Regexp, start bool) bool {
+	return re.Op == syntax.OpRepeat && re.Min == 0 || emptyAt(re.Sub[0], start)
+}
+
+// allEmptyAt reports whether every one of subs matches the empty text at
+// the start of a line, for start, or at its end.
+func allEmptyAt(subs []*syntax.Regexp, start bool) bool {
+	for _, sub := range subs {
+		if !emptyAt(sub, start) {
+			return false
+		}
+	}
+	return true
+}
+
+// anyEmptyAt reports whether one of subs matches the empty text at the
+// start of a line, for start, or at its end.
+func anyEmptyAt(subs []*syntax.Regexp, start bool) bool {
+	for _, sub := range subs {
+		if emptyAt(sub, start) {
+			return true
+		}
+	}
+	return false
 }
 
 // withoutNewline is the ranges of a character class, lo and hi pairs, with
@@ -276,7 +311,8 @@ func fileLines(data []byte) int {
 
 // lines is the set of lines of data in which s finds a match, nil for no
 // s. Once it finds one in a line it searches on from the next, so it reads
-// each line about once whatever the pattern matches.
+// each line about once whatever the pattern matches. Every line end of
+// data is a LF (LineFeeds), as fileLines counts them.
 func (a *Around) lines(s *Search, key string, data []byte, deadline time.Time, file string, limit time.Duration, whose string) (*lineSet, error) {
 	if s == nil {
 		return nil, nil

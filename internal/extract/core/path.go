@@ -105,27 +105,54 @@ func parsePath(s string) (Path, error) {
 	if s == "" {
 		return p, PathError(s, 0, "path is empty; write $ for the whole document")
 	}
+	if err := checkPathText(s); err != nil {
+		return p, err
+	}
+	sels, i, err := scanHead(s)
+	if err != nil {
+		return p, err
+	}
+	p.sels, err = scanSelectors(s, i, sels)
+	return p, err
+}
+
+// checkPathText refuses a path that is not valid UTF-8 or holds a control
+// character, at the first byte that is either.
+func checkPathText(s string) error {
 	for i := 0; i < len(s); {
 		r, size := utf8.DecodeRuneInString(s[i:])
 		switch {
 		case r == utf8.RuneError && size == 1:
-			return p, PathError(s, i, "the path is not valid UTF-8")
+			return PathError(s, i, "the path is not valid UTF-8")
 		case r < 0x20:
-			return p, PathError(s, i, "control character U+%04X is not allowed in a path", r)
+			return PathError(s, i, "control character U+%04X is not allowed in a path", r)
 		}
 		i += size
 	}
-	i := 0
+	return nil
+}
+
+// scanHead reads the start of a non-empty path: the $ of the whole
+// document, or a key written without a dot before it, or nothing before a
+// . or a [. It returns the selectors it read and the byte after them.
+func scanHead(s string) ([]selector, int, error) {
 	if s[0] == '$' {
-		i = 1
-	} else if s[0] != '.' && s[0] != '[' {
-		name, next, err := scanName(s, i)
-		if err != nil {
-			return p, err
-		}
-		p.sels = append(p.sels, selector{kind: selName, name: name})
-		i = next
+		return nil, 1, nil
 	}
+	if s[0] == '.' || s[0] == '[' {
+		return nil, 0, nil
+	}
+	name, next, err := scanName(s, 0)
+	if err != nil {
+		return nil, 0, err
+	}
+	return []selector{{kind: selName, name: name}}, next, nil
+}
+
+// scanSelectors reads the steps from byte i to the end of the path, each a
+// .key or a bracket, after sels. On an error it returns the steps read
+// before it.
+func scanSelectors(s string, i int, sels []selector) ([]selector, error) {
 	for i < len(s) {
 		var sel selector
 		var err error
@@ -138,11 +165,11 @@ func parsePath(s string) (Path, error) {
 			err = PathError(s, i, "expected . or [ but found %q", firstRune(s[i:]))
 		}
 		if err != nil {
-			return p, err
+			return sels, err
 		}
-		p.sels = append(p.sels, sel)
+		sels = append(sels, sel)
 	}
-	return p, nil
+	return sels, nil
 }
 
 func isNameFirst(r rune) bool {
@@ -156,15 +183,18 @@ func isNameRune(r rune) bool {
 // scanName reads a key written after a dot, or at the start of the path,
 // starting at byte i.
 func scanName(s string, i int) (string, int, error) {
-	after := "a key after ."
-	star := ".*"
-	if i == 0 {
-		after, star = "a key", "*"
-	}
 	if i == len(s) {
 		return "", i, PathError(s, i, "expected a key name but the path ends")
 	}
-	j := i
+	j := nameEnd(s, i)
+	if isNameFirst(firstRune(s[i:])) { // a name character, so j > i
+		return s[i:j], j, nil
+	}
+	return "", i, nameError(s, i, j)
+}
+
+// nameEnd returns the byte after the run of name characters from byte j.
+func nameEnd(s string, j int) int {
 	for j < len(s) {
 		r, size := utf8.DecodeRuneInString(s[j:])
 		if !isNameRune(r) {
@@ -172,20 +202,41 @@ func scanName(s string, i int) (string, int, error) {
 		}
 		j += size
 	}
-	switch first := firstRune(s[i:]); {
-	case j > i && isNameFirst(first):
-		return s[i:j], j, nil
-	case j > i && '0' <= first && first <= '9':
-		return "", i, PathError(s, i, "%s cannot start with a digit; write [n] for an index, or ['%s'] for a key", after, Clip(s[i:j]))
-	case j > i:
-		return "", i, PathError(s, i, "%s cannot start with -; write ['%s']", after, Clip(s[i:j]))
-	case first == '.':
-		return "", i, PathError(s, i, "recursive descent (..) is not supported")
-	case first == '*':
-		return "", i, PathError(s, i, "write [*] for every member, not %s", star)
-	default:
-		return "", i, PathError(s, i, "expected a key name but found %q; write ['...'] for a key with that character", first)
+	return j
+}
+
+// nameError names what stands at byte i where a key should, when the name
+// characters from i end at byte j: a run that does not start as a key does,
+// or a character no key holds.
+func nameError(s string, i, j int) error {
+	if j > i {
+		return badNameStart(s, i, j)
 	}
+	switch first := firstRune(s[i:]); first {
+	case '.':
+		return PathError(s, i, "recursive descent (..) is not supported")
+	case '*':
+		star := ".*"
+		if i == 0 {
+			star = "*"
+		}
+		return PathError(s, i, "write [*] for every member, not %s", star)
+	default:
+		return PathError(s, i, "expected a key name but found %q; write ['...'] for a key with that character", first)
+	}
+}
+
+// badNameStart names a run of name characters from byte i to byte j that
+// starts with a digit or a -, which no key written without quotes does.
+func badNameStart(s string, i, j int) error {
+	after := "a key after ."
+	if i == 0 {
+		after = "a key"
+	}
+	if isDigit(s[i]) {
+		return PathError(s, i, "%s cannot start with a digit; write [n] for an index, or ['%s'] for a key", after, Clip(s[i:j]))
+	}
+	return PathError(s, i, "%s cannot start with -; write ['%s']", after, Clip(s[i:j]))
 }
 
 // scanBracket reads what follows a "[" at byte i, through the closing "]".
@@ -273,39 +324,53 @@ func scanQuoted(s string, i int, what string) (string, int, error) {
 // scanUnicode reads \uXXXX at byte j, and the low surrogate after a high
 // one. It returns the character and the bytes it took.
 func scanUnicode(s string, j int) (rune, int, error) {
-	hex4 := func(at int) (rune, bool) {
-		if at+6 > len(s) || s[at] != '\\' || s[at+1] != 'u' {
-			return 0, false
-		}
-		var r rune
-		for _, c := range s[at+2 : at+6] {
-			switch {
-			case '0' <= c && c <= '9':
-				r = r<<4 | (c - '0')
-			case 'a' <= c && c <= 'f':
-				r = r<<4 | (c - 'a' + 10)
-			case 'A' <= c && c <= 'F':
-				r = r<<4 | (c - 'A' + 10)
-			default:
-				return 0, false
-			}
-		}
-		return r, true
-	}
-	r, ok := hex4(j)
+	r, ok := hex4(s, j)
 	switch {
 	case !ok:
 		return 0, 0, PathError(s, j, "\\u takes four hex digits")
-	case 0xDC00 <= r && r <= 0xDFFF:
+	case isLowSurrogate(r):
 		return 0, 0, PathError(s, j, "\\u%04X is a low surrogate without a high one", r)
 	case r < 0xD800 || r > 0xDBFF:
 		return r, 6, nil
 	}
-	lo, ok := hex4(j + 6)
-	if !ok || lo < 0xDC00 || lo > 0xDFFF {
+	lo, ok := hex4(s, j+6)
+	if !ok || !isLowSurrogate(lo) {
 		return 0, 0, PathError(s, j, "\\u%04X is a high surrogate without a low one after it", r)
 	}
 	return utf16.DecodeRune(r, lo), 12, nil
+}
+
+// isLowSurrogate reports whether r is a low surrogate, the second half of
+// a pair.
+func isLowSurrogate(r rune) bool { return 0xDC00 <= r && r <= 0xDFFF }
+
+// hex4 reads \uXXXX at byte at, and reports false for anything else.
+func hex4(s string, at int) (rune, bool) {
+	if at+6 > len(s) || s[at] != '\\' || s[at+1] != 'u' {
+		return 0, false
+	}
+	var r rune
+	for _, c := range s[at+2 : at+6] {
+		v, ok := hexValue(c)
+		if !ok {
+			return 0, false
+		}
+		r = r<<4 | v
+	}
+	return r, true
+}
+
+// hexValue is the value of the hex digit c, or false when c is none.
+func hexValue(c rune) (rune, bool) {
+	switch {
+	case '0' <= c && c <= '9':
+		return c - '0', true
+	case 'a' <= c && c <= 'f':
+		return c - 'a' + 10, true
+	case 'A' <= c && c <= 'F':
+		return c - 'A' + 10, true
+	}
+	return 0, false
 }
 
 // scanIndex reads an index starting at byte i.
@@ -315,23 +380,31 @@ func scanIndex(s string, i int) (selector, int, error) {
 		j++
 	}
 	start := j
-	for j < len(s) && '0' <= s[j] && s[j] <= '9' {
+	for j < len(s) && isDigit(s[j]) {
 		j++
 	}
-	digits := s[start:j]
-	switch {
-	case digits == "":
-		return selector{}, j, PathError(s, i, "expected digits after -")
-	case len(digits) > 1 && digits[0] == '0':
-		return selector{}, j, PathError(s, i, "an index has no leading zero")
-	case s[i:j] == "-0":
-		return selector{}, j, PathError(s, i, "-0 is not an index; write 0")
+	if err := indexError(s, i, s[start:j], s[i:j]); err != nil {
+		return selector{}, j, err
 	}
 	n, err := strconv.Atoi(s[i:j])
 	if err != nil {
 		return selector{}, j, PathError(s, i, "index %s is out of range", Clip(s[i:j]))
 	}
 	return selector{kind: selIndex, index: n}, j, nil
+}
+
+// indexError refuses an index at byte i, written text, whose digits are
+// digits, that RFC 9535 does not allow: a - alone, a leading zero, or -0.
+func indexError(s string, i int, digits, text string) error {
+	switch {
+	case digits == "":
+		return PathError(s, i, "expected digits after -")
+	case len(digits) > 1 && digits[0] == '0':
+		return PathError(s, i, "an index has no leading zero")
+	case text == "-0":
+		return PathError(s, i, "-0 is not an index; write 0")
+	}
+	return nil
 }
 
 // firstRune is the first rune of s.
@@ -414,17 +487,34 @@ func scanTerm(s string, i, depth int) (term, int, error) {
 	if left.current && endsTerm(s[k:]) {
 		return term{current: left.sels, query: true}, j, nil
 	}
-	if err := scanEquals(s, k); err != nil {
-		return term{}, k, err
-	}
-	if left.current && left.many != 0 {
-		return term{}, left.many, manyError(s, left.many)
+	if at, err := comparesFrom(s, k, left); err != nil {
+		return term{}, at, err
 	}
 	at := skipSpace(s, k+2)
 	right, j, err := scanOperand(s, at, depth)
 	if err != nil {
 		return term{}, j, err
 	}
+	return pairTerm(s, at, j, left, right)
+}
+
+// comparesFrom checks that a comparison follows left at byte k: an == and,
+// when left is a path from @, one that selects one node. On an error it
+// returns the byte the error names.
+func comparesFrom(s string, k int, left operand) (int, error) {
+	if err := scanEquals(s, k); err != nil {
+		return k, err
+	}
+	if left.current && left.many != 0 {
+		return left.many, manyError(s, left.many)
+	}
+	return k, nil
+}
+
+// pairTerm joins the two sides of a comparison, the right one at byte at
+// and ending at byte j, into a term: one side a path from @ that selects
+// one node, the other a literal.
+func pairTerm(s string, at, j int, left, right operand) (term, int, error) {
 	if left.current == right.current {
 		if left.current {
 			return term{}, at, PathError(s, at, "a filter compares a path from @ with a literal, not with another path")
@@ -495,55 +585,89 @@ func scanOperand(s string, i, depth int) (operand, int, error) {
 	if i == len(s) {
 		return operand{}, i, PathError(s, i, "expected @ or a literal in the filter but the path ends")
 	}
-	switch c := s[i]; c {
+	switch s[i] {
 	case '@':
 		sels, many, j, err := scanCurrent(s, i+1, depth)
 		return operand{current: true, sels: sels, many: many}, j, err
 	case '\'', '"':
-		str, j, err := scanQuoted(s, i, "string")
-		if err == nil && len(str) > MaxLiteral {
-			err = PathError(s, i, "a string in a filter holds more than %d bytes, the limit", MaxLiteral)
-		}
-		return operand{lit: literal{typ: TypeString, str: str}}, j, err
+		return scanStringOperand(s, i)
 	case '-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
-		lit, j, err := scanNumber(s, i)
-		if err == nil && j-i > MaxLiteral {
-			err = PathError(s, i, "a number in a filter is written in more than %d bytes, the limit", MaxLiteral)
-		}
-		return operand{lit: lit}, j, err
-	case '$':
-		return operand{}, i, PathError(s, i, "$ is not supported in a filter; a comparison starts its path from the member, @")
-	case '!':
-		return operand{}, i, PathError(s, i, "! is not supported in a comparison; it stands only before a path from @ that a term tests, such as !@.key")
-	case '(':
-		return operand{}, i, PathError(s, i, "parentheses are not supported in a filter; join terms with &&")
-	default:
-		if 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' {
-			return scanWord(s, i)
-		}
+		return scanNumberOperand(s, i)
 	}
-	return operand{}, i, PathError(s, i, "expected @ or a literal in the filter but found %q", firstRune(s[i:]))
+	if isLetter(s[i]) {
+		return scanWord(s, i)
+	}
+	return operand{}, i, operandError(s, i)
 }
+
+// scanStringOperand reads a quoted string at byte i, at most MaxLiteral
+// bytes once read.
+func scanStringOperand(s string, i int) (operand, int, error) {
+	str, j, err := scanQuoted(s, i, "string")
+	if err == nil && len(str) > MaxLiteral {
+		err = PathError(s, i, "a string in a filter holds more than %d bytes, the limit", MaxLiteral)
+	}
+	return operand{lit: literal{typ: TypeString, str: str}}, j, err
+}
+
+// scanNumberOperand reads a number at byte i, written in at most
+// MaxLiteral bytes.
+func scanNumberOperand(s string, i int) (operand, int, error) {
+	lit, j, err := scanNumber(s, i)
+	if err == nil && j-i > MaxLiteral {
+		err = PathError(s, i, "a number in a filter is written in more than %d bytes, the limit", MaxLiteral)
+	}
+	return operand{lit: lit}, j, err
+}
+
+// operandError names what stands at byte i where an operand should and no
+// operand starts.
+func operandError(s string, i int) error {
+	switch s[i] {
+	case '$':
+		return PathError(s, i, "$ is not supported in a filter; a comparison starts its path from the member, @")
+	case '!':
+		return PathError(s, i, "! is not supported in a comparison; it stands only before a path from @ that a term tests, such as !@.key")
+	case '(':
+		return PathError(s, i, "parentheses are not supported in a filter; join terms with &&")
+	}
+	return PathError(s, i, "expected @ or a literal in the filter but found %q", firstRune(s[i:]))
+}
+
+// isLetter reports whether c is an ASCII letter.
+func isLetter(c byte) bool { return 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' }
+
+// isWordByte reports whether c may stand in a word of a filter: a letter,
+// a digit or _.
+func isWordByte(c byte) bool { return isDigit(c) || c == '_' || isLetter(c) }
 
 // scanWord reads true, false or null at byte i, and names a function or a
 // word that is neither.
 func scanWord(s string, i int) (operand, int, error) {
 	j := i
-	for j < len(s) && (isDigit(s[j]) || s[j] == '_' || 'a' <= s[j] && s[j] <= 'z' || 'A' <= s[j] && s[j] <= 'Z') {
+	for j < len(s) && isWordByte(s[j]) {
 		j++
 	}
+	switch word := s[i:j]; word {
+	case "true", "false":
+		return operand{lit: literal{typ: TypeBool, b: word == "true"}}, j, nil
+	case "null":
+		return operand{lit: literal{typ: TypeNull}}, j, nil
+	}
+	return operand{}, i, wordError(s, i, j)
+}
+
+// wordError names the word from byte i to byte j, which is not a literal:
+// a function, a literal not in lower case, or a word to quote.
+func wordError(s string, i, j int) error {
 	word := s[i:j]
 	switch {
-	case word == "true" || word == "false":
-		return operand{lit: literal{typ: TypeBool, b: word == "true"}}, j, nil
-	case word == "null":
-		return operand{lit: literal{typ: TypeNull}}, j, nil
 	case j < len(s) && s[j] == '(':
-		return operand{}, i, PathError(s, i, "function %s() is not supported in a filter", Clip(word))
+		return PathError(s, i, "function %s() is not supported in a filter", Clip(word))
 	case strings.EqualFold(word, "true") || strings.EqualFold(word, "false") || strings.EqualFold(word, "null"):
-		return operand{}, i, PathError(s, i, "write %s in lower case", strings.ToLower(word))
+		return PathError(s, i, "write %s in lower case", strings.ToLower(word))
 	default:
-		return operand{}, i, PathError(s, i, "expected @ or a literal in the filter but found %s; quote a string", Clip(word))
+		return PathError(s, i, "expected @ or a literal in the filter but found %s; quote a string", Clip(word))
 	}
 }
 
@@ -556,29 +680,50 @@ func scanCurrent(s string, i, depth int) ([]selector, int, int, error) {
 	var sels []selector
 	many := 0
 	for i < len(s) {
-		var sel selector
-		var err error
-		start := i
-		switch j := skipSpace(s, i); {
-		case j < len(s) && s[j] == '.':
-			sel.name, i, err = scanName(s, j+1)
-		case j < len(s) && s[j] == '[':
-			sel, i, err = scanBracket(s, j+1, depth)
-			if err == nil && many == 0 && (sel.kind == selWild || sel.kind == selFilter) {
-				many = skipSpace(s, j+1)
-			}
-		default:
+		j := skipSpace(s, i)
+		sel, next, ok, err := scanStep(s, j, depth)
+		if !ok {
 			return sels, many, i, nil
 		}
-		if err == nil && sel.kind == selName && len(sel.name) > MaxLiteral {
-			err = PathError(s, skipSpace(s, start), "a key in a filter holds more than %d bytes, the limit", MaxLiteral)
+		if err == nil {
+			err = checkFilterKey(s, j, sel)
 		}
 		if err != nil {
-			return nil, many, i, err
+			return nil, many, next, err
+		}
+		if many == 0 && (sel.kind == selWild || sel.kind == selFilter) {
+			many = skipSpace(s, j+1)
 		}
 		sels = append(sels, sel)
+		i = next
 	}
 	return sels, many, i, nil
+}
+
+// scanStep reads a step after @ at byte j, a .key or a bracket, in a
+// filter at depth. It reports false when no step starts there.
+func scanStep(s string, j, depth int) (selector, int, bool, error) {
+	if j == len(s) {
+		return selector{}, j, false, nil
+	}
+	switch s[j] {
+	case '.':
+		name, next, err := scanName(s, j+1)
+		return selector{name: name}, next, true, err
+	case '[':
+		sel, next, err := scanBracket(s, j+1, depth)
+		return sel, next, true, err
+	}
+	return selector{}, j, false, nil
+}
+
+// checkFilterKey refuses a key step at byte j after @ that holds more than
+// MaxLiteral bytes.
+func checkFilterKey(s string, j int, sel selector) error {
+	if sel.kind == selName && len(sel.name) > MaxLiteral {
+		return PathError(s, j, "a key in a filter holds more than %d bytes, the limit", MaxLiteral)
+	}
+	return nil
 }
 
 // cost is what testing one member costs c before a query runs, in bytes.
@@ -600,41 +745,76 @@ func (c term) cost() int64 {
 
 // scanNumber reads a number literal at byte i, in RFC 9535's grammar.
 func scanNumber(s string, i int) (literal, int, error) {
-	digits := func(j int) int {
-		for j < len(s) && isDigit(s[j]) {
-			j++
-		}
-		return j
+	j, err := scanInteger(s, i)
+	if err == nil {
+		j, err = scanFraction(s, j)
 	}
+	if err == nil {
+		j, err = scanExponent(s, j)
+	}
+	if err != nil {
+		return literal{}, i, err
+	}
+	d, _ := parseDecimal(s[i:j]) // reads every number the grammar above takes
+	return literal{typ: TypeNumber, num: d}, j, nil
+}
+
+// scanDigits returns the byte after the run of digits from byte j.
+func scanDigits(s string, j int) int {
+	for j < len(s) && isDigit(s[j]) {
+		j++
+	}
+	return j
+}
+
+// digitAt reports whether byte j of s is a digit.
+func digitAt(s string, j int) bool { return j < len(s) && isDigit(s[j]) }
+
+// scanInteger reads the integer part of a number at byte i, with its -.
+func scanInteger(s string, i int) (int, error) {
 	j := i
 	if s[j] == '-' {
 		j++
 	}
 	switch {
-	case j == len(s) || !isDigit(s[j]):
-		return literal{}, i, PathError(s, i, "expected digits after -")
-	case s[j] == '0' && j+1 < len(s) && isDigit(s[j+1]):
-		return literal{}, i, PathError(s, i, "a number has no leading zero")
+	case !digitAt(s, j):
+		return 0, PathError(s, i, "expected digits after -")
+	case s[j] == '0' && digitAt(s, j+1):
+		return 0, PathError(s, i, "a number has no leading zero")
 	}
-	j = digits(j)
-	if j < len(s) && s[j] == '.' {
-		if j+1 == len(s) || !isDigit(s[j+1]) {
-			return literal{}, i, PathError(s, j+1, "expected digits after the . of a number")
-		}
-		j = digits(j + 1)
+	return scanDigits(s, j), nil
+}
+
+// scanFraction reads the fraction of a number at byte j, if one is there.
+func scanFraction(s string, j int) (int, error) {
+	if j == len(s) || s[j] != '.' {
+		return j, nil
 	}
-	if j < len(s) && (s[j] == 'e' || s[j] == 'E') {
-		j++
-		if j < len(s) && (s[j] == '+' || s[j] == '-') {
-			j++
-		}
-		if j == len(s) || !isDigit(s[j]) {
-			return literal{}, i, PathError(s, j, "expected digits in the exponent of a number")
-		}
-		j = digits(j)
+	if !digitAt(s, j+1) {
+		return 0, PathError(s, j+1, "expected digits after the . of a number")
 	}
-	d, _ := parseDecimal(s[i:j]) // reads every number the grammar above takes
-	return literal{typ: TypeNumber, num: d}, j, nil
+	return scanDigits(s, j+1), nil
+}
+
+// scanExponent reads the exponent of a number at byte j, if one is there.
+func scanExponent(s string, j int) (int, error) {
+	if j == len(s) || s[j] != 'e' && s[j] != 'E' {
+		return j, nil
+	}
+	_, j = signAt(s, j+1)
+	if !digitAt(s, j) {
+		return 0, PathError(s, j, "expected digits in the exponent of a number")
+	}
+	return scanDigits(s, j), nil
+}
+
+// signAt reads a + or - at byte i, if one is there, and reports whether it
+// was a - and the byte after it.
+func signAt(s string, i int) (bool, int) {
+	if i < len(s) && (s[i] == '+' || s[i] == '-') {
+		return s[i] == '-', i + 1
+	}
+	return false, i
 }
 
 // decimal is a number as 0.digits times 10 to the power exp, with digits
@@ -654,49 +834,54 @@ type decimal struct {
 // for anything else. It takes time linear in s.
 func parseDecimal(s string) (decimal, bool) {
 	var d decimal
-	i := 0
-	if i < len(s) && (s[i] == '+' || s[i] == '-') {
-		d.neg = s[i] == '-'
-		i++
-	}
-	digits := func() string {
-		start := i
-		for i < len(s) && isDigit(s[i]) {
-			i++
-		}
-		return s[start:i]
-	}
-	whole := digits()
-	var frac string
-	if i < len(s) && s[i] == '.' {
-		i++
-		frac = digits()
-	}
+	var i int
+	d.neg, i = signAt(s, 0)
+	whole, frac, i := mantissaText(s, i)
 	if whole == "" && frac == "" {
 		return d, false
 	}
-	expNeg, exp := false, ""
-	if i < len(s) && (s[i] == 'e' || s[i] == 'E') {
-		i++
-		if i < len(s) && (s[i] == '+' || s[i] == '-') {
-			expNeg = s[i] == '-'
-			i++
-		}
-		if exp = digits(); exp == "" {
-			return d, false
-		}
-	}
-	if i != len(s) {
+	expNeg, exp, i, ok := exponentText(s, i)
+	if !ok || i != len(s) {
 		return d, false
 	}
+	return normalDecimal(d.neg, whole, frac, expNeg, exp), true
+}
+
+// mantissaText reads the digits of a number's integer part and of its
+// fraction from byte i, and returns the byte after them.
+func mantissaText(s string, i int) (string, string, int) {
+	j := scanDigits(s, i)
+	whole := s[i:j]
+	if j == len(s) || s[j] != '.' {
+		return whole, "", j
+	}
+	k := scanDigits(s, j+1)
+	return whole, s[j+1 : k], k
+}
+
+// exponentText reads an exponent from byte i, if one is there: its sign,
+// its digits and the byte after them. It reports false for an e with no
+// digits after it.
+func exponentText(s string, i int) (bool, string, int, bool) {
+	if i == len(s) || s[i] != 'e' && s[i] != 'E' {
+		return false, "", i, true
+	}
+	neg, j := signAt(s, i+1)
+	k := scanDigits(s, j)
+	return neg, s[j:k], k, k > j
+}
+
+// normalDecimal is the decimal of the number whose integer part and
+// fraction have the digits whole and frac, times 10 to the power -exp (when
+// expNeg) or exp.
+func normalDecimal(neg bool, whole, frac string, expNeg bool, exp string) decimal {
 	// The value is 0.all times 10^(exp + point).
 	all := strings.TrimLeft(whole+frac, "0")
 	point := int64(len(whole)) - int64(len(whole)+len(frac)-len(all))
 	if all = strings.TrimRight(all, "0"); all == "" {
-		return decimal{}, true
+		return decimal{}
 	}
-	d.digits, d.exp = all, addExponent(expNeg, strings.TrimLeft(exp, "0"), point)
-	return d, true
+	return decimal{neg: neg, digits: all, exp: addExponent(expNeg, strings.TrimLeft(exp, "0"), point)}
 }
 
 // addExponent returns the exponent -mag (when neg) or mag, plus delta, in
@@ -704,13 +889,19 @@ func parseDecimal(s string) (decimal, bool) {
 // number's text, so for a mag of 19 digits or more the sum keeps mag's sign
 // and only its last digits change.
 func addExponent(neg bool, mag string, delta int64) string {
-	if len(mag) <= 18 {
-		v, _ := strconv.ParseInt("0"+mag, 10, 64)
-		if neg {
-			v = -v
-		}
-		return strconv.FormatInt(v+delta, 10)
+	if len(mag) > 18 {
+		return addLongExponent(neg, mag, delta)
 	}
+	v, _ := strconv.ParseInt("0"+mag, 10, 64)
+	if neg {
+		v = -v
+	}
+	return strconv.FormatInt(v+delta, 10)
+}
+
+// addLongExponent is addExponent for a mag too long for an int64, done
+// digit by digit from the last.
+func addLongExponent(neg bool, mag string, delta int64) string {
 	b := []byte(mag)
 	sub := (delta < 0) != neg
 	d := delta
@@ -719,20 +910,13 @@ func addExponent(neg bool, mag string, delta int64) string {
 	}
 	carry := int64(0)
 	for k := len(b) - 1; k >= 0 && (d > 0 || carry != 0); k-- {
-		digit := int64(b[k]-'0') + carry
+		step := d % 10
 		if sub {
-			digit -= d % 10
-		} else {
-			digit += d % 10
+			step = -step
 		}
+		var digit int64
+		digit, carry = carried(int64(b[k]-'0') + carry + step)
 		d /= 10
-		carry = 0
-		switch {
-		case digit < 0:
-			digit, carry = digit+10, -1
-		case digit > 9:
-			digit, carry = digit-10, 1
-		}
 		b[k] = "0123456789"[digit]
 	}
 	// An addition may carry past the first digit; a subtraction may leave
@@ -745,6 +929,18 @@ func addExponent(neg bool, mag string, delta int64) string {
 		return "-" + out
 	}
 	return out
+}
+
+// carried brings a digit sum of -10 to 19 into 0 to 9, and returns the
+// carry out of it: -1, 0 or 1.
+func carried(digit int64) (int64, int64) {
+	switch {
+	case digit < 0:
+		return digit + 10, -1
+	case digit > 9:
+		return digit - 10, 1
+	}
+	return digit, 0
 }
 
 // numberOf is the value of a number scalar as the file wrote it: a JSON
@@ -848,27 +1044,41 @@ func (m *meter) charge(n int64) error {
 // holds reports whether every term of a filter holds for n.
 func (m *meter) holds(sel selector, n *Node) (bool, error) {
 	for _, c := range sel.filter {
-		if c.query {
-			found, err := m.exists(n, c.current)
-			if err != nil || found == c.not {
-				return false, err
-			}
-			continue
-		}
-		cur := n
-		for _, step := range c.current {
-			if cur = step.child(cur); cur == nil {
-				break
-			}
-		}
-		if cur != nil && cur.NotLiteral {
-			return false, notLiteralError{cur}
-		}
-		if !c.lit.equals(cur) {
-			return false, nil
+		ok, err := m.holdsTerm(c, n)
+		if err != nil || !ok {
+			return false, err
 		}
 	}
 	return true, nil
+}
+
+// holdsTerm reports whether one term of a filter holds for n: a query
+// selects a node, or selects none when it is negated, and a comparison's
+// path selects the node that equals its literal.
+func (m *meter) holdsTerm(c term, n *Node) (bool, error) {
+	if c.query {
+		found, err := m.exists(n, c.current)
+		if err != nil {
+			return false, err
+		}
+		return found != c.not, nil
+	}
+	cur := follow(n, c.current)
+	if cur != nil && cur.NotLiteral {
+		return false, notLiteralError{cur}
+	}
+	return c.lit.equals(cur), nil
+}
+
+// follow is the node the steps, each a key or an index, select from n, or
+// nil.
+func follow(n *Node, steps []selector) *Node {
+	for _, step := range steps {
+		if n = step.child(n); n == nil {
+			return nil
+		}
+	}
+	return n
 }
 
 // exists reports whether sels select a node from n, and stops at the first
@@ -882,26 +1092,9 @@ func (m *meter) exists(n *Node, sels []selector) (bool, error) {
 	var stack []frame
 	cur, step := n, 0
 	for {
-		for cur != nil && step < len(sels) {
-			sel := &sels[step]
-			if err := m.charge(StepBytes + int64(len(sel.name))); err != nil {
-				return false, err
-			}
-			// Every kind is named and none has a default, so the exhaustive
-			// linter refuses a kind added without its case here.
-			switch sel.kind {
-			case selName, selIndex:
-				cur, step = sel.child(cur), step+1
-			case selFilter:
-				if err := m.charge(sel.cost * int64(len(cur.Vals)+len(cur.Items))); err != nil {
-					return false, err
-				}
-				stack = append(stack, frame{filter: sel, next: step + 1, vals: cur.Vals, items: cur.Items})
-				cur = nil
-			case selWild:
-				stack = append(stack, frame{next: step + 1, vals: cur.Vals, items: cur.Items})
-				cur = nil
-			}
+		var err error
+		if cur, err = m.descend(cur, step, sels, &stack); err != nil {
+			return false, err
 		}
 		if cur != nil {
 			return true, nil
@@ -912,6 +1105,42 @@ func (m *meter) exists(n *Node, sels []selector) (bool, error) {
 		}
 		cur, step = v, next
 	}
+}
+
+// descend takes the steps of sels from step on, from cur, while each
+// selects one node. It returns the node the last step selects, or nil once
+// a step selects none or pushes a frame for many onto stack.
+func (m *meter) descend(cur *Node, step int, sels []selector, stack *[]frame) (*Node, error) {
+	for cur != nil && step < len(sels) {
+		var err error
+		if cur, step, err = m.stepInto(&sels[step], cur, step, stack); err != nil {
+			return nil, err
+		}
+	}
+	return cur, nil
+}
+
+// stepInto takes the step sel, at step in a query, from cur, after charging
+// for it. A key or an index returns the node it selects and the next step;
+// [*] and a filter push a frame of cur's members onto stack and return
+// nil. Every kind is named and none has a default, so the exhaustive linter
+// refuses a kind added without its case here.
+func (m *meter) stepInto(sel *selector, cur *Node, step int, stack *[]frame) (*Node, int, error) {
+	if err := m.charge(StepBytes + int64(len(sel.name))); err != nil {
+		return nil, step, err
+	}
+	switch sel.kind {
+	case selName, selIndex:
+		return sel.child(cur), step + 1, nil
+	case selFilter:
+		if err := m.charge(sel.cost * int64(len(cur.Vals)+len(cur.Items))); err != nil {
+			return nil, step, err
+		}
+		*stack = append(*stack, frame{filter: sel, next: step + 1, vals: cur.Vals, items: cur.Items})
+	case selWild:
+		*stack = append(*stack, frame{next: step + 1, vals: cur.Vals, items: cur.Items})
+	}
+	return nil, step, nil
 }
 
 // frame is a step of a query that selects many nodes, with the members of
@@ -1000,23 +1229,30 @@ func (m *meter) apply(sel selector, n *Node, out []*Node) ([]*Node, error) {
 		out = append(out, n.Vals...)
 		out = append(out, n.Items...)
 	case selFilter:
-		if err := m.charge(sel.cost * int64(len(n.Vals)+len(n.Items))); err != nil {
-			return nil, err
-		}
-		for _, members := range [2][]*Node{n.Vals, n.Items} {
-			for _, v := range members {
-				ok, err := m.holds(sel, v)
-				if err != nil {
-					return nil, err
-				}
-				if ok {
-					out = append(out, v)
-				}
-			}
-		}
+		return m.filter(sel, n, out)
 	case selName, selIndex:
 		if v := sel.child(n); v != nil {
 			out = append(out, v)
+		}
+	}
+	return out, nil
+}
+
+// filter appends to out the members of n for which the filter sel holds,
+// after charging its cost for each of them.
+func (m *meter) filter(sel selector, n *Node, out []*Node) ([]*Node, error) {
+	if err := m.charge(sel.cost * int64(len(n.Vals)+len(n.Items))); err != nil {
+		return nil, err
+	}
+	for _, members := range [2][]*Node{n.Vals, n.Items} {
+		for _, v := range members {
+			ok, err := m.holds(sel, v)
+			if err != nil {
+				return nil, err
+			}
+			if ok {
+				out = append(out, v)
+			}
 		}
 	}
 	return out, nil
@@ -1080,14 +1316,20 @@ func (sel selector) child(n *Node) *Node {
 			return v
 		}
 	case selIndex:
-		i := sel.index
-		if i < 0 {
-			i += len(n.Items)
-		}
-		if n.Shape == Sequence && 0 <= i && i < len(n.Items) {
-			return n.Items[i]
-		}
+		return itemAt(n, sel.index)
 	case selWild, selFilter:
+	}
+	return nil
+}
+
+// itemAt is the item at index i of the sequence n, counting from the end
+// for a negative i, or nil.
+func itemAt(n *Node, i int) *Node {
+	if i < 0 {
+		i += len(n.Items)
+	}
+	if n.Shape == Sequence && 0 <= i && i < len(n.Items) {
+		return n.Items[i]
 	}
 	return nil
 }

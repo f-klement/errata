@@ -76,9 +76,8 @@ func goneRows(base, head *facts) []finding {
 		}
 		ht := cmp.Or(head.tables[key], head.bySeq[dir+" "+bt.seq], &table{})
 		for _, name := range bt.names {
-			if _, kept := ht.named[name]; !kept && !head.rows[bt.named[name].text] {
-				found = append(found, finding{pos: bt.named[name].pos, base: true,
-					text: fmt.Sprintf("row %s of a table in %s is gone", name, bt.decl)})
+			if f, gone := goneNamed(bt, ht, name, head.rows); gone {
+				found = append(found, f)
 			}
 		}
 		if len(ht.unnamed) < len(bt.unnamed) && lost(bt.unnamed, head.rows) > 0 {
@@ -87,6 +86,23 @@ func goneRows(base, head *facts) []finding {
 		}
 	}
 	return found
+}
+
+// goneNamed: the finding when the head's table has fewer rows of a name than
+// the base's and no table at the head has the text of one of them, at that
+// row. A name that rows shared at the base is reported by its count, since an
+// edited row of the name may be the one that lost its text.
+func goneNamed(bt, ht *table, name string, head map[string]bool) (finding, bool) {
+	was, now := bt.named[name], len(ht.named[name])
+	i := slices.IndexFunc(was, func(r row) bool { return !head[r.text] })
+	switch {
+	case now >= len(was) || i < 0:
+		return finding{}, false
+	case len(was) == 1:
+		return finding{pos: was[i].pos, base: true, text: fmt.Sprintf("row %s of a table in %s is gone", name, bt.decl)}, true
+	}
+	return finding{pos: was[i].pos, base: true,
+		text: fmt.Sprintf("a table in %s has %d rows named %s, against %d at the base", bt.decl, now, name, len(was))}, true
 }
 
 // lost counts the rows whose text no table at the head has.
@@ -252,11 +268,16 @@ func builds(base, head *facts) []finding {
 }
 
 // changedWants: each want value whose text changed, in a change that also
-// edits code.
+// edits code. A row's want the head has no key for is looked for by its row's
+// name and inputs.
 func changedWants(base, head *facts, code string) []finding {
 	var found []finding
 	for key, bw := range base.wants {
-		if hw, kept := head.wants[key]; kept && hw.text != bw.text {
+		hw, kept := head.wants[key]
+		if !kept {
+			hw, kept = head.alts[bw.alt]
+		}
+		if kept && hw.text != bw.text {
 			was, now := clipPair(bw.text, hw.text)
 			found = append(found, finding{pos: hw.pos,
 				text: fmt.Sprintf("%s in %s changed from %s to %s, in a change that also edits %s", hw.what, hw.decl, was, now, code)})

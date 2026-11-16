@@ -28,39 +28,12 @@ func (m *marks) appendProse(dst, src []byte) []byte {
 	b := dst[from:]
 	m.drop = slices.Grow(m.drop[:0], len(b))[:len(b)]
 	clear(m.drop)
-	var single, double [len(formatting)]int
-	for k := range single {
-		single[k], double[k] = -1, -1
+	pr := pairing{b: b, drop: m.drop}
+	for k := range pr.single {
+		pr.single[k], pr.double[k] = -1, -1
 	}
 	for i := 0; i < len(b); i++ {
-		if b[i] == '\\' && i+1 < len(b) && strings.IndexByte(formatting, b[i+1]) >= 0 {
-			m.drop[i] = true
-			i++
-			continue
-		}
-		k := strings.IndexByte(formatting, b[i])
-		if k < 0 {
-			continue
-		}
-		if i+1 < len(b) && b[i+1] == b[i] {
-			if o := double[k]; o >= 0 && i > o+2 {
-				m.drop[o], m.drop[o+1], m.drop[i], m.drop[i+1] = true, true, true, true
-				double[k] = -1
-			} else {
-				double[k] = i
-			}
-			i++
-			continue
-		}
-		// a mark right after the one that opens is a doubled one, above
-		if o := single[k]; o >= 0 && !isBlank(b[i-1]) && (i+1 == len(b) || !isWord(b[i+1])) {
-			m.drop[o], m.drop[i] = true, true
-			single[k] = -1
-			continue
-		}
-		if (i == 0 || !isWord(b[i-1])) && i+1 < len(b) && !isBlank(b[i+1]) {
-			single[k] = i
-		}
+		i = pr.at(i)
 	}
 	j := from
 	for i, c := range b {
@@ -70,6 +43,73 @@ func (m *marks) appendProse(dst, src []byte) []byte {
 		}
 	}
 	return dst[:j]
+}
+
+// pairing is appendProse's pass over b: the marks to drop, and the latest
+// opening mark of each kind, single and doubled, -1 for none.
+type pairing struct {
+	b              []byte
+	drop           []bool
+	single, double [len(formatting)]int
+}
+
+// at reads the byte at i, and returns the index of the last byte it read.
+func (pr *pairing) at(i int) int {
+	b := pr.b
+	if b[i] == '\\' && i+1 < len(b) && strings.IndexByte(formatting, b[i+1]) >= 0 {
+		pr.drop[i] = true
+		return i + 1
+	}
+	k := strings.IndexByte(formatting, b[i])
+	if k < 0 {
+		return i
+	}
+	if i+1 < len(b) && b[i+1] == b[i] {
+		pr.doubleMark(i, k)
+		return i + 1
+	}
+	pr.singleMark(i, k)
+	return i
+}
+
+// doubleMark reads the doubled mark of kind k at i: it closes the one open, or
+// opens one.
+func (pr *pairing) doubleMark(i, k int) {
+	if o := pr.double[k]; o >= 0 && i > o+2 {
+		pr.drop[o], pr.drop[o+1], pr.drop[i], pr.drop[i+1] = true, true, true, true
+		pr.double[k] = -1
+		return
+	}
+	pr.double[k] = i
+}
+
+// singleMark reads the single mark of kind k at i: it closes the one open
+// where it may, or opens one where it may.
+func (pr *pairing) singleMark(i, k int) {
+	// a mark right after the one that opens is a doubled one, above
+	if o := pr.single[k]; o >= 0 && pr.closes(i) {
+		pr.drop[o], pr.drop[i] = true, true
+		pr.single[k] = -1
+		return
+	}
+	if pr.opens(i) {
+		pr.single[k] = i
+	}
+}
+
+// closes reports whether a single mark at i, after one that opens, may
+// close: after a byte that is no blank, and before an end or a byte that is
+// no word's.
+func (pr *pairing) closes(i int) bool {
+	b := pr.b
+	return !isBlank(b[i-1]) && (i+1 == len(b) || !isWord(b[i+1]))
+}
+
+// opens reports whether a single mark at i may open: after a start or a
+// byte that is no word's, and before a byte that is no blank.
+func (pr *pairing) opens(i int) bool {
+	b := pr.b
+	return (i == 0 || !isWord(b[i-1])) && i+1 < len(b) && !isBlank(b[i+1])
 }
 
 // attrs is a block's attribute line: its positional attributes, the first
@@ -114,33 +154,50 @@ func newAttrs() *attrs {
 // the named options or opts, a comma separated list.
 func parseAttrs(s string) *attrs {
 	a := newAttrs()
-	var quote byte
-	from, start := 0, true // start: a quote here opens a value
+	sc := attrScan{start: true}
+	from := 0
 	for i := 0; i <= len(s); i++ {
-		if i < len(s) {
-			switch c := s[i]; {
-			case quote != 0:
-				if c == quote {
-					quote = 0
-				}
-				continue
-			case start && (c == '"' || c == '\''):
-				quote, start = c, false
-				continue
-			case c == ' ' || c == '\t':
-				continue
-			case c == '=':
-				start = true
-				continue
-			case c != ',':
-				start = false
-				continue
-			}
+		if i < len(s) && !sc.ends(s[i]) {
+			continue
 		}
 		a.entry(strings.TrimSpace(s[from:i]))
-		from, start = i+1, true
+		from, sc.start = i+1, true
 	}
 	return a
+}
+
+// attrScan is where parseAttrs stands in a list: in the quoted value
+// quote, 0 outside one, and start, whether a quote here opens a value.
+type attrScan struct {
+	quote byte
+	start bool
+}
+
+// ends reads c, and reports whether it ends an entry: a comma outside
+// quotes.
+func (sc *attrScan) ends(c byte) bool {
+	switch {
+	case sc.quote != 0:
+		if c == sc.quote {
+			sc.quote = 0
+		}
+	case sc.opensQuote(c):
+		sc.quote, sc.start = c, false
+	case c == ' ' || c == '\t':
+	case c == '=':
+		sc.start = true
+	case c != ',':
+		sc.start = false
+	default:
+		return true
+	}
+	return false
+}
+
+// opensQuote reports whether c opens a quoted value: a double or a single
+// quote where a value starts.
+func (sc *attrScan) opensQuote(c byte) bool {
+	return sc.start && (c == '"' || c == '\'')
 }
 
 // merge adds b, the attribute line after a's, to a, as Asciidoctor merges
@@ -170,30 +227,41 @@ func (a *attrs) merge(b *attrs) {
 // entry reads one entry of an attribute list.
 func (a *attrs) entry(e string) {
 	if name, value, ok := strings.Cut(e, "="); ok && isName(strings.TrimSpace(name)) {
-		name, value = strings.TrimSpace(name), unquote(strings.TrimSpace(value))
-		a.named[name] = value
-		if name == "options" || name == "opts" {
-			for _, o := range strings.Split(value, ",") {
-				a.opts[strings.TrimSpace(o)] = true
-			}
-		}
+		a.addNamed(strings.TrimSpace(name), unquote(strings.TrimSpace(value)))
 		return
 	}
 	e = unquote(e)
 	if len(a.pos) == 0 {
-		end := strings.IndexAny(e, "#.%")
-		if end < 0 {
-			end = len(e)
-		}
-		a.style = e[:end]
-		for _, short := range strings.Split(e[end:], "%")[1:] {
-			if o, _, _ := strings.Cut(short, "#"); o != "" {
-				o, _, _ = strings.Cut(o, ".")
-				a.opts[o] = true
-			}
-		}
+		a.addStyle(e)
 	}
 	a.pos = append(a.pos, e)
+}
+
+// addNamed adds the named attribute name=value, and the options it lists
+// when it is options or opts.
+func (a *attrs) addNamed(name, value string) {
+	a.named[name] = value
+	if name == "options" || name == "opts" {
+		for _, o := range strings.Split(value, ",") {
+			a.opts[strings.TrimSpace(o)] = true
+		}
+	}
+}
+
+// addStyle reads e, the first positional attribute: a style, then #id,
+// .role and %option shorthands, of which it keeps the options.
+func (a *attrs) addStyle(e string) {
+	end := strings.IndexAny(e, "#.%")
+	if end < 0 {
+		end = len(e)
+	}
+	a.style = e[:end]
+	for _, short := range strings.Split(e[end:], "%")[1:] {
+		if o, _, _ := strings.Cut(short, "#"); o != "" {
+			o, _, _ = strings.Cut(o, ".")
+			a.opts[o] = true
+		}
+	}
 }
 
 // isName reports whether s is an attribute's name: word characters and

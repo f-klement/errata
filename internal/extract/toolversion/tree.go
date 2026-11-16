@@ -65,53 +65,83 @@ func readPackageJSON(x *extractor, f file, data []byte, add func(string, int) er
 // read the key as a string and refuse a date. last, when set, turns the
 // scalar of the last path into a version, or drops it.
 func readTree(x *extractor, f file, data []byte, format *core.Format, parse func([]byte) (*core.Node, error), add func(string, int) error, last func(*core.Node) (string, bool)) error {
-	if parse == nil {
-		return fmt.Errorf("errata was built without the reader for %s", f.kind.name)
-	}
-	if f.kind.skipsBOM {
-		data = core.DropBOM(data)
-	}
-	if err := f.CheckNodes(data, format); err != nil {
-		return named{err}
-	}
-	tree, err := parse(data)
+	tree, err := parseTree(f, data, format, parse)
 	if err != nil {
 		return err
 	}
 	_, base := core.FileParts(f.File)
-	paths := x.paths[base]
-	type found struct {
-		text string
-		line int
+	all, err := selected(x.paths[base], tree, last)
+	if err != nil {
+		return err
 	}
-	var all []found
-	for i, p := range paths {
-		nodes, err := p.Eval(tree)
-		if err != nil {
-			return err
-		}
-		for _, n := range nodes {
-			if n.Shape != core.Scalar {
-				continue
-			}
-			if n.Form == core.FormDateTime {
-				return core.LineError(n.Line, "the version is a date or a time, not a string; the tool that reads the file refuses it")
-			}
-			text := n.Text
-			if last != nil && i == len(paths)-1 {
-				var ok bool
-				if text, ok = last(n); !ok {
-					continue
-				}
-			}
-			all = append(all, found{text, n.Line})
-		}
-	}
-	slices.SortStableFunc(all, func(a, b found) int { return a.line - b.line })
+	slices.SortStableFunc(all, func(a, b treeValue) int { return a.line - b.line })
 	for _, v := range all {
 		if err := add(v.text, v.line); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// parseTree reads data with parse, after the byte order mark when the
+// file's kind skips it and the node limit of its format.
+func parseTree(f file, data []byte, format *core.Format, parse func([]byte) (*core.Node, error)) (*core.Node, error) {
+	if parse == nil {
+		return nil, fmt.Errorf("errata was built without the reader for %s", f.kind.name)
+	}
+	if f.kind.skipsBOM {
+		data = core.DropBOM(data)
+	}
+	if err := f.CheckNodes(data, format); err != nil {
+		return nil, named{err}
+	}
+	return parse(data)
+}
+
+// treeValue is a version a path selected, and its line.
+type treeValue struct {
+	text string
+	line int
+}
+
+// selected is the scalars paths select in tree, path by path, the last
+// path's turned into a version by last when it is set.
+func selected(paths []core.Path, tree *core.Node, last func(*core.Node) (string, bool)) ([]treeValue, error) {
+	var all []treeValue
+	for i, p := range paths {
+		nodes, err := p.Eval(tree)
+		if err != nil {
+			return nil, err
+		}
+		convert := last
+		if i != len(paths)-1 {
+			convert = nil
+		}
+		for _, n := range nodes {
+			text, ok, err := scalarText(n, convert)
+			if err != nil {
+				return nil, err
+			}
+			if ok {
+				all = append(all, treeValue{text, n.Line})
+			}
+		}
+	}
+	return all, nil
+}
+
+// scalarText is the version node n holds: none for a mapping or a list, an
+// error for a date or a time, and when last is set, what last turns it into.
+func scalarText(n *core.Node, last func(*core.Node) (string, bool)) (string, bool, error) {
+	if n.Shape != core.Scalar {
+		return "", false, nil
+	}
+	if n.Form == core.FormDateTime {
+		return "", false, core.LineError(n.Line, "the version is a date or a time, not a string; the tool that reads the file refuses it")
+	}
+	if last == nil {
+		return n.Text, true, nil
+	}
+	text, ok := last(n)
+	return text, ok, nil
 }

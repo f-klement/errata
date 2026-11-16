@@ -106,8 +106,16 @@ func Run(ctx context.Context, s Spec) Ended {
 	err := cmd.Run()
 	reap(cmd)
 	e := Ended{Stdout: stdout.buf.Bytes(), Stderr: stderr.buf.Bytes(), Err: err}
+	e.overflow(s.Drain, stdout, stderr)
+	e.TimedOut = err != nil && e.OverBound == "" && timed.Err() != nil
+	return e
+}
+
+// overflow records the streams that passed the bound: each one cut, for a
+// run that drains, else the one that stopped the program.
+func (e *Ended) overflow(drain bool, stdout, stderr *bounded) {
 	switch {
-	case s.Drain:
+	case drain:
 		for _, b := range []struct {
 			name string
 			over bool
@@ -121,8 +129,6 @@ func Run(ctx context.Context, s Spec) Ended {
 	case stderr.over:
 		e.OverBound = "stderr"
 	}
-	e.TimedOut = err != nil && e.OverBound == "" && timed.Err() != nil
-	return e
 }
 
 // errNoArgv is how a Spec with no program to start ends.

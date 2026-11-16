@@ -149,30 +149,63 @@ func parse(data []byte, sel *markup.Select, limit int64) (*doc, error) {
 // line reads one line of the file, without its line break.
 func (p *parser) line(line []byte) error {
 	trim := bytes.TrimRight(line, " \t")
-	if top := p.top(); top != nil {
-		switch {
-		case top.verbatim():
-			if string(trim) == top.close {
-				return p.close()
-			}
-			return p.content(top, line)
-		case top.kind == blockTable:
-			return p.tableLine(top, line, trim)
-		case string(trim) == top.close:
-			return p.close()
-		}
+	if done, err := p.blockLine(line, trim); done {
+		return err
 	}
 	if len(trim) == 0 {
 		p.para, p.literal = false, false
 		return nil
 	}
-	if p.para && p.first == p.n-1 && underline(trim, p.firstLen) {
-		return fmt.Errorf("line %d: the line before over this line of %c is a two line title, which the asciidoc extractor does not read; write the title on one line, such as == Title, or read the file with a regex extractor",
-			p.n, trim[0])
+	if err := p.twoLineTitle(trim); err != nil {
+		return err
 	}
 	if b := delimiter(string(trim)); b != nil {
 		return p.open(b)
 	}
+	return p.textLine(trim)
+}
+
+// blockLine reads a line that the innermost block reads itself: any line
+// of a verbatim block or of a table, and the line that closes any other.
+// done is false for a line it leaves to the rest of line.
+func (p *parser) blockLine(line, trim []byte) (done bool, err error) {
+	top := p.top()
+	if top == nil {
+		return false, nil
+	}
+	switch {
+	case top.verbatim():
+		return true, p.verbatimLine(top, line, trim)
+	case top.kind == blockTable:
+		return true, p.tableLine(top, line, trim)
+	case string(trim) == top.close:
+		return true, p.close()
+	}
+	return false, nil
+}
+
+// verbatimLine reads a line of verbatim block b: its end, or its content.
+func (p *parser) verbatimLine(b *block, line, trim []byte) error {
+	if string(trim) == b.close {
+		return p.close()
+	}
+	return p.content(b, line)
+}
+
+// twoLineTitle refuses a line that underlines the line before, the first
+// of a paragraph, as a two line title.
+func (p *parser) twoLineTitle(trim []byte) error {
+	if p.para && p.first == p.n-1 && underline(trim, p.firstLen) {
+		return fmt.Errorf("line %d: the line before over this line of %c is a two line title, which the asciidoc extractor does not read; write the title on one line, such as == Title, or read the file with a regex extractor",
+			p.n, trim[0])
+	}
+	return nil
+}
+
+// textLine reads a line that holds text outside a delimiter: a literal
+// paragraph's, a comment, an attribute line, or the start or the rest of
+// a paragraph.
+func (p *parser) textLine(trim []byte) error {
 	if p.literal {
 		return nil
 	}
@@ -180,50 +213,82 @@ func (p *parser) line(line []byte) error {
 		return p.comment(trim)
 	}
 	if a, ok := attributeLine(trim); ok {
-		p.para = false
-		switch {
-		case a == nil:
-		case p.attrs == nil:
-			p.attrs = a
-		default: // lines one after another make one list
-			p.attrs.merge(a)
-		}
+		p.addAttrs(a)
 		return nil
 	}
 	if !p.para {
-		if level, title, ok := heading(trim); ok {
-			if len(p.stack) > 0 { // a title in a block is no section's
-				p.attrs = nil
-				return p.prose(title)
-			}
-			return p.heading(level, title)
-		}
-		if title, ok := blockTitle(trim); ok {
-			return p.prose(title)
-		}
-		if attributeEntry(trim) {
-			return nil
-		}
-		if trim[0] == ' ' || trim[0] == '\t' {
-			if _, ok := listItem(trim); !ok {
-				p.literal, p.attrs = true, nil
-				return nil
-			}
-		}
-		p.para, p.attrs = true, nil
-		p.first, p.firstLen = -1, utf8.RuneCount(trim)
-		if len(p.stack) == 0 && titleLike(trim) { // only a section's paragraph
-			p.first = p.n
-		}
-		if item, ok := listItem(trim); ok {
-			return p.paragraph(item, true)
-		}
-		return p.paragraph(trim, true)
+		return p.startLine(trim)
 	}
 	if item, ok := listItem(trim); ok { // a list item is a paragraph of its own
 		return p.paragraph(item, true)
 	}
 	return p.paragraph(trim, false)
+}
+
+// addAttrs holds the attribute line a, nil for a block anchor, for the
+// block after it.
+func (p *parser) addAttrs(a *attrs) {
+	p.para = false
+	switch {
+	case a == nil:
+	case p.attrs == nil:
+		p.attrs = a
+	default: // lines one after another make one list
+		p.attrs.merge(a)
+	}
+}
+
+// startLine reads a line outside a paragraph: a title, a block title, an
+// attribute entry, the start of a literal paragraph, or the first line of
+// a paragraph.
+func (p *parser) startLine(trim []byte) error {
+	if level, title, ok := heading(trim); ok {
+		return p.headingLine(level, title)
+	}
+	if title, ok := blockTitle(trim); ok {
+		return p.prose(title)
+	}
+	if attributeEntry(trim) {
+		return nil
+	}
+	if literalLine(trim) {
+		p.literal, p.attrs = true, nil
+		return nil
+	}
+	return p.startParagraph(trim)
+}
+
+// headingLine reads a section title of level, whose text is title; in a
+// block, it is prose and no section's.
+func (p *parser) headingLine(level int, title []byte) error {
+	if len(p.stack) > 0 {
+		p.attrs = nil
+		return p.prose(title)
+	}
+	return p.heading(level, title)
+}
+
+// literalLine reports whether a line starts a literal paragraph: it is
+// indented, and no list item.
+func literalLine(trim []byte) bool {
+	if trim[0] != ' ' && trim[0] != '\t' {
+		return false
+	}
+	_, ok := listItem(trim)
+	return !ok
+}
+
+// startParagraph reads the first line of a paragraph.
+func (p *parser) startParagraph(trim []byte) error {
+	p.para, p.attrs = true, nil
+	p.first, p.firstLen = -1, utf8.RuneCount(trim)
+	if len(p.stack) == 0 && titleLike(trim) { // only a section's paragraph
+		p.first = p.n
+	}
+	if item, ok := listItem(trim); ok {
+		return p.paragraph(item, true)
+	}
+	return p.paragraph(trim, true)
 }
 
 // titleLike reports whether a line may be a two line title's, as
@@ -382,7 +447,7 @@ func (p *parser) comment(trim []byte) error {
 // heading reads a section title of level, whose text is title. A title
 // under the attribute line [discrete] or [float] is prose and no section's.
 func (p *parser) heading(level int, title []byte) error {
-	discrete := p.attrs != nil && (p.attrs.style == "discrete" || p.attrs.style == "float")
+	discrete := isDiscrete(p.attrs)
 	p.attrs = nil
 	if err := p.flush(); err != nil {
 		return err
@@ -394,6 +459,19 @@ func (p *parser) heading(level int, title []byte) error {
 	if discrete || p.outline == nil {
 		return nil
 	}
+	return p.section(level, title, before)
+}
+
+// isDiscrete reports whether the attribute line a, nil for none, makes the
+// title under it prose: [discrete] or [float].
+func isDiscrete(a *attrs) bool {
+	return a != nil && (a.style == "discrete" || a.style == "float")
+}
+
+// section enters the outline at a section title of level, whose text is
+// title, ending the sections it closes at before, where the title's prose
+// starts.
+func (p *parser) section(level int, title []byte, before int) error {
 	text := strings.TrimSpace(string(p.marks.appendProse(nil, title)))
 	ends, named, _ := p.outline.Heading(level, text)
 	section := p.sel.Target == markup.TargetSection
@@ -423,20 +501,40 @@ func (p *parser) open(b *block) error {
 	scope := p.inScope()
 	switch b.kind {
 	case blockCode:
-		if b.close != "```" && p.attrs != nil && len(p.attrs.pos) > 1 && (p.attrs.style == "source" || p.attrs.style == "") {
-			b.lang = p.attrs.pos[1]
-		}
-		b.read = p.sel.Target == markup.TargetCode && scope && (p.sel.Language == "" || b.lang == p.sel.Language)
+		p.openCode(b, scope)
 	case blockComment:
 		b.read = p.sel.Target == markup.TargetComment && scope
 	case blockTable:
-		if p.sel.Target == markup.TargetTable && scope {
-			b.table = newTable(p.attrs, b.sep, p.n)
-		}
+		p.openTable(b, scope)
 	}
 	p.attrs, p.para, p.literal = nil, false, false
 	p.stack = append(p.stack, b)
 	return nil
+}
+
+// openCode takes code block b's language from the attribute line before
+// it, and says whether the target reads it, scope being whether the
+// select's path reaches it.
+func (p *parser) openCode(b *block, scope bool) {
+	if p.namesLanguage(b) {
+		b.lang = p.attrs.pos[1]
+	}
+	b.read = p.sel.Target == markup.TargetCode && scope && (p.sel.Language == "" || b.lang == p.sel.Language)
+}
+
+// namesLanguage reports whether the attribute line before code block b
+// names its language: [source,sh] or [,sh], before a delimiter other than
+// a fence, which names its own.
+func (p *parser) namesLanguage(b *block) bool {
+	return b.close != "```" && p.attrs != nil && len(p.attrs.pos) > 1 && (p.attrs.style == "source" || p.attrs.style == "")
+}
+
+// openTable starts the table of block b, when the target reads it and the
+// select's path reaches it, as scope says.
+func (p *parser) openTable(b *block, scope bool) {
+	if p.sel.Target == markup.TargetTable && scope {
+		b.table = newTable(p.attrs, b.sep, p.n)
+	}
 }
 
 // content reads a line of a verbatim block.
@@ -516,10 +614,24 @@ func delimiter(s string) *block {
 		lang, _, _ := strings.Cut(s[3:], ",")
 		return &block{kind: blockCode, close: "```", lang: strings.TrimSpace(lang)}
 	case len(s) >= 4 && same(s):
-		if i := strings.IndexByte("/-.+=*_", s[0]); i >= 0 {
-			return &block{kind: [...]int{blockComment, blockCode, blockCode, blockPass, blockCompound, blockCompound, blockCompound}[i], close: s}
-		}
-	case len(s) >= 4 && strings.IndexByte("|!,:", s[0]) >= 0 && s[1] == '=' && same(s[1:]):
+		return runDelimiter(s)
+	}
+	return tableDelimiter(s)
+}
+
+// runDelimiter is the block a line of four or more of one character opens,
+// nil for none.
+func runDelimiter(s string) *block {
+	if i := strings.IndexByte("/-.+=*_", s[0]); i >= 0 {
+		return &block{kind: [...]int{blockComment, blockCode, blockCode, blockPass, blockCompound, blockCompound, blockCompound}[i], close: s}
+	}
+	return nil
+}
+
+// tableDelimiter is the table a line opens, a table's |, !, , or : and
+// three or more =, nil for none.
+func tableDelimiter(s string) *block {
+	if len(s) >= 4 && strings.IndexByte("|!,:", s[0]) >= 0 && s[1] == '=' && same(s[1:]) {
 		return &block{kind: blockTable, close: s, sep: s[0]}
 	}
 	return nil
@@ -546,11 +658,16 @@ func heading(trim []byte) (level int, title []byte, ok bool) {
 	if level > 6 || level == len(trim) || !isBlank(trim[level]) {
 		return 0, nil, false
 	}
-	title = bytes.TrimLeft(trim[level:], " \t")
-	if marks := trim[:level]; len(title) > level && bytes.HasSuffix(title, marks) && isBlank(title[len(title)-level-1]) {
-		title = bytes.TrimRight(title[:len(title)-level], " \t")
+	return level, trimClosing(bytes.TrimLeft(trim[level:], " \t"), trim[:level]), true
+}
+
+// trimClosing is a title less the marks after it, the same marks that open
+// it after a blank.
+func trimClosing(title, marks []byte) []byte {
+	if level := len(marks); len(title) > level && bytes.HasSuffix(title, marks) && isBlank(title[len(title)-level-1]) {
+		return bytes.TrimRight(title[:len(title)-level], " \t")
 	}
-	return level, title, true
+	return title
 }
 
 // blockTitle is the text of a block title: a dot and then neither a blank
@@ -568,48 +685,70 @@ func attributeEntry(trim []byte) bool {
 	if trim[0] != ':' {
 		return false
 	}
-	i := 1
-	if i < len(trim) && trim[i] == '!' {
-		i++
-	}
-	from := i
-	for i < len(trim) && (isWord(trim[i]) || trim[i] == '-') {
-		i++
-	}
+	from := skipByte(trim, 1, '!')
+	i := nameEnd(trim, from)
 	if i == from {
 		return false
 	}
-	if i < len(trim) && trim[i] == '!' {
+	i = skipByte(trim, i, '!')
+	return i < len(trim) && trim[i] == ':' && (i+1 == len(trim) || isBlank(trim[i+1]))
+}
+
+// skipByte is i, or i+1 when b is the byte of t at i.
+func skipByte(t []byte, i int, b byte) int {
+	if i < len(t) && t[i] == b {
+		return i + 1
+	}
+	return i
+}
+
+// nameEnd is the end of the run of word characters and hyphens in t from i.
+func nameEnd(t []byte, i int) int {
+	for i < len(t) && (isWord(t[i]) || t[i] == '-') {
 		i++
 	}
-	return i < len(trim) && trim[i] == ':' && (i+1 == len(trim) || isBlank(trim[i+1]))
+	return i
 }
 
 // listItem is the text of a list item, after its marker: a run of * or of
 // dots, a hyphen, or a number and a dot, then a blank.
 func listItem(trim []byte) ([]byte, bool) {
 	s := bytes.TrimLeft(trim, " \t")
-	i := 0
-	switch c := s[0]; {
-	case c == '*' || c == '.':
-		for i < len(s) && s[i] == c {
-			i++
-		}
-	case c == '-':
-		i = 1
-	case '0' <= c && c <= '9':
-		for i < len(s) && '0' <= s[i] && s[i] <= '9' {
-			i++
-		}
-		if i == len(s) || s[i] != '.' {
-			return nil, false
-		}
-		i++
-	}
+	i := markerEnd(s)
 	if i == 0 || i == len(s) || !isBlank(s[i]) {
 		return nil, false
 	}
 	return bytes.TrimLeft(s[i:], " \t"), true
+}
+
+// markerEnd is the end of the list marker s starts with, 0 for none.
+func markerEnd(s []byte) int {
+	switch c := s[0]; {
+	case c == '*' || c == '.':
+		i := 0
+		for i < len(s) && s[i] == c {
+			i++
+		}
+		return i
+	case c == '-':
+		return 1
+	case '0' <= c && c <= '9':
+		return numberMarkerEnd(s)
+	}
+	return 0
+}
+
+// numberMarkerEnd is the end of a marker of digits and a dot that s starts
+// with, 0 when no dot follows the digits.
+func numberMarkerEnd(s []byte) int {
+	i := 0
+	for i < len(s) && '0' <= s[i] && s[i] <= '9' {
+		i++
+	}
+	if i == len(s) || s[i] != '.' {
+		return 0
+	}
+	return i + 1
 }
 
 // isBlank reports whether c is a space, a tab or a line break.

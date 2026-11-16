@@ -271,23 +271,34 @@ func shebang(data []byte) (program string, ok bool) {
 	program = filepath.Base(fields[0])
 	switch program {
 	case "env":
-		program = ""
-		for i := 1; i < len(fields); i++ {
-			f := fields[i]
-			if f == "-u" || f == "-C" || f == "-P" {
-				i++ // an option that takes the next word
-				continue
-			}
-			if !strings.HasPrefix(f, "-") && !strings.Contains(f, "=") {
-				return filepath.Base(f), true
-			}
-		}
+		return envProgram(fields[1:]), true
 	case "busybox":
-		// busybox runs the applet its first argument names.
-		program = ""
-		if len(fields) != 1 {
-			program = filepath.Base(fields[1])
-		}
+		return busyboxApplet(fields[1:]), true
 	}
 	return program, true
+}
+
+// envProgram is the program env runs with the arguments args, by its base
+// name: the first word after env's options and assignments, "" for none.
+func envProgram(args []string) string {
+	for i := 0; i < len(args); i++ {
+		f := args[i]
+		if f == "-u" || f == "-C" || f == "-P" {
+			i++ // an option that takes the next word
+			continue
+		}
+		if !strings.HasPrefix(f, "-") && !strings.Contains(f, "=") {
+			return filepath.Base(f)
+		}
+	}
+	return ""
+}
+
+// busyboxApplet is the applet busybox runs with the arguments args, by
+// its base name: busybox runs the applet its first argument names.
+func busyboxApplet(args []string) string {
+	if len(args) == 0 {
+		return ""
+	}
+	return filepath.Base(args[0])
 }

@@ -155,7 +155,7 @@ func (e yamlExtractor) selectDocs(docs []*core.Node) ([]*core.Node, error) {
 	}
 	var out []*core.Node
 	for _, d := range docs {
-		if (e.kind == "" || scalarAt(d, "kind") == e.kind) && (e.name == "" || scalarAt(d, "metadata", "name") == e.name) {
+		if e.selects(d) {
 			out = append(out, d)
 		}
 	}
@@ -163,6 +163,12 @@ func (e yamlExtractor) selectDocs(docs []*core.Node) ([]*core.Node, error) {
 		return nil, fmt.Errorf("no document has kind %s and name %s", core.Quote(e.kind), core.Quote(e.name))
 	}
 	return out, nil
+}
+
+// selects reports whether the document d has the kind and the
+// metadata.name the extractor selects, each when it is set.
+func (e yamlExtractor) selects(d *core.Node) bool {
+	return (e.kind == "" || scalarAt(d, "kind") == e.kind) && (e.name == "" || scalarAt(d, "metadata", "name") == e.name)
 }
 
 // scalarAt returns the scalar at keys in n, or "" when there is none.
@@ -253,8 +259,11 @@ func parseNoted(data []byte, expanded int, note func(n *core.Node, tag string, p
 	}
 }
 
+// nullTag is YAML's tag of a null.
+const nullTag = "!!null"
+
 func isEmptyDoc(c *yaml.Node) bool {
-	return c.Kind == yaml.ScalarNode && c.Tag == "!!null" && c.Value == "" && c.Style == 0
+	return c.Kind == yaml.ScalarNode && c.Tag == nullTag && c.Value == "" && c.Style == 0
 }
 
 // yamlWalker turns yaml.v3 nodes into a tree, refusing what decoding the
@@ -318,22 +327,7 @@ func (w *yamlWalker) convert(y *yaml.Node, depth int, merged bool) (*core.Node, 
 	if depth > core.MaxDepth {
 		return nil, 0, core.TooDeep(y.Line)
 	}
-	var c converted
-	var err error
-	switch y.Kind {
-	case yaml.AliasNode:
-		if c, err = w.alias(y, merged); err == nil {
-			err = w.expand(c.size, y.Line)
-		}
-	case yaml.SequenceNode:
-		c, err = w.sequence(y, depth, merged)
-	case yaml.MappingNode:
-		c, err = w.mapping(y, depth, merged)
-	default:
-		// A scalar keeps the text the file wrote: 1.0 stays 1.0, and a null
-		// is null, ~ or the empty string, as written.
-		c, err = converted{&core.Node{Type: yamlType(y), Form: yamlForm(y), Block: w.blocks.lineOf(y), Text: y.Value, Line: w.line(y)}, 1}, w.checkValueTag(y)
-	}
+	c, err := w.convertKind(y, depth, merged)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -344,6 +338,27 @@ func (w *yamlWalker) convert(y *yaml.Node, depth int, merged bool) (*core.Node, 
 		w.anchors[y] = c
 	}
 	return c.n, c.size, nil
+}
+
+// convertKind turns y into a node by its kind: an alias, a sequence, a
+// mapping or a scalar.
+func (w *yamlWalker) convertKind(y *yaml.Node, depth int, merged bool) (converted, error) {
+	switch y.Kind {
+	case yaml.AliasNode:
+		c, err := w.alias(y, merged)
+		if err == nil {
+			err = w.expand(c.size, y.Line)
+		}
+		return c, err
+	case yaml.SequenceNode:
+		return w.sequence(y, depth, merged)
+	case yaml.MappingNode:
+		return w.mapping(y, depth, merged)
+	default:
+		// A scalar keeps the text the file wrote: 1.0 stays 1.0, and a null
+		// is null, ~ or the empty string, as written.
+		return converted{&core.Node{Type: yamlType(y), Form: yamlForm(y), Block: w.blocks.lineOf(y), Text: y.Value, Line: w.line(y)}, 1}, w.checkValueTag(y)
+	}
 }
 
 // writtenTag is the tag the file wrote on y, such as !reference or !!str,
@@ -423,21 +438,9 @@ func (w *yamlWalker) mapping(y *yaml.Node, depth int, merged bool) (converted, e
 	aliasKeys := map[string]bool{}
 	for i := 0; i+1 < len(y.Content); i += 2 {
 		k, v := y.Content[i], y.Content[i+1]
-		key, err := w.key(k)
+		key, err := w.mapKey(c.n, k, merge != nil, aliasKeys)
 		if err != nil {
 			return c, err
-		}
-		if _, repeated := c.n.Field[key]; repeated || (key == "<<" && merge != nil) {
-			return c, fmt.Errorf("line %d: key %s is repeated in one mapping", k.Line, core.Quote(key))
-		}
-		// yaml.v3 compares an alias key by the alias's name, so two aliases
-		// of one name repeat a key even when the anchor was defined again
-		// between them and they name different text.
-		if k.Kind == yaml.AliasNode {
-			if aliasKeys[k.Value] {
-				return c, fmt.Errorf("line %d: alias key *%s is repeated in one mapping", k.Line, core.Clip(k.Value))
-			}
-			aliasKeys[k.Value] = true
 		}
 		val, size, err := w.convert(v, depth+1, isMerge(k))
 		if err != nil {
@@ -448,35 +451,87 @@ func (w *yamlWalker) mapping(y *yaml.Node, depth int, merged bool) (converted, e
 			c.size += size
 			continue
 		}
-		// An alias is its anchor's node, which keeps the line of the key the
-		// anchor stands under, as it keeps its Line.
-		if v.Kind != yaml.AliasNode {
-			val.KeyLine = int32(w.line(k)) //nolint:gosec // a line of a file of at most MaxMaxBytes, under 2^31
-		}
-		c.n.Set(key, val)
-		scalar := keyScalar(k)
-		own.keys = append(own.keys, mergedKey{key: scalar, name: key, null: scalar.ShortTag() == "!!null", val: val})
+		w.setOwn(c.n, &own, k, v, key, val)
 		c.size += 1 + size
 	}
 	if merge != nil {
-		own.sources = []*core.Node{mergeVal}
-		if merge.Kind == yaml.SequenceNode {
-			own.sources = mergeVal.Items
-		}
-		for _, f := range own.sources {
-			if f.Shape != core.Mapping {
-				return c, fmt.Errorf("line %d: a merge key (<<) takes a mapping, an alias of one, or a sequence of those", merge.Line)
-			}
-		}
-		var clash *mergeClash
-		if err := w.mergeKeys(c.n, y, own.sources, merge.Line); errors.As(err, &clash) && merged {
-			w.unmerged[c.n] = err
-		} else if err != nil {
+		if err := w.merge(c.n, y, &own, merge, mergeVal, merged); err != nil {
 			return c, err
 		}
 	}
 	w.merges[c.n] = own
 	return c, nil
+}
+
+// mapKey is the text of the key k of the mapping n, refusing a key n has
+// already, a second merge key (merging says n has one), and an alias key
+// whose name aliasKeys holds already.
+func (w *yamlWalker) mapKey(n *core.Node, k *yaml.Node, merging bool, aliasKeys map[string]bool) (string, error) {
+	key, err := w.key(k)
+	if err != nil {
+		return "", err
+	}
+	if _, repeated := n.Field[key]; repeated || (key == "<<" && merging) {
+		return "", fmt.Errorf("line %d: key %s is repeated in one mapping", k.Line, core.Quote(key))
+	}
+	// yaml.v3 compares an alias key by the alias's name, so two aliases
+	// of one name repeat a key even when the anchor was defined again
+	// between them and they name different text.
+	if k.Kind == yaml.AliasNode {
+		if aliasKeys[k.Value] {
+			return "", fmt.Errorf("line %d: alias key *%s is repeated in one mapping", k.Line, core.Clip(k.Value))
+		}
+		aliasKeys[k.Value] = true
+	}
+	return key, nil
+}
+
+// setOwn sets the key k, of text key, of the mapping n to val, converted
+// from v, and adds it to own, the keys a merge of n copies.
+func (w *yamlWalker) setOwn(n *core.Node, own *mergeable, k, v *yaml.Node, key string, val *core.Node) {
+	// An alias is its anchor's node, which keeps the line of the key the
+	// anchor stands under, as it keeps its Line.
+	if v.Kind != yaml.AliasNode {
+		val.KeyLine = int32(w.line(k)) //nolint:gosec // a line of a file of at most MaxMaxBytes, under 2^31
+	}
+	n.Set(key, val)
+	scalar := keyScalar(k)
+	own.keys = append(own.keys, mergedKey{key: scalar, name: key, null: scalar.ShortTag() == nullTag, val: val})
+}
+
+// merge adds to n, the mapping y, the keys its merge key names, and
+// records the mappings it names in own: written is that merge key's value
+// as the file writes it, converted to mergeVal. A clash in a mapping a merge
+// key names itself (merged) waits, as mapping says.
+func (w *yamlWalker) merge(n *core.Node, y *yaml.Node, own *mergeable, written *yaml.Node, mergeVal *core.Node, merged bool) error {
+	sources, err := mergeSources(written, mergeVal)
+	own.sources = sources
+	if err != nil {
+		return err
+	}
+	var clash *mergeClash
+	if err := w.mergeKeys(n, y, sources, written.Line); errors.As(err, &clash) && merged {
+		w.unmerged[n] = err
+	} else if err != nil {
+		return err
+	}
+	return nil
+}
+
+// mergeSources are the mappings a merge key's value names, mergeVal
+// converted from written: the mapping, or each of a sequence, refusing any
+// other node.
+func mergeSources(written *yaml.Node, mergeVal *core.Node) ([]*core.Node, error) {
+	sources := []*core.Node{mergeVal}
+	if written.Kind == yaml.SequenceNode {
+		sources = mergeVal.Items
+	}
+	for _, f := range sources {
+		if f.Shape != core.Mapping {
+			return sources, fmt.Errorf("line %d: a merge key (<<) takes a mapping, an alias of one, or a sequence of those", written.Line)
+		}
+	}
+	return sources, nil
 }
 
 // keyScalar is the scalar a key names: the anchor's for an alias key.
@@ -541,26 +596,35 @@ func (w *yamlWalker) mergeKeys(n *core.Node, y *yaml.Node, sources []*core.Node,
 	for len(stack) > 0 {
 		f := w.merges[stack[len(stack)-1]]
 		stack = stack[:len(stack)-1]
-		for _, k := range f.keys {
-			if err := w.expandKey(len(k.name)/mergeKeyBytes, line); err != nil {
-				return err
-			}
-			if stringKeys && k.null {
-				continue
-			}
-			id := w.keyID(k.key, k.name, stringKeys)
-			if seen[id] {
-				continue
-			}
-			seen[id] = true
-			if _, set := n.Field[k.name]; set {
-				return &mergeClash{line, k.name}
-			}
-			n.Set(k.name, k.val)
+		if err := w.mergeFrom(n, f, seen, stringKeys, line); err != nil {
+			return err
 		}
 		for i := len(f.sources) - 1; i >= 0; i-- {
 			stack = append(stack, f.sources[i])
 		}
+	}
+	return nil
+}
+
+// mergeFrom adds to n the own keys of f, a source of n's merge key, that a
+// key seen before does not hide, at line.
+func (w *yamlWalker) mergeFrom(n *core.Node, f mergeable, seen map[any]bool, stringKeys bool, line int) error {
+	for _, k := range f.keys {
+		if err := w.expandKey(len(k.name)/mergeKeyBytes, line); err != nil {
+			return err
+		}
+		if stringKeys && k.null {
+			continue
+		}
+		id := w.keyID(k.key, k.name, stringKeys)
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		if _, set := n.Field[k.name]; set {
+			return &mergeClash{line, k.name}
+		}
+		n.Set(k.name, k.val)
 	}
 	return nil
 }
@@ -659,7 +723,7 @@ func yamlType(y *yaml.Node) core.ScalarType {
 		return core.TypeNumber
 	case "!!bool":
 		return core.TypeBool
-	case "!!null":
+	case nullTag:
 		return core.TypeNull
 	default:
 		return core.TypeString

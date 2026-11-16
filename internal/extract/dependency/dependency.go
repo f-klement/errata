@@ -98,21 +98,11 @@ type Parsers = core.Parsers
 
 // Build checks s and returns its extractor.
 func Build(s Spec, p Parsers) (check.Extractor, error) {
-	switch {
-	case s.Module && s.Name != "":
-		return nil, errors.New("dependency: module: true returns each go.mod's module path, so it takes no name; leave one of them out")
-	case s.Module && s.Only != "":
-		return nil, errors.New("dependency: only keeps ranges or resolved versions, and a module path is neither; leave only out")
-	case !s.Module && s.Name == "":
-		return nil, errors.New("dependency: name is required: write the package's name, such as golang.org/x/mod, lodash or serde, or module: true for go.mod's module path")
-	case len(s.Name) > maxName:
-		return nil, fmt.Errorf("dependency: name is %d bytes long, over the limit of %d", len(s.Name), maxName)
-	case strings.ContainsFunc(s.Name, func(r rune) bool { return unicode.IsSpace(r) || check.ActedOn(r) }):
-		return nil, fmt.Errorf("dependency: name %s holds a blank or a character a terminal acts on, which no package's name holds", core.Quote(s.Name))
-	case s.Only != "" && s.Only != Range && s.Only != Resolved:
-		return nil, fmt.Errorf("dependency: only is %s; write %s for the versions manifests accept, or %s for the versions lockfiles record", core.Quote(s.Only), Range, Resolved)
-	case len(s.Files) == 0:
-		return nil, errors.New("dependency: files is required: list the manifests and lockfiles, such as go.mod, package.json, package-lock.json or **/Cargo.toml")
+	if err := checkModule(s); err != nil {
+		return nil, err
+	}
+	if err := checkFields(s); err != nil {
+		return nil, err
 	}
 	src, err := core.CheckSource("dependency", ".", s.MaxBytes)
 	if err != nil {
@@ -134,6 +124,36 @@ func Build(s Spec, p Parsers) (check.Extractor, error) {
 		}
 	}
 	return x, nil
+}
+
+// checkModule refuses a spec whose module and name disagree: module: true
+// takes neither name nor only, and without it a name is required.
+func checkModule(s Spec) error {
+	switch {
+	case s.Module && s.Name != "":
+		return errors.New("dependency: module: true returns each go.mod's module path, so it takes no name; leave one of them out")
+	case s.Module && s.Only != "":
+		return errors.New("dependency: only keeps ranges or resolved versions, and a module path is neither; leave only out")
+	case !s.Module && s.Name == "":
+		return errors.New("dependency: name is required: write the package's name, such as golang.org/x/mod, lodash or serde, or module: true for go.mod's module path")
+	}
+	return nil
+}
+
+// checkFields refuses a name no package holds, an only it does not know,
+// and a spec with no files.
+func checkFields(s Spec) error {
+	switch {
+	case len(s.Name) > maxName:
+		return fmt.Errorf("dependency: name is %d bytes long, over the limit of %d", len(s.Name), maxName)
+	case strings.ContainsFunc(s.Name, func(r rune) bool { return unicode.IsSpace(r) || check.ActedOn(r) }):
+		return fmt.Errorf("dependency: name %s holds a blank or a character a terminal acts on, which no package's name holds", core.Quote(s.Name))
+	case s.Only != "" && s.Only != Range && s.Only != Resolved:
+		return fmt.Errorf("dependency: only is %s; write %s for the versions manifests accept, or %s for the versions lockfiles record", core.Quote(s.Only), Range, Resolved)
+	case len(s.Files) == 0:
+		return errors.New("dependency: files is required: list the manifests and lockfiles, such as go.mod, package.json, package-lock.json or **/Cargo.toml")
+	}
+	return nil
 }
 
 // extractor is a built dependency extractor.
@@ -194,15 +214,24 @@ func (x extractor) Extract(ctx context.Context, root string) ([]check.Value, err
 		if err != nil {
 			return nil, err
 		}
-		for _, v := range got {
-			if len(out) == core.MaxValues {
-				return nil, fmt.Errorf("dependency: the files hold more than %d values of %s, the limit", core.MaxValues, x.what())
-			}
-			if held += int64(len(v.Text)); held > x.limit {
-				return nil, fmt.Errorf("dependency: the values of %s hold more than %d bytes in all, the extractor's max_bytes; set max_bytes: higher", x.what(), x.limit)
-			}
-			out = append(out, v)
+		if out, err = x.add(out, got, &held); err != nil {
+			return nil, err
 		}
+	}
+	return out, nil
+}
+
+// add appends one file's values got to out, held counting the bytes of
+// the values so far, and refuses more values or bytes than the limits.
+func (x extractor) add(out, got []check.Value, held *int64) ([]check.Value, error) {
+	for _, v := range got {
+		if len(out) == core.MaxValues {
+			return nil, fmt.Errorf("dependency: the files hold more than %d values of %s, the limit", core.MaxValues, x.what())
+		}
+		if *held += int64(len(v.Text)); *held > x.limit {
+			return nil, fmt.Errorf("dependency: the values of %s hold more than %d bytes in all, the extractor's max_bytes; set max_bytes: higher", x.what(), x.limit)
+		}
+		out = append(out, v)
 	}
 	return out, nil
 }

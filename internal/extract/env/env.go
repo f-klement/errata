@@ -134,11 +134,8 @@ func (r Readers) names() string {
 
 // Build checks s and returns its extractor.
 func Build(s Spec, r Readers) (check.Extractor, error) {
-	if s.Name == "" {
-		return nil, errors.New("env: name is required")
-	}
-	if len(s.Name) > maxName || !variableName.MatchString(s.Name) {
-		return nil, fmt.Errorf("env: name %s is no variable name every reader reads: write a letter or _, then letters, digits and _, %d bytes at most", core.Quote(s.Name), maxName)
+	if err := checkName(s.Name); err != nil {
+		return nil, err
 	}
 	if len(s.Files) == 0 {
 		return nil, errors.New("env: files is required: list the files that set the variable, such as .env, deploy.sh or .github/workflows/*.yml")
@@ -152,32 +149,60 @@ func Build(s Spec, r Readers) (check.Extractor, error) {
 		return nil, err
 	}
 	x := extractor{name: s.Name, limit: src.Limit, readers: r, files: files, by: make([]string, len(files.Entries))}
-	for f, reader := range s.Readers {
-		i := slices.IndexFunc(files.Entries, func(e core.FileEntry) bool { return e.Clean == path.Clean(filepath.ToSlash(f)) })
+	if err := x.give(s.Readers); err != nil {
+		return nil, err
+	}
+	if err := x.checkReaders(s.MaxBytes); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// checkName refuses a name that is missing, or is no variable name every
+// reader reads.
+func checkName(name string) error {
+	if name == "" {
+		return errors.New("env: name is required")
+	}
+	if len(name) > maxName || !variableName.MatchString(name) {
+		return fmt.Errorf("env: name %s is no variable name every reader reads: write a letter or _, then letters, digits and _, %d bytes at most", core.Quote(name), maxName)
+	}
+	return nil
+}
+
+// give gives each entry the reader readers: names for it, and refuses a
+// file the entries do not list or a reader that is none of x's.
+func (x extractor) give(readers map[string]string) error {
+	for f, reader := range readers {
+		i := slices.IndexFunc(x.files.Entries, func(e core.FileEntry) bool { return e.Clean == path.Clean(filepath.ToSlash(f)) })
 		if i < 0 {
-			return nil, fmt.Errorf("env: readers names %s, which files does not list", core.Quote(f))
+			return fmt.Errorf("env: readers names %s, which files does not list", core.Quote(f))
 		}
-		if r.find(reader) == nil {
-			return nil, fmt.Errorf("env: readers gives %s the reader %s; write one of %s", core.Quote(f), core.Quote(reader), r.names())
+		if x.readers.find(reader) == nil {
+			return fmt.Errorf("env: readers gives %s the reader %s; write one of %s", core.Quote(f), core.Quote(reader), x.readers.names())
 		}
 		x.by[i] = reader
 	}
-	// Each reader an entry chooses checks the name now, so a name it
-	// refuses, such as GITHUB_TOKEN, fails the load and not each run. A
-	// glob's own name chooses as its files' do: .github/workflows/*.yml.
-	for i, e := range files.Entries {
+	return nil
+}
+
+// checkReaders has each reader an entry chooses check the name now, so a
+// name it refuses, such as GITHUB_TOKEN, fails the load and not each run. A
+// glob's own name chooses as its files' do: .github/workflows/*.yml.
+func (x extractor) checkReaders(maxBytes int64) error {
+	for i, e := range x.files.Entries {
 		reader := x.by[i]
 		if reader == "" {
-			reader = r.Choose(e.Clean)
+			reader = x.readers.Choose(e.Clean)
 		}
 		if reader == "" {
 			continue
 		}
-		if _, err := r.find(reader).Read(e.Clean, s.Name, s.MaxBytes); err != nil {
-			return nil, fmt.Errorf("env: %w", err)
+		if _, err := x.readers.find(reader).Read(e.Clean, x.name, maxBytes); err != nil {
+			return fmt.Errorf("env: %w", err)
 		}
 	}
-	return x, nil
+	return nil
 }
 
 // Bound is the max_bytes s sets, 0 for the default (core.Bounded).
@@ -256,28 +281,16 @@ func (x extractor) Extract(ctx context.Context, root string) ([]check.Value, err
 	if err != nil {
 		return nil, err
 	}
-	out := []check.Value{}
+	g := gathered{out: []check.Value{}}
 	left := x.limit // the bytes the files read may still hold
-	var held int64  // the bytes of the values so far
 	for _, t := range targets {
-		head, size, err := core.Source{File: t.file, Limit: left}.Head(ctx, root, x.readers.sniffBytes())
-		if err != nil && errors.Is(err, core.ErrTooLarge) {
-			// The limit the message names is what the files before left,
-			// or max_bytes for the first.
-			return nil, fmt.Errorf("env: %w; the files env reads, and a GitLab CI file's includes, hold at most max_bytes, %d, in all", err, x.limit)
-		}
+		head, size, err := x.head(ctx, root, t.file, left)
 		if err != nil {
 			return nil, err
 		}
-		reader := t.reader
-		if reader == "" {
-			reader = x.readers.Choose(t.file)
-		}
-		if reader == "" {
-			reader = x.readers.Sniff(head)
-		}
-		if reader == "" {
-			return nil, fmt.Errorf("env: no reader reads %s: its name is none the readers' are, and it starts with no #! line of a shell; give it one under readers:, one of %s", core.Quote(t.file), x.readers.names())
+		reader, err := x.readerOf(t, head)
+		if err != nil {
+			return nil, err
 		}
 		// At least 1, since a reader's 0 is the default of 32 MiB: a file
 		// that grows past what Head saw is then refused as grown.
@@ -286,19 +299,62 @@ func (x extractor) Extract(ctx context.Context, root string) ([]check.Value, err
 			return nil, err
 		}
 		left -= max(size, read)
-		for _, v := range vs {
-			if len(out) == core.MaxValues {
-				return nil, fmt.Errorf("env: the files hold more than %d values of %s, the limit", core.MaxValues, x.name)
-			}
-			if held += int64(len(v.Text)); held > x.limit {
-				return nil, fmt.Errorf("env: the values of %s hold more than %d bytes in all, the extractor's max_bytes; set max_bytes: higher", x.name, x.limit)
-			}
-			v.Key, v.HasKey = "", false
-			v.Origin = strings.TrimSpace(reader + " " + v.Origin)
-			out = append(out, v)
+		if err := x.keep(&g, vs, reader); err != nil {
+			return nil, err
 		}
 	}
-	return out, nil
+	return g.out, nil
+}
+
+// head is the start of file under root that a reader's sniff reads, and the
+// file's size, which may hold at most left bytes.
+func (x extractor) head(ctx context.Context, root, file string, left int64) ([]byte, int64, error) {
+	head, size, err := core.Source{File: file, Limit: left}.Head(ctx, root, x.readers.sniffBytes())
+	if err != nil && errors.Is(err, core.ErrTooLarge) {
+		// The limit the message names is what the files before left,
+		// or max_bytes for the first.
+		return nil, 0, fmt.Errorf("env: %w; the files env reads, and a GitLab CI file's includes, hold at most max_bytes, %d, in all", err, x.limit)
+	}
+	return head, size, err
+}
+
+// readerOf is the reader of t: its entry's, else the one its name chooses,
+// else the one its head's #! line does.
+func (x extractor) readerOf(t target, head []byte) (string, error) {
+	reader := t.reader
+	if reader == "" {
+		reader = x.readers.Choose(t.file)
+	}
+	if reader == "" {
+		reader = x.readers.Sniff(head)
+	}
+	if reader == "" {
+		return "", fmt.Errorf("env: no reader reads %s: its name is none the readers' are, and it starts with no #! line of a shell; give it one under readers:, one of %s", core.Quote(t.file), x.readers.names())
+	}
+	return reader, nil
+}
+
+// gathered is the values Extract has kept so far, and the bytes they hold.
+type gathered struct {
+	out  []check.Value
+	held int64
+}
+
+// keep adds the values reader gave to g, within the limits on values, each
+// with no key and reader at the start of its origin.
+func (x extractor) keep(g *gathered, vs []check.Value, reader string) error {
+	for _, v := range vs {
+		if len(g.out) == core.MaxValues {
+			return fmt.Errorf("env: the files hold more than %d values of %s, the limit", core.MaxValues, x.name)
+		}
+		if g.held += int64(len(v.Text)); g.held > x.limit {
+			return fmt.Errorf("env: the values of %s hold more than %d bytes in all, the extractor's max_bytes; set max_bytes: higher", x.name, x.limit)
+		}
+		v.Key, v.HasKey = "", false
+		v.Origin = strings.TrimSpace(reader + " " + v.Origin)
+		g.out = append(g.out, v)
+	}
+	return nil
 }
 
 // read is the values reader gives of the variable in file, none for a

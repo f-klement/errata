@@ -453,12 +453,23 @@ func TemplateNotLiteral(file string, test func(*Entry) bool) func(*Entry) bool {
 	if !IsTemplate(base) {
 		return test
 	}
-	erb := strings.HasSuffix(base, ".erb")
-	terraform := strings.HasSuffix(base, ".tpl") || strings.HasSuffix(base, ".tftpl")
-	return func(e *Entry) bool {
-		v := e.Value
-		return e.InBlock || HasJinja(v) || erb && bytes.Contains(v, []byte("<%")) ||
-			terraform && (bytes.Contains(v, []byte("${")) || bytes.Contains(v, []byte("%{"))) ||
-			test != nil && test(e)
+	marks := templateMarks{
+		erb:       strings.HasSuffix(base, ".erb"),
+		terraform: strings.HasSuffix(base, ".tpl") || strings.HasSuffix(base, ".tftpl"),
 	}
+	return func(e *Entry) bool {
+		return e.InBlock || marks.in(e.Value) || test != nil && test(e)
+	}
+}
+
+// templateMarks is which engines besides Jinja's a template file's suffix
+// names, whose tags a value may hold.
+type templateMarks struct {
+	erb, terraform bool
+}
+
+// in reports whether v holds the start of a tag the engines render.
+func (m templateMarks) in(v []byte) bool {
+	return HasJinja(v) || m.erb && bytes.Contains(v, []byte("<%")) ||
+		m.terraform && (bytes.Contains(v, []byte("${")) || bytes.Contains(v, []byte("%{")))
 }

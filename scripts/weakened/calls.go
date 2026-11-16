@@ -88,7 +88,7 @@ func (r *reader) inline(s *ast.IfStmt) {
 		}
 		if lit != nil {
 			side := r.print(other)
-			r.want(fmt.Sprintf("inline %s #%d", side, r.next("inline "+side)), "the value compared with "+clip(side), lit)
+			r.want(fmt.Sprintf("inline %s #%d", side, r.next("inline "+side)), "", "the value compared with "+clip(side), lit)
 		}
 		return true
 	})

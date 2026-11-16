@@ -57,44 +57,70 @@ type Text struct{}
 
 func (Text) Write(w io.Writer, r check.Report) error {
 	var b strings.Builder
-	for _, res := range r.Results {
+	writeFailures(&b, r.Results)
+	writeSummary(&b, r)
+	writeSkips(&b, r.Results)
+	writeLeftOut(&b, r.Results)
+	writeNotes(&b, r.Results)
+	_, err := io.WriteString(w, QuoteControls(b.String()))
+	return err
+}
+
+// writeFailures writes each failed result: its verdict, name and scope, the
+// check's reason and the result's message, then a blank line.
+func writeFailures(b *strings.Builder, results []check.Result) {
+	for _, res := range results {
 		if !res.Failed() {
 			continue
 		}
-		fmt.Fprintf(&b, "%s %s (%s)\n", strings.ToUpper(string(res.Verdict)), res.Name(), res.Check.Scope)
-		writeIndented(&b, "why:  ", res.Check.Reason)
+		fmt.Fprintf(b, "%s %s (%s)\n", strings.ToUpper(string(res.Verdict)), res.Name(), res.Check.Scope)
+		writeIndented(b, "why:  ", res.Check.Reason)
 		if res.Message != "" {
-			writeIndented(&b, "said: ", res.Message)
+			writeIndented(b, "said: ", res.Message)
 		}
 		b.WriteString("\n")
 	}
+}
 
+// writeSummary writes the run's counts on one line: errata, unknowns,
+// coverage, the witnesses held when any ran, and whether a skip fails it.
+func writeSummary(b *strings.Builder, r check.Report) {
 	ran, skipped := r.Coverage()
-	fmt.Fprintf(&b, "%s, %d unknown. Coverage: ran %d, skipped %d.", errataCount(len(r.Errata())), len(r.Unknowns()), ran, skipped)
+	fmt.Fprintf(b, "%s, %d unknown. Coverage: ran %d, skipped %d.", errataCount(len(r.Errata())), len(r.Unknowns()), ran, skipped)
 	if held, ran := r.WitnessesHeld(); ran > 0 {
-		fmt.Fprintf(&b, " %s held.", plural(held, "witness", "witnesses"))
+		fmt.Fprintf(b, " %s held.", plural(held, "witness", "witnesses"))
 	}
 	if r.FailingSkips() > 0 {
 		b.WriteString(" A skip fails this run.")
 	}
 	b.WriteString("\n")
-	for _, res := range r.Results {
+}
+
+// writeSkips writes a line for each skipped result, with its gap.
+func writeSkips(b *strings.Builder, results []check.Result) {
+	for _, res := range results {
 		if res.Skipped() {
-			fmt.Fprintf(&b, "  skipped %s (%s): %s\n", res.Check.ID, res.Check.Scope, res.Gap)
+			fmt.Fprintf(b, "  skipped %s (%s): %s\n", res.Check.ID, res.Check.Scope, res.Gap)
 		}
 	}
-	for _, res := range r.Results {
+}
+
+// writeLeftOut writes a line for each value skip_not_literal left out.
+func writeLeftOut(b *strings.Builder, results []check.Result) {
+	for _, res := range results {
 		for _, f := range leftOut(res) {
-			fmt.Fprintf(&b, "  left out of %s (%s), not literal: %s\n", res.Check.ID, res.Check.Scope, where(f))
+			fmt.Fprintf(b, "  left out of %s (%s), not literal: %s\n", res.Check.ID, res.Check.Scope, where(f))
 		}
 	}
-	for _, res := range r.Results {
+}
+
+// writeNotes writes the note of each true result that has one.
+func writeNotes(b *strings.Builder, results []check.Result) {
+	for _, res := range results {
 		if res.Verdict == check.VerdictTrue && res.Note != "" {
-			writeIndented(&b, fmt.Sprintf("note on %s (%s): ", res.Check.ID, res.Check.Scope), res.Note)
+			writeIndented(b, fmt.Sprintf("note on %s (%s): ", res.Check.ID, res.Check.Scope), res.Note)
 		}
 	}
-	_, err := io.WriteString(w, QuoteControls(b.String()))
-	return err
 }
 
 // QuoteControls writes every rune of s that a terminal acts on instead of

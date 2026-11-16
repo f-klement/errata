@@ -219,14 +219,28 @@ func (w *walker) release(stmt *syntax.Stmt) {
 // clearNode is release's callback: it clears a node once its children are
 // walked, when syntax.Walk calls it with nil.
 func (w *walker) clearNode(n syntax.Node) bool {
-	if r, ok := n.(*syntax.Redirect); ok && r.Hdoc == nil && (r.Op == syntax.Hdoc || r.Op == syntax.DashHdoc) {
+	if r, ok := n.(*syntax.Redirect); ok && unreadHdoc(r) {
 		return false
 	}
 	if n != nil {
 		w.stack = append(w.stack, n)
 		return true
 	}
-	switch n := w.stack[len(w.stack)-1].(type) {
+	clearText(w.stack[len(w.stack)-1])
+	w.stack = w.stack[:len(w.stack)-1]
+	return true
+}
+
+// unreadHdoc reports whether r is a here-document whose body the parser
+// has not read yet.
+func unreadHdoc(r *syntax.Redirect) bool {
+	return r.Hdoc == nil && (r.Op == syntax.Hdoc || r.Op == syntax.DashHdoc)
+}
+
+// clearText drops what the node n holds of the script's text and of the
+// nodes below it.
+func clearText(n syntax.Node) {
+	switch n := n.(type) {
 	case *syntax.Stmt:
 		n.Cmd, n.Redirs = nil, nil
 	case *syntax.Word:
@@ -240,8 +254,6 @@ func (w *walker) clearNode(n syntax.Node) bool {
 	case *syntax.SglQuoted:
 		n.Value = ""
 	}
-	w.stack = w.stack[:len(w.stack)-1]
-	return true
 }
 
 // visit is syntax.Walk's callback: a node, or nil when the children of the
@@ -265,6 +277,15 @@ func (w *walker) visit(n syntax.Node) bool {
 		w.err = core.LineError(lineAt(w.data, w.stmtOffset()), "the script's syntax is more than %d levels deep, the limit, as a pipeline, a list of && and || or a sum of about %d commands or terms makes it; a regex extractor can still read the file", maxTreeDepth, maxTreeDepth/2)
 		return false
 	}
+	w.read(n)
+	w.quotes = append(w.quotes, w.quotingOf(n))
+	w.stack = append(w.stack, n)
+	return true
+}
+
+// read reads the node n by its kind: what it assigns, the default it
+// gives, or the here-document it leaves for later.
+func (w *walker) read(n syntax.Node) {
 	switch n := n.(type) {
 	case *syntax.DeclClause:
 		w.decl(n)
@@ -275,13 +296,10 @@ func (w *walker) visit(n syntax.Node) bool {
 	case *syntax.ParamExp:
 		w.param(n)
 	case *syntax.Redirect:
-		if n.Hdoc == nil && (n.Op == syntax.Hdoc || n.Op == syntax.DashHdoc) {
+		if unreadHdoc(n) {
 			w.pending = append(w.pending, pendingDoc{r: n, off: w.base})
 		}
 	}
-	w.quotes = append(w.quotes, w.quotingOf(n))
-	w.stack = append(w.stack, n)
-	return true
 }
 
 // closeNode applies the values a declaration or a posix export, readonly
@@ -381,25 +399,45 @@ func (w *walker) assign(a *syntax.Assign) {
 		}
 		return
 	}
-	notLiteral := a.Append || a.Index != nil || w.declArgs[a] || w.inBlock(offset(a.Pos()))
-	var text string
-	var from, to int
-	ok := true
+	notLiteral := w.assignNotLiteral(a)
+	text, from, to, ok := w.assignValue(a, inDecl, notLiteral)
+	literal := ok && !notLiteral
+	if name == w.name && !w.full() {
+		w.keep(text, offset(a.Pos()), from, to, !literal)
+	}
+	w.record(name, varState{value: text, known: literal}, d, inDecl)
+}
+
+// assignNotLiteral reports whether an assignment's value is not literal
+// whatever it holds: an append, an element, a value after an option that
+// changes it, or one in a block.
+func (w *walker) assignNotLiteral(a *syntax.Assign) bool {
+	return a.Append || a.Index != nil || w.declArgs[a] || w.inBlock(offset(a.Pos()))
+}
+
+// assignValue is the text of an assignment's value, where it is written,
+// and whether it is literal: an array is written as it stands, and so is a
+// value that is not literal.
+func (w *walker) assignValue(a *syntax.Assign, inDecl, notLiteral bool) (text string, from, to int, ok bool) {
+	ok = true
 	if a.Array != nil {
 		from, to = offset(a.Array.Lparen), offset(a.Array.End())
-		text, ok = w.source(from, to), false
-	} else if a.Value != nil {
+		return w.source(from, to), from, to, false
+	}
+	if a.Value != nil {
 		from, to = offset(a.Value.Pos()), offset(a.Value.End())
 		text, ok = w.literal(a.Value, unquoted, inDecl)
 		if !ok || notLiteral {
 			text = w.source(from, to)
 		}
 	}
-	literal := ok && !notLiteral
-	if name == w.name && !w.full() {
-		w.keep(text, offset(a.Pos()), from, to, !literal)
-	}
-	st := varState{value: text, known: literal}
+	return text, from, to, ok
+}
+
+// record records what an assignment st gives the variable name: once
+// the declaration d it is in is read, or at once, unless a command follows
+// it, for which alone it sets the variable.
+func (w *walker) record(name string, st varState, d *syntax.DeclClause, inDecl bool) {
 	if inDecl {
 		w.deferred = append(w.deferred, assigned{name, st, d.Variant.Value == "readonly"})
 		return
@@ -463,10 +501,7 @@ func (w *walker) resolve(name string) (string, bool) {
 // ${X:-v}, ${X-v}, ${X:=v} and ${X=v}, read in the quoting the expansion is
 // in.
 func (w *walker) param(p *syntax.ParamExp) {
-	if p.Param == nil || p.Exp == nil || p.Param.Value != w.name || w.full() {
-		return
-	}
-	if p.Index != nil || p.Excl || p.Length || p.Width || !defaultOp(p.Exp.Op) {
+	if !w.givesDefault(p) || w.full() {
 		return
 	}
 	if p.Exp.Word == nil {
@@ -479,6 +514,16 @@ func (w *walker) param(p *syntax.ParamExp) {
 		text = w.source(from, to)
 	}
 	w.keep(text, offset(p.Pos()), from, to, !ok)
+}
+
+// givesDefault reports whether p gives the variable a default: one of the
+// operators of defaultOp on the variable itself, with no index and in no
+// other form.
+func (w *walker) givesDefault(p *syntax.ParamExp) bool {
+	if p.Param == nil || p.Exp == nil || p.Param.Value != w.name {
+		return false
+	}
+	return p.Index == nil && !p.Excl && !p.Length && !p.Width && defaultOp(p.Exp.Op)
 }
 
 // defaultOp reports whether a parameter expansion's operator gives a
@@ -523,11 +568,18 @@ func (w *walker) quotingOf(n syntax.Node) quoting {
 			return pattern
 		}
 	case *syntax.Word:
-		if r, ok := w.parent().(*syntax.Redirect); ok && r.Hdoc == n {
+		if w.hdocBody(n) {
 			return heredoc
 		}
 	}
 	return w.quoting()
+}
+
+// hdocBody reports whether the word n is the body of the here-document of
+// the redirect it is a child of.
+func (w *walker) hdocBody(n *syntax.Word) bool {
+	r, ok := w.parent().(*syntax.Redirect)
+	return ok && r.Hdoc == n
 }
 
 // wordOp reports whether a parameter expansion's operator takes a word,
@@ -573,36 +625,48 @@ type declState struct {
 // argument is one, since the parser reads export, readonly and local as
 // commands.
 func (w *walker) declWord(s *declState, word *syntax.Word) {
-	readonly := s.variant == "readonly"
-	name, value, from, literal, ok := w.splitAssign(word)
-	if ok {
-		text := value
-		notLiteral := !literal || s.changes || s.unreadable || w.inBlock(offset(word.Pos()))
-		if notLiteral {
-			text = w.source(from, offset(word.End()))
-		}
-		if name == w.name {
-			if !w.full() {
-				w.keep(text, offset(word.Pos()), from, offset(word.End()), notLiteral)
-			}
-			w.transformed = w.transformed || s.changes
-		}
-		w.deferred = append(w.deferred, assigned{name, varState{value: text, known: !notLiteral}, readonly})
+	if name, value, from, literal, ok := w.splitAssign(word); ok {
+		w.declAssign(s, word, name, value, from, literal)
 		return
 	}
 	text, isLit := w.literal(word, unquoted, false)
-	if isLit && isName(text) {
-		if readonly {
-			w.readonly[text] = true
-		}
-		w.transformed = w.transformed || s.changes && text == w.name
-		return
-	}
-	if isLit && (strings.HasPrefix(text, "-") || strings.HasPrefix(text, "+")) {
+	switch {
+	case !isLit:
+		s.unreadable = true
+	case isName(text):
+		w.declName(s, text)
+	case strings.HasPrefix(text, "-") || strings.HasPrefix(text, "+"):
 		s.changes = s.changes || changesValues(s.variant, text)
-		return
+	default:
+		s.unreadable = true
 	}
-	s.unreadable = true
+}
+
+// declAssign reads an argument of a declaration that assigns name the
+// value value, written from the offset from, and defers the assignment
+// until the declaration is read.
+func (w *walker) declAssign(s *declState, word *syntax.Word, name, value string, from int, literal bool) {
+	text := value
+	notLiteral := !literal || s.changes || s.unreadable || w.inBlock(offset(word.Pos()))
+	if notLiteral {
+		text = w.source(from, offset(word.End()))
+	}
+	if name == w.name {
+		if !w.full() {
+			w.keep(text, offset(word.Pos()), from, offset(word.End()), notLiteral)
+		}
+		w.transformed = w.transformed || s.changes
+	}
+	w.deferred = append(w.deferred, assigned{name, varState{value: text, known: !notLiteral}, s.variant == "readonly"})
+}
+
+// declName reads an argument of a declaration that is a name alone, which
+// a readonly declaration makes read only.
+func (w *walker) declName(s *declState, name string) {
+	if s.variant == "readonly" {
+		w.readonly[name] = true
+	}
+	w.transformed = w.transformed || s.changes && name == w.name
 }
 
 // splitAssign reads a word that starts, once its quotes are removed, with
@@ -614,17 +678,7 @@ func (w *walker) splitAssign(word *syntax.Word) (name, value string, from int, l
 	var b strings.Builder
 	literal = w.parts(&b, word.Parts, unquoted)
 	if !literal {
-		// The name may still be literal: the text before the first part
-		// that is not, inside double quotes too.
-		b.Reset()
-		w.literalPrefix(&b, word.Parts, unquoted)
-		if first, isLit := word.Parts[0].(*syntax.Lit); isLit && !strings.Contains(b.String(), "=") {
-			// The name and its = share the first part, which is not
-			// literal as a whole, as in V=a:~/b or V=a\ at the end of
-			// the file: the name is still plain text before the =.
-			b.Reset()
-			b.WriteString(first.Value)
-		}
+		w.namePrefix(&b, word)
 	}
 	name, rest, found := strings.Cut(b.String(), "=")
 	if !found || !isName(name) {
@@ -634,15 +688,34 @@ func (w *walker) splitAssign(word *syntax.Word) (name, value string, from int, l
 	if first, isLit := word.Parts[0].(*syntax.Lit); isLit && strings.HasPrefix(first.Value, name+"=") {
 		from += len(name) + 1
 	}
+	literal = literal && !matchOp(word) && (w.lang == syntax.LangPOSIX || !bracesExpand(word))
+	return name, rest, from, literal, true
+}
+
+// namePrefix writes to b, in place of a word that is not literal as a
+// whole, the text that may still hold its name: the text before the first
+// part that is not literal, inside double quotes too.
+func (w *walker) namePrefix(b *strings.Builder, word *syntax.Word) {
+	b.Reset()
+	w.literalPrefix(b, word.Parts, unquoted)
+	if first, isLit := word.Parts[0].(*syntax.Lit); isLit && !strings.Contains(b.String(), "=") {
+		// The name and its = share the first part, which is not
+		// literal as a whole, as in V=a:~/b or V=a\ at the end of
+		// the file: the name is still plain text before the =.
+		b.Reset()
+		b.WriteString(first.Value)
+	}
+}
+
+// matchOp reports whether a plain text part of word holds =~; splitAssign
+// reads no such value as literal.
+func matchOp(word *syntax.Word) bool {
 	for _, p := range word.Parts {
 		if l, isLit := p.(*syntax.Lit); isLit && strings.Contains(l.Value, "=~") {
-			literal = false
+			return true
 		}
 	}
-	if literal && w.lang != syntax.LangPOSIX && bracesExpand(word) {
-		literal = false
-	}
-	return name, rest, from, literal, true
+	return false
 }
 
 // literalPrefix writes the text of the parts before the first that is not

@@ -514,14 +514,28 @@ func parseRun(block text.Reader, minimum int, processor parser.DelimiterProcesso
 // one closes, and a run of _ that is both opens only after punctuation and
 // closes only before it.
 func canOpenClose(before, after rune, c byte) (canOpen, canClose bool) {
-	beforeSpace, beforePunct := markdownSpace(before), markdownPunct(before)
-	afterSpace, afterPunct := markdownSpace(after), markdownPunct(after)
-	left := !afterSpace && (!afterPunct || beforeSpace || beforePunct)
-	right := !beforeSpace && (!beforePunct || afterSpace || afterPunct)
+	left, right := flanking(before, after)
 	if c == '_' {
-		return left && (!right || beforePunct), right && (!left || afterPunct)
+		return underscoreOpenClose(left, right, markdownPunct(before), markdownPunct(after))
 	}
 	return left, right
+}
+
+// flanking reports whether a run between the characters before and after
+// it is left-flanking and right-flanking.
+func flanking(before, after rune) (left, right bool) {
+	beforeSpace, beforePunct := markdownSpace(before), markdownPunct(before)
+	afterSpace, afterPunct := markdownSpace(after), markdownPunct(after)
+	left = !afterSpace && (!afterPunct || beforeSpace || beforePunct)
+	right = !beforeSpace && (!beforePunct || afterSpace || afterPunct)
+	return left, right
+}
+
+// underscoreOpenClose is canOpenClose for a run of _, left and right
+// flanking as given: one that is both opens only after punctuation and
+// closes only before it.
+func underscoreOpenClose(left, right, beforePunct, afterPunct bool) (canOpen, canClose bool) {
+	return left && (!right || beforePunct), right && (!left || afterPunct)
 }
 
 // markdownSpace is CommonMark's Unicode whitespace character: a space
@@ -674,16 +688,22 @@ func headerCells(line []byte) int {
 	}
 	cells := 0
 	for pos < limit {
-		closure := pos
-		for ; closure < limit; closure++ {
-			if line[closure] == '|' && (closure == 0 || line[closure-1] != '\\') {
-				break
-			}
-		}
 		cells++
-		pos = closure + 1
+		pos = cellEnd(line, pos, limit) + 1
 	}
 	return cells
+}
+
+// cellEnd is where the cell of line that starts at pos ends: at the first
+// | before limit that no backslash escapes, or at limit.
+func cellEnd(line []byte, pos, limit int) int {
+	closure := pos
+	for ; closure < limit; closure++ {
+		if line[closure] == '|' && (closure == 0 || line[closure-1] != '\\') {
+			break
+		}
+	}
+	return closure
 }
 
 // delimiterColumns is the columns of line read as goldmark's table
@@ -697,6 +717,18 @@ func delimiterColumns(line []byte) int {
 	if len(bytes.Trim(line, "-")) == 0 || len(bytes.Trim(line, " \t\n\v\f\r-|:")) > 0 {
 		return 0
 	}
+	cols := delimiterCells(line)
+	for _, c := range cols {
+		if !delimiterCell(c) {
+			return 0
+		}
+	}
+	return len(cols)
+}
+
+// delimiterCells are the cells of a delimiter row line between its pipes,
+// a blank cell at either end left out.
+func delimiterCells(line []byte) [][]byte {
 	cols := bytes.Split(line, []byte("|"))
 	if util.IsBlank(cols[0]) {
 		cols = cols[1:]
@@ -704,13 +736,14 @@ func delimiterColumns(line []byte) int {
 	if len(cols) > 0 && util.IsBlank(cols[len(cols)-1]) {
 		cols = cols[:len(cols)-1]
 	}
-	for _, c := range cols {
-		c = bytes.TrimSuffix(bytes.TrimPrefix(bytes.TrimSpace(c), []byte(":")), []byte(":"))
-		if len(c) == 0 || len(bytes.Trim(c, "-")) > 0 {
-			return 0
-		}
-	}
-	return len(cols)
+	return cols
+}
+
+// delimiterCell reports whether c is a cell of a delimiter row: :?-+:?
+// between blanks.
+func delimiterCell(c []byte) bool {
+	c = bytes.TrimSuffix(bytes.TrimPrefix(bytes.TrimSpace(c), []byte(":")), []byte(":"))
+	return len(c) != 0 && len(bytes.Trim(c, "-")) == 0
 }
 
 // tableNodes is an upper bound on the nodes goldmark's table transformer
@@ -955,34 +988,44 @@ func (d *Doc) Err(p *Prose) error {
 // sibling, or to the last sibling when stop is nil, as Prose reads them.
 func (p *Prose) Blocks(src []byte, first, stop ast.Node, code bool) error {
 	for c := first; c != nil && c != stop; c = c.NextSibling() {
-		switch c.Kind() {
-		case ast.KindParagraph, ast.KindHeading:
-			p.Inline(src, c)
-			p.EndBlock()
-		case ast.KindCodeBlock:
-			if code {
-				p.Lines(src, c.(*ast.CodeBlock).Value.Segments())
-			}
-		case ast.KindHTMLBlock:
-			h := c.(*ast.HTMLBlock)
-			switch {
-			case code:
-				p.Lines(src, h.Value.Segments())
-			case shownAsHTML(h, src):
-				if err := p.htmlText(src, h); err != nil {
-					return err
-				}
-			default:
-				p.htmlTail(src, h)
-			}
-		case ast.KindBlockquote, ast.KindList, ast.KindListItem:
-			if err := p.Blocks(src, c.FirstChild(), nil, code); err != nil {
-				return err
-			}
-		case ast.KindThematicBreak, ast.KindLinkReferenceDefinition:
-		default:
-			return fmt.Errorf("line %d: a block of kind %s, which the text extractor does not read", LineOf(src, FirstOffset(c)), c.Kind())
+		if err := p.block(src, c, code); err != nil {
+			return err
 		}
+	}
+	return nil
+}
+
+// block appends the prose of the block c, by its kind, as Blocks reads it.
+func (p *Prose) block(src []byte, c ast.Node, code bool) error {
+	switch c.Kind() {
+	case ast.KindParagraph, ast.KindHeading:
+		p.Inline(src, c)
+		p.EndBlock()
+	case ast.KindCodeBlock:
+		if code {
+			p.Lines(src, c.(*ast.CodeBlock).Value.Segments())
+		}
+	case ast.KindHTMLBlock:
+		return p.htmlBlock(src, c.(*ast.HTMLBlock), code)
+	case ast.KindBlockquote, ast.KindList, ast.KindListItem:
+		return p.Blocks(src, c.FirstChild(), nil, code)
+	case ast.KindThematicBreak, ast.KindLinkReferenceDefinition:
+	default:
+		return fmt.Errorf("line %d: a block of kind %s, which the text extractor does not read", LineOf(src, FirstOffset(c)), c.Kind())
+	}
+	return nil
+}
+
+// htmlBlock appends the prose of the HTML block h: its lines as written
+// when code is set, else what a browser shows of it (htmlText, htmlTail).
+func (p *Prose) htmlBlock(src []byte, h *ast.HTMLBlock, code bool) error {
+	switch {
+	case code:
+		p.Lines(src, h.Value.Segments())
+	case shownAsHTML(h, src):
+		return p.htmlText(src, h)
+	default:
+		p.htmlTail(src, h)
 	}
 	return nil
 }
@@ -1128,11 +1171,17 @@ func breaksLine(b []byte) bool {
 	if i < len(b) && b[i] == '/' {
 		i++
 	}
-	j := i
-	for j < len(b) && !isBlank(b[j]) && b[j] != '/' && b[j] != '>' {
-		j++
-	}
+	j := tagNameEnd(b, i)
 	return j < len(b) && htmlparse.LineTag(string(asciiLower(b[i:j])))
+}
+
+// tagNameEnd is where the name of a tag that starts at i in b ends: at a
+// blank, a / or a >, or at the end of b.
+func tagNameEnd(b []byte, i int) int {
+	for i < len(b) && !isBlank(b[i]) && b[i] != '/' && b[i] != '>' {
+		i++
+	}
+	return i
 }
 
 // tagAt reports whether b holds at i a < that starts a tag, a comment, a
@@ -1154,11 +1203,7 @@ func (p *Prose) Inline(src []byte, n ast.Node) {
 	for c := n.FirstChild(); c != nil; c = c.NextSibling() {
 		switch c := c.(type) {
 		case *ast.Text:
-			s := c.Value.Index()
-			p.copyText(src[s.Start:s.Stop], s.Start)
-			if c.SoftLineBreak() || c.HardLineBreak() {
-				p.space(s.Stop)
-			}
+			p.inlineText(src, c)
 		case *ast.CodeSpan:
 			for _, s := range codeSpanText(c, src) {
 				p.copyText(src[s.Start:s.Stop], s.Start)
@@ -1173,6 +1218,16 @@ func (p *Prose) Inline(src []byte, n ast.Node) {
 		default:
 			p.Inline(src, c)
 		}
+	}
+}
+
+// inlineText appends the text of c, and a space for the line break that
+// ends it.
+func (p *Prose) inlineText(src []byte, c *ast.Text) {
+	s := c.Value.Index()
+	p.copyText(src[s.Start:s.Stop], s.Start)
+	if c.SoftLineBreak() || c.HardLineBreak() {
+		p.space(s.Stop)
 	}
 }
 

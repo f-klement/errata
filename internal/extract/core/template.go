@@ -235,6 +235,17 @@ func (s *blockScan) change(lang templateLang, off, end, delta int) {
 	}
 }
 
+// tagStarts lists, for each engine, the texts that start one of its tags.
+var tagStarts = []struct {
+	lang   templateLang
+	starts []string
+}{
+	{langGo, []string{"{{"}},
+	{langJinja, []string{"{%", "{#"}},
+	{langTerraform, []string{"%{"}},
+	{langERB, []string{"<%"}},
+}
+
 // hides reports whether the body of a tag of lang holds the start of a tag
 // of another engine the file's suffix names, which that engine reads and
 // the scan, passing over the body, does not: in a .tmpl, a Jinja comment
@@ -244,10 +255,22 @@ func (s *blockScan) hides(lang templateLang, body []byte) bool {
 		lang = langJinja // Jinja's own {{ }}, which reads its body as Jinja
 	}
 	other := s.langs &^ lang
-	return other&langGo != 0 && bytes.Contains(body, []byte("{{")) ||
-		other&langJinja != 0 && (bytes.Contains(body, []byte("{%")) || bytes.Contains(body, []byte("{#"))) ||
-		other&langTerraform != 0 && bytes.Contains(body, []byte("%{")) ||
-		other&langERB != 0 && bytes.Contains(body, []byte("<%"))
+	for _, t := range tagStarts {
+		if other&t.lang != 0 && containsAny(body, t.starts) {
+			return true
+		}
+	}
+	return false
+}
+
+// containsAny reports whether body holds any of the texts.
+func containsAny(body []byte, texts []string) bool {
+	for _, t := range texts {
+		if bytes.Contains(body, []byte(t)) {
+			return true
+		}
+	}
+	return false
 }
 
 // hide marks the lines of a tag whose body hides another engine's tags.
@@ -258,63 +281,96 @@ func (s *blockScan) hide(off, end int) {
 	}
 }
 
+// tagOpener is a text that opens a tag of lang, which closer ends, for the
+// files whose engines meet langs. One with no closer is an escape: the
+// engine prints it as text, and the scan passes over it.
+type tagOpener struct {
+	langs  templateLang
+	open   string
+	lang   templateLang
+	closer string
+}
+
+// tagOpeners lists the openers in the order the scan tries them, each
+// escape before the opener it begins with.
+var tagOpeners = []tagOpener{
+	{langJinja, "{%", langJinja, "%}"},
+	{langJinja, "{#", langJinja, "#}"},
+	{langJinja | langGo, "{{", langGo, "}}"},
+	{langERB, "<%%", 0, ""}, // <%% is a literal <%
+	{langERB, "<%", langERB, "%>"},
+	{langTerraform, "%%{", 0, ""}, // %%{ is a literal %{
+	{langTerraform, "%{", langTerraform, "}"},
+}
+
+// openerAt returns the opener of the engines of langs that rest starts
+// with, if any.
+func openerAt(rest []byte, langs templateLang) (tagOpener, bool) {
+	for _, o := range tagOpeners {
+		if langs&o.langs != 0 && bytes.HasPrefix(rest, []byte(o.open)) {
+			return o, true
+		}
+	}
+	return tagOpener{}, false
+}
+
 // tag reads the tag, if any, at p, and returns where the scan goes on.
 func (s *blockScan) tag(p int, langs templateLang, m *Meter) (int, error) {
 	rest := s.data[p:]
-	var lang templateLang
-	var closer string
-	switch {
-	case langs&langJinja != 0 && bytes.HasPrefix(rest, []byte("{%")):
-		lang, closer = langJinja, "%}"
-	case langs&langJinja != 0 && bytes.HasPrefix(rest, []byte("{#")):
-		lang, closer = langJinja, "#}"
-	case langs&(langJinja|langGo) != 0 && bytes.HasPrefix(rest, []byte("{{")):
-		lang, closer = langGo, "}}"
-	case langs&langERB != 0 && bytes.HasPrefix(rest, []byte("<%%")):
-		return p + 3, nil // <%% is a literal <%
-	case langs&langERB != 0 && bytes.HasPrefix(rest, []byte("<%")):
-		lang, closer = langERB, "%>"
-	case langs&langTerraform != 0 && bytes.HasPrefix(rest, []byte("%%{")):
-		return p + 3, nil // %%{ is a literal %{
-	case langs&langTerraform != 0 && bytes.HasPrefix(rest, []byte("%{")):
-		lang, closer = langTerraform, "}"
-	default:
+	o, ok := openerAt(rest, langs)
+	if !ok {
 		return p + 1, nil
 	}
-	n := bytes.Index(rest[2:], []byte(closer))
+	if o.closer == "" {
+		return p + len(o.open), nil
+	}
+	n := bytes.Index(rest[2:], []byte(o.closer))
 	if n < 0 {
 		s.unread = true // a tag the engine refuses
 		return len(s.data), nil
 	}
-	end := p + 2 + n + len(closer)
+	end := p + 2 + n + len(o.closer)
 	if err := m.Charge(tagWork); err != nil {
 		return 0, err
 	}
 	body := rest[2 : 2+n]
-	if s.hides(lang, body) {
+	if s.hides(o.lang, body) {
 		defer s.hide(p, end)
 	}
+	return s.apply(o, langs, p, end, body, m)
+}
+
+// apply applies the tag of o from p to end, whose body is body, to the open
+// blocks, and returns where the scan goes on.
+func (s *blockScan) apply(o tagOpener, langs templateLang, p, end int, body []byte, m *Meter) (int, error) {
 	switch {
-	case closer == "#}":
+	case o.closer == "#}":
 		return end, nil // a Jinja comment
-	case lang == langGo && langs&langGo == 0:
+	case o.lang == langGo && langs&langGo == 0:
 		return end, nil // Jinja's {{ }} prints, and opens nothing
-	case lang == langGo:
+	case o.lang == langGo:
 		s.change(langGo, p, end, goTag(body))
-	case lang == langJinja:
-		delta, raw := jinjaTag(body)
-		if delta == wholeFile {
-			s.whole = true
-			return end, nil
-		}
-		s.change(langJinja, p, end, delta)
-		if raw {
-			return s.endRaw(end, m)
-		}
-	case lang == langERB:
+	case o.lang == langJinja:
+		return s.jinja(p, end, body, m)
+	case o.lang == langERB:
 		s.change(langERB, p, end, erbTag(body))
-	case lang == langTerraform:
+	case o.lang == langTerraform:
 		s.change(langTerraform, p, end, terraformTag(body))
+	}
+	return end, nil
+}
+
+// jinja applies the Jinja tag from p to end, whose body is body, and passes
+// over the text of a raw block it opens.
+func (s *blockScan) jinja(p, end int, body []byte, m *Meter) (int, error) {
+	delta, raw := jinjaTag(body)
+	if delta == wholeFile {
+		s.whole = true
+		return end, nil
+	}
+	s.change(langJinja, p, end, delta)
+	if raw {
+		return s.endRaw(end, m)
 	}
 	return end, nil
 }

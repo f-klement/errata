@@ -72,22 +72,26 @@ func (w *walker) part(b *strings.Builder, part syntax.WordPart, rest []syntax.Wo
 		return w.single(b, p, q)
 	}
 	if p, ok := part.(*syntax.ParamExp); ok {
-		// $Y or ${Y}, which the walk may know the value of. A value past
-		// max_bytes could not be returned, so it is not resolved.
-		if q != unquoted && q != double || !simpleRef(p) {
-			return false
-		}
-		v, ok := w.resolve(p.Param.Value)
-		if !ok || b.Len()+len(v) > w.limit {
-			return false
-		}
-		b.WriteString(v)
-		return true
+		return w.ref(b, p, q)
 	}
 	if p, ok := part.(*syntax.DblQuoted); ok {
 		return w.doubleQuoted(b, p, q)
 	}
 	return false
+}
+
+// ref writes the value of $Y or ${Y}, which the walk may know. A value past
+// max_bytes could not be returned, so it is not resolved.
+func (w *walker) ref(b *strings.Builder, p *syntax.ParamExp, q quoting) bool {
+	if q != unquoted && q != double || !simpleRef(p) {
+		return false
+	}
+	v, ok := w.resolve(p.Param.Value)
+	if !ok || b.Len()+len(v) > w.limit {
+		return false
+	}
+	b.WriteString(v)
+	return true
 }
 
 // single writes the text of '...' or $'...'.
@@ -133,9 +137,7 @@ func (w *walker) doubleQuoted(b *strings.Builder, p *syntax.DblQuoted, q quoting
 
 // simpleRef reports whether a parameter expansion is $Y or ${Y} of a name.
 func simpleRef(p *syntax.ParamExp) bool {
-	return p.Param != nil && isName(p.Param.Value) && p.Flags == nil && !p.Excl && !p.Length && !p.Width &&
-		!p.IsSet && p.NestedParam == nil && p.Index == nil && len(p.Modifiers) == 0 && p.Slice == nil &&
-		p.Repl == nil && p.Names == 0 && p.Exp == nil
+	return p.Param != nil && isName(p.Param.Value) && !paramForm(p) && !paramEdit(p) && p.Exp == nil
 }
 
 // dollarQuote reports whether a literal part ends in a $ no backslash
@@ -167,9 +169,23 @@ func (w *walker) lit(b *strings.Builder, v string, i int, q quoting) bool {
 		b.WriteString(v)
 		return !strings.Contains(v, `\`)
 	}
-	if q == unquoted && (strings.HasPrefix(v, "~") && (i == 0 || strings.HasSuffix(b.String(), ":")) || strings.Contains(v, ":~")) {
+	if q == unquoted && tildeExpands(b, v, i) {
 		return false
 	}
+	return unescape(b, v, q)
+}
+
+// tildeExpands reports whether the literal part v, the i-th of its word
+// with b written before it, holds a tilde the shell expands unquoted: at
+// the start of the word or after a colon.
+func tildeExpands(b *strings.Builder, v string, i int) bool {
+	return strings.HasPrefix(v, "~") && (i == 0 || strings.HasSuffix(b.String(), ":")) || strings.Contains(v, ":~")
+}
+
+// unescape writes v, a literal part unquoted or in double quotes, with the
+// backslashes that quote a character in q removed, and reports whether it
+// is literal: a backslash that ends the part is not.
+func unescape(b *strings.Builder, v string, q quoting) bool {
 	for j := 0; j != len(v); j++ {
 		if v[j] == '\\' {
 			if j+1 == len(v) {

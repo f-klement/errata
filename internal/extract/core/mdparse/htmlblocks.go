@@ -50,73 +50,108 @@ func (d *Doc) htmlBlocks() *htmlBlocks {
 	}
 	hb := &htmlBlocks{index: map[*ast.HTMLBlock]int{}}
 	d.html = hb
+	st := d.joinHTML(hb)
+	hb.events = make([][]htmlEvent, len(st.ends))
+	if len(st.ends) == 0 {
+		return hb
+	}
+	scan := htmlparse.NewScanner(st.stream, d.maxTokens)
+	scan.Blocks(st.ends)
+	for scan.Next() {
+		st.event(hb, scan)
+	}
+	if err := scan.Err(); err != nil {
+		hb.err = st.lineError(d.Src, err)
+	}
+	return hb
+}
+
+// htmlStream is the text of the document's HTML blocks, joined into one
+// stream for the HTML parse.
+type htmlStream struct {
 	// The blocks' lines are joined without the markers of the blocks around
-	// them, as a block quote's; starts and froms map each line back.
-	var stream []byte
-	var starts, froms, ends []int
+	// them, as a block quote's; starts and froms map each line back: line i
+	// starts at starts[i] in stream and at froms[i] in the file. ends holds
+	// where each block ends in stream.
+	stream              []byte
+	starts, froms, ends []int
+}
+
+// joinHTML joins the lines of the HTML blocks shown as HTML, and indexes
+// each block in hb by its place among them.
+func (d *Doc) joinHTML(hb *htmlBlocks) *htmlStream {
+	st := &htmlStream{}
 	_ = ast.Walk(d.Root, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
 		h, ok := n.(*ast.HTMLBlock)
 		if !entering || !ok || !shownAsHTML(h, d.Src) {
 			return ast.WalkContinue, nil
 		}
-		hb.index[h] = len(ends)
+		hb.index[h] = len(st.ends)
 		for _, seg := range h.Value.Segments() {
-			starts, froms = append(starts, len(stream)), append(froms, seg.Start)
-			stream = append(stream, d.Src[seg.Start:seg.Stop]...)
+			st.starts, st.froms = append(st.starts, len(st.stream)), append(st.froms, seg.Start)
+			st.stream = append(st.stream, d.Src[seg.Start:seg.Stop]...)
 		}
-		ends = append(ends, len(stream))
+		st.ends = append(st.ends, len(st.stream))
 		return ast.WalkSkipChildren, nil
 	})
-	hb.events = make([][]htmlEvent, len(ends))
-	if len(ends) == 0 {
-		return hb
+	return st
+}
+
+// line is the line of the stream the offset at is on.
+func (st *htmlStream) line(at int) int { return sort.SearchInts(st.starts, at+1) - 1 }
+
+// fileAt is the offset in the file of the offset at of the stream.
+func (st *htmlStream) fileAt(at int) int {
+	i := st.line(at)
+	return st.froms[i] + at - st.starts[i]
+}
+
+// add records the run from to to of the stream in block b, split where its
+// lines split, each part at its own offset of the file.
+func (st *htmlStream) add(hb *htmlBlocks, b int, kind htmlKind, from, to int) {
+	for i := st.line(from); from < to; i++ {
+		end := to
+		if i+1 < len(st.starts) {
+			end = min(end, st.starts[i+1])
+		}
+		hb.events[b] = append(hb.events[b], htmlEvent{kind: kind, from: st.froms[i] + from - st.starts[i], to: st.froms[i] + end - st.starts[i]})
+		from = end
 	}
-	line := func(at int) int { return sort.SearchInts(starts, at+1) - 1 }
-	fileAt := func(at int) int { i := line(at); return froms[i] + at - starts[i] }
-	// add records the run from to to of the stream, split where its lines
-	// split, each part at its own offset of the file.
-	add := func(b int, kind htmlKind, from, to int) {
-		for i := line(from); from < to; i++ {
-			end := to
-			if i+1 < len(starts) {
-				end = min(end, starts[i+1])
-			}
-			hb.events[b] = append(hb.events[b], htmlEvent{kind: kind, from: froms[i] + from - starts[i], to: froms[i] + end - starts[i]})
-			from = end
+}
+
+// event records the events of the token scan is at: text, a comment's
+// opening and text, and a tag that breaks a line.
+func (st *htmlStream) event(hb *htmlBlocks, scan *htmlparse.Scanner) {
+	b, from, to := scan.Block(), scan.Start(), scan.End()
+	switch scan.Kind() {
+	case htmlparse.Text:
+		st.add(hb, b, eventText, from, to)
+	case htmlparse.Pre:
+		st.add(hb, b, eventPre, from, to)
+	case htmlparse.Comment:
+		if start, end, ok := scan.CommentText(); ok {
+			hb.events[b] = append(hb.events[b], htmlEvent{kind: eventComment, from: st.fileAt(from)})
+			st.add(hb, b, eventCommentText, start, end)
+		}
+	case htmlparse.StartTag, htmlparse.EndTag:
+		if scan.BreaksLine() {
+			hb.events[b] = append(hb.events[b], htmlEvent{kind: eventBreak, from: st.fileAt(from)})
 		}
 	}
-	scan := htmlparse.NewScanner(stream, d.maxTokens)
-	scan.Blocks(ends)
-	for scan.Next() {
-		b, from, to := scan.Block(), scan.Start(), scan.End()
-		switch scan.Kind() {
-		case htmlparse.Text:
-			add(b, eventText, from, to)
-		case htmlparse.Pre:
-			add(b, eventPre, from, to)
-		case htmlparse.Comment:
-			if start, end, ok := scan.CommentText(); ok {
-				hb.events[b] = append(hb.events[b], htmlEvent{kind: eventComment, from: fileAt(from)})
-				add(b, eventCommentText, start, end)
-			}
-		case htmlparse.StartTag, htmlparse.EndTag:
-			if scan.BreaksLine() {
-				hb.events[b] = append(hb.events[b], htmlEvent{kind: eventBreak, from: fileAt(from)})
-			}
-		}
+}
+
+// lineError is err, the HTML parse's error, with the line of the file it
+// stopped at when it names one.
+func (st *htmlStream) lineError(src []byte, err error) error {
+	var many *htmlparse.TooManyTokensError
+	var nest *htmlparse.NestError
+	switch {
+	case errors.As(err, &many):
+		return fmt.Errorf("line %d: %w", LineOf(src, st.fileAt(many.At)), err)
+	case errors.As(err, &nest):
+		return fmt.Errorf("line %d: %w", LineOf(src, st.fileAt(nest.At)), err)
 	}
-	if err := scan.Err(); err != nil {
-		var many *htmlparse.TooManyTokensError
-		var nest *htmlparse.NestError
-		switch {
-		case errors.As(err, &many):
-			err = fmt.Errorf("line %d: %w", LineOf(d.Src, fileAt(many.At)), err)
-		case errors.As(err, &nest):
-			err = fmt.Errorf("line %d: %w", LineOf(d.Src, fileAt(nest.At)), err)
-		}
-		hb.err = err
-	}
-	return hb
+	return err
 }
 
 // htmlText appends the text a browser shows of HTML block h, as the HTML

@@ -110,6 +110,20 @@ func TestFileSetEmptyAndRefused(t *testing.T) {
 	extracttest.WantError(t, err, "fake: refused refused.txt")
 }
 
+// A set whose root is gone by the time it reads its first file, after
+// its listing found the file, refuses the read with the open's reason and
+// reads nothing. Planted break: the open's error returned as nil, which
+// passed the file over.
+func TestFileSetRefusesARootGoneBeforeItsFirstRead(t *testing.T) {
+	r := setRead{ctx: t.Context(), root: filepath.Join(t.TempDir(), "gone"), read: map[string]bool{}}
+	defer r.close()
+	err := r.file("a.txt")
+	extracttest.WantError(t, err, "open the repository root: ")
+	if r.files != nil || len(r.out) != 0 {
+		t.Errorf("reader %v, values %v; want neither", r.files, r.out)
+	}
+}
+
 // The files hold at most max_bytes in all, each read to what the files
 // before it left, with the refusal naming both; the values to MaxValues
 // and to max_bytes in all. Planted breaks: each file read to max_bytes;

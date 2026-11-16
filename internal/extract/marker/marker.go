@@ -240,44 +240,73 @@ type fileMarkers struct {
 // marker and that no reader of the walk reads, an unclosed marker, a stray
 // closer and a marker that does not parse.
 func Read(ctx context.Context, root string, names []Name, b Bounds) ([]Found, error) {
-	var out []Found
-	var spent int64
-	var r *core.Reader // opened at the first file
-	defer func() {
-		if r != nil {
-			r.Close()
-		}
-	}()
+	w := reading{ctx: ctx, root: root, b: b}
+	defer w.close()
 	for _, n := range names {
-		name := n.File
-		if r == nil {
-			var err error
-			if r, err = core.OpenReader(ctx, root); err != nil {
-				return nil, err
-			}
-		}
-		// The size first, so the walk reads no file past its bound on bytes
-		// (markers delta review 2, E1): the shared read below is the run's,
-		// and knows nothing of what this walk has spent. A stat that fails
-		// leaves the refusal to readFile, which says why.
-		if info, err := r.Stat(core.Source{File: name, Limit: math.MaxInt64}); err == nil && spent+info.Size() > b.Bytes {
-			return nil, errBytes(name)
-		}
-		m, err := check.Shared(ctx, fileKey{root, name, n.Limit, b}, func() (fileMarkers, error) {
-			return readFile(r, name, n.Limit, b)
-		})
-		if err != nil {
+		if err := w.file(n); err != nil {
 			return nil, err
 		}
-		if spent += m.size; spent > b.Bytes {
-			return nil, errBytes(name)
-		}
-		if len(out)+len(m.found) > b.Count {
-			return nil, errCount(name)
-		}
-		out = append(out, m.found...)
 	}
-	return out, nil
+	return w.out, nil
+}
+
+// reading is one call of Read: the reader, opened at the first file, the
+// bytes its files hold so far, and their markers.
+type reading struct {
+	ctx   context.Context
+	root  string
+	b     Bounds
+	r     *core.Reader
+	spent int64
+	out   []Found
+}
+
+// file reads the markers of the file n names into the reading.
+func (w *reading) file(n Name) error {
+	name := n.File
+	r, err := w.reader()
+	if err != nil {
+		return err
+	}
+	// The size first, so the walk reads no file past its bound on bytes
+	// (markers delta review 2, E1): the shared read below is the run's,
+	// and knows nothing of what this walk has spent. A stat that fails
+	// leaves the refusal to readFile, which says why.
+	if info, err := r.Stat(core.Source{File: name, Limit: math.MaxInt64}); err == nil && w.spent+info.Size() > w.b.Bytes {
+		return errBytes(name)
+	}
+	m, err := check.Shared(w.ctx, fileKey{w.root, name, n.Limit, w.b}, func() (fileMarkers, error) {
+		return readFile(r, name, n.Limit, w.b)
+	})
+	if err != nil {
+		return err
+	}
+	if w.spent += m.size; w.spent > w.b.Bytes {
+		return errBytes(name)
+	}
+	if len(w.out)+len(m.found) > w.b.Count {
+		return errCount(name)
+	}
+	w.out = append(w.out, m.found...)
+	return nil
+}
+
+// reader is the reading's reader, opened at its first call.
+func (w *reading) reader() (*core.Reader, error) {
+	if w.r == nil {
+		var err error
+		if w.r, err = core.OpenReader(w.ctx, w.root); err != nil {
+			return nil, err
+		}
+	}
+	return w.r, nil
+}
+
+// close closes the reading's reader, if it opened one.
+func (w *reading) close() {
+	if w.r != nil {
+		w.r.Close()
+	}
 }
 
 // errBytes refuses a walk whose files, up to name, hold more than its
@@ -307,32 +336,38 @@ func readFile(r *core.Reader, name string, limit int64, b Bounds) (fileMarkers, 
 		return fileMarkers{}, fmt.Errorf("%s: %w", Kind.Key, err)
 	}
 	if at != name {
-		// The link may be a directory on the way, which git tracks and the
-		// name does not (markers delta review 2, E3).
-		is := "is a symlink"
-		if dir := path.Dir(name); dir != "." {
-			if d, err := r.Resolved(core.Source{File: dir, Limit: math.MaxInt64}); err == nil && d != dir {
-				is = "is reached through a symlink"
-			}
-		}
-		return fileMarkers{}, fmt.Errorf("%s: %s %s git tracks, to %s, and a marker walk reads each file under its own name; list %s in files instead, or narrow files to leave the link out", Kind.Key, name, is, at, at)
+		return fileMarkers{}, errSymlink(r, name, at)
 	}
 	f, size, err := r.Open(src)
 	if err != nil {
 		return fileMarkers{}, err
 	}
 	defer f.Close()
+	return readOpen(f, name, size, limit, b)
+}
+
+// errSymlink refuses name, which resolves to at.
+func errSymlink(r *core.Reader, name, at string) error {
+	// The link may be a directory on the way, which git tracks and the
+	// name does not (markers delta review 2, E3).
+	is := "is a symlink"
+	if dir := path.Dir(name); dir != "." {
+		if d, err := r.Resolved(core.Source{File: dir, Limit: math.MaxInt64}); err == nil && d != dir {
+			is = "is reached through a symlink"
+		}
+	}
+	return fmt.Errorf("%s: %s %s git tracks, to %s, and a marker walk reads each file under its own name; list %s in files instead, or narrow files to leave the link out", Kind.Key, name, is, at, at)
+}
+
+// readOpen is readFile of f, the file name opened, which holds size bytes.
+func readOpen(f io.Reader, name string, size, limit int64, b Bounds) (fileMarkers, error) {
 	if size > b.Bytes {
 		return fileMarkers{}, errBytes(name)
 	}
 	m := fileMarkers{size: size}
 	if size > limit {
-		holds, err := contains(io.LimitReader(f, size), name)
-		if err != nil {
+		if err := overLimit(f, name, size, limit); err != nil {
 			return fileMarkers{}, err
-		}
-		if holds {
-			return fileMarkers{}, fmt.Errorf("%s: %s is %d bytes, over the limit of %d, and holds the bytes errata, so the walk cannot read its markers; set max_bytes: higher, or narrow files", Kind.Key, name, size, limit)
 		}
 		return m, nil
 	}
@@ -347,6 +382,19 @@ func readFile(r *core.Reader, name string, limit int64, b Bounds) (fileMarkers, 
 		return fileMarkers{}, errCount(name)
 	}
 	return m, nil
+}
+
+// overLimit refuses f, the file name opened, which holds size bytes, over
+// limit, when it holds errata, since its markers go unread.
+func overLimit(f io.Reader, name string, size, limit int64) error {
+	holds, err := contains(io.LimitReader(f, size), name)
+	if err != nil {
+		return err
+	}
+	if holds {
+		return fmt.Errorf("%s: %s is %d bytes, over the limit of %d, and holds the bytes errata, so the walk cannot read its markers; set max_bytes: higher, or narrow files", Kind.Key, name, size, limit)
+	}
+	return nil
 }
 
 // contains reports whether r holds token, read in pieces of chunk bytes, each
@@ -538,7 +586,7 @@ func clean(b []byte, stars bool) (text string, first int) {
 		case isBlank(c):
 			space = true
 			continue
-		case lineStart && stars && c == '*' && (i+1 == len(b) || isBlank(b[i+1])):
+		case lineStart && stars && decoration(b, i):
 			lineStart = false
 			continue
 		}
@@ -552,6 +600,13 @@ func clean(b []byte, stars bool) (text string, first int) {
 		out = append(out, c)
 	}
 	return string(out), first
+}
+
+// decoration reports whether b[i] is a * that a blank or the end of b
+// follows, which at the start of a line of a block comment is its
+// decoration.
+func decoration(b []byte, i int) bool {
+	return b[i] == '*' && (i+1 == len(b) || isBlank(b[i+1]))
 }
 
 // found is the marker of p, whose value is text with its first byte at
@@ -574,25 +629,10 @@ func found(file string, p pair, text string, first int, lines *core.LineCursor) 
 // finds is one, and a value is the text of the file between an opener and
 // its closer, tags and all.
 func scanMarkup(file string, data []byte, lang core.Language) ([]Found, error) {
-	var marks []mark
 	lines := core.NewLineCursor(data)
-	for s := range lang.Spans(data) {
-		if err := core.CheckSpan(file, data, s); err != nil {
-			return nil, fmt.Errorf("%s: %w", Kind.Key, err)
-		}
-		if s.Kind != core.SpanComment {
-			continue
-		}
-		kind, id, err := classify(data[s.BodyStart:s.BodyEnd])
-		if err != nil {
-			return nil, fmt.Errorf("%s: %s: line %d: %w", Kind.Key, file, lines.At(s.Start), err)
-		}
-		if n := countMarkerish(data, s.Start, s.End); n > 1 || n == 1 && kind == notMarker {
-			return nil, errStray(file, lines.At(s.Start))
-		}
-		if kind != notMarker {
-			marks = append(marks, mark{kind: kind, id: id, start: s.Start, end: s.End})
-		}
+	marks, err := markupMarks(file, data, lang, lines)
+	if err != nil {
+		return nil, err
 	}
 	ps, err := pairs(file, marks, lines.At)
 	if err != nil {
@@ -609,6 +649,43 @@ func scanMarkup(file string, data []byte, lang core.Language) ([]Found, error) {
 	return out, nil
 }
 
+// markupMarks is the markers of the comments of data, a file in lang.
+func markupMarks(file string, data []byte, lang core.Language, lines *core.LineCursor) ([]mark, error) {
+	var marks []mark
+	for s := range lang.Spans(data) {
+		if err := core.CheckSpan(file, data, s); err != nil {
+			return nil, fmt.Errorf("%s: %w", Kind.Key, err)
+		}
+		if s.Kind != core.SpanComment {
+			continue
+		}
+		m, ok, err := commentMark(file, data, s, lines)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			marks = append(marks, m)
+		}
+	}
+	return marks, nil
+}
+
+// commentMark is the marker the comment s of data is, if any.
+func commentMark(file string, data []byte, s core.Span, lines *core.LineCursor) (mark, bool, error) {
+	kind, id, err := classify(data[s.BodyStart:s.BodyEnd])
+	if err != nil {
+		return mark{}, false, fmt.Errorf("%s: %s: line %d: %w", Kind.Key, file, lines.At(s.Start), err)
+	}
+	if stray(countMarkerish(data, s.Start, s.End), kind) {
+		return mark{}, false, errStray(file, lines.At(s.Start))
+	}
+	return mark{kind: kind, id: id, start: s.Start, end: s.End}, kind != notMarker, nil
+}
+
+// stray reports whether a comment of kind that holds n openings of a
+// marker holds one that is no marker of its own.
+func stray(n, kind int) bool { return n > 1 || n == 1 && kind == notMarker }
+
 // comment is one comment of a code file: its span, and where its body
 // starts in the text of the comments.
 type comment struct {
@@ -622,45 +699,11 @@ type comment struct {
 // two, so a value may run from one comment into the next when only blanks
 // stand between them in the file, as in a run of line comments.
 func scanCode(file string, data []byte, lang core.Language) ([]Found, error) {
-	var (
-		text     []byte
-		comments []comment
-		marks    []mark
-		of       []int // the comment of each mark
-	)
-	lines := core.NewLineCursor(data)
-	for s := range lang.Spans(data) {
-		if err := core.CheckSpan(file, data, s); err != nil {
-			return nil, fmt.Errorf("%s: %w", Kind.Key, err)
-		}
-		if s.Kind != core.SpanComment {
-			continue
-		}
-		if len(comments) > 0 {
-			text = append(text, '\n')
-		}
-		c := comment{span: s, at: len(text)}
-		text = append(text, data[s.BodyStart:s.BodyEnd]...)
-		found, err := bodyMarks(file, text, c.at, len(text), lines, s.BodyStart)
-		if err != nil {
-			return nil, err
-		}
-		for range found {
-			of = append(of, len(comments))
-		}
-		marks = append(marks, found...)
-		comments = append(comments, c)
+	c := codeText{file: file, data: data, lines: core.NewLineCursor(data)}
+	if err := c.read(lang); err != nil {
+		return nil, err
 	}
-	// offset is the offset in the file of off, an offset in the text inside
-	// the body of comment k or at its end.
-	offset := func(k, off int) int { return comments[k].span.BodyStart + off - comments[k].at }
-	ps, err := pairs(file, marks, func(off int) int {
-		k := 0
-		for k+1 < len(comments) && comments[k+1].at <= off {
-			k++
-		}
-		return lines.At(offset(k, off))
-	})
+	ps, err := pairs(file, c.marks, c.line)
 	if err != nil {
 		return nil, err
 	}
@@ -668,25 +711,88 @@ func scanCode(file string, data []byte, lang core.Language) ([]Found, error) {
 	// and 2i+1.
 	var out []Found
 	for i, p := range ps {
-		a, b := of[2*i], of[2*i+1]
-		for k := a; k < b; k++ {
-			if gap := data[comments[k].span.End:comments[k+1].span.Start]; len(trim(gap)) > 0 {
-				return nil, fmt.Errorf("%s: %s: line %d: the value of the marker %s runs out of its comment into code at line %d; close the marker in the comment it opens in, or in a comment after it with only blanks between",
-					Kind.Key, file, lines.At(offset(a, p.open.start)), p.open.id, lines.At(comments[k].span.End))
-			}
+		f, err := c.value(p, c.of[2*i], c.of[2*i+1])
+		if err != nil {
+			return nil, err
 		}
-		text, first := clean(text[p.open.end:p.close.start], true)
-		if first >= 0 {
-			off := p.open.end + first
-			k := a
-			for k < b && comments[k+1].at <= off {
-				k++
-			}
-			first = offset(k, off)
-		}
-		out = append(out, foundAt(file, p, text, first, offset(a, p.open.start), lines))
+		out = append(out, f)
 	}
 	return out, nil
+}
+
+// codeText is the comments of a code file and the marks in them.
+type codeText struct {
+	file     string
+	data     []byte
+	lines    *core.LineCursor
+	text     []byte // the comments' bodies, a line feed between two
+	comments []comment
+	marks    []mark
+	of       []int // the comment of each mark
+}
+
+// read reads the comments of the file, in lang, and the marks in each.
+func (c *codeText) read(lang core.Language) error {
+	for s := range lang.Spans(c.data) {
+		if err := core.CheckSpan(c.file, c.data, s); err != nil {
+			return fmt.Errorf("%s: %w", Kind.Key, err)
+		}
+		if s.Kind != core.SpanComment {
+			continue
+		}
+		if len(c.comments) > 0 {
+			c.text = append(c.text, '\n')
+		}
+		at := len(c.text)
+		c.text = append(c.text, c.data[s.BodyStart:s.BodyEnd]...)
+		found, err := bodyMarks(c.file, c.text, at, len(c.text), c.lines, s.BodyStart)
+		if err != nil {
+			return err
+		}
+		for range found {
+			c.of = append(c.of, len(c.comments))
+		}
+		c.marks = append(c.marks, found...)
+		c.comments = append(c.comments, comment{span: s, at: at})
+	}
+	return nil
+}
+
+// offset is the offset in the file of off, an offset in the text inside
+// the body of comment k or at its end.
+func (c *codeText) offset(k, off int) int {
+	return c.comments[k].span.BodyStart + off - c.comments[k].at
+}
+
+// commentAt is the comment from k on whose body holds off, an offset in
+// the text, up to comment last.
+func (c *codeText) commentAt(off, k, last int) int {
+	for k < last && c.comments[k+1].at <= off {
+		k++
+	}
+	return k
+}
+
+// line is the line of the file that off, an offset in the text, is at.
+func (c *codeText) line(off int) int {
+	return c.lines.At(c.offset(c.commentAt(off, 0, len(c.comments)-1), off))
+}
+
+// value is the marker of p, which opens in comment a and closes in comment
+// b, refused when code stands between two comments it runs through.
+func (c *codeText) value(p pair, a, b int) (Found, error) {
+	for k := a; k < b; k++ {
+		if gap := c.data[c.comments[k].span.End:c.comments[k+1].span.Start]; len(trim(gap)) > 0 {
+			return Found{}, fmt.Errorf("%s: %s: line %d: the value of the marker %s runs out of its comment into code at line %d; close the marker in the comment it opens in, or in a comment after it with only blanks between",
+				Kind.Key, c.file, c.lines.At(c.offset(a, p.open.start)), p.open.id, c.lines.At(c.comments[k].span.End))
+		}
+	}
+	text, first := clean(c.text[p.open.end:p.close.start], true)
+	if first >= 0 {
+		off := p.open.end + first
+		first = c.offset(c.commentAt(off, a, b), off)
+	}
+	return foundAt(c.file, p, text, first, c.offset(a, p.open.start), c.lines), nil
 }
 
 // foundAt is found with the opener at offset open of the file.
@@ -728,41 +834,10 @@ func scanMarkdown(file string, data []byte, limit int64) ([]Found, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", Kind.Key, err)
 	}
-	src := doc.Src
-	lines := core.NewLineCursor(src)
-	var marks []mark
-	walkErr := ast.Walk(doc.Root, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
-		if !entering {
-			return ast.WalkContinue, nil
-		}
-		var found []mark
-		var err error
-		switch h := n.(type) {
-		case *ast.RawHTML:
-			found, err = rawMarks(file, src, h, lines)
-		case *ast.HTMLBlock:
-			found, err = blockMarks(file, doc, h, lines)
-		case *ast.CodeSpan, *ast.CodeBlock:
-			return ast.WalkSkipChildren, nil
-		case *ast.Text:
-			// A <!-- that Markdown reads as text: no --> closes it.
-			if s := h.Value.Index(); markerish(src, s.Start, s.Stop) >= 0 {
-				err = errStray(file, lines.At(markerish(src, s.Start, s.Stop)))
-			}
-		default:
-			return ast.WalkContinue, nil
-		}
-		if err != nil {
-			return ast.WalkStop, err
-		}
-		marks = append(marks, found...)
-		return ast.WalkSkipChildren, nil
-	})
-	if walkErr != nil {
-		return nil, walkErr
-	}
-	if len(marks) == 0 {
-		return nil, nil
+	lines := core.NewLineCursor(doc.Src)
+	marks, err := markdownMarks(file, doc, lines)
+	if err != nil || len(marks) == 0 {
+		return nil, err
 	}
 	ps, err := pairs(file, marks, lines.At)
 	if err != nil {
@@ -772,41 +847,121 @@ func scanMarkdown(file string, data []byte, limit int64) ([]Found, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", Kind.Key, err)
 	}
+	v := mdValues{file: file, src: doc.Src, limit: limit, lines: lines, prose: prose}
 	var out []Found
-	var cells map[int]ast.Node // read when a value holds a |
-	k := 0                     // the offset of the prose the walk is at; the pairs are in file order
 	for _, p := range ps {
-		for k < len(prose.Text) && prose.Offset(k) < p.open.end {
-			k++
+		f, err := v.value(p)
+		if err != nil {
+			return nil, err
 		}
-		start := k
-		for k < len(prose.Text) && prose.Offset(k) < p.close.start {
-			k++
-		}
-		from, to := markup.TrimBlanks(prose.Text, start, k)
-		if bytes.IndexByte(prose.Text[from:to], '\n') >= 0 {
-			return nil, fmt.Errorf("%s: %s: line %d: the value of the marker %s runs from one block into the next; close the marker in the paragraph, heading or list item it opens in",
-				Kind.Key, file, lines.At(p.open.start), p.open.id)
-		}
-		if bytes.IndexByte(prose.Text[from:to], '|') >= 0 {
-			if cells == nil {
-				if cells, err = tableCells(file, doc.Src, limit); err != nil {
-					return nil, err
-				}
-			}
-			if cells[p.open.start] != cells[p.close.start] {
-				return nil, fmt.Errorf("%s: %s: line %d: the value of the marker %s runs from one table cell into the next; close the marker in the cell it opens in",
-					Kind.Key, file, lines.At(p.open.start), p.open.id)
-			}
-		}
-		// The prose from from is trimmed, so the value starts at from.
-		text, first := clean(prose.Text[from:to], false)
-		if first >= 0 {
-			first = prose.Offset(from)
-		}
-		out = append(out, found(file, p, text, first, lines))
+		out = append(out, f)
 	}
 	return out, nil
+}
+
+// markdownMarks is the markers of doc, in file order.
+func markdownMarks(file string, doc *mdparse.Doc, lines *core.LineCursor) ([]mark, error) {
+	var marks []mark
+	err := ast.Walk(doc.Root, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
+		if !entering {
+			return ast.WalkContinue, nil
+		}
+		found, status, err := nodeMarks(file, doc, n, lines)
+		if err != nil {
+			return ast.WalkStop, err
+		}
+		marks = append(marks, found...)
+		return status, nil
+	})
+	return marks, err
+}
+
+// nodeMarks is the markers of n, a node the walk enters, and whether the
+// walk goes on into its children.
+func nodeMarks(file string, doc *mdparse.Doc, n ast.Node, lines *core.LineCursor) ([]mark, ast.WalkStatus, error) {
+	switch h := n.(type) {
+	case *ast.RawHTML:
+		found, err := rawMarks(file, doc.Src, h, lines)
+		return found, ast.WalkSkipChildren, err
+	case *ast.HTMLBlock:
+		found, err := blockMarks(file, doc, h, lines)
+		return found, ast.WalkSkipChildren, err
+	case *ast.CodeSpan, *ast.CodeBlock:
+		return nil, ast.WalkSkipChildren, nil
+	case *ast.Text:
+		// A <!-- that Markdown reads as text: no --> closes it.
+		s := h.Value.Index()
+		if at := markerish(doc.Src, s.Start, s.Stop); at >= 0 {
+			return nil, ast.WalkSkipChildren, errStray(file, lines.At(at))
+		}
+		return nil, ast.WalkSkipChildren, nil
+	}
+	return nil, ast.WalkContinue, nil
+}
+
+// mdValues reads the value of each pair of a Markdown file from its prose,
+// in file order.
+type mdValues struct {
+	file  string
+	src   []byte
+	limit int64
+	lines *core.LineCursor
+	prose *mdparse.Prose
+	cells map[int]ast.Node // read when a value holds a |
+	k     int              // the offset of the prose the walk is at; the pairs are in file order
+}
+
+// value is the marker of p, refused when its value runs from one block or
+// one table cell into the next.
+func (v *mdValues) value(p pair) (Found, error) {
+	from, to := v.span(p)
+	if bytes.IndexByte(v.prose.Text[from:to], '\n') >= 0 {
+		return Found{}, fmt.Errorf("%s: %s: line %d: the value of the marker %s runs from one block into the next; close the marker in the paragraph, heading or list item it opens in",
+			Kind.Key, v.file, v.lines.At(p.open.start), p.open.id)
+	}
+	if err := v.oneCell(p, v.prose.Text[from:to]); err != nil {
+		return Found{}, err
+	}
+	// The prose from from is trimmed, so the value starts at from.
+	text, first := clean(v.prose.Text[from:to], false)
+	if first >= 0 {
+		first = v.prose.Offset(from)
+	}
+	return found(v.file, p, text, first, v.lines), nil
+}
+
+// span is the prose between p's opener and its closer, its blanks at
+// either end left out.
+func (v *mdValues) span(p pair) (from, to int) {
+	text := v.prose.Text
+	for v.k < len(text) && v.prose.Offset(v.k) < p.open.end {
+		v.k++
+	}
+	start := v.k
+	for v.k < len(text) && v.prose.Offset(v.k) < p.close.start {
+		v.k++
+	}
+	return markup.TrimBlanks(text, start, v.k)
+}
+
+// oneCell refuses value, p's, when it holds a | and its opener and its
+// closer stand in two cells of a table.
+func (v *mdValues) oneCell(p pair, value []byte) error {
+	if bytes.IndexByte(value, '|') < 0 {
+		return nil
+	}
+	if v.cells == nil {
+		cells, err := tableCells(v.file, v.src, v.limit)
+		if err != nil {
+			return err
+		}
+		v.cells = cells
+	}
+	if v.cells[p.open.start] != v.cells[p.close.start] {
+		return fmt.Errorf("%s: %s: line %d: the value of the marker %s runs from one table cell into the next; close the marker in the cell it opens in",
+			Kind.Key, v.file, v.lines.At(p.open.start), p.open.id)
+	}
+	return nil
 }
 
 // tableCells is, for the offset of each inline HTML comment of src, a
@@ -839,29 +994,36 @@ func tableCells(file string, src []byte, limit int64) (map[int]ast.Node, error) 
 
 // rawMarks is the marker an inline HTML comment h is, if any.
 func rawMarks(file string, src []byte, h *ast.RawHTML, lines *core.LineCursor) ([]mark, error) {
-	ix := h.Value.Indices()
-	if len(ix) == 0 {
+	raw, ok := rawComment(src, h)
+	if !ok {
 		return nil, nil
 	}
-	var raw []byte
-	for _, s := range ix {
-		raw = append(raw, src[s.Start:s.Stop]...)
-	}
-	if !bytes.HasPrefix(raw, []byte("<!--")) || !bytes.HasSuffix(raw, []byte("-->")) || len(raw) < 7 {
-		return nil, nil // a tag, or <!--> or <!--->, which hold no text
-	}
+	ix := h.Value.Indices()
 	start := ix[0].Start
 	kind, id, err := classify(raw[4 : len(raw)-3])
 	if err != nil {
 		return nil, fmt.Errorf("%s: %s: line %d: %w", Kind.Key, file, lines.At(start), err)
 	}
-	if n := countMarkerish(raw, 0, len(raw)); n > 1 || n == 1 && kind == notMarker {
+	if stray(countMarkerish(raw, 0, len(raw)), kind) {
 		return nil, errStray(file, lines.At(start))
 	}
 	if kind == notMarker {
 		return nil, nil
 	}
 	return []mark{{kind: kind, id: id, start: start, end: ix[len(ix)-1].Stop}}, nil
+}
+
+// rawComment is the text of h, inline HTML, when it is a comment that holds
+// text.
+func rawComment(src []byte, h *ast.RawHTML) ([]byte, bool) {
+	var raw []byte
+	for _, s := range h.Value.Indices() {
+		raw = append(raw, src[s.Start:s.Stop]...)
+	}
+	if !bytes.HasPrefix(raw, []byte("<!--")) || !bytes.HasSuffix(raw, []byte("-->")) || len(raw) < 7 {
+		return nil, false // a tag, or <!--> or <!--->, which hold no text
+	}
+	return raw, true
 }
 
 // blockMarks is the markers of an HTML block h: those of its comments for a
@@ -876,14 +1038,7 @@ func blockMarks(file string, doc *mdparse.Doc, h *ast.HTMLBlock, lines *core.Lin
 		p.CopyFrom(src[s.Start:s.Stop], s.Start)
 	}
 	if h.HTMLBlockKind != ast.HTMLBlockKind2 {
-		if scriptLike(h, src) {
-			return nil, nil
-		}
-		if at := markerish(p.Text, 0, len(p.Text)); at >= 0 {
-			return nil, fmt.Errorf("%s: %s: line %d: a marker inside an HTML block other than a comment, whose text errata does not read; put the marker in a paragraph",
-				Kind.Key, file, lines.At(p.Offset(at)))
-		}
-		return nil, nil
+		return nil, otherBlock(file, src, h, p, lines)
 	}
 	var out []mark
 	for _, c := range markup.HTMLComments(p.Text, 0) {
@@ -903,6 +1058,19 @@ func blockMarks(file string, doc *mdparse.Doc, h *ast.HTMLBlock, lines *core.Lin
 		return nil, errStray(file, lines.At(p.Offset(markerish(p.Text, 0, len(p.Text)))))
 	}
 	return out, nil
+}
+
+// otherBlock refuses a marker in h, an HTML block other than a comment
+// block, whose text is p.
+func otherBlock(file string, src []byte, h *ast.HTMLBlock, p *mdparse.Prose, lines *core.LineCursor) error {
+	if scriptLike(h, src) {
+		return nil
+	}
+	if at := markerish(p.Text, 0, len(p.Text)); at >= 0 {
+		return fmt.Errorf("%s: %s: line %d: a marker inside an HTML block other than a comment, whose text errata does not read; put the marker in a paragraph",
+			Kind.Key, file, lines.At(p.Offset(at)))
+	}
+	return nil
 }
 
 // scriptLike reports whether h is a script, style or textarea element, whose

@@ -320,42 +320,60 @@ func (s SARIF) writeBounded(w io.Writer, r check.Report, bu budget) error {
 // fits. When even the rules alone do not fit, it returns every cut, and the
 // warning says so.
 func (p pieces) shrink(full int) (cuts, error) {
-	size := func(c cuts) (int, error) {
-		b, err := p.marshal(c, false)
-		return uploadSize(b, c.results), err
-	}
-	limit := p.budget.gzipped
 	for _, short := range []bool{false, true} {
-		none := cuts{notes: len(p.notes), short: short}
-		if s, err := size(none); err != nil {
-			return cuts{}, err
-		} else if s > limit {
-			continue
+		if c, ok, err := p.keepResults(full, short); ok || err != nil {
+			return c, err
 		}
-		shi := full
-		if short {
-			var err error
-			if shi, err = size(cuts{results: len(p.results), notes: len(p.notes), short: true}); err != nil {
-				return cuts{}, err
-			}
-		}
-		if shi <= limit {
-			return cuts{results: len(p.results), notes: len(p.notes), short: short}, nil
-		}
-		keep, err := most(len(p.results), limit, shi, func(k int) (int, error) {
-			return size(cuts{results: k, notes: len(p.notes), short: short})
-		})
-		return cuts{results: keep, notes: len(p.notes), short: short}, err
 	}
-	shi, err := size(cuts{notes: len(p.notes), short: true})
+	return p.keepNotes()
+}
+
+// sizeOf is the upload size of the file c describes.
+func (p pieces) sizeOf(c cuts) (int, error) {
+	b, err := p.marshal(c, false)
+	return uploadSize(b, c.results), err
+}
+
+// keepResults is the file that keeps the most results and every
+// notification, with the rules and notifications short when short. full is
+// the size of the file with nothing cut. ok is false when even no result
+// fits.
+func (p pieces) keepResults(full int, short bool) (cuts, bool, error) {
+	limit := p.budget.gzipped
+	if s, err := p.sizeOf(cuts{notes: len(p.notes), short: short}); err != nil {
+		return cuts{}, true, err
+	} else if s > limit {
+		return cuts{}, false, nil
+	}
+	shi := full
+	if short {
+		var err error
+		if shi, err = p.sizeOf(cuts{results: len(p.results), notes: len(p.notes), short: true}); err != nil {
+			return cuts{}, true, err
+		}
+	}
+	if shi <= limit {
+		return cuts{results: len(p.results), notes: len(p.notes), short: short}, true, nil
+	}
+	keep, err := most(len(p.results), limit, shi, func(k int) (int, error) {
+		return p.sizeOf(cuts{results: k, notes: len(p.notes), short: short})
+	})
+	return cuts{results: keep, notes: len(p.notes), short: short}, true, err
+}
+
+// keepNotes is the file with no result, the rules and notifications short,
+// that keeps the most notifications; every cut when not even the rules fit.
+func (p pieces) keepNotes() (cuts, error) {
+	limit := p.budget.gzipped
+	shi, err := p.sizeOf(cuts{notes: len(p.notes), short: true})
 	if err != nil {
 		return cuts{}, err
 	}
-	if s, err := size(cuts{short: true}); err != nil || s > limit {
+	if s, err := p.sizeOf(cuts{short: true}); err != nil || s > limit {
 		return cuts{short: true}, err
 	}
 	keep, err := most(len(p.notes), limit, shi, func(k int) (int, error) {
-		return size(cuts{notes: k, short: true})
+		return p.sizeOf(cuts{notes: k, short: true})
 	})
 	return cuts{notes: keep, short: true}, err
 }
@@ -374,53 +392,86 @@ func build(r check.Report) pieces {
 	}
 	index := map[string]int{}
 	for _, res := range r.Results {
-		// The key is the id as encoding/json writes it, each invalid byte
-		// a U+FFFD, so two ids that read alike in the file are one rule.
-		key := string([]rune(res.Check.ID))
-		i, ok := index[key]
-		if !ok {
-			// Two checks with one id would be two rules with one id. The
-			// loader refuses that, so the first one stands for both here.
-			i = len(p.rules)
-			index[key] = i
-			whole, short := sarifRuleOf(res.Check)
-			p.rules, p.shortRules = append(p.rules, whole), append(p.shortRules, short)
-		}
-		ref := &sarifRuleRef{ID: res.Check.ID, Index: i}
-		switch {
-		case res.Skipped():
-			note := func(limit int) sarifNotification {
-				return sarifNotification{
-					Level:   skipLevel,
-					Message: sarifMessage{fmt.Sprintf("check %s skipped (%s): %s", plain(res.Check.ID), plain(string(res.Check.Scope)), cut(res.Gap, "gap", limit))},
-					Rule:    ref,
-				}
-			}
-			p.notes, p.shortNotes = append(p.notes, note(-1)), append(p.shortNotes, note(shortLimit))
-		case res.Verdict == check.VerdictUnknown:
-			// The short form, for a file that does not fit, keeps the count
-			// in the message and leaves the locations out.
-			locs, said := leftOutLocations(res)
-			whole := sarifNotification{Level: "error", Message: sarifMessage{unknownText(res, messageLimit, -1, said)}, Locations: locs, Rule: ref}
-			short := sarifNotification{Level: "error", Message: sarifMessage{unknownText(res, shortLimit, shortLimit, "")}, Rule: ref}
-			p.notes, p.shortNotes = append(p.notes, whole), append(p.shortNotes, short)
-		case res.Verdict == check.VerdictTrue && len(leftOut(res)) > 0:
-			locs, said := leftOutLocations(res)
-			note := func(limit int) sarifNotification {
-				text := "check " + plain(res.Check.ID) + " holds on the values left: " + cut(strings.TrimSpace(res.Message), "message", limit)
-				return sarifNotification{Level: "note", Message: sarifMessage{text}, Rule: ref}
-			}
-			whole := note(messageLimit)
-			whole.Message.Text += said
-			whole.Locations = locs
-			p.notes, p.shortNotes = append(p.notes, whole), append(p.shortNotes, note(shortLimit))
-		case res.Verdict == check.VerdictFalse && len(p.results) == maxResults:
-			p.overCount++
-		case res.Verdict == check.VerdictFalse:
-			p.results = append(p.results, sarifResultOf(res, i))
-		}
+		p.add(res, p.ruleIndex(index, res.Check), skipLevel)
 	}
 	return p
+}
+
+// ruleIndex is the index of c's rule, added when no check before had its
+// id. index holds each id's.
+func (p *pieces) ruleIndex(index map[string]int, c check.Check) int {
+	// The key is the id as encoding/json writes it, each invalid byte
+	// a U+FFFD, so two ids that read alike in the file are one rule.
+	key := string([]rune(c.ID))
+	i, ok := index[key]
+	if !ok {
+		// Two checks with one id would be two rules with one id. The
+		// loader refuses that, so the first one stands for both here.
+		i = len(p.rules)
+		index[key] = i
+		whole, short := sarifRuleOf(c)
+		p.rules, p.shortRules = append(p.rules, whole), append(p.shortRules, short)
+	}
+	return i
+}
+
+// add adds res, of the rule at i, as a notification, whole and short, or as
+// a result. A skip's notification is at skipLevel.
+func (p *pieces) add(res check.Result, i int, skipLevel string) {
+	ref := &sarifRuleRef{ID: res.Check.ID, Index: i}
+	switch {
+	case res.Skipped():
+		p.addNote(skipNotes(res, ref, skipLevel))
+	case res.Verdict == check.VerdictUnknown:
+		p.addNote(unknownNotes(res, ref))
+	case res.Verdict == check.VerdictTrue && len(leftOut(res)) > 0:
+		p.addNote(heldNotes(res, ref))
+	case res.Verdict == check.VerdictFalse && len(p.results) == maxResults:
+		p.overCount++
+	case res.Verdict == check.VerdictFalse:
+		p.results = append(p.results, sarifResultOf(res, i))
+	}
+}
+
+// addNote adds a notification, whole and in its short form.
+func (p *pieces) addNote(whole, short sarifNotification) {
+	p.notes, p.shortNotes = append(p.notes, whole), append(p.shortNotes, short)
+}
+
+// skipNotes is the notification of a skipped result, whole and short.
+func skipNotes(res check.Result, ref *sarifRuleRef, level string) (whole, short sarifNotification) {
+	note := func(limit int) sarifNotification {
+		return sarifNotification{
+			Level:   level,
+			Message: sarifMessage{fmt.Sprintf("check %s skipped (%s): %s", plain(res.Check.ID), plain(string(res.Check.Scope)), cut(res.Gap, "gap", limit))},
+			Rule:    ref,
+		}
+	}
+	return note(-1), note(shortLimit)
+}
+
+// unknownNotes is the notification of an unknown result, whole and short.
+// The short form, for a file that does not fit, keeps the count in the
+// message and leaves the locations out.
+func unknownNotes(res check.Result, ref *sarifRuleRef) (whole, short sarifNotification) {
+	locs, said := leftOutLocations(res)
+	whole = sarifNotification{Level: "error", Message: sarifMessage{unknownText(res, messageLimit, -1, said)}, Locations: locs, Rule: ref}
+	short = sarifNotification{Level: "error", Message: sarifMessage{unknownText(res, shortLimit, shortLimit, "")}, Rule: ref}
+	return whole, short
+}
+
+// heldNotes is the notification of a true result that left values out,
+// whole, with the values' locations, and short.
+func heldNotes(res check.Result, ref *sarifRuleRef) (whole, short sarifNotification) {
+	locs, said := leftOutLocations(res)
+	note := func(limit int) sarifNotification {
+		text := "check " + plain(res.Check.ID) + " holds on the values left: " + cut(strings.TrimSpace(res.Message), "message", limit)
+		return sarifNotification{Level: "note", Message: sarifMessage{text}, Rule: ref}
+	}
+	whole = note(messageLimit)
+	whole.Message.Text += said
+	whole.Locations = locs
+	return whole, note(shortLimit)
 }
 
 // marshal writes the file c describes, with a warning when it leaves out or
@@ -457,9 +508,17 @@ func (p pieces) marshal(c cuts, indent bool) ([]byte, error) {
 // warning says what the file c describes leaves out or cuts, and why, or
 // is empty when it holds everything.
 func (p pieces) warning(c cuts) string {
-	var said, why []string
-	dropped := len(p.results) - c.results
-	if n := p.overCount + dropped; n > 0 {
+	said := p.cutsSaid(c)
+	if len(said) == 0 {
+		return ""
+	}
+	return strings.Join(said, ", ") + ": " + strings.Join(p.cutsWhy(c), "; ")
+}
+
+// cutsSaid is what the file c describes leaves out or cuts, a phrase each.
+func (p pieces) cutsSaid(c cuts) []string {
+	var said []string
+	if n := p.overCount + len(p.results) - c.results; n > 0 {
 		said = append(said, errataCount(n)+" left out of this file")
 	}
 	if n := len(p.notes) - c.notes; n == 1 {
@@ -470,16 +529,20 @@ func (p pieces) warning(c cuts) string {
 	if c.short {
 		said = append(said, "rule help and notifications cut short")
 	}
-	if len(said) == 0 {
-		return ""
-	}
+	return said
+}
+
+// cutsWhy is why the file c describes leaves out or cuts anything: the
+// results past code scanning's count, and the bound on the upload's size.
+func (p pieces) cutsWhy(c cuts) []string {
+	var why []string
 	if p.overCount > 0 {
 		why = append(why, fmt.Sprintf("code scanning rejects a run with more than %d results", maxResults))
 	}
-	if dropped > 0 || c.notes < len(p.notes) || c.short {
+	if c.results < len(p.results) || c.notes < len(p.notes) || c.short {
 		why = append(why, fmt.Sprintf("the upload would pass %d bytes gzipped, errata's bound under the 10 MB that code scanning accepts", p.budget.gzipped))
 	}
-	return strings.Join(said, ", ") + ": " + strings.Join(why, "; ")
+	return why
 }
 
 // sarifRuleOf returns the rule for c, whole and with its help cut at
@@ -591,42 +654,60 @@ func unknownText(res check.Result, msgLimit, reasonLimit int, said string) strin
 }
 
 func sarifResultOf(res check.Result, ruleIndex int) sarifResult {
-	msg := "check " + plain(res.Check.ID) + " found its claim false"
-	if m := strings.TrimSpace(res.Message); m != "" {
-		msg = cutKeeping(m, "message", messageLimit, check.LeftOutCount(res.Extracted))
-	}
 	out := sarifResult{RuleID: res.Check.ID, RuleIndex: ruleIndex, Level: "error"}
-
 	values := flatten(res.Extracted)
 	primary := blamed(res)
+	var msg string
+	out.Locations, msg = resultPlace(res, values, primary, resultMessage(res))
+	msg = out.relate(res, values, primary, msg)
+	out.Message = sarifMessage{msg}
+	return out
+}
+
+// resultMessage is the result's own message, cut to the limit, or one that
+// names the check when it has none.
+func resultMessage(res check.Result) string {
+	if m := strings.TrimSpace(res.Message); m != "" {
+		return cutKeeping(m, "message", messageLimit, check.LeftOutCount(res.Extracted))
+	}
+	return "check " + plain(res.Check.ID) + " found its claim false"
+}
+
+// resultPlace is where the result is, of its values the one at primary,
+// and msg with the sentence that says why when it is not at that value.
+func resultPlace(res check.Result, values []named, primary int, msg string) ([]sarifLocation, string) {
 	// A result that names its own place, such as the line where a
 	// generated file first differs, points there. Its file is one the
 	// loader held inside the repository.
-	placed, inside := physical(res.At)
-	if res.At.File != "" && inside {
-		out.Locations = []sarifLocation{{Physical: placed}}
+	if placed, inside := physical(res.At); res.At.File != "" && inside {
+		return []sarifLocation{{Physical: placed}}, msg
 	}
-	if out.Locations == nil {
-		switch {
-		case primary < 0:
-			out.Locations, msg = atCheck(res, msg)
-		case values[primary].value.At.Missing:
-			// An exists value that is false names a file that is not
-			// there, which code scanning cannot show a line of, so the
-			// result is at the check that asked for the file.
-			msg += "\nThe value is at " + cut(values[primary].value.At.File, "path", valueLimit) + ", where no file is, so this result is at the check."
-			out.Locations, msg = atCheck(res, msg)
-		default:
-			first := values[primary]
-			if p, inside := physical(first.value.At); inside {
-				out.Locations = []sarifLocation{{Physical: p}}
-			} else {
-				out.Locations = []sarifLocation{{Message: &sarifMessage{outside(first)}}}
-				msg += "\nThe value is at " + cut(first.value.At.File, "path", valueLimit) + ", outside the repository, so this result has no place in a file."
-			}
-		}
+	switch {
+	case primary < 0:
+		return atCheck(res, msg)
+	case values[primary].value.At.Missing:
+		// An exists value that is false names a file that is not
+		// there, which code scanning cannot show a line of, so the
+		// result is at the check that asked for the file.
+		msg += "\nThe value is at " + cut(values[primary].value.At.File, "path", valueLimit) + ", where no file is, so this result is at the check."
+		return atCheck(res, msg)
 	}
+	return valueLocation(values[primary], msg)
+}
 
+// valueLocation is the location of the result at its first value, and msg
+// with the sentence a value outside the repository adds.
+func valueLocation(first named, msg string) ([]sarifLocation, string) {
+	if p, inside := physical(first.value.At); inside {
+		return []sarifLocation{{Physical: p}}, msg
+	}
+	return []sarifLocation{{Message: &sarifMessage{outside(first)}}},
+		msg + "\nThe value is at " + cut(first.value.At.File, "path", valueLimit) + ", outside the repository, so this result has no place in a file."
+}
+
+// relate adds the related locations, the values other than the one at
+// primary and those left out, and returns msg with the links to them.
+func (out *sarifResult) relate(res check.Result, values []named, primary int, msg string) string {
 	// Compared values take the related location slots first, but for
 	// leftOutReserve kept for the values left out, so neither side pushes the
 	// other out; a side that needs fewer slots leaves them to the other.
@@ -640,17 +721,8 @@ func sarifResultOf(res check.Result, ruleIndex int) sarifResult {
 	left := leftOut(res)
 	keepCompared := min(len(compared), maxRelated-min(len(left), leftOutReserve))
 	keepLeft := min(len(left), maxRelated-keepCompared)
-	var links, leftLinks []string
-	for _, f := range compared[:keepCompared] {
-		loc := relatedLocation(f, len(out.Related)+1, false)
-		out.Related = append(out.Related, loc)
-		links = append(links, fmt.Sprintf("[value %d](%d)", loc.ID, loc.ID))
-	}
-	for _, f := range left[:keepLeft] {
-		loc := relatedLocation(f, len(out.Related)+1, true)
-		out.Related = append(out.Related, loc)
-		leftLinks = append(leftLinks, fmt.Sprintf("[value %d](%d)", loc.ID, loc.ID))
-	}
+	links := out.addRelated(compared[:keepCompared], false)
+	leftLinks := out.addRelated(left[:keepLeft], true)
 	// code scanning links a related location only from the result message.
 	// The link text is errata's own words; the value is in the related
 	// location's message. The "]" of "[related locations]" ends any "[" that
@@ -662,9 +734,19 @@ func sarifResultOf(res check.Result, ruleIndex int) sarifResult {
 	if len(leftLinks) > 0 {
 		msg += "\nThe values left out as not literal, as [related locations]: " + strings.Join(leftLinks, ", ") + "."
 	}
-	msg += notLinked(len(compared)-keepCompared, len(left)-keepLeft)
-	out.Message = sarifMessage{msg}
-	return out
+	return msg + notLinked(len(compared)-keepCompared, len(left)-keepLeft)
+}
+
+// addRelated adds a related location for each value, numbered on from those
+// already there, and returns the message's link to each.
+func (out *sarifResult) addRelated(values []named, notLiteral bool) []string {
+	var links []string
+	for _, f := range values {
+		loc := relatedLocation(f, len(out.Related)+1, notLiteral)
+		out.Related = append(out.Related, loc)
+		links = append(links, fmt.Sprintf("[value %d](%d)", loc.ID, loc.ID))
+	}
+	return links
 }
 
 // atCheck is the location of a result at its check, the line its entry

@@ -273,6 +273,7 @@ func TestParseFilterRefuses(t *testing.T) {
 		"a[?@.b == False]":             `column 11: write false in lower case`,
 		"a[?@.b == true1]":             `column 11: expected @ or a literal in the filter but found true1; quote a string`,
 		"a[?@.b":                       `column 7: expected ] but the path ends`,
+		"a[?@.b ":                      `column 8: expected ] but the path ends`,
 		"a[?@.b == 'x' || @.c == 'y']": `column 15: || is not supported in a filter; only && joins terms`,
 		"a[?(@.b == 'kilo')]":          `column 4: parentheses are not supported in a filter; join terms with &&`,
 		"a[?@.b != 'x']":               `column 8: operator != is not supported in a filter; only == is`,
@@ -323,6 +324,10 @@ func TestParseFilterRefuses(t *testing.T) {
 		"a[?@.b == 01]":                `column 11: a number has no leading zero`,
 		"a[?@.b == -01]":               `column 11: a number has no leading zero`,
 		"a[?@.b == -]":                 `column 11: expected digits after -`,
+		"a[?@.b == -":                  `column 11: expected digits after -`,
+		"a[?@.b == 1.":                 `column 13: expected digits after the . of a number`,
+		"a[?@.b == 1e":                 `column 13: expected digits in the exponent of a number`,
+		"a[?@.b == true":               `column 15: expected ] but the path ends`,
 		"a[?@.b == 1.]":                `column 13: expected digits after the . of a number`,
 		"a[?@.b == 1.e3]":              `column 13: expected digits after the . of a number`,
 		"a[?@.b == 1e]":                `column 13: expected digits in the exponent of a number`,
@@ -388,6 +393,7 @@ func TestParseDecimal(t *testing.T) {
 		"1e-1000000000000000000":        {digits: "1", exp: "-999999999999999999"},
 		"0.01e-999999999999999999":      {digits: "1", exp: "-1000000000000000000"},
 		"99e9999999999999999999999999":  {digits: "99", exp: "10000000000000000000000001"},
+		"1e1234567890123456788":         {digits: "1", exp: "1234567890123456789"},
 		"-5e-9999999999999999999999999": {neg: true, digits: "5", exp: "-9999999999999999999999998"},
 	} {
 		got, ok := parseDecimal(in)
@@ -678,6 +684,27 @@ func TestNestedFilterWorkIsBounded(t *testing.T) {
 	outer.Items = append(outer.Items, member)
 	if _, err := p.Eval(root); !errors.Is(err, ErrFilterWork) {
 		t.Fatalf("one member past the limit: got %v, want the filter work refusal", err)
+	}
+}
+
+// A step of a query charges StepBytes and the bytes of its key against
+// the filter work left before it is taken: work left that pays for the
+// step takes it, and one byte less refuses it. TestQueryChargesItsSteps
+// pins the same charge over 1.5 million members in make slow; this test
+// starts the meter at the limit's edge, so make test and the mutation run
+// it. Planted break: a step charged StepBytes less its key, which took the
+// step it could not pay for.
+func TestQueryStepChargeAtTheLimit(t *testing.T) {
+	n := NewMapping(1)
+	n.Set("key", &Node{Type: TypeNumber, Text: "1", Line: 1})
+	sels := []selector{{kind: selName, name: "key"}}
+	left := meter(MaxFilterBytes - StepBytes - len("key"))
+	short := left + 1 // a step charges the meter, so take it before one does
+	if found, err := left.exists(n, sels); err != nil || !found {
+		t.Errorf("the step's cost left: found %v, %v; want the key found", found, err)
+	}
+	if found, err := short.exists(n, sels); !errors.Is(err, ErrFilterWork) {
+		t.Errorf("a byte short: found %v, %v; want the filter work refusal", found, err)
 	}
 }
 

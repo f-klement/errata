@@ -376,6 +376,9 @@ func TestPythonLines(t *testing.T) {
 		"an open bracket":         {"def f(:\n", [2]int{0, 0}},
 		"an unclosed string":      {"x = \"\"\"never closed\n", [2]int{0, 0}},
 		"a closing bracket alone": {"x = 1)\n", [2]int{0, 0}},
+		// A backslash ends the file, so no line feed can follow it.
+		"a backslash last":          {"x = 1 \\", [2]int{1, 1}},
+		"a backslash and a CR last": {"x = 1 \\\r", [2]int{1, 1}},
 	} {
 		if got := python(t, c.src); got != c.want {
 			t.Errorf("%s: (code, +docstr) = %v, want %v", name, got, c.want)

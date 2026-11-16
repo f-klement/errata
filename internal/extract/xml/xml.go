@@ -334,35 +334,53 @@ func parseXML(data []byte, limit int64) (*xmlDoc, error) {
 		bound: map[string]int32{},
 		limit: limit,
 	}
-	d := xml.NewDecoder(bytes.NewReader(data))
-	d.CharsetReader = asciiOnly(data)
+	if err := b.read(); err != nil {
+		return nil, err
+	}
+	return b.finish()
+}
+
+// read decodes the file a token at a time into the document.
+func (b *xmlBuilder) read() error {
+	d := xml.NewDecoder(bytes.NewReader(b.data))
+	d.CharsetReader = asciiOnly(b.data)
 	for {
 		off := int(d.InputOffset())
 		tok, err := d.RawToken()
 		if errors.Is(err, io.EOF) {
-			break
+			return nil
 		}
 		if err != nil {
-			return nil, xmlError(err, b.lines.At(int(d.InputOffset())))
+			return xmlError(err, b.lines.At(int(d.InputOffset())))
 		}
-		switch t := tok.(type) {
-		case xml.StartElement:
-			err = b.start(t, off, int(d.InputOffset()))
-		case xml.EndElement:
-			err = b.end(t, off)
-		case xml.CharData:
-			err = b.chars(t, off)
-		case xml.Directive:
-			err = b.directive(t, off)
-		case xml.ProcInst:
-			err = b.procInst(t, off)
-		default: // a comment
-			b.inText = false
-		}
-		if err != nil {
-			return nil, err
+		if err := b.token(tok, off, int(d.InputOffset())); err != nil {
+			return err
 		}
 	}
+}
+
+// token adds one token, which the file holds from byte off to end.
+func (b *xmlBuilder) token(tok xml.Token, off, end int) error {
+	switch t := tok.(type) {
+	case xml.StartElement:
+		return b.start(t, off, end)
+	case xml.EndElement:
+		return b.end(t, off)
+	case xml.CharData:
+		return b.chars(t, off)
+	case xml.Directive:
+		return b.directive(t, off)
+	case xml.ProcInst:
+		return b.procInst(t, off)
+	default: // a comment
+		b.inText = false
+		return nil
+	}
+}
+
+// finish refuses a file that ends inside an element or holds no root
+// element, and returns the document.
+func (b *xmlBuilder) finish() (*xmlDoc, error) {
 	if n := len(b.open); n > 0 {
 		top := b.open[n-1]
 		return nil, fmt.Errorf("the file ends before <%s>, opened at line %d, is closed", core.Clip(qname(top.name)), top.line)
@@ -432,27 +450,14 @@ func (b *xmlBuilder) count(n int, line int) error {
 
 func (b *xmlBuilder) start(t xml.StartElement, off, end int) error {
 	line := b.lines.At(off)
-	if len(b.open) == 0 && b.rooted {
-		return fmt.Errorf("line %d: <%s> is a second root element; an XML file has one", line, core.Clip(qname(t.Name)))
-	}
-	if len(b.open) == core.MaxDepth {
-		return core.TooDeep(line)
-	}
-	if err := b.count(1+len(t.Attr), line); err != nil {
+	if err := b.admit(t, line); err != nil {
 		return err
 	}
 	doc := b.doc
 	o := openElem{index: i32(len(doc.elems)), name: t.Name, line: line, lastKid: -1, lastTx: -1, undo: len(b.undo)}
-	keys := make([][2]int32, 0, len(t.Attr))
-	for _, a := range t.Attr {
-		prefix, ok := declares(a.Name)
-		if !ok {
-			continue
-		}
-		if err := b.declare(prefix, a.Value, line); err != nil {
-			return err
-		}
-		keys = append(keys, [2]int32{-1, intern(doc.names, prefix)})
+	keys, err := b.declareAll(t.Attr, line)
+	if err != nil {
+		return err
 	}
 	space, err := b.resolve(t.Name, true, line)
 	if err != nil {
@@ -462,37 +467,83 @@ func (b *xmlBuilder) start(t xml.StartElement, off, end int) error {
 		space: space, name: intern(doc.names, t.Name.Local), line: i32(line),
 		last: o.index, kid: -1, next: -1, text: -1, attr0: i32(len(doc.attrs)),
 	}
-	spans := attrSpans(b.data[off:end], len(t.Attr))
-	for k, a := range t.Attr {
+	if keys, err = b.attributes(t.Attr, keys, off, end); err != nil {
+		return err
+	}
+	if repeated(keys) {
+		return fmt.Errorf("line %d: <%s> repeats an attribute or a namespace declaration", line, core.Clip(qname(t.Name)))
+	}
+	b.link(o.index)
+	doc.elems = append(doc.elems, el)
+	b.open = append(b.open, o)
+	b.rooted, b.inText = true, false
+	return nil
+}
+
+// admit refuses a start tag at line that would open a second root or go
+// past core.MaxDepth, and counts its element and attributes.
+func (b *xmlBuilder) admit(t xml.StartElement, line int) error {
+	if len(b.open) == 0 && b.rooted {
+		return fmt.Errorf("line %d: <%s> is a second root element; an XML file has one", line, core.Clip(qname(t.Name)))
+	}
+	if len(b.open) == core.MaxDepth {
+		return core.TooDeep(line)
+	}
+	return b.count(1+len(t.Attr), line)
+}
+
+// declareAll binds the namespaces a start tag at line declares, and
+// returns a key for each declaration, for repeated.
+func (b *xmlBuilder) declareAll(attrs []xml.Attr, line int) ([][2]int32, error) {
+	keys := make([][2]int32, 0, len(attrs))
+	for _, a := range attrs {
+		prefix, ok := declares(a.Name)
+		if !ok {
+			continue
+		}
+		if err := b.declare(prefix, a.Value, line); err != nil {
+			return nil, err
+		}
+		keys = append(keys, [2]int32{-1, intern(b.doc.names, prefix)})
+	}
+	return keys, nil
+}
+
+// attributes adds the attributes of the start tag from byte off to end
+// that declare no namespace, and appends a key for each to keys.
+func (b *xmlBuilder) attributes(attrs []xml.Attr, keys [][2]int32, off, end int) ([][2]int32, error) {
+	doc := b.doc
+	spans := attrSpans(b.data[off:end], len(attrs))
+	for k, a := range attrs {
 		if _, ok := declares(a.Name); ok {
 			continue
 		}
 		aline := b.lines.At(off + spans[k].name)
 		aspace, err := b.resolve(a.Name, false, aline)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		name := intern(doc.names, a.Name.Local)
 		keys = append(keys, [2]int32{aspace, name})
 		value := normalise(a.Value, b.data[off+spans[k].value0:off+spans[k].value1])
 		doc.attrs = append(doc.attrs, xmlAttr{space: aspace, name: name, line: i32(aline), value: value})
 	}
-	if repeated(keys) {
-		return fmt.Errorf("line %d: <%s> repeats an attribute or a namespace declaration", line, core.Clip(qname(t.Name)))
+	return keys, nil
+}
+
+// link makes element index the last child of the open element, if any.
+func (b *xmlBuilder) link(index int32) {
+	n := len(b.open)
+	if n == 0 {
+		return
 	}
-	if n := len(b.open); n > 0 {
-		parent := &b.open[n-1]
-		if parent.lastKid < 0 {
-			doc.elems[parent.index].kid = o.index
-		} else {
-			doc.elems[parent.lastKid].next = o.index
-		}
-		parent.lastKid = o.index
+	parent := &b.open[n-1]
+	if parent.lastKid < 0 {
+		b.doc.elems[parent.index].kid = index
+	} else {
+		b.doc.elems[parent.lastKid].next = index
 	}
-	doc.elems = append(doc.elems, el)
-	b.open = append(b.open, o)
-	b.rooted, b.inText = true, false
-	return nil
+	parent.lastKid = index
 }
 
 // declares reports whether an attribute declares a namespace, and the
@@ -582,35 +633,56 @@ type attrSpan struct {
 // ends at the next byte of its quote.
 func attrSpans(tag []byte, n int) []attrSpan {
 	out := make([]attrSpan, n)
+	i := tagNameEnd(tag)
+	for k := range out {
+		var ok bool
+		if out[k], i, ok = nextAttrSpan(tag, i); !ok {
+			break
+		}
+	}
+	return out
+}
+
+// tagNameEnd is the end of the element's name in tag, which starts at its <.
+func tagNameEnd(tag []byte) int {
 	i := 1
 	for i < len(tag) && !isXMLSpace(tag[i]) && tag[i] != '/' && tag[i] != '>' {
 		i++
 	}
-	for k := range out {
-		for i < len(tag) && isXMLSpace(tag[i]) {
-			i++
-		}
-		out[k].name = i
-		eq := bytes.IndexByte(tag[i:], '=')
-		if eq < 0 {
-			break
-		}
-		i += eq + 1
-		for i < len(tag) && isXMLSpace(tag[i]) {
-			i++
-		}
-		if i == len(tag) {
-			break
-		}
-		q := tag[i]
-		end := bytes.IndexByte(tag[i+1:], q)
-		if end < 0 {
-			break
-		}
-		out[k].value0, out[k].value1 = i+1, i+1+end
-		i += end + 2
+	return i
+}
+
+// nextAttrSpan reads the span of the attribute after byte i of tag, and
+// returns the byte after its value. It reports false when tag holds no
+// whole attribute there, with the span's name set and its value not.
+func nextAttrSpan(tag []byte, i int) (attrSpan, int, bool) {
+	var sp attrSpan
+	i = skipXMLSpace(tag, i)
+	sp.name = i
+	eq := bytes.IndexByte(tag[i:], '=')
+	if eq < 0 {
+		return sp, i, false
 	}
-	return out
+	i = skipXMLSpace(tag, i+eq+1)
+	if i == len(tag) {
+		return sp, i, false
+	}
+	q := tag[i]
+	end := bytes.IndexByte(tag[i+1:], q)
+	if end < 0 {
+		return sp, i, false
+	}
+	sp.value0, sp.value1 = i+1, i+1+end
+	return sp, i + end + 2, true
+}
+
+// skipXMLSpace is the index of the first byte of tag from i that is not
+// white space.
+func skipXMLSpace(tag []byte, i int) int {
+	for i < len(tag) && isXMLSpace(tag[i]) {
+		i++
+	}
+	return i
 }
 
 // normalise is an attribute's value as XML 1.0 section 3.3.3 has it with no
@@ -626,23 +698,28 @@ func normalise(decoded string, raw []byte) string {
 	}
 	out := make([]byte, 0, len(decoded))
 	for i := 0; i < len(raw); i++ {
-		switch c := raw[i]; c {
-		case '\r':
-			if i+1 < len(raw) && raw[i+1] == '\n' {
-				i++
-			}
-			out = append(out, ' ')
-		case '\t', '\n':
-			out = append(out, ' ')
-		case '&':
-			end := i + bytes.IndexByte(raw[i:], ';')
-			out = appendReference(out, string(raw[i+1:end]))
-			i = end
-		default:
-			out = append(out, c)
-		}
+		out, i = normaliseAt(out, raw, i)
 	}
 	return string(out)
+}
+
+// normaliseAt appends what the byte of raw at i stands for, a reference
+// whole, and returns the index of the last byte it read.
+func normaliseAt(out, raw []byte, i int) ([]byte, int) {
+	switch c := raw[i]; c {
+	case '\r':
+		if i+1 < len(raw) && raw[i+1] == '\n' {
+			i++
+		}
+		return append(out, ' '), i
+	case '\t', '\n':
+		return append(out, ' '), i
+	case '&':
+		end := i + bytes.IndexByte(raw[i:], ';')
+		return appendReference(out, string(raw[i+1:end])), end
+	default:
+		return append(out, c), i
+	}
 }
 
 // predefined are the five entities XML names without a DTD.
@@ -668,17 +745,11 @@ func appendReference(out []byte, ref string) []byte {
 func (b *xmlBuilder) directive(t xml.Directive, off int) error {
 	b.inText = false
 	line := b.lines.At(off)
-	end := bytes.IndexFunc(t, func(r rune) bool { return ('A' > r || r > 'Z') && ('a' > r || r > 'z') })
-	if end < 0 {
-		end = len(t)
-	}
-	name := string(t[:end])
-	rest := t[end:]
-	named := bytes.TrimLeftFunc(rest, func(r rune) bool { return r == ' ' || r == '\t' || r == '\n' || r == '\r' })
+	name, rest := directiveName(t)
 	switch {
 	case name != "DOCTYPE":
 		return fmt.Errorf("line %d: a <!%s> directive outside a <!DOCTYPE> is not well formed", line, core.Clip(name))
-	case len(named) == len(rest) || len(named) == 0 || !isXMLNameStart(firstRune(string(named[:min(len(named), utf8.UTFMax)]))):
+	case unnamed(rest):
 		// doctypedecl ::= '<!DOCTYPE' S Name ...
 		return fmt.Errorf("line %d: a <!DOCTYPE> with no name is not well formed; it names the root element", line)
 	case b.rooted:
@@ -688,6 +759,23 @@ func (b *xmlBuilder) directive(t xml.Directive, off int) error {
 	}
 	b.doctype = true
 	return nil
+}
+
+// directiveName splits a directive into the ASCII letters that start it
+// and the rest.
+func directiveName(t xml.Directive) (string, []byte) {
+	end := bytes.IndexFunc(t, func(r rune) bool { return ('A' > r || r > 'Z') && ('a' > r || r > 'z') })
+	if end < 0 {
+		end = len(t)
+	}
+	return string(t[:end]), t[end:]
+}
+
+// unnamed reports whether rest, what follows DOCTYPE, lacks the white space
+// and the name that come next.
+func unnamed(rest []byte) bool {
+	named := bytes.TrimLeftFunc(rest, func(r rune) bool { return r == ' ' || r == '\t' || r == '\n' || r == '\r' })
+	return len(named) == len(rest) || len(named) == 0 || !isXMLNameStart(firstRune(string(named[:min(len(named), utf8.UTFMax)])))
 }
 
 // procInst refuses a processing instruction XML 1.0 does not allow where
@@ -761,35 +849,54 @@ func (b *xmlBuilder) chars(t xml.CharData, off int) error {
 	doc := b.doc
 	start := len(doc.buf)
 	if !b.inText {
-		line := b.lines.At(off)
-		if err := b.count(1, line); err != nil {
+		if err := b.openText(start, off); err != nil {
 			return err
 		}
-		idx := i32(len(doc.texts))
-		doc.texts = append(doc.texts, xmlText{start: i32(start), line: i32(line), next: -1})
-		o := &b.open[n-1]
-		if o.lastTx < 0 {
-			doc.elems[o.index].text = idx
-		} else {
-			doc.texts[o.lastTx].next = idx
-		}
-		o.lastTx = idx
 	}
 	doc.buf = append(doc.buf, t...)
 	doc.texts[len(doc.texts)-1].end = i32(len(doc.buf))
 	if first >= 0 {
-		for _, o := range b.open[b.pending:] {
-			doc.elems[o.index].trim0 = i32(start + first)
-		}
-		b.pending = n
-		last := len(t) - 1
-		for isXMLSpace(t[last]) {
-			last--
-		}
-		b.solid = start + last + 1
+		b.solidText(t, start, first)
 	}
 	b.inText = true
 	return nil
+}
+
+// openText adds a text node, from byte start of buf and byte off of the
+// file, as the last text of the open element.
+func (b *xmlBuilder) openText(start, off int) error {
+	doc := b.doc
+	line := b.lines.At(off)
+	if err := b.count(1, line); err != nil {
+		return err
+	}
+	idx := i32(len(doc.texts))
+	doc.texts = append(doc.texts, xmlText{start: i32(start), line: i32(line), next: -1})
+	o := &b.open[len(b.open)-1]
+	if o.lastTx < 0 {
+		doc.elems[o.index].text = idx
+	} else {
+		doc.texts[o.lastTx].next = idx
+	}
+	o.lastTx = idx
+	return nil
+}
+
+// solidText marks text t, from byte start of buf, whose first byte that is
+// not white space is first: the open elements still waiting for one start
+// their trimmed text there, and the trimmed text of each ends after t's
+// last such byte.
+func (b *xmlBuilder) solidText(t xml.CharData, start, first int) {
+	doc := b.doc
+	for _, o := range b.open[b.pending:] {
+		doc.elems[o.index].trim0 = i32(start + first)
+	}
+	b.pending = len(b.open)
+	last := len(t) - 1
+	for isXMLSpace(t[last]) {
+		last--
+	}
+	b.solid = start + last + 1
 }
 
 // isDigit reports whether c is an ASCII digit.

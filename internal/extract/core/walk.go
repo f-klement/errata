@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	slashpath "path"
 	"slices"
 
@@ -162,34 +163,11 @@ func (w *walker) read(d folder, rel string) (files, dirs []string, err error) {
 		return nil, nil, fmt.Errorf("walk: read %s: %w", Quote(rel), bare(err))
 	}
 	defer f.Close()
-	held := 0
+	var l listing
 	for {
 		batch, err := f.ReadDir(walkBatch)
-		for _, e := range batch {
-			if w.entries++; w.entries > w.limits.Entries {
-				return nil, nil, fmt.Errorf("walk: the repository holds more than %d files and directories outside the directories errata passes over, the limit, and stopped in %s; name the files to read in files", w.limits.Entries, Quote(rel))
-			}
-			name := e.Name()
-			if n := len(rel) + 1 + len(name); n > maxFileName {
-				return nil, nil, fmt.Errorf("walk: %s is %d bytes long, over the limit of %d", Quote(slashpath.Join(rel, name)), n, maxFileName)
-			}
-			if name == ".git" && rel != "." {
-				w.names -= held
-				return nil, nil, nil
-			}
-			// ReadDir gives an entry's type as Lstat does, so a symlink
-			// is never a directory here, whatever it points at.
-			if e.IsDir() {
-				if !skipped(rel, name) {
-					if w.names += len(name); w.names > w.limits.Names {
-						return nil, nil, fmt.Errorf("walk: the directories waiting to be walked have names of more than %d bytes in all, the limit, in %s; name the files to read in files", w.limits.Names, Quote(rel))
-					}
-					held += len(name)
-					dirs = append(dirs, name)
-				}
-			} else if w.want(rel, name) {
-				files = append(files, name)
-			}
+		if gitDir, berr := w.take(&l, batch, rel); berr != nil || gitDir {
+			return nil, nil, berr
 		}
 		if errors.Is(err, io.EOF) {
 			break
@@ -198,7 +176,66 @@ func (w *walker) read(d folder, rel string) (files, dirs []string, err error) {
 			return nil, nil, fmt.Errorf("walk: read %s: %w", Quote(rel), bare(err))
 		}
 	}
-	slices.Sort(files)
-	slices.Sort(dirs)
-	return files, dirs, nil
+	slices.Sort(l.files)
+	slices.Sort(l.dirs)
+	return l.files, l.dirs, nil
+}
+
+// listing is what read has taken of a directory so far: the files want
+// accepts, the subdirectories to walk, and the bytes of their names.
+type listing struct {
+	files, dirs []string
+	held        int
+}
+
+// take adds the entries of batch, read from the directory at rel, to l. It
+// reports true when the directory holds .git and is below the root, so
+// read gives neither files nor directories.
+func (w *walker) take(l *listing, batch []fs.DirEntry, rel string) (bool, error) {
+	for _, e := range batch {
+		if gitDir, err := w.entry(l, e, rel); err != nil || gitDir {
+			return gitDir, err
+		}
+	}
+	return false, nil
+}
+
+// entry adds e, an entry of the directory at rel, to l, within the walk's
+// limits, as take says.
+func (w *walker) entry(l *listing, e fs.DirEntry, rel string) (bool, error) {
+	if w.entries++; w.entries > w.limits.Entries {
+		return false, fmt.Errorf("walk: the repository holds more than %d files and directories outside the directories errata passes over, the limit, and stopped in %s; name the files to read in files", w.limits.Entries, Quote(rel))
+	}
+	name := e.Name()
+	if n := len(rel) + 1 + len(name); n > maxFileName {
+		return false, fmt.Errorf("walk: %s is %d bytes long, over the limit of %d", Quote(slashpath.Join(rel, name)), n, maxFileName)
+	}
+	if name == ".git" && rel != "." {
+		w.names -= l.held
+		return true, nil
+	}
+	// ReadDir gives an entry's type as Lstat does, so a symlink is never a
+	// directory here, whatever it points at.
+	if e.IsDir() {
+		return false, w.addDir(l, rel, name)
+	}
+	if w.want(rel, name) {
+		l.files = append(l.files, name)
+	}
+	return false, nil
+}
+
+// addDir adds the subdirectory name of the directory at rel to the ones to
+// walk, unless the walk passes over it, within the limit on the names
+// waiting.
+func (w *walker) addDir(l *listing, rel, name string) error {
+	if skipped(rel, name) {
+		return nil
+	}
+	if w.names += len(name); w.names > w.limits.Names {
+		return fmt.Errorf("walk: the directories waiting to be walked have names of more than %d bytes in all, the limit, in %s; name the files to read in files", w.limits.Names, Quote(rel))
+	}
+	l.held += len(name)
+	l.dirs = append(l.dirs, name)
+	return nil
 }

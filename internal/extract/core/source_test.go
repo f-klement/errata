@@ -49,19 +49,22 @@ func TestHead(t *testing.T) {
 }
 
 // Resolved names the file a link leads to, relative to the root, and refuses
-// what Read refuses, with Read's words: a link out of the repository and a
-// root that is not there. The planted breaks are each of its two error
-// checks negated, which return a path for the refusal and refuse the link
-// that stays inside.
+// what Read refuses, with Read's words: a link out of the repository, one
+// to .. that ends above the root, and a root that is not there. The planted
+// breaks are each of its two error checks negated, which return a path for
+// the refusal and refuse the link that stays inside, and the check of
+// where a route ends dropped, which resolved up to "..".
 func TestResolvedFollowsLinksAndRefusesAsReadDoes(t *testing.T) {
 	root := extracttest.Repo(t, map[string]string{"real/f.yaml": "a: 1\n"})
 	extracttest.Symlink(t, "real/f.yaml", filepath.Join(root, "link.yaml"))
 	extracttest.Symlink(t, "/", filepath.Join(root, "slash"))
+	extracttest.Symlink(t, "..", filepath.Join(root, "up"))
 	if got, err := (Source{File: "link.yaml"}).Resolved(t.Context(), root); err != nil || got != "real/f.yaml" {
 		t.Errorf("link.yaml resolves to %q, %v; want real/f.yaml", got, err)
 	}
 	for _, c := range []struct{ root, file, want string }{
 		{root, "slash/etc/passwd", "read slash/etc/passwd: a symlink leads outside the repository"},
+		{root, "up", "read up: a symlink leads outside the repository"},
 		{filepath.Join(t.TempDir(), "gone"), "a.txt", "open the repository root: no such file or directory"},
 	} {
 		got, err := (Source{File: c.file}).Resolved(t.Context(), c.root)

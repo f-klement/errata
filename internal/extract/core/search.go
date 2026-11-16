@@ -366,28 +366,14 @@ func (e Search) each(data []byte, clock *clockedReader, keep func(m []int) error
 	accepted := 0
 	for pos, prevEnd := 0, -1; pos <= len(data); {
 		m := e.first(data, pos, clock)
-		if clock.stopped || clock.late() {
-			return fmt.Errorf("%s: matching took more than %s, %s, and stopped after %d matches; "+
-				"start the pattern with ^, drop an optional part that scans to the end of the line, such as (?:.*x)?, "+
-				"or shorten a counted repeat, such as {0,1000}",
-				e.File, e.TimeLimit, e.whoseLimit(), accepted)
+		if err := e.tooSlow(clock, accepted); err != nil {
+			return err
 		}
-		if m == nil || (m[0] == len(data) && len(data) > 0 && data[len(data)-1] == '\n') {
+		if endsSearch(data, m) {
 			break
 		}
-		accept := true
-		if m[1] == pos {
-			// An empty match at pos. One that touches the match before is
-			// dropped, and the next search starts one rune on.
-			accept = m[0] != prevEnd
-			if _, w := utf8.DecodeRune(data[pos:]); w > 0 {
-				pos += w
-			} else {
-				pos = len(data) + 1
-			}
-		} else {
-			pos = m[1]
-		}
+		var accept bool
+		pos, accept = nextSearch(data, pos, prevEnd, m)
 		prevEnd = m[1]
 		if accept {
 			accepted++
@@ -397,6 +383,39 @@ func (e Search) each(data []byte, clock *clockedReader, keep func(m []int) error
 		}
 	}
 	return nil
+}
+
+// tooSlow is the error of a search that the clock stopped, or that ran
+// past its deadline, after it accepted accepted matches; nil otherwise.
+func (e Search) tooSlow(clock *clockedReader, accepted int) error {
+	if !clock.stopped && !clock.late() {
+		return nil
+	}
+	return fmt.Errorf("%s: matching took more than %s, %s, and stopped after %d matches; "+
+		"start the pattern with ^, drop an optional part that scans to the end of the line, such as (?:.*x)?, "+
+		"or shorten a counted repeat, such as {0,1000}",
+		e.File, e.TimeLimit, e.whoseLimit(), accepted)
+}
+
+// endsSearch reports whether the search is over after the match m: there
+// is none, or it is the empty match after a final newline, which is on no
+// line.
+func endsSearch(data []byte, m []int) bool {
+	return m == nil || (m[0] == len(data) && len(data) > 0 && data[len(data)-1] == '\n')
+}
+
+// nextSearch returns where the search after the match m, found from pos,
+// starts, and whether m is accepted. An empty match at pos that touches
+// the match before, which ended at prevEnd, is dropped, and the next
+// search starts one rune on.
+func nextSearch(data []byte, pos, prevEnd int, m []int) (int, bool) {
+	if m[1] != pos {
+		return m[1], true
+	}
+	if _, w := utf8.DecodeRune(data[pos:]); w > 0 {
+		return pos + w, m[0] != prevEnd
+	}
+	return len(data) + 1, m[0] != prevEnd
 }
 
 // first returns the first match at or after start, through clock: a
@@ -441,47 +460,82 @@ func (e Search) find(data []byte, start int, clock *clockedReader) []int {
 		m, _ := e.search(data, start, e.re, e.after, clock)
 		return m
 	}
-	first := start == 0 && e.after != nil
-	pos, from, end, tried := start, start, -minGap, 0
+	f := prefixFind{first: start == 0 && e.after != nil, pos: start, from: start, end: -minGap}
 	for {
-		i := bytes.Index(data[pos:], e.prefix)
+		i := bytes.Index(data[f.pos:], e.prefix)
 		if i < 0 {
 			return nil
 		}
-		if first && !e.atStart {
-			if nl := bytes.LastIndexByte(data[pos:pos+i], '\n'); nl >= 0 {
-				from, tried = pos+nl+1, 0
-			}
-		}
-		pos += i
-		if !first {
-			from = pos
-		}
-		a, spare := e.anchored(), clock.spare-tried
-		if a == nil || spare <= 0 || pos < end+minGap {
+		e.toPrefix(&f, data, i)
+		m, done, tried := e.tryAt(data, &f, clock)
+		if !tried {
 			break
 		}
-		stop, read := min(pos+spare, len(data)), clock.read
-		var m []int
-		m, end = e.search(data[:stop], pos, a.at, a.after, clock)
-		if first {
-			tried += clock.read - read
-		}
-		if end == stop && stop < len(data) {
-			break
-		}
-		if m != nil || clock.stopped {
+		if done {
 			return m
 		}
-		pos++
+		f.pos++
 	}
-	if first {
-		clock.spare -= tried
-		m, _ := e.search(data, from, e.re, nil, clock)
+	return e.searchOn(data, &f, clock)
+}
+
+// prefixFind is where find stands in its scan of a pattern's prefix.
+type prefixFind struct {
+	first bool // a search from the start of a pattern that looks back
+	pos   int  // the place of the prefix find tries next
+	from  int  // where the search after the tries starts, when first
+	end   int  // where the last try stopped reading
+	tried int  // the bytes the tries since from read, when first
+}
+
+// toPrefix moves f to the prefix i bytes past f.pos, and the start of the
+// search after the tries with it: to the place for a pattern that does not
+// look back, and to the start of the prefix's line for one that does,
+// unless the pattern holds \A.
+func (e Search) toPrefix(f *prefixFind, data []byte, i int) {
+	if f.first && !e.atStart {
+		if nl := bytes.LastIndexByte(data[f.pos:f.pos+i], '\n'); nl >= 0 {
+			f.from, f.tried = f.pos+nl+1, 0
+		}
+	}
+	f.pos += i
+	if !f.first {
+		f.from = f.pos
+	}
+}
+
+// tryAt tries the anchored pattern at f.pos, reading no more than the
+// bytes still spare. It reports false, for find to search on unanchored,
+// when it did not try or its try was cut off, and else whether the try's
+// result is find's: a match, or a stopped clock.
+func (e Search) tryAt(data []byte, f *prefixFind, clock *clockedReader) ([]int, bool, bool) {
+	a, spare := e.anchored(), clock.spare-f.tried
+	if a == nil || spare <= 0 || f.pos < f.end+minGap {
+		return nil, false, false
+	}
+	stop, read := min(f.pos+spare, len(data)), clock.read
+	var m []int
+	m, f.end = e.search(data[:stop], f.pos, a.at, a.after, clock)
+	if f.first {
+		f.tried += clock.read - read
+	}
+	if f.end == stop && stop < len(data) {
+		return nil, false, false
+	}
+	return m, m != nil || clock.stopped, true
+}
+
+// searchOn searches unanchored after the tries: from f.from, reading the
+// tries since again, for a pattern that looks back, and from f.pos for any
+// other. Either spends the spare bytes it reads again.
+func (e Search) searchOn(data []byte, f *prefixFind, clock *clockedReader) []int {
+	if f.first {
+		clock.spare -= f.tried
+		m, _ := e.search(data, f.from, e.re, nil, clock)
 		return m
 	}
-	clock.spare -= max(0, end-pos)
-	m, _ := e.search(data, pos, e.re, e.after, clock)
+	clock.spare -= max(0, f.end-f.pos)
+	m, _ := e.search(data, f.pos, e.re, e.after, clock)
 	return m
 }
 

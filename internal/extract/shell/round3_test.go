@@ -45,9 +45,12 @@ func TestShellXtraceEndsResolution(t *testing.T) {
 // a quote, the value still comes back as written, not literal (the
 // correctness review's A3: it was lost). A name the shell reads after quote
 // removal still comes from the text before the first part that is not
-// literal. The planted breaks: splitAssign without the first part's name,
-// which lost the first four rows' values, and that without its test of an
-// = already found, which lost the last.
+// literal. An argument that is neither a name nor an option, as 9x, makes
+// the values after it not literal. The planted breaks: splitAssign without
+// the first part's name, which lost the first four rows' values, that
+// without its test of an = already found, which lost the seventh, and
+// declWord's last case not marking the declaration unreadable, which read
+// the last row's value as literal.
 func TestShellPOSIXDeclarationKeepsItsValue(t *testing.T) {
 	for _, c := range []struct{ name, body, want string }{
 		{"V", "export V=a:~/b\n", "a:~/b!@1"},
@@ -57,6 +60,7 @@ func TestShellPOSIXDeclarationKeepsItsValue(t *testing.T) {
 		{"V", "export V=a$'x'\n", "a$'x'!@1"},
 		{"V", "export V={a,b}%:~/a\n", "{a,b}%:~/a!@1"},
 		{"ab", "export a\\b=$x\n", "a\\b=$x!@1"},
+		{"V", "export 9x V=1\n", "1!@1"}, // an argument neither a name nor an option
 	} {
 		if got := values(t, Spec{File: "deploy.sh", Name: c.name, Language: "posix"}, c.body); got != c.want {
 			t.Errorf("%q: got %q, want %q", c.body, got, c.want)

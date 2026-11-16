@@ -166,6 +166,41 @@ func TestPropertiesReadsWhatJavaReads(t *testing.T) {
 	}
 }
 
+// Each malformed sequence is as long as Java's decoder reads it: a lead
+// byte and as many continuation bytes as could still begin a character, cut
+// at the end of the file.
+func TestPropertiesMalformedSequenceLengths(t *testing.T) {
+	for in, want := range map[string]int{
+		"\xff": 1, "\xc3": 1,
+		"\xe2": 1, "\xe0\x80": 1, "\xe2x": 1, "\xe2\x82": 2, "\xe2\x82x": 2, "\xed\xa0\x80": 3,
+		"\xf0\x80": 1, "\xf0\x9f": 2, "\xf0\x9fx": 2, "\xf0\x9f\x98": 3,
+		"\xf4\x90\x80\x80": 1, "\xf0\x9fx\x80": 2, "\xf0\x9f\x98x": 3,
+		// The first and the last lead byte of each length, cut after a
+		// second byte that may follow it, and a lead byte alone.
+		"\xe0\xa0": 2, "\xef\xbf": 2, "\xf0\x90": 2, "\xf4\x80": 2, "\xf0": 1, "\xf4": 1,
+	} {
+		if got := javaMalformed([]byte(in)); got != want {
+			t.Errorf("%q: %d bytes, want %d", in, got, want)
+		}
+	}
+}
+
+// A \u escape reads hex digits in either case, and a low surrogate before
+// a second one pairs with nothing: each is a U+FFFD of its own.
+func TestPropertiesUnescapeEdges(t *testing.T) {
+	for in, want := range map[string]string{
+		`\uafAF`:       "\uafaf",
+		`\u0f0F`:       "\u0f0f",
+		`\uDC00\uDC00`: "\ufffd\ufffd",
+		`\uD83D\uDE00`: "\U0001F600",
+	} {
+		got, err := unescape(nil, []byte(in))
+		if err != nil || string(got) != want {
+			t.Errorf("%s: %q, %v, want %q", in, got, err, want)
+		}
+	}
+}
+
 // Java reads every value as written, so only a template's values are marked
 // not literal, as its engine renders them.
 func TestPropertiesMarksWhatATemplateComputes(t *testing.T) {

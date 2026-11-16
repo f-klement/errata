@@ -127,38 +127,68 @@ func (e Each) FromShared(data []byte, _ *Spent) ([]check.Value, error) {
 // before the context drops any.
 func (e Each) FromData(data []byte) ([]check.Value, error) {
 	data = LineFeeds(data)
-	var all []Match
-	var held int64
-	for i, v := range e.values {
-		s, err := compileOnce(e.kind, EachPattern(e.before, v, e.after))
-		if err != nil {
-			return nil, &PatternError{Index: i, Err: err}
-		}
-		s.Source, s.TimeLimit, s.shared, s.whose = e.Source, e.TimeLimit, e.deadline, eachLimit
-		matches, err := s.Matches(data)
-		if err != nil {
-			return nil, err
-		}
-		for _, m := range matches {
-			if m[2] < 0 {
-				continue
-			}
-			if all = append(all, m); len(all) > MaxValues {
-				return nil, TooManyValues(e.File)
-			}
-			if held += int64(m[3] - m[2]); held > e.Limit {
-				return nil, fmt.Errorf("%s: the values of every pattern hold more than %d bytes in all, the extractor's max_bytes; narrow the pattern or set max_bytes: higher",
-					e.File, e.Limit)
-			}
-		}
+	all, err := e.matchAll(data)
+	if err != nil {
+		return nil, err
 	}
 	slices.SortStableFunc(all, func(a, b Match) int { return cmp.Compare(a[0], b[0]) })
 	if e.around != nil {
-		var err error
 		if all, err = e.around.keep(data, all, e.deadline, e.File, e.TimeLimit, eachLimit); err != nil {
 			return nil, err
 		}
 	}
+	return e.valuesOf(data, all), nil
+}
+
+// matchAll is the matches of every value's pattern in data, in the order
+// of the values, held to MaxValues and the file's limit.
+func (e Each) matchAll(data []byte) ([]Match, error) {
+	var all []Match
+	var held int64
+	for i, v := range e.values {
+		matches, err := e.matchValue(data, i, v)
+		if err != nil {
+			return nil, err
+		}
+		if all, held, err = e.addMatches(all, held, matches); err != nil {
+			return nil, err
+		}
+	}
+	return all, nil
+}
+
+// matchValue is the matches in data of the pattern of v, the value at i.
+func (e Each) matchValue(data []byte, i int, v string) ([]Match, error) {
+	s, err := compileOnce(e.kind, EachPattern(e.before, v, e.after))
+	if err != nil {
+		return nil, &PatternError{Index: i, Err: err}
+	}
+	s.Source, s.TimeLimit, s.shared, s.whose = e.Source, e.TimeLimit, e.deadline, eachLimit
+	return s.Matches(data)
+}
+
+// addMatches adds to all, whose values hold held bytes, each of matches
+// whose group took part, and refuses more than MaxValues matches or more
+// bytes than the file's limit.
+func (e Each) addMatches(all []Match, held int64, matches []Match) ([]Match, int64, error) {
+	for _, m := range matches {
+		if m[2] < 0 {
+			continue
+		}
+		if all = append(all, m); len(all) > MaxValues {
+			return nil, 0, TooManyValues(e.File)
+		}
+		if held += int64(m[3] - m[2]); held > e.Limit {
+			return nil, 0, fmt.Errorf("%s: the values of every pattern hold more than %d bytes in all, the extractor's max_bytes; narrow the pattern or set max_bytes: higher",
+				e.File, e.Limit)
+		}
+	}
+	return all, held, nil
+}
+
+// valuesOf is the value of each match in data, its group's text at the line
+// where the match starts.
+func (e Each) valuesOf(data []byte, all []Match) []check.Value {
 	l := NewLineCursor(data)
 	out := make([]check.Value, 0, len(all))
 	for _, m := range all {
@@ -167,5 +197,5 @@ func (e Each) FromData(data []byte) ([]check.Value, error) {
 			At:   check.Location{File: e.File, Line: l.At(m[0])},
 		})
 	}
-	return out, nil
+	return out
 }

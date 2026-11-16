@@ -44,24 +44,7 @@ func unboundMarkers(checks []check.Check) (check.Check, bool, error) {
 	taken := false
 	for _, c := range checks {
 		taken = taken || c.ID == UnboundMarkersID
-		r := c.Rule()
-		if r == nil {
-			continue
-		}
-		for _, x := range r.Extractors {
-			spec, _ := x.Spec.(extract.Spec)
-			m, ok := extract.SpecOf(spec, marker.Kind)
-			if !ok {
-				continue
-			}
-			w, err := marker.NewWalk(m.Files, m.MaxBytes)
-			if err != nil {
-				// The extractor did not build either, and its rule says so.
-				continue
-			}
-			bindings = append(bindings, binding{rule: c.ID, walk: w, spec: spec})
-			limit = max(limit, w.Limit())
-		}
+		bindings, limit = ruleBindings(c, bindings, limit)
 	}
 	if len(bindings) == 0 {
 		return check.Check{}, false, nil
@@ -69,16 +52,7 @@ func unboundMarkers(checks []check.Check) (check.Check, bool, error) {
 	if taken {
 		return check.Check{}, false, fmt.Errorf("id %q is the built-in check errata adds when a rule reads markers; give the check another id", UnboundMarkersID)
 	}
-	var entries []string // what the rules' files: name, for errata list
-	for _, b := range bindings {
-		m, _ := extract.SpecOf(b.spec, marker.Kind)
-		for _, f := range marker.Resolve(m).Files {
-			if !slices.Contains(entries, f) {
-				entries = append(entries, f)
-			}
-		}
-	}
-	shown := marker.Spec{Files: entries, MaxBytes: limit}
+	shown := marker.Spec{Files: walkedFiles(bindings), MaxBytes: limit}
 	x := check.NamedExtractor{
 		Name:        unboundName,
 		Extractor:   unbound{bindings: bindings},
@@ -95,6 +69,46 @@ func unboundMarkers(checks []check.Check) (check.Check, bool, error) {
 		return check.Check{}, false, err
 	}
 	return check.Check{ID: UnboundMarkersID, Reason: unboundReason, Scope: check.ScopeRepo, Kind: r}, true, nil
+}
+
+// ruleBindings appends a binding for each marker extractor of c, when it
+// is a rule, to bindings, and raises limit to the largest max_bytes of
+// their walks.
+func ruleBindings(c check.Check, bindings []binding, limit int64) ([]binding, int64) {
+	r := c.Rule()
+	if r == nil {
+		return bindings, limit
+	}
+	for _, x := range r.Extractors {
+		spec, _ := x.Spec.(extract.Spec)
+		m, ok := extract.SpecOf(spec, marker.Kind)
+		if !ok {
+			continue
+		}
+		w, err := marker.NewWalk(m.Files, m.MaxBytes)
+		if err != nil {
+			// The extractor did not build either, and its rule says so.
+			continue
+		}
+		bindings = append(bindings, binding{rule: c.ID, walk: w, spec: spec})
+		limit = max(limit, w.Limit())
+	}
+	return bindings, limit
+}
+
+// walkedFiles is what the files: of the bindings' rules name, each entry
+// once, for errata list.
+func walkedFiles(bindings []binding) []string {
+	var entries []string
+	for _, b := range bindings {
+		m, _ := extract.SpecOf(b.spec, marker.Kind)
+		for _, f := range marker.Resolve(m).Files {
+			if !slices.Contains(entries, f) {
+				entries = append(entries, f)
+			}
+		}
+	}
+	return entries
 }
 
 // unbound is the built-in check's extractor: a value for each marker in the

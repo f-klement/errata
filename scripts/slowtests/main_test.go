@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"slices"
@@ -94,4 +95,44 @@ func tree(t *testing.T, files map[string]string) string {
 		}
 	}
 	return root
+}
+
+// cli prints the list a line a test and exits 0, exits 1 with the error when
+// the tree holds a call the list would miss, and 2 with the usage on a misuse.
+func TestCliExitsByHowTheListEnded(t *testing.T) {
+	good := tree(t, map[string]string{"internal/p/p_test.go": "package p\n\nfunc TestB(t *testing.T) { slowOnly(t) }\n\nfunc TestA(t *testing.T) { slowOnly(t) }\n"})
+	bad := tree(t, map[string]string{"internal/p/p_test.go": "package p\n\nfunc big(t *testing.T) { slowOnly(t) }\n"})
+	for _, tc := range []struct {
+		args           []string
+		rc             int
+		stdout, stderr string
+	}{
+		{nil, 2, "", "usage: slowtests <module root>\n"},
+		{[]string{good, good}, 2, "", "usage: slowtests <module root>\n"},
+		{[]string{good}, 0, "./internal/p:TestA\n./internal/p:TestB\n", ""},
+		{[]string{bad}, 1, "", "slowtests: " + filepath.Join(bad, "internal/p/p_test.go") + ":3:26: big calls slowOnly"},
+	} {
+		var out, errs bytes.Buffer
+		rc := cli(tc.args, &out, &errs)
+		if rc != tc.rc || out.String() != tc.stdout || !strings.HasPrefix(errs.String(), tc.stderr) {
+			t.Errorf("%q: exit %d, stdout %q, stderr %q", tc.args, rc, out.String(), errs.String())
+		}
+	}
+}
+
+// A refused call ends the list with the tests found before it, those of its
+// own file included, as at the base, where each was added as it was found.
+func TestSlowTestsKeepsWhatItFoundBeforeARefusal(t *testing.T) {
+	root := tree(t, map[string]string{"internal/p/p_test.go": "package p\n\nfunc TestA(t *testing.T) { slowOnly(t) }\n\nfunc big(t *testing.T) { slowOnly(t) }\n"})
+	found, err := slowTests(root)
+	if err == nil || !slices.Equal(found, []string{"./internal/p:TestA"}) {
+		t.Fatalf("got %q, %v", found, err)
+	}
+}
+
+func TestSlowTestsRefusesAFileItCannotParse(t *testing.T) {
+	_, err := slowTests(tree(t, map[string]string{"internal/p/p_test.go": "package p\n\nfunc TestP(\n"}))
+	if err == nil || !strings.Contains(err.Error(), "p_test.go:") {
+		t.Fatalf("got %v", err)
+	}
 }

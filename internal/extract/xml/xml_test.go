@@ -318,6 +318,13 @@ func TestXPathRefusesWhatTheSubsetLeavesOut(t *testing.T) {
 		"/[1]":                     `column 2: expected a step: an element, @attribute or text() but found '['`,
 		"/a[text()='x']":           "column 4: text() is not supported in a predicate; compare the element itself, as [name='value']",
 		"/a[.='x']":                "column 4: the self step (.) is not supported",
+		"/a<=1":                    "column 3: the operator <= is not supported",
+		"/a>1":                     "column 3: the operator > is not supported",
+		"/a)":                      "column 3: a parenthesised expression is not supported",
+		"/a -1":                    "column 4: arithmetic is not supported",
+		"/a mod 2":                 "column 4: arithmetic is not supported",
+		"/a modx":                  "column 4: expected / or // before the next step, or the end of the path but found 'm'",
+		"/'a'":                     "column 2: a literal is not supported here; a comparison takes it after =",
 		"/a/@b/c":                  "column 6: an attribute has no children, so its step ends the path",
 		"/a/text()/b":              "column 10: text has no children, so its step ends the path",
 		"/a/text()[b='x']":         "column 10: a comparison on text() is not supported",
@@ -634,6 +641,35 @@ func TestXMLComparisonsStopAtTheFilterLimitAtItsSize(t *testing.T) {
 	xmlComparisonsAtTheLimit(t, 0, int(core.MaxFilterBytes/xmlComparisonCost))
 }
 
+// A comparison charges the literal's bytes only for a child or attribute
+// whose value is as long as the literal, since only that one compares them.
+// Here each value is one byte longer than the literal, and the work limit
+// is one node looked at, so the step charges only that and selects nothing.
+// The planted break charges the literal for every child or attribute of the
+// name, which goes past the limit.
+func TestXMLChargesTheLiteralOnlyWhereTheLengthsAgree(t *testing.T) {
+	for body, path := range map[string]string{
+		`<r><a b="xy"/></r>`:      "/r/a[@b='x']",
+		`<r><a><b>xy</b></a></r>`: "/r/a[b='x']",
+	} {
+		got, err := readXMLWithin(t, xmlSpec(path, nil), body, 0, core.StepBytes)
+		if err != nil || len(got) != 0 {
+			t.Errorf("%s: %q, %v", path, extracttest.Texts(got), err)
+		}
+	}
+}
+
+// A namespace declaration and an attribute of the same local name are no
+// repeat, even where the attribute is in the namespace the declaration
+// binds. The planted break keys a declaration as an attribute in that
+// namespace, which refuses the file as one that repeats an attribute.
+func TestXMLADeclarationIsNoRepeatOfAnAttribute(t *testing.T) {
+	root := extracttest.Repo(t, map[string]string{"f.xml": `<r xmlns:p="urn:x" p:p="v"/>`})
+	if got := extracttest.Texts(mustRun(t, xmlSpec("/r/@p:p", map[string]string{"p": "urn:x"}), root)); got != "v@1" {
+		t.Errorf("got %q, want v@1", got)
+	}
+}
+
 // xmlComparisonCost is what the comparisons on one a cost.
 const xmlComparisonCost = 64 * (100*core.StepBytes + core.StepBytes + 1)
 
@@ -730,11 +766,12 @@ func TestXMLRefusesADeclarationOutOfPlace(t *testing.T) {
 // character reference keeps the character it names. The planted break is
 // each literal character; the control is each reference.
 func TestXMLNormalisesAttributeValues(t *testing.T) {
-	root := extracttest.Repo(t, map[string]string{"f.xml": "<a b=\"x\ty\nz\r\nw  v\" c='&#9;&#10;&#13;' d=\"p&#10;q\nr&amp;\tA&#x41;\"/>"})
+	root := extracttest.Repo(t, map[string]string{"f.xml": "<a b=\"x\ty\nz\r\nw  v\" c='&#9;&#10;&#13;' d=\"p&#10;q\nr&amp;\tA&#x41;\" e=\"x\r\"/>"})
 	for path, want := range map[string]string{
 		"/a/@b": "x y z w  v",
 		"/a/@c": "\t\n\r",
 		"/a/@d": "p\nq r& AA",
+		"/a/@e": "x ", // a CR that ends the value, with no byte after it to look at
 	} {
 		got := mustRun(t, xmlSpec(path, nil), root)
 		if len(got) != 1 || got[0].Text != want {
@@ -757,6 +794,8 @@ func TestXMLRefusesADirectiveOutsideTheProlog(t *testing.T) {
 		"<!DOCTYPE a>\n<!DOCTYPE a><a/>": "line 2: a second <!DOCTYPE> is not well formed",
 		"<!ENTITY e 'x'>\n<a/>":          "line 1: a <!ENTITY> directive outside a <!DOCTYPE> is not well formed",
 		"<a><!ELEMENT a ANY></a>":        "line 1: a <!ELEMENT> directive outside a <!DOCTYPE> is not well formed",
+		"<!AZaz><a/>":                    "line 1: a <!AZaz> directive outside a <!DOCTYPE> is not well formed",
+		"<!1><a/>":                       "line 1: a <!> directive outside a <!DOCTYPE> is not well formed",
 	} {
 		_, err := run(t, xmlSpec("/a", nil), extracttest.Repo(t, map[string]string{"f.xml": body}))
 		extracttest.WantError(t, err, "f.xml: "+want)

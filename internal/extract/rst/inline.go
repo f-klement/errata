@@ -44,17 +44,17 @@ func plain(d *doc, ls []span) string {
 
 // inline hands keep, in order, the ranges of in that are its prose: in
 // without the delimiters of its inline markup, as docutils recognises
-// them. “literal“ keeps its text as written; **strong**, *emphasis* and
-// `interpreted text` keep theirs, with a role before or after and the _ or
-// __ of a reference left out, and a reference written `text <target>`_
-// keeps its text. A backslash escapes the character after it, and goes
-// with it when that is a blank. Any other markup, a substitution, a
-// footnote or a reference by name_ included, stays as written. A start of
-// markup is a delimiter after a blank, the start of in, or one of '"([{<-/:,
-// with no blank after it; its end the first delimiter after it with no blank
-// or backslash before it, followed by a blank, the end, or punctuation. One
-// pass over in: each kind of end is searched for once from each place
-// (ends).
+// them. A literal, between pairs of backquotes, keeps its text as written;
+// **strong**, *emphasis* and `interpreted text` keep theirs, with a role
+// before or after and the _ or __ of a reference left out, and a reference
+// written `text <target>`_ keeps its text. A backslash escapes the
+// character after it, and goes with it when that is a blank. Any other
+// markup, a substitution, a footnote or a reference by name_ included,
+// stays as written. A start of markup is a delimiter after a blank, the
+// start of in, or one of '"([{<-/:, with no blank after it; its end the
+// first delimiter after it with no blank or backslash before it, followed
+// by a blank, the end, or punctuation. One pass over in: each kind of end
+// is searched for once from each place (ends).
 func inline(in []byte, keep func(from, to int)) {
 	e := ends{in: in}
 	from := 0 // the start of the text kept as written
@@ -154,29 +154,54 @@ func (e *ends) markup(p int) (a, b, next int, raw, ok bool) {
 	in := e.in
 	switch {
 	case bytes.HasPrefix(in[p:], []byte("``")):
-		if q, ok := e.literal.next(len(in), p+3, func(q int) bool { return e.endsAt(q, "``", 0, false) }); ok && !isSpace(in[p+2]) {
-			return p + 2, q, q + 2, true, true
-		}
-		return 0, 0, 0, false, false
+		return e.literalAt(p)
 	case bytes.HasPrefix(in[p:], []byte("**")):
-		if q, ok := e.strong.next(len(in), p+3, func(q int) bool { return e.endsAt(q, "**", 0, true) }); ok && !isSpace(in[p+2]) {
-			return p + 2, q, q + 2, false, true
+		if a, b, next, ok := e.strongAt(p); ok {
+			return a, b, next, false, true
 		}
-		fallthrough
+		return e.emphasisAt(p)
 	case in[p] == '*':
-		if q, ok := e.emphasis.next(len(in), p+2, func(q int) bool { return e.endsAt(q, "*", 0, true) }); ok {
-			return p + 1, q, q + 1, false, true
-		}
-		return 0, 0, 0, false, false
+		return e.emphasisAt(p)
 	case in[p] == ':':
-		m := rolePrefix.Find(in[p:])
-		if m == nil {
-			return 0, 0, 0, false, false
-		}
-		return e.interpreted(p+len(m)-2, true)
+		return e.roleAt(p)
 	default: // a backquote
 		return e.interpreted(p, false)
 	}
+}
+
+// literalAt reads an inline literal whose two opening backquotes are at p.
+func (e *ends) literalAt(p int) (a, b, next int, raw, ok bool) {
+	in := e.in
+	if q, ok := e.literal.next(len(in), p+3, func(q int) bool { return e.endsAt(q, "``", 0, false) }); ok && !isSpace(in[p+2]) {
+		return p + 2, q, q + 2, true, true
+	}
+	return 0, 0, 0, false, false
+}
+
+// strongAt reads strong emphasis whose ** is at p, which is never raw.
+func (e *ends) strongAt(p int) (a, b, next int, ok bool) {
+	in := e.in
+	if q, ok := e.strong.next(len(in), p+3, func(q int) bool { return e.endsAt(q, "**", 0, true) }); ok && !isSpace(in[p+2]) {
+		return p + 2, q, q + 2, true
+	}
+	return 0, 0, 0, false
+}
+
+// emphasisAt reads emphasis whose * is at p.
+func (e *ends) emphasisAt(p int) (a, b, next int, raw, ok bool) {
+	if q, ok := e.emphasis.next(len(e.in), p+2, func(q int) bool { return e.endsAt(q, "*", 0, true) }); ok {
+		return p + 1, q, q + 1, false, true
+	}
+	return 0, 0, 0, false, false
+}
+
+// roleAt reads interpreted text whose role, :name:, starts at p.
+func (e *ends) roleAt(p int) (a, b, next int, raw, ok bool) {
+	m := rolePrefix.Find(e.in[p:])
+	if m == nil {
+		return 0, 0, 0, false, false
+	}
+	return e.interpreted(p+len(m)-2, true)
 }
 
 // interpreted reads interpreted text whose ` is at p, with its role or

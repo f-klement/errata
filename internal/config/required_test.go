@@ -124,6 +124,16 @@ func TestRequiredComparesEveryEntry(t *testing.T) {
 	}
 }
 
+// required compares each id as written, a refused one too: id: y, which
+// YAML 1.1 reads as true, is refused for that and named as y, not as true
+// or as no id, among the checks required does not list.
+func TestRequiredComparesAnIDAsWritten(t *testing.T) {
+	_, err := parse([]byte("required: [b]\nchecks:\n- {id: y, reason: r, scope: repo, run: [x]}\n- {id: b, reason: r, scope: repo, run: [x]}\n"), BuiltIn)
+	if err == nil || !strings.Contains(err.Error(), `these checks are not under required: "y"`) {
+		t.Errorf("error %v does not name y as a check required does not list", err)
+	}
+}
+
 // Load returns the required list too, so the CLI can print it.
 func TestLoadReturnsRequired(t *testing.T) {
 	root := t.TempDir()

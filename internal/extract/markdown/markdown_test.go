@@ -325,3 +325,21 @@ func TestALineElementInAHeadingIsASpace(t *testing.T) {
 	got := read(t, Spec{Selector: markup.Selector{Target: "section", Section: "Foo Bar"}}, "## Foo<br>Bar\n\nx\n")
 	want(t, "br", got, "1:x")
 }
+
+// The comment target refuses an HTML block the HTML parse refuses, here
+// for elements nested past core.MaxDepth, as the other targets do. The
+// planted breaks: either half of the test that keeps the parse's error
+// negated.
+func TestCommentsRefuseWhatTheHTMLParseRefuses(t *testing.T) {
+	s := Spec{Selector: markup.Selector{Target: "comment"}}
+	s.File = "README.md"
+	e, err := Build(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := "<div>\n" + strings.Repeat("<b>", core.MaxDepth+1) + "\n\n<div><!-- x --></div>\n"
+	_, err = e.(extractor).FromData([]byte(body))
+	if err == nil || !strings.Contains(err.Error(), "line 2") || !strings.Contains(err.Error(), "nested more than") {
+		t.Errorf("got %v, want the HTML parse's refusal of elements nested more than the limit, at line 2", err)
+	}
+}

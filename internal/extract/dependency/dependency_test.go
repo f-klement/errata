@@ -238,6 +238,8 @@ func TestDependencyReadsNpm(t *testing.T) {
 			"3.20.2@package-lock.json:2 [package-lock.json packages (resolved)]"},
 		{"an alias in a version 1 lockfile", "zod", "package-lock.json", "{\"dependencies\": {\n\"zod-old\": {\"version\": \"npm:zod@3.20.2\"}}}",
 			"3.20.2@package-lock.json:2 [package-lock.json dependencies (resolved)]"},
+		{"package-lock v1, an entry with no version", "x", "package-lock.json", `{"dependencies": {"x": {"resolved": "file:x"}}}`, ""},
+		{"package-lock v1, the key is an alias of another package", "x", "package-lock.json", `{"dependencies": {"x": {"version": "npm:y@1.0.0"}}}`, ""},
 		{"an alias in yarn.lock", "zod", "yarn.lock", "\"zod-old@npm:zod@^3.20.0\":\n  version \"3.20.2\"\n",
 			"3.20.2@yarn.lock:2 [yarn.lock (resolved)]"},
 		{"yarn berry, a link", "foo", "yarn.lock", "__metadata:\n  version: 8\n\n\"foo@link:../foo::locator=app%40workspace%3A.\":\n  version: 0.0.0-use.local\n", ""},
@@ -309,6 +311,7 @@ other = { git = "https://example.com/o.git" }
 		{"a name after a joined blank line", "x", "constraints.txt", "\\\nx!\n", "!@constraints.txt:2 [requirements (range)]"},
 		{"a pin's version on the line after the ==", "x", "requirements.txt", "x== \\\r\n1.0 \\\r\n --hash=sha256:0\r\n", "1.0@requirements.txt:2 [requirements (resolved)]"},
 		{"a URL on the line after the @", "x", "requirements.txt", "x @\\\n https://h/x.zip\n", "https://h/x.zip!@requirements.txt:2 [requirements (range)]"},
+		{"a URL on the line after the @, a marker after it", "x", "requirements.txt", "x @\\\n https://h/x.zip \\\n; os_name == 'nt'\n", "https://h/x.zip!@requirements.txt:2 [requirements (range)]"},
 		{"parentheses over lines", "x", "requirements.txt", "x (\\\n>=1)\n", ">=1@requirements.txt:2 [requirements (range)]"},
 		{"a specifier pip joins with nothing between", "x", "requirements.txt", "x>=1\\\n.0,\\\n<2\n", ">=1.0,<2@requirements.txt:1 [requirements (range)]"},
 		{"a marker on a later line", "x", "requirements.txt", "x[a]~=3.1 \\\nX >= 2 ; python_version > '3'", "~=3.1 X >= 2@requirements.txt:1 [requirements (range)]"},
@@ -319,6 +322,8 @@ other = { git = "https://example.com/o.git" }
 		{"a backslash on the last line", "x", "requirements.txt", "x>=1 \\", ">=1@requirements.txt:1 [requirements (range)]"},
 		{"a backslash on the last line before its end", "x", "requirements.txt", "a==1\nx>=1 \\\n", ">=1@requirements.txt:2 [requirements (range)]"},
 		{"a comment the backslash joins the next line to", "y", "requirements.txt", "x # c \\\ny>=1\n", ""},
+		{"a requirement with no specifier", "x", "requirements.txt", "x\nx ; os_name == 'nt'\n", ""},
+		{"poetry, a list of constraints", "x", "pyproject.toml", "[tool.poetry.dependencies]\nx = [\n  { version = \"^1\", python = \"<3.8\" },\n  { version = \"^2\", python = \">=3.8\" },\n]\n", "^1@pyproject.toml:3 [pyproject.toml tool.poetry.dependencies (range)]; ^2@pyproject.toml:4 [pyproject.toml tool.poetry.dependencies (range)]"},
 		{"a comment line ends a join", "x", "requirements.txt", "x>=1 \\\n# c \\\nx<2\n", ">=1@requirements.txt:1 [requirements (range)]; <2@requirements.txt:3 [requirements (range)]"},
 		{"a comment line right after a join", "x", "requirements.txt", "x>=1\\\n# c\n", ">=1@requirements.txt:1 [requirements (range)]"},
 		{"every backslash at the end is stripped", "x", "requirements.txt", "x>=1\\\\\n.0\n", ">=1.0@requirements.txt:1 [requirements (range)]"},
@@ -418,7 +423,11 @@ DEPENDENCIES
 		{"a constant after a comment at the end", "x", "Gemfile", "gem \"x\", # c\n# d\nV", "V!@Gemfile:3 [Gemfile (range)]"},
 		{"a lone CR ends the line before a requirement", "rails", "Gemfile", "gem \"rails\",\r  \"~> 7.1\"", "~> 7.1@Gemfile:2 [Gemfile (range)]"},
 		{"an exact version", "rails", "Gemfile", "gem \"rails\", \"= 7.1\", \"7.1\"\n", "==7.1@Gemfile:1 [Gemfile (range)]; ==7.1@Gemfile:1 [Gemfile (range)]"},
+		{"a scoped constant", "x", "Gemfile", "gem \"x\", Foo::BAR\n", "Foo::BAR!@Gemfile:1 [Gemfile (range)]"},
+		{"a colon at the end", "x", "Gemfile", "gem \"x\", Foo:", ""},
+		{"a second statement of the package", "x", "Gemfile", "gem \"x\", platforms: :jruby\ngem \"x\", \"~> 1.15\"\n", "~> 1.15@Gemfile:2 [Gemfile (range)]"},
 		{"Gemfile.lock", "nokogiri", "Gemfile.lock", lock, "1.16.2@Gemfile.lock:4 [Gemfile.lock specs (resolved)]"},
+		{"Gemfile.lock, a spec without a version", "x", "Gemfile.lock", "GEM\n  specs:\n    x\n    x (1.0)\n", "1.0@Gemfile.lock:4 [Gemfile.lock specs (resolved)]"},
 		{"a dependency's range is not read", "racc", "Gemfile.lock", lock, "1.7.3@Gemfile.lock:6 [Gemfile.lock specs (resolved)]"},
 		{"PATH", "larder", "Gemfile.lock", lock, "0.1.0@Gemfile.lock:15 [Gemfile.lock specs (resolved)]"},
 		{"DEPENDENCIES is not read", "rails", "Gemfile.lock", lock, "7.1.3@Gemfile.lock:7 [Gemfile.lock specs (resolved)]"},
@@ -443,6 +452,7 @@ func TestDependencyReadsComposer(t *testing.T) {
 			"dev-main!@composer.lock:1 [composer.lock packages (resolved)]"},
 		{"composer.lock", "monolog/monolog", "composer.lock", "{\n  \"packages\": [\n    {\"name\": \"monolog/monolog\", \"version\": \"3.5.0\"}\n  ],\n  \"packages-dev\": [\n    {\"name\": \"monolog/monolog\",\n     \"version\": \"v3.5.0\"}\n  ]\n}\n",
 			"3.5.0@composer.lock:3 [composer.lock packages (resolved)]; v3.5.0@composer.lock:7 [composer.lock packages-dev (resolved)]"},
+		{"composer.lock, another package and one without a version", "x", "composer.lock", `{"packages": [{"name": "y", "version": "1.0.0"}, {"name": "x"}, {"name": "x", "version": "2.0.0"}]}`, "2.0.0@composer.lock:1 [composer.lock packages (resolved)]"},
 	})
 }
 
@@ -526,9 +536,13 @@ func TestDependencyRefusesFiles(t *testing.T) {
 		{"pyproject.toml", "[project]\ndependencies = \"x\"\n", "pyproject.toml: line 2: project.dependencies is a string, not a list of requirements"},
 		{"pyproject.toml", "\xef\xbb\xbf[project]\n", "pyproject.toml: "},
 		{"go.mod", "module m\nfrob x\n", "go.mod:2: unknown directive: frob"},
+		{"composer.json", `{"require": {"y": "1", "x": 1}}`, "composer.json: line 1: require of the package is a number, not a string"},
+		{"go.mod", "module m\nreplace x => \"./a\u202eb\"\n", `go.mod: line 2: the version "./a\u202eb" holds a control character`},
 		{"composer.lock", `{"packages": [{"name": "x", "version": ["1"]}]}`, "composer.lock: line 1: version is a list, not a string"},
 		{"pnpm-lock.yaml", "- a\n", "pnpm-lock.yaml: line 1: the file is no mapping of keys, as pnpm-lock.yaml is"},
 		{"package-lock.json", `{"dependencies": {"a": {"version": "npm:x@1\u001b"}}}`, `package-lock.json: line 1: the version "1\x1b" holds a control character`},
+		{"package-lock.json", `{"packages": {"node_modules/x": {"version": "1\u001b"}}}`, `package-lock.json: line 1: the version "1\x1b" holds a control character`},
+		{"package-lock.json", `{"packages": {"": {"name": "x", "version": "1\u001b"}}}`, `package-lock.json: line 1: the version "1\x1b" holds a control character`},
 		{"pyproject.toml", "[tool.poetry.dependencies]\nx = \"1\\u001b\"\n", `pyproject.toml: line 2: the version "==1\x1b" holds a control character`},
 		{"poetry.lock", "[[package]]\nname = \"x\"\nversion = \"1\\u001b\"\n", `poetry.lock: line 3: the version "1\x1b" holds a control character`},
 		{"Gemfile.lock", "GEM\n  specs:\n    x (1\x1b)\n", `Gemfile.lock: line 3: the version "1\x1b" holds a control character`},
@@ -551,6 +565,22 @@ func TestDependencyBounds(t *testing.T) {
 	got := refusal(t, repo, Spec{Name: "x", Files: []string{"*/requirements.txt"}, MaxBytes: 9})
 	if !strings.Contains(got, "the files the extractor reads hold at most max_bytes, 9, in all") {
 		t.Errorf("over the limit: %s", got)
+	}
+	// The values may outgrow the file: Composer's bare 1 is ==1, so 100
+	// of them make 399 bytes of value from 199 of range.
+	composer := map[string]string{"composer.json": `{"require": {"x": "` + strings.TrimSpace(strings.Repeat("1 ", 100)) + `"}}`}
+	if got := values(t, composer, Spec{Name: "x", Files: []string{"composer.json"}, MaxBytes: 399}); !strings.Contains(got, "@composer.json:1") {
+		t.Errorf("values at the limit: %s", got)
+	}
+	got = refusal(t, composer, Spec{Name: "x", Files: []string{"composer.json"}, MaxBytes: 398})
+	if !strings.Contains(got, `the values of "x" hold more than 398 bytes in all`) {
+		t.Errorf("values over the limit: %s", got)
+	}
+	// One gem statement of core.MaxValues+1 requirements, 500 013 bytes.
+	g := "gem \"x\"" + strings.Repeat(", \"1\"", core.MaxValues+1) + "\n"
+	got = refusal(t, map[string]string{"Gemfile": g}, Spec{Name: "x", Files: []string{"Gemfile"}, MaxBytes: 1 << 20})
+	if want := "the files hold more than " + strconv.Itoa(core.MaxValues) + ` values of "x", the limit`; !strings.Contains(got, want) {
+		t.Errorf("value count limit: %s", got)
 	}
 	got = refusal(t, map[string]string{"package.json": "[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]"}, Spec{Name: "x", Files: []string{"package.json"}, MaxBytes: 64})
 	if !strings.HasPrefix(got, "package.json: the file can hold up to") {

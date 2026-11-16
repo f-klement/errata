@@ -191,24 +191,36 @@ func parse(d *doc, r *reading) {
 			i++
 			continue
 		}
-		ind, off := d.indent(i)
-		t := d.line(i)[off:]
-		switch {
-		case isExplicit(t):
-			i = explicit(d, r, i, ind, off)
-		case gridBorder(t):
-			i = grid(d, r, i, ind)
-		case simpleBorder(t) != nil:
-			i = simple(d, r, i, ind)
-		case ind == 0 && adornment(t) > 0:
-			i = overline(d, r, i)
-		case ind == 0 && i+1 < d.lines() && underlines(d.line(i+1), t) && !bullet.Match(t):
-			r.title(style{char: d.line(i + 1)[0]}, plain(d, []span{d.from(i, 0)}), i+1)
-			i += 2
-		default:
-			i = paragraph(d, r, i, ind, off)
-		}
+		i = readAt(d, r, i)
 	}
+}
+
+// readAt reads what starts at line i, which is not blank, and returns the
+// line after it.
+func readAt(d *doc, r *reading, i int) int {
+	ind, off := d.indent(i)
+	t := d.line(i)[off:]
+	switch {
+	case isExplicit(t):
+		return explicit(d, r, i, ind, off)
+	case gridBorder(t):
+		return grid(d, r, i, ind)
+	case simpleBorder(t) != nil:
+		return simple(d, r, i, ind)
+	case ind == 0 && adornment(t) > 0:
+		return overline(d, r, i)
+	case underlined(d, i, ind, t):
+		r.title(style{char: d.line(i + 1)[0]}, plain(d, []span{d.from(i, 0)}), i+1)
+		return i + 2
+	default:
+		return paragraph(d, r, i, ind, off)
+	}
+}
+
+// underlined reports whether line i, at column ind and t from its first
+// character, is a title with an underline and no overline.
+func underlined(d *doc, i, ind int, t []byte) bool {
+	return ind == 0 && i+1 < d.lines() && underlines(d.line(i+1), t) && !bullet.Match(t)
 }
 
 // punctuation is the characters that may adorn a title: the printable
@@ -389,45 +401,75 @@ var containers = []string{"admonition", "compound", "container", "only", "sideba
 // rST, or a target, a footnote, a citation, a substitution or another
 // directive, whose body it passes over unread. It returns the line after.
 func explicit(d *doc, r *reading, i, ind, off int) int {
-	l := d.line(i)
-	o := off + 2
-	for o < len(l) && isSpace(l[o]) {
-		o++
-	}
-	first := d.from(i, o)
+	first := d.from(i, skipBlanks(d.line(i), off+2))
 	rest := d.text(first)
-	if len(rest) == 0 && (i+1 == d.lines() || d.blank(i+1)) {
+	if len(rest) == 0 && d.endsBlock(i) {
 		r.comment(d, nil, i+1) // an empty comment, which ends what is before it and holds nothing after
 		return i + 1
 	}
 	name, args, isDirective := directive(rest)
-	if isDirective && (contains(admonitions, name) || contains(containers, name)) {
-		if a := bytes.TrimLeft(args, " \t"); len(a) > 0 && contains(admonitions, name) {
-			// The text after :: and the lines under it are the content's first paragraph.
-			return block(d, r, span{start: first.end - len(a), end: first.end, line: i + 1}, i+1, d.content(i, ind))
-		}
-		return d.options(i+1, ind) // the content is read as the rest of the file is
+	if isDirective && readsContent(name) {
+		return readContent(d, r, first, i, ind, name, args)
 	}
 	end := d.indented(i, ind)
 	switch {
 	case isDirective && contains(codeDirectives, name):
-		k := d.options(i+1, ind)
-		lang := ""
-		if f := strings.Fields(string(args)); len(f) > 0 {
-			lang = f[0]
-		}
-		body := d.block(k, end)
-		line := i + 1
-		if len(body) > 0 {
-			line = body[0].line
-		}
-		r.code(d, lang, body, line)
+		readCode(d, r, i, ind, end, args)
 		return end
 	case isDirective, target.Match(rest), label.Match(rest), substitution.Match(rest):
 		return end
 	}
 	r.comment(d, append([]span{first}, d.block(i+1, end)...), i+1)
 	return end
+}
+
+// readsContent reports whether the directive name holds rST errata reads:
+// an admonition or a container.
+func readsContent(name string) bool {
+	return contains(admonitions, name) || contains(containers, name)
+}
+
+// skipBlanks is the offset of the first character of l from o that is not
+// a blank.
+func skipBlanks(l []byte, o int) int {
+	for o < len(l) && isSpace(l[o]) {
+		o++
+	}
+	return o
+}
+
+// endsBlock reports whether line i is the last of its block: the last of
+// the file, or one before a blank line.
+func (d *doc) endsBlock(i int) bool {
+	return i+1 == d.lines() || d.blank(i+1)
+}
+
+// readContent reads a directive at line i, column ind, whose content is rST,
+// first being the text after its marker: an admonition with text after its
+// ::, whose first paragraph that text starts, or one whose content is read
+// as the rest of the file is. It returns the line after what it read.
+func readContent(d *doc, r *reading, first span, i, ind int, name string, args []byte) int {
+	if a := bytes.TrimLeft(args, " \t"); len(a) > 0 && contains(admonitions, name) {
+		// The text after :: and the lines under it are the content's first paragraph.
+		return block(d, r, span{start: first.end - len(a), end: first.end, line: i + 1}, i+1, d.content(i, ind))
+	}
+	return d.options(i+1, ind) // the content is read as the rest of the file is
+}
+
+// readCode reads a code directive at line i, column ind, whose body ends at
+// line end and whose arguments, args, name its language.
+func readCode(d *doc, r *reading, i, ind, end int, args []byte) {
+	k := d.options(i+1, ind)
+	lang := ""
+	if f := strings.Fields(string(args)); len(f) > 0 {
+		lang = f[0]
+	}
+	body := d.block(k, end)
+	line := i + 1
+	if len(body) > 0 {
+		line = body[0].line
+	}
+	r.code(d, lang, body, line)
 }
 
 // contains reports whether names holds name.

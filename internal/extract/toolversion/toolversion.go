@@ -73,19 +73,41 @@ func Build(s Spec, p Parsers) (check.Extractor, error) {
 		return nil, err
 	}
 	x := extractor{tool: s.Tool, parsers: p, explicit: len(s.Files) > 0, maxBytes: s.MaxBytes, walk: core.DefaultWalk}
+	var err error
 	if !x.explicit {
-		// The walk finds the files; max_bytes is checked here, on a name
-		// that is always the repository's.
-		if _, err := core.CheckSource("tool_version", ".", s.MaxBytes); err != nil {
+		if x.search, err = searched(s.Tool, s.MaxBytes); err != nil {
 			return nil, err
 		}
-		x.search = map[string]bool{}
-		for _, k := range kinds {
-			if k.searched && k.pins(s.Tool) {
-				x.search[k.name] = true
-			}
+	}
+	if x.files, err = namedFiles(s); err != nil {
+		return nil, err
+	}
+	if x.paths, err = treePaths(s.Tool); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// searched is the names of the kinds of file the walk looks for that pin
+// tool. The walk finds the files; max_bytes is checked here, on a name that
+// is always the repository's.
+func searched(tool string, maxBytes int64) (map[string]bool, error) {
+	if _, err := core.CheckSource("tool_version", ".", maxBytes); err != nil {
+		return nil, err
+	}
+	search := map[string]bool{}
+	for _, k := range kinds {
+		if k.searched && k.pins(tool) {
+			search[k.name] = true
 		}
 	}
+	return search, nil
+}
+
+// namedFiles is the files s names, each once, each of a kind that pins its
+// tool.
+func namedFiles(s Spec) ([]file, error) {
+	var files []file
 	seen := map[string]bool{}
 	for _, name := range s.Files {
 		src, err := core.CheckSource("tool_version", name, s.MaxBytes)
@@ -97,21 +119,27 @@ func Build(s Spec, p Parsers) (check.Extractor, error) {
 			return nil, fmt.Errorf("tool_version: files names %s twice", core.Quote(name))
 		}
 		seen[clean] = true
-		_, base := core.FileParts(name)
-		k := kindOf(base)
-		switch {
-		case k == nil:
-			return nil, fmt.Errorf("tool_version: errata does not know how %s pins a tool; it reads %s", core.Quote(name), knownNames())
-		case !k.pins(s.Tool):
-			return nil, fmt.Errorf("tool_version: %s pins %s, not %s", core.Quote(name), k.pinned(), s.Tool)
+		k, err := pinningKind(name, s.Tool)
+		if err != nil {
+			return nil, err
 		}
-		x.files = append(x.files, file{Source: src, kind: k})
+		files = append(files, file{Source: src, kind: k})
 	}
-	var err error
-	if x.paths, err = treePaths(s.Tool); err != nil {
-		return nil, err
+	return files, nil
+}
+
+// pinningKind is the kind of the file name, refused when errata does not
+// know it or it does not pin tool.
+func pinningKind(name, tool string) (*fileKind, error) {
+	_, base := core.FileParts(name)
+	k := kindOf(base)
+	switch {
+	case k == nil:
+		return nil, fmt.Errorf("tool_version: errata does not know how %s pins a tool; it reads %s", core.Quote(name), knownNames())
+	case !k.pins(tool):
+		return nil, fmt.Errorf("tool_version: %s pins %s, not %s", core.Quote(name), k.pinned(), tool)
 	}
-	return x, nil
+	return k, nil
 }
 
 // checkTool refuses a tool name that no file could spell: empty, too long,
@@ -236,39 +264,57 @@ func (r *reading) close() {
 // file reads f, or takes its versions from the file it links to when that
 // was read before, and adds them at f's own path.
 func (r *reading) file(f file) error {
-	if r.files == nil {
-		files, err := core.OpenReader(r.ctx, r.root)
-		if err != nil {
-			return err
-		}
-		r.files = files
+	if err := r.open(); err != nil {
+		return err
 	}
 	resolved, err := r.files.Resolved(f.Source)
-	if err == nil {
-		got, seen := r.read[resolved]
-		if !seen {
-			var data []byte
-			if data, err = r.files.Read(f.Source); err == nil {
-				// The files of one extractor are read up to its max_bytes
-				// in all, as one file is: a walk may find many, and
-				// symlinks or copies may repeat one.
-				if r.bytes += int64(len(data)); r.bytes > f.Limit {
-					return fmt.Errorf("%s: the files the extractor reads hold more than %d bytes in all, the extractor's max_bytes; name the files to read in files, or set max_bytes: higher", f.File, f.Limit)
-				}
-				if got, err = r.x.FromData(f, data); err != nil {
-					return err
-				}
-				r.read[resolved] = got
-			}
-		}
-		if err == nil {
-			return r.add(f, got)
-		}
+	if err != nil {
+		return r.unread(err)
 	}
+	got, seen := r.read[resolved]
+	if !seen {
+		data, err := r.files.Read(f.Source)
+		if err != nil {
+			return r.unread(err)
+		}
+		if got, err = r.parse(f, data); err != nil {
+			return err
+		}
+		r.read[resolved] = got
+	}
+	return r.add(f, got)
+}
+
+// open opens the reader of the repository's files, once.
+func (r *reading) open() error {
+	if r.files != nil {
+		return nil
+	}
+	files, err := core.OpenReader(r.ctx, r.root)
+	if err != nil {
+		return err
+	}
+	r.files = files
+	return nil
+}
+
+// unread is the error of a file that could not be read: none when the walk
+// found a file that is then not there, the error when the spec named it.
+func (r *reading) unread(err error) error {
 	if !r.x.explicit && errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
 	return err
+}
+
+// parse is the versions in data, the bytes of f. The files of one extractor
+// are read up to its max_bytes in all, as one file is: a walk may find many,
+// and symlinks or copies may repeat one.
+func (r *reading) parse(f file, data []byte) ([]check.Value, error) {
+	if r.bytes += int64(len(data)); r.bytes > f.Limit {
+		return nil, fmt.Errorf("%s: the files the extractor reads hold more than %d bytes in all, the extractor's max_bytes; name the files to read in files, or set max_bytes: higher", f.File, f.Limit)
+	}
+	return r.x.FromData(f, data)
 }
 
 // add adds the versions got at f's path, within the limits on values.

@@ -184,22 +184,30 @@ const classFactor = 3
 func starLen(seg string) int {
 	n, class := 0, false
 	for i := 0; i < len(seg); i++ {
-		c, w := seg[i], 1
-		if class || c == '[' {
-			w = classFactor
-		}
-		switch {
-		case c == '\\' && i+1 < len(seg):
-			i++
-			w *= 2
-		case c == '[' && !class:
-			class = true
-		case c == ']' && class:
-			class = false
-		}
+		var w int
+		w, i, class = starByte(seg, i, class)
 		n += w
 	}
 	return n
+}
+
+// starByte weighs byte i of seg, in a class when class is true, and
+// returns its weight, the last byte it took, which is the byte after a \,
+// and whether a class is open after it.
+func starByte(seg string, i int, class bool) (int, int, bool) {
+	c, w := seg[i], 1
+	if class || c == '[' {
+		w = classFactor
+	}
+	switch {
+	case c == '\\' && i+1 < len(seg):
+		return w * 2, i + 1, class
+	case c == '[' && !class:
+		return w, i, true
+	case c == ']' && class:
+		return w, i, false
+	}
+	return w, i, class
 }
 
 // matchGlob reports whether name, a path with slashes as git's index writes
@@ -330,52 +338,83 @@ func (t *Tracked) List(f Files) ([]Named, error) {
 
 // list is List under root, with the index index gives.
 func (f Files) list(root string, index func() (gitindex.Index, error)) ([]Named, error) {
-	var spans []gitindex.Span // each entry's, nil until the index is read
-	var ix gitindex.Index     // read with spans
-	seen := map[string]int{}  // each file's index in out
-	var out []Named
+	l := listed{index: index, seen: map[string]int{}}
 	for k, e := range f.Entries {
 		files := []string{e.Clean}
 		if e.Glob {
-			if spans == nil {
-				var err error
-				ix, err = index()
-				if err != nil {
-					return nil, fmt.Errorf("%s: files lists the glob %s: %w", f.kind, Quote(e.Clean), err)
-				}
-				var whole bool
-				spans, whole = f.spans(ix.Paths())
-				if err := f.checkMatch(spans, whole); err != nil {
-					return nil, err
-				}
-			}
 			var err error
-			match := func(t string) bool { return matchGlob(e.segs, t) }
-			under := func(dir string) bool { return matchesBelow(e.segs, dir) }
-			if files, err = spans[k].Match(match, under, onDisk(root)); err != nil {
-				return nil, fmt.Errorf("%s: files lists the glob %s, which %w", f.kind, Quote(e.Clean), err)
+			if files, err = f.globFiles(&l, k, e, root); err != nil {
+				return nil, err
 			}
 		}
-		for _, file := range files {
-			link := false
-			if e.Glob {
-				entry, _ := ix.Lookup(file)
-				link = entry.Symlink()
-			}
-			i, ok := seen[file]
-			if ok {
-				out[i].By = append(out[i].By, k)
-				out[i].Link = out[i].Link || link
-				continue
-			}
-			if len(out) == f.FileLimit {
-				return nil, fmt.Errorf("%s: files names more than %d files, the limit, at %s; narrow the glob", f.kind, f.stated, Quote(e.Clean))
-			}
-			seen[file] = len(out)
-			out = append(out, Named{File: file, By: []int{k}, Link: link})
+		if err := f.addFiles(&l, k, e, files); err != nil {
+			return nil, err
 		}
 	}
-	return out, nil
+	return l.out, nil
+}
+
+// listed is a list under way: the files so far, and git's index once a
+// glob has read it.
+type listed struct {
+	index func() (gitindex.Index, error)
+	spans []gitindex.Span // each entry's, nil until the index is read
+	ix    gitindex.Index  // read with spans
+	seen  map[string]int  // each file's index in out
+	out   []Named
+}
+
+// globFiles lists the files the glob e, entry k, matches under root,
+// reading the index at the first glob.
+func (f Files) globFiles(l *listed, k int, e FileEntry, root string) ([]string, error) {
+	if l.spans == nil {
+		if err := f.readSpans(l, e); err != nil {
+			return nil, err
+		}
+	}
+	match := func(t string) bool { return matchGlob(e.segs, t) }
+	under := func(dir string) bool { return matchesBelow(e.segs, dir) }
+	files, err := l.spans[k].Match(match, under, onDisk(root))
+	if err != nil {
+		return nil, fmt.Errorf("%s: files lists the glob %s, which %w", f.kind, Quote(e.Clean), err)
+	}
+	return files, nil
+}
+
+// readSpans reads the index for the glob e, the first, and each entry's
+// span of it, and refuses globs that match too much of it.
+func (f Files) readSpans(l *listed, e FileEntry) error {
+	ix, err := l.index()
+	if err != nil {
+		return fmt.Errorf("%s: files lists the glob %s: %w", f.kind, Quote(e.Clean), err)
+	}
+	spans, whole := f.spans(ix.Paths())
+	l.ix, l.spans = ix, spans
+	return f.checkMatch(spans, whole)
+}
+
+// addFiles adds files, those entry k, e, names, to the list: a file named
+// before takes k as one more entry that names it, and a new one counts
+// against the limit.
+func (f Files) addFiles(l *listed, k int, e FileEntry, files []string) error {
+	for _, file := range files {
+		link := false
+		if e.Glob {
+			entry, _ := l.ix.Lookup(file)
+			link = entry.Symlink()
+		}
+		if i, ok := l.seen[file]; ok {
+			l.out[i].By = append(l.out[i].By, k)
+			l.out[i].Link = l.out[i].Link || link
+			continue
+		}
+		if len(l.out) == f.FileLimit {
+			return fmt.Errorf("%s: files names more than %d files, the limit, at %s; narrow the glob", f.kind, f.stated, Quote(e.Clean))
+		}
+		l.seen[file] = len(l.out)
+		l.out = append(l.out, Named{File: file, By: []int{k}, Link: link})
+	}
+	return nil
 }
 
 // onDisk reports whether the working tree at root holds something at p, a

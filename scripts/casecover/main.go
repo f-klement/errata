@@ -51,6 +51,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -60,15 +61,20 @@ import (
 	"strings"
 )
 
-func main() {
-	if len(os.Args) != 3 {
-		fmt.Fprintln(os.Stderr, "usage: casecover <module root> <profile>")
-		os.Exit(2)
+func main() { os.Exit(cli(os.Args[1:], os.Stderr)) }
+
+// cli runs the command line args, which follow the program's name, and
+// returns the status to exit with: 2 on a misuse, 1 on an error.
+func cli(args []string, stderr io.Writer) int {
+	if len(args) != 2 {
+		fmt.Fprintln(stderr, "usage: casecover <module root> <profile>")
+		return 2
 	}
-	if err := run(os.Args[1], os.Args[2]); err != nil {
-		fmt.Fprintf(os.Stderr, "casecover: %v\n", err)
-		os.Exit(1)
+	if err := run(args[0], args[1]); err != nil {
+		fmt.Fprintf(stderr, "casecover: %v\n", err)
+		return 1
 	}
+	return 0
 }
 
 // run appends the case blocks for the profile's files to the profile.
@@ -191,60 +197,93 @@ func caseBlocks(profile []byte, mod string, read func(rel string) ([]byte, error
 	}
 	sort.Strings(names)
 	var out []string
-	inModule, named, skipped := 0, 0, 0
+	var n fileCount
 	for _, name := range names {
-		rel, ok := strings.CutPrefix(name, mod+"/")
-		if !ok {
-			continue
-		}
-		inModule++
-		covered := starts[name]
-		if len(covered) == 0 {
-			continue
-		}
-		named++
-		src, err := read(rel)
-		if errors.Is(err, fs.ErrNotExist) {
-			skipped++
-			continue
-		}
+		blocks, err := n.file(name, mod, starts[name], read)
 		if err != nil {
 			return nil, err
 		}
-		fset := token.NewFileSet()
-		file, err := parser.ParseFile(fset, rel, src, parser.SkipObjectResolution)
-		if err != nil {
-			return nil, err
-		}
-		at := func(p token.Pos) pos {
-			q := fset.PositionFor(p, false)
-			return pos{q.Line, q.Column}
-		}
-		ast.Inspect(file, func(n ast.Node) bool {
-			kw, colonPos, body, ok := clause(n)
-			if !ok {
-				return true
-			}
-			colon := at(colonPos)
-			lo := pos{colon.line, colon.col + 1}
-			hi := lo
-			if len(body) > 0 {
-				hi = at(body[0].Pos())
-			}
-			if ranAny(covered, lo, hi) {
-				c := at(kw)
-				out = append(out, fmt.Sprintf("%s:%d.%d,%d.%d 0 1", name, c.line, c.col, colon.line, colon.col))
-			}
-			return true
-		})
+		out = append(out, blocks...)
 	}
-	if len(names) > 0 && inModule == 0 {
-		return nil, notThisTree(fmt.Sprintf("the profile names %s and none is under %s, the root's module", files(len(names)), mod))
-	}
-	if named > 0 && skipped == named {
-		return nil, notThisTree(fmt.Sprintf("the profile names %s under %s that the tests ran, and none is under the root", files(named), mod))
+	if err := n.refusal(len(names), mod); err != nil {
+		return nil, err
 	}
 	return out, nil
+}
+
+// fileCount counts the profile's names caseBlocks went through: those in the
+// module, those of them a test ran a block of, and those of these that no file
+// has.
+type fileCount struct{ inModule, named, skipped int }
+
+// file is the case blocks of the profile's file name, whose covered blocks
+// start at covered: none for a file outside mod, one no test ran a block of,
+// or one that read finds no file for.
+func (n *fileCount) file(name, mod string, covered []pos, read func(rel string) ([]byte, error)) ([]string, error) {
+	rel, ok := strings.CutPrefix(name, mod+"/")
+	if !ok {
+		return nil, nil
+	}
+	n.inModule++
+	if len(covered) == 0 {
+		return nil, nil
+	}
+	n.named++
+	src, err := read(rel)
+	if errors.Is(err, fs.ErrNotExist) {
+		n.skipped++
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return clauseBlocks(name, rel, src, covered)
+}
+
+// clauseBlocks is the profile lines for the source src of the profile's file
+// name, at rel under the root: one per case clause whose body block is
+// covered.
+func clauseBlocks(name, rel string, src []byte, covered []pos) ([]string, error) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, rel, src, parser.SkipObjectResolution)
+	if err != nil {
+		return nil, err
+	}
+	at := func(p token.Pos) pos {
+		q := fset.PositionFor(p, false)
+		return pos{q.Line, q.Column}
+	}
+	var out []string
+	ast.Inspect(file, func(n ast.Node) bool {
+		kw, colonPos, body, ok := clause(n)
+		if !ok {
+			return true
+		}
+		colon := at(colonPos)
+		lo := pos{colon.line, colon.col + 1}
+		hi := lo
+		if len(body) > 0 {
+			hi = at(body[0].Pos())
+		}
+		if ranAny(covered, lo, hi) {
+			c := at(kw)
+			out = append(out, fmt.Sprintf("%s:%d.%d,%d.%d 0 1", name, c.line, c.col, colon.line, colon.col))
+		}
+		return true
+	})
+	return out, nil
+}
+
+// refusal is notThisTree when the counts show the root is not the tree the
+// tests ran in, of a profile that names nNames files; nil otherwise.
+func (n fileCount) refusal(nNames int, mod string) error {
+	if nNames > 0 && n.inModule == 0 {
+		return notThisTree(fmt.Sprintf("the profile names %s and none is under %s, the root's module", files(nNames), mod))
+	}
+	if n.named > 0 && n.skipped == n.named {
+		return notThisTree(fmt.Sprintf("the profile names %s under %s that the tests ran, and none is under the root", files(n.named), mod))
+	}
+	return nil
 }
 
 // files counts n files in words, so a count of one reads "1 file".

@@ -14,28 +14,42 @@ func readComposer(rd *reading, data []byte) error {
 		return err
 	}
 	for _, section := range []string{"require", "require-dev"} {
-		n := t.Member(section)
-		if n == nil || n.Shape != core.Mapping {
-			continue
-		}
-		for i, key := range n.Keys {
-			if !rd.is(key) {
-				continue
-			}
-			s, err := text(n.Vals[i], section+" of the package")
-			if err != nil {
-				return err
-			}
-			f := found{text: s, section: section, role: Range, line: n.Vals[i].Line}
-			if f.notLiteral = s == "self.version" || composerBranch(s); !f.notLiteral {
-				f.text = composerRange(s)
-			}
-			if err := rd.add(f); err != nil {
-				return err
-			}
+		if err := composerSection(rd, section, t.Member(section)); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+// composerSection adds the range n, a composer.json's require or
+// require-dev, gives the package, nothing when it is no mapping.
+func composerSection(rd *reading, section string, n *core.Node) error {
+	if n == nil || n.Shape != core.Mapping {
+		return nil
+	}
+	for i, key := range n.Keys {
+		if !rd.is(key) {
+			continue
+		}
+		if err := composerEntry(rd, section, n.Vals[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// composerEntry adds the range v, the package's value in a section of a
+// composer.json, rewritten as Composer reads it when it is literal.
+func composerEntry(rd *reading, section string, v *core.Node) error {
+	s, err := text(v, section+" of the package")
+	if err != nil {
+		return err
+	}
+	f := found{text: s, section: section, role: Range, line: v.Line}
+	if f.notLiteral = s == "self.version" || composerBranch(s); !f.notLiteral {
+		f.text = composerRange(s)
+	}
+	return rd.add(f)
 }
 
 // readComposerLock reads a composer.lock: the arrays packages and
@@ -52,22 +66,28 @@ func readComposerLock(rd *reading, data []byte) error {
 			continue
 		}
 		for _, p := range n.Items {
-			name := p.Member("name")
-			if name == nil || name.Shape != core.Scalar || !rd.is(name.Text) {
-				continue
-			}
-			v := p.Member("version")
-			if v == nil {
-				continue
-			}
-			s, err := text(v, "version")
-			if err != nil {
-				return err
-			}
-			if err := rd.add(found{text: s, section: section, role: Resolved, line: v.Line, notLiteral: composerBranch(s)}); err != nil {
+			if err := composerLocked(rd, section, p); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
+}
+
+// composerLocked adds the version installed of p, a package of a
+// composer.lock's section, when it is the package.
+func composerLocked(rd *reading, section string, p *core.Node) error {
+	name := p.Member("name")
+	if name == nil || name.Shape != core.Scalar || !rd.is(name.Text) {
+		return nil
+	}
+	v := p.Member("version")
+	if v == nil {
+		return nil
+	}
+	s, err := text(v, "version")
+	if err != nil {
+		return err
+	}
+	return rd.add(found{text: s, section: section, role: Resolved, line: v.Line, notLiteral: composerBranch(s)})
 }

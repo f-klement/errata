@@ -13,8 +13,8 @@
 //     a test of those packages at the head has the same body;
 //   - a table row that is gone: a row named by its map key or by a name,
 //     desc, description or title field that the table no longer holds, or
-//     fewer unnamed rows than at the base, unless the row's text is in a
-//     table at the head;
+//     fewer rows of a name that rows share, or fewer unnamed rows, than at
+//     the base, unless the row's text is in a table at the head;
 //   - a call of Skip, Skipf or SkipNow, or of testing.Short, or of a helper
 //     of the package (a function that takes a *testing.T, B or F or a
 //     testing.TB) that makes such a call itself, whose line, or a line of the
@@ -39,11 +39,14 @@
 //
 // It does not follow a helper into another helper or another package, count
 // assertions made through a package such as testify's, read rows that are not
-// composite literals, nor see a want computed rather than written out. A
-// skip's guard is only the if statements around it: a switch case around it,
-// or a variable an if reads (`skip := <cond>; ... if skip`), is not part of
-// it, so changing either to one that always holds is no finding. A guard
-// rewritten only in its parentheses reads as rewritten.
+// composite literals, nor see a want computed rather than written out. A row
+// with no name, or with a name other rows of its table share, is keyed by its
+// inputs: when one change edits both its inputs and its want, the base row and
+// the head row have different keys, and its want is not compared. A skip's
+// guard is only the if statements around it: a switch case around it, or a
+// variable an if reads (`skip := <cond>; ... if skip`), is not part of it, so
+// changing either to one that always holds is no finding. A guard rewritten
+// only in its parentheses reads as rewritten.
 //
 // scripts/changedtests names the tests a change adds or edits, for the gate's
 // atbase and shuffle checks; this command does not take that list. A test the

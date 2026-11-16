@@ -247,6 +247,10 @@ if [ "$1 $2" = "test -c" ]; then
     chmod +x "$out"
     exit 0
 fi
+# Only a child a test starts with TESTREACH_EXEC may hand a command to go.
+# In the test binary itself, execGo would replace it with this script, and
+# the test would end with go's status, 0 included, having run nothing.
+[ -n "${TESTREACH_EXEC:-}" ] || { echo "fake go: execGo replaced the test binary: go $*" >&2; exit 97; }
 [ "$1" = test ] || exit "${GO_RC:-0}"
 exit "${PLAIN_RC:-0}"
 `)
@@ -514,6 +518,7 @@ func TestRunRunsTheWholePackageWhenTheIndexCannotNarrow(t *testing.T) {
 		{"no test reaches the line", "package example.com/m/internal/p\ndir internal/p\ntest TestAdd\np.go 4 6\ntest TestOther\n", "no indexed test reaches the line"},
 		{"every test reaches it", "package example.com/m/internal/p\ndir internal/p\ntest TestLess\np.go 8 11\ntest ExampleLess\np.go 9 9\n", "every indexed test reaches the line"},
 		{"an index of another package", "package example.com/m/internal/q\ndir internal/q\ntest TestLess\np.go 8 11\n", "the index is of another package"},
+		{"an index it cannot read", "package example.com/m/internal/p\ndir internal/p\ntest TestLess\nbogus line\n", "index unreadable"},
 	}
 	for _, tc := range cases {
 		w := newWorld(t)
@@ -629,6 +634,15 @@ func TestReachingReadsTheIndexByLine(t *testing.T) {
 	if _, err := readIndex(filepath.Join(d, "bad")); err == nil {
 		t.Error("an index with a range before any test read")
 	}
+	for _, bad := range []string{
+		"package x\ndir p\ntest T\nbogus y\n",
+		"package x\ndir p\ntest T\na.go 1 x\n",
+	} {
+		write(t, filepath.Join(d, "bad"), bad)
+		if _, err := readIndex(filepath.Join(d, "bad")); err == nil || !strings.Contains(err.Error(), "not an index line") {
+			t.Errorf("%q: %v", bad, err)
+		}
+	}
 }
 
 // module writes a module with one package, p, of the files given.
@@ -672,7 +686,7 @@ func TestIndexRecordsTheLinesEachTestExampleAndFuzzSeedRuns(t *testing.T) {
 		"sub/sub.go": "package sub\n",
 	})
 	out := filepath.Join(t.TempDir(), "reach")
-	why, err := index(goBin(t), casecoverBin(t), "", root, "p", out, 2, time.Minute)
+	why, err := indexJob{goBin: goBin(t), casecover: casecoverBin(t), root: root, pkgDir: "p", outDir: out, jobs: 2, limit: time.Minute}.index()
 	if err != nil || why != "" {
 		t.Fatalf("index: %q, %v", why, err)
 	}
@@ -708,7 +722,7 @@ func TestIndexRefusesAPackageWhoseTestFailsAlone(t *testing.T) {
 		"p_test.go": "package p\n\nimport \"testing\"\n\nfunc TestSet(t *testing.T) { State = 1 }\n\nfunc TestRead(t *testing.T) {\n\tif State != 1 {\n\t\tt.Fatal(\"needs TestSet first\")\n\t}\n}\n",
 	})
 	out := filepath.Join(t.TempDir(), "reach")
-	why, err := index(goBin(t), casecoverBin(t), "", root, "p", out, 1, time.Minute)
+	why, err := indexJob{goBin: goBin(t), casecover: casecoverBin(t), root: root, pkgDir: "p", outDir: out, jobs: 1, limit: time.Minute}.index()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -734,7 +748,7 @@ func TestIndexGivesAChildOfTheTestBinaryItsCoverDir(t *testing.T) {
 			"\tif out, err := cmd.CombinedOutput(); err != nil || len(out) != 0 {\n\t\tt.Fatalf(\"child: %v: %q\", err, out)\n\t}\n}\n",
 	})
 	out := filepath.Join(t.TempDir(), "reach")
-	why, err := index(goBin(t), casecoverBin(t), "", root, "p", out, 1, time.Minute)
+	why, err := indexJob{goBin: goBin(t), casecover: casecoverBin(t), root: root, pkgDir: "p", outDir: out, jobs: 1, limit: time.Minute}.index()
 	if err != nil || why != "" {
 		t.Fatalf("index: %q, %v", why, err)
 	}
@@ -749,8 +763,225 @@ func TestIndexGivesAChildOfTheTestBinaryItsCoverDir(t *testing.T) {
 
 func TestIndexOfAPackageWithoutTests(t *testing.T) {
 	root := module(t, map[string]string{"p.go": "package p\n"})
-	why, err := index(goBin(t), casecoverBin(t), "", root, "p", filepath.Join(t.TempDir(), "reach"), 1, time.Minute)
+	why, err := indexJob{goBin: goBin(t), casecover: casecoverBin(t), root: root, pkgDir: "p", outDir: filepath.Join(t.TempDir(), "reach"), jobs: 1, limit: time.Minute}.index()
 	if err != nil || why != "it has no test files" {
 		t.Fatalf("got %q, %v", why, err)
+	}
+}
+
+// cliOf runs the command line args and returns its status, stdout and stderr.
+func cliOf(args ...string) (int, string, string) {
+	var out, errs bytes.Buffer
+	rc := cli(args, &out, &errs)
+	return rc, out.String(), errs.String()
+}
+
+func TestCliRefusesAMisuseWithTheUsage(t *testing.T) {
+	ok := []string{"index", "go", "casecover", "", "root", "p", "out", "2", "1.5"}
+	with := func(i int, v string) []string {
+		a := append([]string(nil), ok...)
+		a[i] = v
+		return a
+	}
+	for _, args := range [][]string{
+		nil,
+		{"bogus"},
+		{"run", "go", "root"},
+		{"redundant"},
+		ok[:8],
+		append(append([]string(nil), ok...), "extra"),
+		with(7, "x"),
+		with(7, "0"),
+		with(8, "x"),
+		with(8, "0"),
+	} {
+		rc, out, errs := cliOf(args...)
+		if rc != 2 || out != "" || errs != usageText+"\n" {
+			t.Errorf("%q: exit %d, stdout %q, stderr %q", args, rc, out, errs)
+		}
+	}
+}
+
+func TestParseIndexArgsReadsEachArgument(t *testing.T) {
+	j, ok := parseIndexArgs([]string{"go", "cc", "tg", "root", "p", "out", "1", "1.5"})
+	want := indexJob{goBin: "go", casecover: "cc", tags: "tg", root: "root", pkgDir: "p", outDir: "out", jobs: 1, limit: 1500 * time.Millisecond}
+	if !ok || j != want {
+		t.Fatalf("got %+v, %v; want %+v", j, ok, want)
+	}
+}
+
+func TestCliIndexExitsOneOnAnError(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "go")
+	rc, out, errs := cliOf("index", missing, "cc", "", t.TempDir(), "p", t.TempDir(), "1", "1")
+	if rc != 1 || out != "" || !strings.HasPrefix(errs, "testreach: go list ./p: ") {
+		t.Fatalf("exit %d, stdout %q, stderr %q", rc, out, errs)
+	}
+}
+
+func TestCliIndexExitsThreeWithTheReasonThereIsNone(t *testing.T) {
+	root := module(t, map[string]string{"p.go": "package p\n"})
+	rc, out, errs := cliOf("index", goBin(t), "cc", "", root, "p", t.TempDir(), "1", "60")
+	if rc != 3 || out != "it has no test files\n" || errs != "" {
+		t.Fatalf("exit %d, stdout %q, stderr %q", rc, out, errs)
+	}
+}
+
+func TestIndexSaysWhyWhenTheBinaryListsNoTest(t *testing.T) {
+	root := module(t, map[string]string{
+		"p.go":      "package p\n",
+		"p_test.go": "package p\n\nimport \"testing\"\n\nfunc BenchmarkP(b *testing.B) {}\n",
+	})
+	why, err := indexJob{goBin: goBin(t), root: root, pkgDir: "p", outDir: t.TempDir(), jobs: 1, limit: time.Minute}.index()
+	if err != nil || why != "its test binary lists no test" {
+		t.Fatalf("got %q, %v", why, err)
+	}
+}
+
+func TestIndexReportsABuildThatFails(t *testing.T) {
+	root := module(t, map[string]string{
+		"p.go":      "package p\n",
+		"p_test.go": "package p\n\nimport \"testing\"\n\nfunc TestP(t *testing.T) { undefined() }\n",
+	})
+	_, err := indexJob{goBin: goBin(t), root: root, pkgDir: "p", outDir: t.TempDir(), jobs: 1, limit: time.Minute}.index()
+	if err == nil || !strings.HasPrefix(err.Error(), "go test -c ./p: ") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestTagArgsAndCutTagsKeepTheTags(t *testing.T) {
+	if got := (indexJob{}).tagArgs(); got != nil {
+		t.Errorf("no tags: %q", got)
+	}
+	if got := (indexJob{tags: "mutation"}).tagArgs(); !slices.Equal(got, []string{"-tags", "mutation"}) {
+		t.Errorf("tags: %q", got)
+	}
+	if tags, rest := cutTags([]string{"-tags", "mutation"}); tags != "mutation" || len(rest) != 0 {
+		t.Errorf("-tags alone: %q, %q", tags, rest)
+	}
+	if tags, rest := cutTags([]string{"-tags"}); tags != "" || !slices.Equal(rest, []string{"-tags"}) {
+		t.Errorf("-tags without a value: %q, %q", tags, rest)
+	}
+}
+
+// listPackage counts the internal and the external test files together.
+func TestListPackageCountsBothKindsOfTestFile(t *testing.T) {
+	root := module(t, map[string]string{
+		"p.go":      "package p\n",
+		"p_test.go": "package p\n",
+		"q_test.go": "package p_test\n",
+	})
+	importPath, n, err := indexJob{goBin: goBin(t), root: root, pkgDir: "p"}.listPackage(t.Context())
+	if err != nil || importPath != "example.com/m/p" || n != 2 {
+		t.Fatalf("got %q, %d, %v", importPath, n, err)
+	}
+}
+
+// A run with no go arguments still goes to go, which run reaches through
+// execGo: with no go there, execGo writes to the process's own stderr, not
+// the stderr cli was given, where a misuse's usage goes.
+func TestCliRunWithNoGoArgumentsRunsGo(t *testing.T) {
+	rc, out, errs := cliOf("run", filepath.Join(t.TempDir(), "go"), "root", "idx")
+	if rc != 2 || out != "" || errs != "" {
+		t.Fatalf("exit %d, stdout %q, stderr %q", rc, out, errs)
+	}
+}
+
+// Limits of 11 and 12 leave a narrowed run nothing of gremlins' 8 s, so
+// the mutant goes to the whole run. The limits must say e > c: readLimits
+// refuses 1 1, and run then hands the command to go, which replaces the
+// test binary itself. Only a child the test starts, as
+// TestRunWithoutLimitsLogsItForMutationToFail starts one, may get there.
+func TestRunRunsTheWholePackageWithNoTimeToNarrow(t *testing.T) {
+	w := newWorld(t)
+	write(t, filepath.Join(w.index, "limits"), "11 12\n")
+	if rc := run(w.goBin, w.root, w.index, mutantRun); rc != 0 {
+		t.Fatalf("exit %d", rc)
+	}
+	if got := logLines(t, w); strings.Contains(got, "-test.run=") {
+		t.Fatalf("ran a narrowed run\n%s", got)
+	}
+	if got := read(t, filepath.Join(w.index, "log")); !strings.Contains(got, " no time for a narrowed run (build ") {
+		t.Fatalf("log %q", got)
+	}
+}
+
+func TestRunWithoutADirectoryForTheBinaryIsNotViable(t *testing.T) {
+	w := newWorld(t)
+	t.Setenv("TMPDIR", filepath.Join(w.index, "missing"))
+	if rc := run(w.goBin, w.root, w.index, mutantRun); rc != 2 {
+		t.Fatalf("exit %d", rc)
+	}
+	if got := read(t, filepath.Join(w.index, "log")); !strings.Contains(got, " no directory for the test binary: ") {
+		t.Fatalf("log %q", got)
+	}
+}
+
+// bounded reads a command that cannot start, and one it may not start
+// because testreach is stopping, as never started.
+func TestBoundedReadsACommandNotStartedAsNotStarted(t *testing.T) {
+	o := bounded(filepath.Join(t.TempDir(), "missing"), nil, "", time.Second, 0)
+	if o.code != 2 || !o.notStarted || o.timedOut {
+		t.Fatalf("%+v", o)
+	}
+	current.Lock()
+	current.stopping = true
+	current.Unlock()
+	defer func() { current.Lock(); current.stopping = false; current.Unlock() }()
+	o = bounded("true", nil, "", time.Second, 0)
+	if o.code != 2 || !o.notStarted || o.took != 0 {
+		t.Fatalf("stopping: %+v", o)
+	}
+}
+
+func TestChangedLineRefusesWhatItCannotCompare(t *testing.T) {
+	orig, work := t.TempDir(), t.TempDir()
+	if _, _, err := changedLine(work, filepath.Join(orig, "missing")); err == nil {
+		t.Error("no original directory")
+	}
+	write(t, filepath.Join(orig, "a.go"), "package p\n")
+	if _, _, err := changedLine(work, orig); err == nil {
+		t.Error("no working copy of a.go")
+	}
+	write(t, filepath.Join(work, "a.go"), "package q\n\nvar x = 1\n")
+	if _, _, err := changedLine(work, orig); err == nil || !strings.HasPrefix(err.Error(), "a.go: ") {
+		t.Errorf("a.go differs in more than one token: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(orig, "gone"), filepath.Join(orig, "b.go")); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := changedLine(work, orig); err == nil {
+		t.Error("a dangling b.go")
+	}
+}
+
+func TestIndexFailsWithoutItsDirectory(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "file")
+	write(t, f, "")
+	if _, err := (indexJob{outDir: filepath.Join(f, "reach")}).index(); err == nil {
+		t.Fatal("no error")
+	}
+}
+
+// index exits 0, with nothing on stdout or stderr, when it writes the
+// index: scripts/mutation.sh reads that status.
+func TestCliIndexExitsZeroWhenItWritesTheIndex(t *testing.T) {
+	root := module(t, map[string]string{
+		"p.go":      "package p\n",
+		"p_test.go": "package p\n\nimport \"testing\"\n\nfunc TestP(t *testing.T) {}\n",
+	})
+	rc, out, errs := cliOf("index", goBin(t), casecoverBin(t), "", root, "p", t.TempDir(), "1", "60")
+	if rc != 0 || out != "" || errs != "" {
+		t.Fatalf("exit %d, stdout %q, stderr %q", rc, out, errs)
+	}
+}
+
+func TestIndexReportsATestBinaryThatCannotList(t *testing.T) {
+	root := module(t, map[string]string{
+		"p.go":      "package p\n",
+		"p_test.go": "package p\n\nimport (\n\t\"os\"\n\t\"testing\"\n)\n\nfunc TestMain(m *testing.M) { os.Exit(1) }\n\nfunc TestP(t *testing.T) {}\n",
+	})
+	_, err := (indexJob{goBin: goBin(t), root: root, pkgDir: "p", outDir: t.TempDir(), jobs: 1, limit: time.Minute}).index()
+	if err == nil || !strings.HasPrefix(err.Error(), "listing the tests of p: ") {
+		t.Fatalf("got %v", err)
 	}
 }

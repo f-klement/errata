@@ -362,46 +362,72 @@ func (l lines) at(off int) int { return sort.SearchInts(l, off+1) - 1 }
 // mark doc instead of code.
 func marked(data []byte, spans []lexer.Span, docstring func(int) bool) (code, doc []bool) {
 	ls := newLines(data)
-	code = make([]bool, len(ls))
-	doc = make([]bool, len(ls))
-	mark := func(set []bool, from, to int) { // the lines of the bytes from to to, to excluded
-		if to <= from {
-			return
-		}
-		for l := ls.at(from); l <= ls.at(to-1); l++ {
-			set[l] = true
-		}
-	}
-	plain := func(from, to int) {
-		for i := from; i < to; i++ {
-			switch data[i] {
-			case '\\': // joins the lines when a line feed follows, as Python's tokenizer reads it
-				if !bytes.HasPrefix(data[i+1:to], []byte("\n")) && !bytes.HasPrefix(data[i+1:to], []byte("\r\n")) {
-					code[ls.at(i)] = true
-				}
-			case ' ', '\t', '\r', '\n', '\f', '\v':
-			default:
-				code[ls.at(i)] = true
-			}
-		}
-	}
+	m := &marking{data: data, ls: ls, code: make([]bool, len(ls)), doc: make([]bool, len(ls))}
 	at := 0
 	for k, s := range spans {
-		plain(at, s.Start)
-		switch {
-		case s.Kind == lexer.Comment:
-		case s.Kind == lexer.Text:
-			plain(s.Start, s.End)
-		case docstring(k):
-			mark(doc, s.Start, s.End)
-		default:
-			mark(code, s.Start, s.End)
-			mark(code, s.Here.Start, s.Here.End)
-		}
+		m.plain(at, s.Start)
+		m.span(s, docstring(k))
 		at = max(at, s.End)
 	}
-	plain(at, len(data))
-	return code, doc
+	m.plain(at, len(data))
+	return m.code, m.doc
+}
+
+// marking is marked's work: the file, its lines, and the lines found to hold
+// code and docstrings.
+type marking struct {
+	data      []byte
+	ls        lines
+	code, doc []bool
+}
+
+// span marks the lines of one lexer span: none for a comment, those not
+// blank for a Text span, its lines as doc for a docstring, else as code with
+// a heredoc's body. docstring says whether the span is a docstring.
+func (m *marking) span(s lexer.Span, docstring bool) {
+	switch {
+	case s.Kind == lexer.Comment:
+	case s.Kind == lexer.Text:
+		m.plain(s.Start, s.End)
+	case docstring:
+		mark(m.ls, m.doc, s.Start, s.End)
+	default:
+		mark(m.ls, m.code, s.Start, s.End)
+		mark(m.ls, m.code, s.Here.Start, s.Here.End)
+	}
+}
+
+// mark sets in set the lines of the bytes from from to to, to excluded.
+func mark(ls lines, set []bool, from, to int) {
+	if to <= from {
+		return
+	}
+	for l := ls.at(from); l <= ls.at(to-1); l++ {
+		set[l] = true
+	}
+}
+
+// plain marks as code the line of each byte from from to to, to excluded,
+// that is not blank.
+func (m *marking) plain(from, to int) {
+	for i := from; i < to; i++ {
+		if m.notBlank(i, to) {
+			m.code[m.ls.at(i)] = true
+		}
+	}
+}
+
+// notBlank says whether byte i, of the bytes before to, is code: a backslash
+// is not when a line feed follows, since it joins the lines, as Python's
+// tokenizer reads it.
+func (m *marking) notBlank(i, to int) bool {
+	switch m.data[i] {
+	case '\\':
+		return !bytes.HasPrefix(m.data[i+1:to], []byte("\n")) && !bytes.HasPrefix(m.data[i+1:to], []byte("\r\n"))
+	case ' ', '\t', '\r', '\n', '\f', '\v':
+		return false
+	}
+	return true
 }
 
 func count(set []bool) int {
@@ -468,66 +494,128 @@ var header = regexp.MustCompile(`^(?:async\s+)?(?:def|class)\b`)
 // reads Python as the lexer table does, so an f-string nesting the quotes it
 // opened with, legal since 3.12, ends early there.
 func pythonDocstrings(data []byte, spans []lexer.Span) (map[int]bool, bool) {
-	docstrings := map[int]bool{}
-	var text []byte // the statement's code, a span as \x00 or \x01
-	var members []int
-	expect := true // the next statement may be a docstring
-	depth := 0
-	end := func() {
-		stmt := bytes.Join(bytes.Fields(text), nil)
-		if len(stmt) > 0 {
-			if expect && docstringStatement.Match(stmt) {
-				for _, k := range members {
-					docstrings[k] = true
-				}
-			}
-			expect = header.Match(bytes.TrimSpace(text)) // before the blanks go: "def f" joined is "deff"
-		}
-		text, members = text[:0], members[:0]
-	}
-	code := func(from, to int) {
-		for i := from; i < to; i++ {
-			b := data[i]
-			switch {
-			case b == '\\' && i+1 < to && data[i+1] == '\n':
-				i++
-			case b == '\\' && i+2 < to && data[i+1] == '\r' && data[i+2] == '\n':
-				i += 2
-			case b == '(' || b == '[' || b == '{':
-				depth++
-				text = append(text, b)
-			case b == ')' || b == ']' || b == '}':
-				depth--
-				text = append(text, b)
-			case depth == 0 && (b == '\n' || b == ';'):
-				end()
-			case depth == 0 && b == ':' && header.Match(bytes.TrimSpace(text)):
-				text = append(text, b)
-				end()
-			default:
-				text = append(text, b)
-			}
-		}
-	}
+	d := &docScan{data: data, docstrings: map[int]bool{}, expect: true}
 	at := 0
 	for k, s := range spans {
 		if s.RunsOff(len(data)) && s.Kind != lexer.Comment {
 			return nil, false
 		}
-		code(at, s.Start)
-		if s.Kind != lexer.Comment {
-			if q := data[s.Start]; q == '"' || q == '\'' {
-				text = append(text, 0)
-				members = append(members, k)
-			} else {
-				text = append(text, 1)
-			}
-		}
+		d.code(at, s.Start)
+		d.span(k, s)
 		at = s.End
 	}
-	code(at, len(data))
-	end()
-	return docstrings, depth == 0
+	d.code(at, len(data))
+	d.end()
+	return d.docstrings, d.depth == 0
+}
+
+// docScan is pythonDocstrings' reading of a file: the statement so far, the
+// spans in it that open with a quote, whether it may be a docstring, and the
+// depth of brackets.
+type docScan struct {
+	data       []byte
+	docstrings map[int]bool
+	text       []byte // the statement's code, a span as \x00 or \x01
+	members    []int
+	expect     bool // the next statement may be a docstring
+	depth      int
+}
+
+// span adds lexer span k to the statement: a string as \x00, any other span
+// but a comment as \x01.
+func (d *docScan) span(k int, s lexer.Span) {
+	if s.Kind == lexer.Comment {
+		return
+	}
+	if q := d.data[s.Start]; q == '"' || q == '\'' {
+		d.text = append(d.text, 0)
+		d.members = append(d.members, k)
+		return
+	}
+	d.text = append(d.text, 1)
+}
+
+// end ends the statement: its strings are docstrings when it is made of them
+// alone and one may come here, and the next may be one when it is a header.
+func (d *docScan) end() {
+	stmt := bytes.Join(bytes.Fields(d.text), nil)
+	if len(stmt) > 0 {
+		if d.expect && docstringStatement.Match(stmt) {
+			for _, k := range d.members {
+				d.docstrings[k] = true
+			}
+		}
+		d.expect = header.Match(bytes.TrimSpace(d.text)) // before the blanks go: "def f" joined is "deff"
+	}
+	d.text, d.members = d.text[:0], d.members[:0]
+}
+
+// code reads the code from from to to, to excluded.
+func (d *docScan) code(from, to int) {
+	for i := from; i < to; i++ {
+		i = d.step(i, to)
+	}
+}
+
+// step reads the code at byte i, of the bytes before to, and returns the
+// last byte it read.
+func (d *docScan) step(i, to int) int {
+	if n := d.continuation(i, to); n > 0 {
+		return i + n
+	}
+	b := d.data[i]
+	switch delta := bracket(b); {
+	case delta != 0:
+		d.depth += delta
+	case d.depth == 0 && d.endStatementAt(b):
+		return i
+	}
+	d.text = append(d.text, b)
+	return i
+}
+
+// continuation is the number of bytes after a backslash at i that join its
+// line to the next, a line feed or a carriage return and one; 0 when none
+// do.
+func (d *docScan) continuation(i, to int) int {
+	if d.data[i] != '\\' {
+		return 0
+	}
+	switch {
+	case i+1 < to && d.data[i+1] == '\n':
+		return 1
+	case i+2 < to && d.data[i+1] == '\r' && d.data[i+2] == '\n':
+		return 2
+	}
+	return 0
+}
+
+// bracket is 1 for a byte that opens a bracket, -1 for one that closes it,
+// else 0.
+func bracket(b byte) int {
+	switch b {
+	case '(', '[', '{':
+		return 1
+	case ')', ']', '}':
+		return -1
+	}
+	return 0
+}
+
+// endStatementAt ends the statement at b, outside brackets, when b ends it,
+// and reports whether it did: a line feed or ; ends it, and the colon after
+// a header is appended to it and then ends it.
+func (d *docScan) endStatementAt(b byte) bool {
+	switch {
+	case b == '\n' || b == ';':
+		d.end()
+		return true
+	case b == ':' && header.Match(bytes.TrimSpace(d.text)):
+		d.text = append(d.text, b)
+		d.end()
+		return true
+	}
+	return false
 }
 
 // render is the census as a table: a row per bucket and language, a total

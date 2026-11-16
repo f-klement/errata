@@ -26,33 +26,48 @@ func readPackageJSON(rd *reading, data []byte) error {
 		return err
 	}
 	for _, section := range npmSections {
-		deps := t.Member(section)
-		if deps == nil || deps.Shape != core.Mapping {
-			continue
-		}
-		for i, key := range deps.Keys {
-			n := deps.Vals[i]
-			v := n.Text
-			if alias, r, ok := npmAlias(v); ok && n.Type == core.TypeString {
-				if !rd.is(alias) {
-					continue
-				}
-				v = r
-			} else if !rd.is(key) {
-				continue
-			} else if v, err = text(n, section+" of the package"); err != nil {
-				return err
-			}
-			f := found{text: v, section: section, role: Range, line: n.Line, notLiteral: npmNotLiteral(v)}
-			if v == "" {
-				f.text = `""`
-			}
-			if err := rd.add(f); err != nil {
-				return err
-			}
+		if err := npmSection(rd, section, t.Member(section)); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+// npmSection adds the range deps, a section of a package.json, gives the
+// package, nothing when it is no mapping.
+func npmSection(rd *reading, section string, deps *core.Node) error {
+	if deps == nil || deps.Shape != core.Mapping {
+		return nil
+	}
+	for i, key := range deps.Keys {
+		if err := npmEntry(rd, section, key, deps.Vals[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// npmEntry adds the range n of the entry key of a package.json's section
+// when the entry names the package, under its key or as an alias.
+func npmEntry(rd *reading, section, key string, n *core.Node) error {
+	v := n.Text
+	if alias, r, ok := npmAlias(v); ok && n.Type == core.TypeString {
+		if !rd.is(alias) {
+			return nil
+		}
+		v = r
+	} else if !rd.is(key) {
+		return nil
+	} else if s, err := text(n, section+" of the package"); err != nil {
+		return err
+	} else {
+		v = s
+	}
+	f := found{text: v, section: section, role: Range, line: n.Line, notLiteral: npmNotLiteral(v)}
+	if v == "" {
+		f.text = `""`
+	}
+	return rd.add(f)
 }
 
 // npmAlias is the package and the range of an npm alias, npm:name@range,
@@ -78,6 +93,12 @@ func npmNotLiteral(v string) bool {
 	if c < 'a' || c > 'z' {
 		return false
 	}
+	return npmTag(c, v)
+}
+
+// npmTag reports whether v, a range whose first byte is the letter c in
+// lower case, is a dist-tag: any word but x or v as a range writes them.
+func npmTag(c byte, v string) bool {
 	switch c {
 	case 'x':
 		return len(v) > 1 && v[1] != '.' && v[1] != ' '
@@ -105,26 +126,39 @@ func readPackageLock(rd *reading, data []byte) error {
 		return err
 	}
 	if packages := t.Member("packages"); packages != nil && packages.Shape == core.Mapping {
-		for i, key := range packages.Keys {
-			entry := packages.Vals[i]
-			if i := strings.LastIndex(key, nodeModules); i >= 0 {
-				// An alias's entry names the package it installs.
-				installed := key[i+len(nodeModules):]
-				if n := entry.Member("name"); n != nil && n.Shape == core.Scalar && n.Type == core.TypeString {
-					installed = n.Text
-				}
-				if rd.is(installed) {
-					if err := lockVersion(rd, entry, "packages"); err != nil {
-						return err
-					}
-				}
-			} else if err := own(rd, entry, "packages"); err != nil {
-				return err
-			}
-		}
-		return nil
+		return lockV2(rd, packages)
 	}
 	return lockV1(rd, t.Member("dependencies"))
+}
+
+// lockV2 adds the package's version in packages, the packages of a
+// lockfile of version 2 or later: each installed under node_modules, and
+// the project's own and its workspaces' by name.
+func lockV2(rd *reading, packages *core.Node) error {
+	for i, key := range packages.Keys {
+		entry := packages.Vals[i]
+		if i := strings.LastIndex(key, nodeModules); i >= 0 {
+			if err := installed(rd, key[i+len(nodeModules):], entry); err != nil {
+				return err
+			}
+		} else if err := own(rd, entry, "packages"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// installed adds the version of entry, which npm installs under the
+// directory dir, when it is the package's: an alias's entry names the
+// package it installs.
+func installed(rd *reading, dir string, entry *core.Node) error {
+	if n := entry.Member("name"); n != nil && n.Shape == core.Scalar && n.Type == core.TypeString {
+		dir = n.Text
+	}
+	if !rd.is(dir) {
+		return nil
+	}
+	return lockVersion(rd, entry, "packages")
 }
 
 // nodeModules is what a package-lock.json's key of an installed package
@@ -165,27 +199,42 @@ func lockV1(rd *reading, deps *core.Node) error {
 	}
 	for i, key := range deps.Keys {
 		entry := deps.Vals[i]
-		// An alias's version is npm:name@version.
-		if v := entry.Member("version"); v != nil && v.Type == core.TypeString {
-			if alias, version, ok := npmAlias(v.Text); ok {
-				if rd.is(alias) {
-					if err := rd.add(found{text: version, section: "dependencies", role: Resolved, line: v.Line}); err != nil {
-						return err
-					}
-				}
-				key = ""
-			}
-		}
-		if key != "" && rd.is(key) {
-			if err := lockVersion(rd, entry, "dependencies"); err != nil {
-				return err
-			}
+		if err := lockV1Entry(rd, key, entry); err != nil {
+			return err
 		}
 		if err := lockV1(rd, entry.Member("dependencies")); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// lockV1Entry adds the version of entry, keyed key in a version 1
+// lockfile's dependencies, when it is the package's.
+func lockV1Entry(rd *reading, key string, entry *core.Node) error {
+	alias, err := lockV1Alias(rd, entry)
+	if err != nil || alias || key == "" || !rd.is(key) {
+		return err
+	}
+	return lockVersion(rd, entry, "dependencies")
+}
+
+// lockV1Alias adds the version of entry when it is an alias of the
+// package, and reports whether it is an alias at all: an alias's version
+// is npm:name@version.
+func lockV1Alias(rd *reading, entry *core.Node) (bool, error) {
+	v := entry.Member("version")
+	if v == nil || v.Type != core.TypeString {
+		return false, nil
+	}
+	alias, version, ok := npmAlias(v.Text)
+	if !ok {
+		return false, nil
+	}
+	if !rd.is(alias) {
+		return true, nil
+	}
+	return true, rd.add(found{text: version, section: "dependencies", role: Resolved, line: v.Line})
 }
 
 // readPnpmLock reads a pnpm-lock.yaml's packages, each keyed by the
@@ -198,11 +247,19 @@ func readPnpmLock(rd *reading, data []byte) error {
 	if err != nil || t == nil {
 		return err
 	}
-	v5 := false
-	if lv := t.Member("lockfileVersion"); lv != nil && lv.Shape == core.Scalar {
-		v5 = strings.HasPrefix(lv.Text, "5")
-	}
-	packages := t.Member("packages")
+	return pnpmPackages(rd, t.Member("packages"), pnpmV5(t))
+}
+
+// pnpmV5 reports whether the pnpm-lock.yaml t is of lockfile version 5,
+// whose keys are /name/1.2.3.
+func pnpmV5(t *core.Node) bool {
+	lv := t.Member("lockfileVersion")
+	return lv != nil && lv.Shape == core.Scalar && strings.HasPrefix(lv.Text, "5")
+}
+
+// pnpmPackages adds the package's version in packages, a pnpm-lock.yaml's
+// packages, nothing when it is no mapping.
+func pnpmPackages(rd *reading, packages *core.Node, v5 bool) error {
 	if packages == nil || packages.Shape != core.Mapping {
 		return nil
 	}
@@ -282,26 +339,37 @@ func readYarnLock(rd *reading, data []byte) error {
 	}
 	// Yarn drops a byte order mark before it parses.
 	data = core.DropBOM(data)
-	matched := false
-	return eachLine(data, func(line []byte, n int) error {
-		if len(line) == 0 || line[0] == '#' {
-			return nil
-		}
-		if line[0] != ' ' {
-			head, ok := bytes.CutSuffix(bytes.TrimRight(line, " \t"), []byte(":"))
-			matched = ok && yarnDescribes(rd, string(head))
-			return nil
-		}
-		if !matched {
-			return nil
-		}
-		rest, ok := bytes.CutPrefix(bytes.TrimLeft(line, " "), []byte("version "))
-		if !ok || len(line)-len(bytes.TrimLeft(line, " ")) != 2 {
-			return nil
-		}
-		v := strings.Trim(strings.TrimSpace(string(rest)), `"`)
-		return rd.add(found{text: v, role: Resolved, line: n})
-	})
+	y := yarnV1{rd: rd}
+	return eachLine(data, y.line)
+}
+
+// yarnV1 reads a Yarn 1 yarn.lock a line at a time; matched is whether
+// the entry the lines are in names the package.
+type yarnV1 struct {
+	rd      *reading
+	matched bool
+}
+
+// line reads line n: a line at the margin starts an entry, and the
+// version line of an entry that names the package gives its version.
+func (y *yarnV1) line(line []byte, n int) error {
+	if len(line) == 0 || line[0] == '#' {
+		return nil
+	}
+	if line[0] != ' ' {
+		head, ok := bytes.CutSuffix(bytes.TrimRight(line, " \t"), []byte(":"))
+		y.matched = ok && yarnDescribes(y.rd, string(head))
+		return nil
+	}
+	if !y.matched {
+		return nil
+	}
+	rest, ok := bytes.CutPrefix(bytes.TrimLeft(line, " "), []byte("version "))
+	if !ok || len(line)-len(bytes.TrimLeft(line, " ")) != 2 {
+		return nil
+	}
+	v := strings.Trim(strings.TrimSpace(string(rest)), `"`)
+	return y.rd.add(found{text: v, role: Resolved, line: n})
 }
 
 // yarnDescribes reports whether a list of descriptors, comma separated and

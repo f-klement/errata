@@ -68,23 +68,40 @@ func replaces(rd *reading, data []byte, rs []*modfile.Replace, required map[stri
 		if !rd.is(r.Old.Path) {
 			continue
 		}
-		maybe := false
-		if required != nil && r.Old.Version != "" && !required[r.Old.Version] {
-			if len(required) == 0 || gomod.Canonical(r.Old.Version) && !anyQuery(required) {
-				continue
-			}
-			maybe = true
+		applies, maybe := replaceApplies(r, required)
+		if !applies {
+			continue
 		}
-		f := found{text: r.New.Version, section: "replace", role: Resolved, line: gomod.LastTokenLine(data, r.Syntax),
-			notLiteral: r.New.Path != r.Old.Path || maybe || !gomod.Canonical(r.New.Version)}
-		if f.text == "" {
-			f.text, f.notLiteral = r.New.Path, true
-		}
-		if err := rd.add(f); err != nil {
+		if err := rd.add(replaceFound(data, r, maybe)); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// replaceApplies reports whether the replace r may apply to a version the
+// go.mod requires, required, and maybe whether that rests on a query the
+// file does not resolve.
+func replaceApplies(r *modfile.Replace, required map[string]bool) (applies, maybe bool) {
+	if required == nil || r.Old.Version == "" || required[r.Old.Version] {
+		return true, false
+	}
+	if len(required) == 0 || gomod.Canonical(r.Old.Version) && !anyQuery(required) {
+		return false, false
+	}
+	return true, true
+}
+
+// replaceFound is the version the replace r gives, in the file data, not
+// literal when maybe says it may not apply, when it names another module or
+// a directory, or writes no canonical version.
+func replaceFound(data []byte, r *modfile.Replace, maybe bool) found {
+	f := found{text: r.New.Version, section: "replace", role: Resolved, line: gomod.LastTokenLine(data, r.Syntax),
+		notLiteral: r.New.Path != r.Old.Path || maybe || !gomod.Canonical(r.New.Version)}
+	if f.text == "" {
+		f.text, f.notLiteral = r.New.Path, true
+	}
+	return f
 }
 
 // anyQuery reports whether a version of required is a query, one that is

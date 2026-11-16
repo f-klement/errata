@@ -114,54 +114,82 @@ import (
 	"time"
 )
 
-func main() {
-	switch arg(1) {
-	case "index":
-		if len(os.Args) != 10 {
-			usage()
-		}
-		jobs, err := strconv.Atoi(os.Args[8])
-		if err != nil || jobs < 1 {
-			usage()
-		}
-		limit, err := strconv.ParseFloat(os.Args[9], 64)
-		if err != nil || limit <= 0 {
-			usage()
-		}
-		why, err := index(os.Args[2], os.Args[3], os.Args[4], os.Args[5], os.Args[6], os.Args[7], jobs, time.Duration(limit*float64(time.Second)))
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "testreach: %v\n", err)
-			os.Exit(1)
-		}
-		if why != "" {
-			fmt.Fprintln(os.Stdout, why)
-			os.Exit(3)
-		}
-	case "run":
-		if len(os.Args) < 5 {
-			usage()
-		}
-		os.Exit(run(os.Args[2], os.Args[3], os.Args[4], os.Args[5:]))
-	case "redundant":
-		os.Exit(redundantMain(os.Stdout, os.Stderr, os.Args[2:]))
-	default:
-		usage()
-	}
-}
+func main() { os.Exit(cli(os.Args[1:], os.Stdout, os.Stderr)) }
 
-// arg is the command line's argument i, empty when there is none.
-func arg(i int) string {
-	if i < len(os.Args) {
-		return os.Args[i]
+// cli runs the command line args, which follow the program's name, and
+// returns the status to exit with.
+func cli(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		return usage(stderr)
 	}
-	return ""
+	switch args[0] {
+	case "index":
+		return indexMain(stdout, stderr, args[1:])
+	case "run":
+		if len(args) < 4 {
+			return usage(stderr)
+		}
+		return run(args[1], args[2], args[3], args[4:])
+	case "redundant":
+		return redundantMain(stdout, stderr, args[1:])
+	}
+	return usage(stderr)
 }
 
 const usageText = "usage: testreach index <go> <casecover> <tags> <module root> <package dir> <out dir> <jobs> <limit>\n       testreach run <go> <module root> <index dir> <go arguments...>\n       testreach redundant <index dir>"
 
-func usage() {
-	fmt.Fprintln(os.Stderr, usageText)
-	os.Exit(2)
+// usage prints the usage to stderr and returns the status a misuse exits with.
+func usage(stderr io.Writer) int {
+	fmt.Fprintln(stderr, usageText)
+	return 2
+}
+
+// indexMain runs `index` with its arguments: it exits 3 with the reason on
+// stdout when the package gets no index, and 1 on an error.
+func indexMain(stdout, stderr io.Writer, args []string) int {
+	j, ok := parseIndexArgs(args)
+	if !ok {
+		return usage(stderr)
+	}
+	why, err := j.index()
+	if err != nil {
+		fmt.Fprintf(stderr, "testreach: %v\n", err)
+		return 1
+	}
+	if why != "" {
+		fmt.Fprintln(stdout, why)
+		return 3
+	}
+	return 0
+}
+
+// indexJob is what `index` is given: the go to run, the casecover to run on
+// each profile, the build tags, the module root, the package's directory
+// relative to it, the directory to write the index to, how many tests run at
+// once, and the limit on each.
+type indexJob struct {
+	goBin, casecover, tags, root, pkgDir, outDir string
+	jobs                                         int
+	limit                                        time.Duration
+}
+
+// parseIndexArgs reads `index`'s eight arguments; false when they are not.
+func parseIndexArgs(args []string) (indexJob, bool) {
+	if len(args) != 8 {
+		return indexJob{}, false
+	}
+	jobs, err := strconv.Atoi(args[6])
+	if err != nil || jobs < 1 {
+		return indexJob{}, false
+	}
+	limit, err := strconv.ParseFloat(args[7], 64)
+	if err != nil || limit <= 0 {
+		return indexJob{}, false
+	}
+	return indexJob{
+		goBin: args[0], casecover: args[1], tags: args[2], root: args[3], pkgDir: args[4], outDir: args[5],
+		jobs: jobs, limit: time.Duration(limit * float64(time.Second)),
+	}, true
 }
 
 // testName is a name the test binary lists that go test runs without -bench:
@@ -170,41 +198,79 @@ var testName = regexp.MustCompile(`^(Test|Example|Fuzz)[\p{L}\p{N}_]*$`)
 
 // index writes outDir/index for the package in pkgDir, a directory relative to
 // root. It returns why there is none, or an error.
-func index(goBin, casecover, tags, root, pkgDir, outDir string, jobs int, limit time.Duration) (string, error) {
+func (j indexJob) index() (string, error) {
 	ctx := context.Background()
-	var tagArgs []string
-	if tags != "" {
-		tagArgs = []string{"-tags", tags}
-	}
-	if err := os.MkdirAll(filepath.Join(outDir, "cov"), 0o750); err != nil { //nolint:gosec // the index directory scripts/mutation.sh names
+	if err := os.MkdirAll(filepath.Join(j.outDir, "cov"), 0o750); err != nil {
 		return "", err
 	}
-	list := exec.CommandContext(ctx, goBin, append(append([]string{"list"}, tagArgs...), "-f", "{{.ImportPath}} {{len .TestGoFiles}} {{len .XTestGoFiles}}", "./"+pkgDir)...) //nolint:gosec // the go and package scripts/mutation.sh names
-	list.Dir = root
+	importPath, nTests, err := j.listPackage(ctx)
+	if err != nil {
+		return "", err
+	}
+	if nTests == 0 {
+		return "it has no test files", nil
+	}
+	bin := filepath.Join(j.outDir, "pkg.test")
+	if err := j.buildBinary(ctx, bin); err != nil {
+		return "", err
+	}
+	dir := filepath.Join(j.root, filepath.FromSlash(j.pkgDir))
+	names, err := j.listTests(ctx, bin, dir)
+	if err != nil {
+		return "", err
+	}
+	if len(names) == 0 {
+		return "its test binary lists no test", nil
+	}
+	if why, err := j.runEach(ctx, bin, dir, names); why != "" || err != nil {
+		return why, err
+	}
+	return "", j.writeIndex(importPath, names)
+}
+
+// tagArgs is the -tags flag go is given, none when there are no tags.
+func (j indexJob) tagArgs() []string {
+	if j.tags == "" {
+		return nil
+	}
+	return []string{"-tags", j.tags}
+}
+
+// listPackage asks go list for the package's import path and its number of
+// test files, internal and external together.
+func (j indexJob) listPackage(ctx context.Context) (string, int, error) {
+	list := exec.CommandContext(ctx, j.goBin, append(append([]string{"list"}, j.tagArgs()...), "-f", "{{.ImportPath}} {{len .TestGoFiles}} {{len .XTestGoFiles}}", "./"+j.pkgDir)...) //nolint:gosec // the go and package scripts/mutation.sh names
+	list.Dir = j.root
 	out, err := list.Output()
 	if err != nil {
-		return "", fmt.Errorf("go list ./%s: %w", pkgDir, err)
+		return "", 0, fmt.Errorf("go list ./%s: %w", j.pkgDir, err)
 	}
 	var importPath string
 	var nTest, nXTest int
 	if _, err := fmt.Sscanf(string(out), "%s %d %d", &importPath, &nTest, &nXTest); err != nil {
-		return "", fmt.Errorf("go list ./%s printed %q: %w", pkgDir, out, err)
+		return "", 0, fmt.Errorf("go list ./%s printed %q: %w", j.pkgDir, out, err)
 	}
-	if nTest+nXTest == 0 {
-		return "it has no test files", nil
-	}
-	bin := filepath.Join(outDir, "pkg.test")
-	build := exec.CommandContext(ctx, goBin, append(append([]string{"test", "-c", "-cover"}, tagArgs...), "-o", bin, "./"+pkgDir)...) //nolint:gosec // as above
-	build.Dir = root
+	return importPath, nTest + nXTest, nil
+}
+
+// buildBinary builds the package's test binary to bin, with -cover.
+func (j indexJob) buildBinary(ctx context.Context, bin string) error {
+	build := exec.CommandContext(ctx, j.goBin, append(append([]string{"test", "-c", "-cover"}, j.tagArgs()...), "-o", bin, "./"+j.pkgDir)...) //nolint:gosec // as above
+	build.Dir = j.root
 	if out, err := build.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("go test -c ./%s: %w\n%s", pkgDir, err, out)
+		return fmt.Errorf("go test -c ./%s: %w\n%s", j.pkgDir, err, out)
 	}
-	dir := filepath.Join(root, filepath.FromSlash(pkgDir))
-	lister := exec.CommandContext(ctx, bin, "-test.list", ".*") //nolint:gosec // the binary built above
+	return nil
+}
+
+// listTests is the names the test binary lists that go test runs without
+// -bench (testName).
+func (j indexJob) listTests(ctx context.Context, bin, dir string) ([]string, error) {
+	lister := exec.CommandContext(ctx, bin, "-test.list", ".*")
 	lister.Dir = dir
-	out, err = lister.Output()
+	out, err := lister.Output()
 	if err != nil {
-		return "", fmt.Errorf("listing the tests of %s: %w", pkgDir, err)
+		return nil, fmt.Errorf("listing the tests of %s: %w", j.pkgDir, err)
 	}
 	var names []string
 	for _, n := range strings.Fields(string(out)) {
@@ -212,19 +278,23 @@ func index(goBin, casecover, tags, root, pkgDir, outDir string, jobs int, limit 
 			names = append(names, n)
 		}
 	}
-	if len(names) == 0 {
-		return "its test binary lists no test", nil
-	}
+	return names, nil
+}
+
+// runEach runs each test alone, j.jobs at once, each with the profile
+// outDir/cov/<its place in names>. It says why there is no index when one
+// fails alone, the first in names, and returns an error when casecover fails.
+func (j indexJob) runEach(ctx context.Context, bin, dir string, names []string) (string, error) {
 	failed := make([]string, len(names))
 	errs := make([]error, len(names))
 	var wg sync.WaitGroup
 	next := make(chan int)
-	for range jobs {
+	for range j.jobs {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for i := range next {
-				failed[i], errs[i] = runAlone(ctx, bin, casecover, root, dir, names[i], filepath.Join(outDir, "cov", strconv.Itoa(i)), limit)
+				failed[i], errs[i] = j.runAlone(ctx, bin, dir, names[i], j.profile(i))
 			}
 		}()
 	}
@@ -241,31 +311,40 @@ func index(goBin, casecover, tags, root, pkgDir, outDir string, jobs int, limit 
 			return fmt.Sprintf("%s fails when it runs alone (%s)", names[i], f), nil
 		}
 	}
+	return "", nil
+}
+
+// profile is the path of the profile of test i of the binary's list.
+func (j indexJob) profile(i int) string { return filepath.Join(j.outDir, "cov", strconv.Itoa(i)) }
+
+// writeIndex writes outDir/index from the tests' profiles, through a
+// temporary file, so a reader never sees half of one.
+func (j indexJob) writeIndex(importPath string, names []string) error {
 	var b bytes.Buffer
-	fmt.Fprintf(&b, "package %s\ndir %s\n", importPath, pkgDir)
+	fmt.Fprintf(&b, "package %s\ndir %s\n", importPath, j.pkgDir)
 	for i, n := range names {
 		fmt.Fprintf(&b, "test %s\n", n)
-		if err := ranLines(&b, filepath.Join(outDir, "cov", strconv.Itoa(i)), importPath); err != nil {
-			return "", err
+		if err := ranLines(&b, j.profile(i), importPath); err != nil {
+			return err
 		}
 	}
-	tmp := filepath.Join(outDir, "index.tmp")
-	if err := os.WriteFile(tmp, b.Bytes(), 0o600); err != nil { //nolint:gosec // in the index directory scripts/mutation.sh names
-		return "", err
+	tmp := filepath.Join(j.outDir, "index.tmp")
+	if err := os.WriteFile(tmp, b.Bytes(), 0o600); err != nil {
+		return err
 	}
-	return "", os.Rename(tmp, filepath.Join(outDir, "index")) //nolint:gosec // as above
+	return os.Rename(tmp, filepath.Join(j.outDir, "index"))
 }
 
 // runAlone runs one test of the binary with a profile of its own, as go test
 // runs the binary for a mutant, then casecover on the profile. It says how the
 // test failed, empty when it passed, and returns an error when casecover fails.
-func runAlone(ctx context.Context, bin, casecover, root, dir, name, profile string, limit time.Duration) (string, error) {
+func (j indexJob) runAlone(ctx context.Context, bin, dir, name, profile string) (string, error) {
 	covdata := profile + ".d"
 	if err := os.MkdirAll(covdata, 0o750); err != nil { //nolint:gosec // beside the profile, in the index directory scripts/mutation.sh names
 		return "", err
 	}
 	cmd := exec.CommandContext(ctx, bin, "-test.run", "^"+name+"$", "-test.count", "1", "-test.paniconexit0", //nolint:gosec // the binary built above, a name it listed
-		"-test.timeout", limit.String(), "-test.coverprofile", profile, "-test.gocoverdir", covdata)
+		"-test.timeout", j.limit.String(), "-test.coverprofile", profile, "-test.gocoverdir", covdata)
 	cmd.Dir = dir
 	// GOCOVERDIR as go test sets it: a test that runs its own binary again, as
 	// testscript runs errata in internal/cli, then writes the child's coverage
@@ -273,7 +352,7 @@ func runAlone(ctx context.Context, bin, casecover, root, dir, name, profile stri
 	cmd.Env = append(os.Environ(), "GOCOVERDIR="+covdata)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
-		cc := exec.CommandContext(ctx, casecover, root, profile) //nolint:gosec // the casecover scripts/mutation.sh names
+		cc := exec.CommandContext(ctx, j.casecover, j.root, profile) //nolint:gosec // the casecover scripts/mutation.sh names
 		if out, err := cc.CombinedOutput(); err != nil {
 			return "", fmt.Errorf("casecover on the profile of %s: %w: %s", name, err, strings.TrimSpace(string(out)))
 		}
@@ -335,21 +414,7 @@ func readIndex(path string) (*reach, error) {
 	sc := bufio.NewScanner(f)
 	sc.Buffer(nil, 1<<20)
 	for sc.Scan() {
-		fields := strings.Fields(sc.Text())
-		switch {
-		case len(fields) == 2 && fields[0] == "package":
-			r.pkg = fields[1]
-		case len(fields) == 2 && fields[0] == "dir":
-			r.dir = fields[1]
-		case len(fields) == 2 && fields[0] == "test":
-			r.tests = append(r.tests, fields[1])
-		case (len(fields) == 3 || len(fields) == 5) && len(r.tests) > 0:
-			n, ok := numbers(fields[1:])
-			if !ok {
-				return nil, fmt.Errorf("%s: not an index line: %q", path, sc.Text())
-			}
-			r.ranges[fields[0]] = append(r.ranges[fields[0]], span{n[0], n[1], n[2], n[3], len(r.tests) - 1})
-		default:
+		if !r.add(strings.Fields(sc.Text())) {
 			return nil, fmt.Errorf("%s: not an index line: %q", path, sc.Text())
 		}
 	}
@@ -360,6 +425,45 @@ func readIndex(path string) (*reach, error) {
 		return nil, fmt.Errorf("%s names no package or directory", path)
 	}
 	return r, nil
+}
+
+// add reads one line of the index, split into its fields; false when it is
+// not an index line.
+func (r *reach) add(fields []string) bool {
+	if len(fields) == 2 {
+		return r.header(fields[0], fields[1])
+	}
+	if (len(fields) == 3 || len(fields) == 5) && len(r.tests) > 0 {
+		return r.addSpan(fields)
+	}
+	return false
+}
+
+// header reads a line of two fields: the package, its directory, or a test,
+// whose blocks the lines after it list.
+func (r *reach) header(key, value string) bool {
+	switch key {
+	case "package":
+		r.pkg = value
+	case "dir":
+		r.dir = value
+	case "test":
+		r.tests = append(r.tests, value)
+	default:
+		return false
+	}
+	return true
+}
+
+// addSpan reads a block the last test ran: its file, lines and, when the
+// line has them, columns.
+func (r *reach) addSpan(fields []string) bool {
+	n, ok := numbers(fields[1:])
+	if !ok {
+		return false
+	}
+	r.ranges[fields[0]] = append(r.ranges[fields[0]], span{n[0], n[1], n[2], n[3], len(r.tests) - 1})
+	return true
 }
 
 // numbers reads an index line's two or four numbers into four, the columns
@@ -406,16 +510,12 @@ type mutantArgs struct {
 
 func parseMutant(args []string) (mutantArgs, bool) {
 	var m mutantArgs
-	rest := args
-	if len(rest) == 0 || rest[0] != "test" {
+	if len(args) == 0 || args[0] != "test" {
 		return m, false
 	}
-	rest = rest[1:]
-	if len(rest) >= 2 && rest[0] == "-tags" {
-		m.tags = rest[1]
-		rest = rest[2:]
-	}
-	if len(rest) != 4 || rest[0] != "-timeout" || rest[2] != "-failfast" || strings.HasPrefix(rest[3], "-") {
+	var rest []string
+	m.tags, rest = cutTags(args[1:])
+	if !gremlinsTail(rest) {
 		return m, false
 	}
 	d, err := time.ParseDuration(rest[1])
@@ -424,6 +524,20 @@ func parseMutant(args []string) (mutantArgs, bool) {
 	}
 	m.timeout, m.pkg = d, rest[3]
 	return m, true
+}
+
+// cutTags takes a leading -tags and its value off go test's arguments.
+func cutTags(args []string) (string, []string) {
+	if len(args) >= 2 && args[0] == "-tags" {
+		return args[1], args[2:]
+	}
+	return "", args
+}
+
+// gremlinsTail is the rest of gremlins' go test after the tags: -timeout, its
+// value, -failfast and the package.
+func gremlinsTail(rest []string) bool {
+	return len(rest) == 4 && rest[0] == "-timeout" && rest[2] == "-failfast" && !strings.HasPrefix(rest[3], "-")
 }
 
 // buildArgs is the go test -c that builds the mutant's test binary to out,
@@ -514,136 +628,212 @@ func run(goBin, root, indexDir string, args []string) int {
 	if !ok {
 		return execGo(goBin, args)
 	}
-	logPath := filepath.Join(indexDir, "log")
-	c, e, err := readLimits(filepath.Join(indexDir, "limits"))
+	mr, err := newTrial(goBin, root, indexDir, m)
 	if err != nil {
 		// Gremlins' limit may be half again the planned one, and testreach
 		// cannot tell. scripts/mutation.sh fails the package on this line.
-		appendLog(logPath, fmt.Sprintf("- 0/0 - - - - limits unreadable: %s\n", strings.ReplaceAll(err.Error(), "\n", " ")))
+		appendLog(mr.logPath, fmt.Sprintf("- 0/0 - - - - limits unreadable: %s\n", strings.ReplaceAll(err.Error(), "\n", " ")))
 		return execGo(goBin, args)
 	}
 	stop := catchSignals()
 	defer stop()
-	given := m.timeout - 2*time.Second
-	whole := given * time.Duration(c) / time.Duration(e)
+	mr.start = time.Now()
+	mr.locate()
+	return mr.judge()
+}
+
+// trial is one mutant's go test, as run handles it: what gremlins
+// asked for, the limits, where in the index the mutant is, and why it is or
+// is not narrowed.
+type trial struct {
+	goBin, root, indexDir, logPath string
+	m                              mutantArgs
+	// given is gremlins' limit; whole, the planned limit L, bounds the build
+	// and the whole run; narrowed is the rest, for the narrowed run.
+	given, whole, narrowed time.Duration
+	start                  time.Time
+	r                      *reach
+	site, why              string
+	tests                  []string
+	nTests                 int
+}
+
+// newTrial reads the limits and shares gremlins' limit out between the
+// runs. It returns an error when the limits cannot be read.
+func newTrial(goBin, root, indexDir string, m mutantArgs) (*trial, error) {
+	mr := &trial{goBin: goBin, root: root, indexDir: indexDir, logPath: filepath.Join(indexDir, "log"), m: m, site: "-"}
+	c, e, err := readLimits(filepath.Join(indexDir, "limits"))
+	if err != nil {
+		return mr, err
+	}
+	mr.given = m.timeout - 2*time.Second
+	mr.whole = mr.given * time.Duration(c) / time.Duration(e)
 	// L for the build and the whole run, and the rest for the narrowed run.
-	narrowed := given - whole - 500*time.Millisecond
-	start := time.Now()
-	site, why := "-", ""
-	var tests []string
-	r, err := readIndex(filepath.Join(indexDir, "index"))
-	nTests := 0
+	mr.narrowed = mr.given - mr.whole - 500*time.Millisecond
+	return mr, nil
+}
+
+// locate reads the index and finds the mutant's line and the tests that
+// reach it. why says why the mutant is not narrowed, empty when it is.
+func (mr *trial) locate() {
+	r, err := readIndex(filepath.Join(mr.indexDir, "index"))
 	switch {
 	case err != nil:
-		why = "index unreadable"
-	case r.pkg != m.pkg:
-		why = "the index is of another package"
-	default:
-		nTests = len(r.tests)
-		wd, err := os.Getwd()
-		if err != nil {
-			why = "no working directory"
-		} else if file, line, err := changedLine(wd, filepath.Join(root, filepath.FromSlash(r.dir))); err != nil {
-			why = err.Error()
-		} else {
-			site = fmt.Sprintf("%s:%d", file, line)
-			tests = r.reaching(file, line)
-			switch {
-			case len(tests) == 0:
-				why = "no indexed test reaches the line"
-			case len(tests) == len(r.tests):
-				why = "every indexed test reaches the line"
-			case narrowed <= 0:
-				why = "no time for a narrowed run"
-			}
-		}
+		mr.why = "index unreadable"
+		return
+	case r.pkg != mr.m.pkg:
+		mr.why = "the index is of another package"
+		return
 	}
-	logf := func(n outcome, ran bool, w outcome, wran bool, why string) {
-		ns, nt, ws, wt := "-", "-", "-", "-"
-		if ran {
-			ns, nt = n.String(), secs(n.took)
-		}
-		if wran {
-			ws, wt = w.String(), secs(w.took)
-		}
-		appendLog(logPath, fmt.Sprintf("%s %d/%d %s %s %s %s %s\n", site, len(tests), nTests, ns, nt, ws, wt, strings.ReplaceAll(why, "\n", " ")))
+	mr.r, mr.nTests = r, len(r.tests)
+	file, line, err := mr.changed()
+	if err != nil {
+		mr.why = err.Error()
+		return
 	}
-	timedOut := func() int {
-		// Gremlins reads a timeout only when its own limit ends the command.
-		waitUntil(start.Add(given + afterLimit))
-		return 1
+	mr.site = fmt.Sprintf("%s:%d", file, line)
+	mr.tests = r.reaching(file, line)
+	switch {
+	case len(mr.tests) == 0:
+		mr.why = "no indexed test reaches the line"
+	case len(mr.tests) == len(r.tests):
+		mr.why = "every indexed test reaches the line"
+	case mr.narrowed <= 0:
+		mr.why = "no time for a narrowed run"
 	}
-	// held is what a timeout costs past the planned limit: testreach holds
-	// the worker until gremlins' own limit, for gremlins to read it.
-	held := fmt.Sprintf("; held %s past the planned limit", secs(given-whole))
-	var b outcome
+}
 
-	// The build, once, bounded at the planned limit as today's go test is. Its
-	// time is charged to the whole run, so build and whole tests together get
-	// the planned limit, as they do under gremlins today.
+// changed is the mutant's file and line: the token that differs between the
+// working directory, gremlins' copy, and the package in the module root.
+func (mr *trial) changed() (string, int, error) {
+	wd, err := os.Getwd()
+	if err != nil {
+		return "", 0, errors.New("no working directory")
+	}
+	return changedLine(wd, mr.origDir())
+}
+
+// origDir is the package's directory in the module root.
+func (mr *trial) origDir() string { return filepath.Join(mr.root, filepath.FromSlash(mr.r.dir)) }
+
+// log adds the mutant's line to the log: the narrowed run's result when ran,
+// the whole run's (or the build's) when wran, and why.
+func (mr *trial) log(n outcome, ran bool, w outcome, wran bool, why string) {
+	ns, nt, ws, wt := "-", "-", "-", "-"
+	if ran {
+		ns, nt = n.String(), secs(n.took)
+	}
+	if wran {
+		ws, wt = w.String(), secs(w.took)
+	}
+	appendLog(mr.logPath, fmt.Sprintf("%s %d/%d %s %s %s %s %s\n", mr.site, len(mr.tests), mr.nTests, ns, nt, ws, wt, strings.ReplaceAll(why, "\n", " ")))
+}
+
+// timedOut waits for gremlins' own limit to end testreach, since gremlins
+// reads a timeout only when its own limit ends the command.
+func (mr *trial) timedOut() int {
+	waitUntil(mr.start.Add(mr.given + afterLimit))
+	return 1
+}
+
+// held is what a timeout costs past the planned limit: testreach holds the
+// worker until gremlins' own limit, for gremlins to read it.
+func (mr *trial) held() string {
+	return fmt.Sprintf("; held %s past the planned limit", secs(mr.given-mr.whole))
+}
+
+// judge builds the mutant's test binary, runs the narrowed tests when there
+// are any, then the whole package's, and returns the status to exit with.
+func (mr *trial) judge() int {
 	tmp, err := os.MkdirTemp("", "testreach-")
 	if err != nil {
-		logf(outcome{}, false, outcome{code: 2}, true, "no directory for the test binary: "+err.Error())
+		mr.log(outcome{}, false, outcome{code: 2}, true, "no directory for the test binary: "+err.Error())
 		return 2
 	}
 	defer func() { _ = os.RemoveAll(tmp) }()
 	bin := filepath.Join(tmp, "mutant.test")
-	b = runBounded(goBin, m.buildArgs(bin), "", whole, 0)
+	b, rc, done := mr.build(bin)
+	if done {
+		return rc
+	}
+	binTimeout := mr.whole + 2*time.Second
+	// go test's own wait for a test binary's output after it exits: the
+	// larger of 5 s and a tenth of -timeout (cmd/go/internal/test, Go 1.27).
+	ioWait := max(5*time.Second, binTimeout/10)
+	n, ran, killed := mr.narrow(bin, binTimeout, ioWait)
+	if killed {
+		return 1
+	}
+	return mr.runWhole(bin, b, n, ran, binTimeout, ioWait)
+}
+
+// build builds the mutant's test binary to bin, once, bounded at the planned
+// limit as today's go test is. Its time is charged to the whole run, so build
+// and whole tests together get the planned limit, as they do under gremlins
+// today. done says the build ended the mutant, with the status rc.
+func (mr *trial) build(bin string) (b outcome, rc int, done bool) {
+	b = runBounded(mr.goBin, mr.m.buildArgs(bin), "", mr.whole, 0)
 	switch {
 	case b.timedOut:
 		// The build alone took the planned limit: timed out, as one go test
 		// would be.
-		logf(outcome{}, false, b, true, "the build took the whole limit"+held)
-		recordKill(indexDir, site, nil)
-		return timedOut()
+		mr.log(outcome{}, false, b, true, "the build took the whole limit"+mr.held())
+		recordKill(mr.indexDir, mr.site, nil)
+		return b, mr.timedOut(), true
 	case b.signaled:
-		logf(outcome{}, false, b, true, "the build was signalled")
+		mr.log(outcome{}, false, b, true, "the build was signalled")
 		raise(b.sig)
-		return 3
+		return b, 3, true
 	case b.code != 0:
 		// go test -c builds and runs no test, so its failure is the build's:
 		// the mutant does not compile. Exit 2, which gremlins counts as not
 		// viable; go test's own 1 would count it as killed.
-		logf(outcome{}, false, b, true, "the build failed")
-		return 2
+		mr.log(outcome{}, false, b, true, "the build failed")
+		return b, 2, true
 	}
 	if _, err := os.Stat(bin); err != nil {
-		logf(outcome{}, false, outcome{code: 2}, true, "the build wrote no test binary")
-		return 2
+		mr.log(outcome{}, false, outcome{code: 2}, true, "the build wrote no test binary")
+		return b, 2, true
 	}
-	binTimeout := whole + 2*time.Second
-	// go test's own wait for a test binary's output after it exits: the
-	// larger of 5 s and a tenth of -timeout (cmd/go/internal/test, Go 1.27).
-	ioWait := max(5*time.Second, binTimeout/10)
+	return b, 0, false
+}
 
-	var n outcome
-	ran := false
-	if why == "" {
-		expr := "^(" + strings.Join(tests, "|") + ")$"
-		ok, left, checkWhy := checkSet(filepath.Join(indexDir, "pkg.test"), filepath.Join(root, filepath.FromSlash(r.dir)), indexDir, expr, binTimeout, ioWait, narrowed)
-		if ok {
-			ran = true
-			n = runBounded(bin, binArgs(binTimeout, expr), "", left, ioWait)
-			if n.testFailed() {
-				logf(n, true, outcome{}, false, "narrowed"+checkWhy)
-				recordKill(indexDir, site, n.fails)
-				return 1
-			}
-			why = "narrowed, then whole" + checkWhy
-		} else {
-			why = checkWhy
-		}
+// narrow runs the reaching tests on the mutant, once checkSet has seen them
+// pass together on the original code. ran says it ran them, and killed that
+// a test failed, which ends the mutant. Otherwise why says what comes next.
+func (mr *trial) narrow(bin string, binTimeout, ioWait time.Duration) (n outcome, ran, killed bool) {
+	if mr.why != "" {
+		return outcome{}, false, false
 	}
-	w := runBounded(bin, binArgs(binTimeout, ""), "", whole-b.took, ioWait)
+	expr := "^(" + strings.Join(mr.tests, "|") + ")$"
+	ok, left, checkWhy := checkSet(filepath.Join(mr.indexDir, "pkg.test"), mr.origDir(), mr.indexDir, expr, binTimeout, ioWait, mr.narrowed)
+	if !ok {
+		mr.why = checkWhy
+		return outcome{}, false, false
+	}
+	n = runBounded(bin, binArgs(binTimeout, expr), "", left, ioWait)
+	if n.testFailed() {
+		mr.log(n, true, outcome{}, false, "narrowed"+checkWhy)
+		recordKill(mr.indexDir, mr.site, n.fails)
+		return n, true, true
+	}
+	mr.why = "narrowed, then whole" + checkWhy
+	return n, true, false
+}
+
+// runWhole runs the whole package's tests on the mutant, within the planned
+// limit less the build's time b.took, and returns the status to exit with.
+func (mr *trial) runWhole(bin string, b, n outcome, ran bool, binTimeout, ioWait time.Duration) int {
+	w := runBounded(bin, binArgs(binTimeout, ""), "", mr.whole-b.took, ioWait)
 	if w.timedOut {
 		// Build and whole tests passed the planned limit: timed out, final.
-		logf(n, ran, w, true, fmt.Sprintf("%s (build %s)%s", why, secs(b.took), held))
-		recordKill(indexDir, site, nil)
-		return timedOut()
+		mr.log(n, ran, w, true, fmt.Sprintf("%s (build %s)%s", mr.why, secs(b.took), mr.held()))
+		recordKill(mr.indexDir, mr.site, nil)
+		return mr.timedOut()
 	}
-	logf(n, ran, w, true, fmt.Sprintf("%s (build %s)", why, secs(b.took)))
+	mr.log(n, ran, w, true, fmt.Sprintf("%s (build %s)", mr.why, secs(b.took)))
 	if w.failed() {
-		recordKill(indexDir, site, w.fails)
+		recordKill(mr.indexDir, mr.site, w.fails)
 		return 1
 	}
 	return 0
@@ -666,21 +856,14 @@ func checkSet(origBin, origDir, indexDir, expr string, binTimeout, ioWait, share
 	}
 	o := runBounded(origBin, binArgs(binTimeout, expr), origDir, share, ioWait)
 	left := share - o.took
-	var verdict string
-	switch {
-	case o.timedOut:
+	if o.timedOut {
 		return false, 0, "no time to run the reaching tests together on the original code"
-	case o.failed():
+	}
+	verdict := "pass"
+	if o.failed() {
 		verdict = "fail"
-	default:
-		verdict = "pass"
 	}
-	if err := os.MkdirAll(filepath.Dir(memo), 0o750); err == nil { //nolint:gosec // in the index directory
-		tmp := fmt.Sprintf("%s.%d", memo, os.Getpid())
-		if os.WriteFile(tmp, []byte(verdict), 0o600) == nil { //nolint:gosec // as above
-			_ = os.Rename(tmp, memo) //nolint:gosec // as above
-		}
-	}
+	keepVerdict(memo, verdict)
 	if verdict == "fail" {
 		return false, 0, "the reaching tests fail together on the original code"
 	}
@@ -691,6 +874,19 @@ func checkSet(origBin, origDir, indexDir, expr string, binTimeout, ioWait, share
 		return false, 0, "no time left for a narrowed run after checking its tests"
 	}
 	return true, left, fmt.Sprintf(" (set checked in %s)", secs(o.took))
+}
+
+// keepVerdict writes a set's verdict to its memo, through a file of this
+// process's own, so a reader never sees half of one. A memo it cannot write
+// only costs the set another run.
+func keepVerdict(memo, verdict string) {
+	if err := os.MkdirAll(filepath.Dir(memo), 0o750); err != nil { //nolint:gosec // in the index directory
+		return
+	}
+	tmp := fmt.Sprintf("%s.%d", memo, os.Getpid())
+	if os.WriteFile(tmp, []byte(verdict), 0o600) == nil { //nolint:gosec // as above
+		_ = os.Rename(tmp, memo) //nolint:gosec // as above
+	}
 }
 
 // readLimits reads the planned coefficient and the one gremlins was given.
@@ -784,19 +980,46 @@ func bounded(name string, args []string, dir string, limit, ioWait time.Duration
 	if limit <= 0 {
 		return outcome{timedOut: true}
 	}
-	current.Lock()
-	if current.stopping {
-		current.Unlock()
+	switch err := startCurrent(cmd); {
+	case errors.Is(err, errStopping):
 		return outcome{code: 2, notStarted: true}
+	case err != nil:
+		return outcome{code: 2, notStarted: true, took: time.Since(start)}
+	}
+	stopped, err := waitAtMost(cmd, limit)
+	o := outcome{took: time.Since(start), timedOut: stopped}
+	// Whatever the group left behind goes too.
+	killGroup(cmd)
+	o.fails = scan.failed()
+	current.Lock()
+	current.cmd = nil
+	current.Unlock()
+	o.end(err)
+	return o
+}
+
+// errStopping is startCurrent's refusal once the signal handler is stopping
+// testreach.
+var errStopping = errors.New("testreach is stopping")
+
+// startCurrent starts cmd as the command the signal handler kills, unless the
+// handler is already stopping testreach.
+func startCurrent(cmd *exec.Cmd) error {
+	current.Lock()
+	defer current.Unlock()
+	if current.stopping {
+		return errStopping
 	}
 	err := cmd.Start()
 	if err == nil {
 		current.cmd = cmd
 	}
-	current.Unlock()
-	if err != nil {
-		return outcome{code: 2, notStarted: true, took: time.Since(start)}
-	}
+	return err
+}
+
+// waitAtMost waits for the started cmd and kills its group at the limit. It
+// says whether the limit stopped it, and returns Wait's error.
+func waitAtMost(cmd *exec.Cmd, limit time.Duration) (bool, error) {
 	var mu sync.Mutex
 	stopped := false
 	timer := time.AfterFunc(limit, func() {
@@ -805,18 +1028,15 @@ func bounded(name string, args []string, dir string, limit, ioWait time.Duration
 		mu.Unlock()
 		killGroup(cmd)
 	})
-	err = cmd.Wait()
+	err := cmd.Wait()
 	timer.Stop()
-	o := outcome{took: time.Since(start)}
 	mu.Lock()
-	o.timedOut = stopped
-	mu.Unlock()
-	// Whatever the group left behind goes too.
-	killGroup(cmd)
-	o.fails = scan.failed()
-	current.Lock()
-	current.cmd = nil
-	current.Unlock()
+	defer mu.Unlock()
+	return stopped, err
+}
+
+// end records how the command ended from Wait's error.
+func (o *outcome) end(err error) {
 	var exitErr *exec.ExitError
 	switch {
 	case err == nil:
@@ -835,33 +1055,15 @@ func bounded(name string, args []string, dir string, limit, ioWait time.Duration
 		// #264, H1).
 		o.code, o.notStarted = 2, true
 	}
-	return o
 }
 
 // changedLine finds the one Go file of the package that differs between the
 // working copy and the original, and in it the one token that differs, by its
 // line in the original.
 func changedLine(work, orig string) (string, int, error) {
-	entries, err := os.ReadDir(orig)
+	changed, err := differing(work, orig)
 	if err != nil {
 		return "", 0, err
-	}
-	var changed []string
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
-			continue
-		}
-		a, err := os.ReadFile(filepath.Join(orig, e.Name())) //nolint:gosec // a file of the package
-		if err != nil {
-			return "", 0, err
-		}
-		b, err := os.ReadFile(filepath.Join(work, e.Name())) //nolint:gosec // its working copy
-		if err != nil {
-			return "", 0, err
-		}
-		if !bytes.Equal(a, b) {
-			changed = append(changed, e.Name())
-		}
 	}
 	if len(changed) != 1 {
 		return "", 0, fmt.Errorf("%d files differ from the original, not 1", len(changed))
@@ -874,6 +1076,33 @@ func changedLine(work, orig string) (string, int, error) {
 		return "", 0, fmt.Errorf("%s: %w", name, err)
 	}
 	return name, line, nil
+}
+
+// differing is the Go files of the package in orig whose copy in work
+// differs.
+func differing(work, orig string) ([]string, error) {
+	entries, err := os.ReadDir(orig)
+	if err != nil {
+		return nil, err
+	}
+	var changed []string
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
+			continue
+		}
+		a, err := os.ReadFile(filepath.Join(orig, e.Name())) //nolint:gosec // a file of the package
+		if err != nil {
+			return nil, err
+		}
+		b, err := os.ReadFile(filepath.Join(work, e.Name())) //nolint:gosec // its working copy
+		if err != nil {
+			return nil, err
+		}
+		if !bytes.Equal(a, b) {
+			changed = append(changed, e.Name())
+		}
+	}
+	return changed, nil
 }
 
 type tok struct {

@@ -142,69 +142,116 @@ func (s FileSet) Extract(ctx context.Context, root string) ([]check.Value, error
 	if err != nil {
 		return nil, err
 	}
-	out := []check.Value{}
-	left := s.limit // the bytes the files still to read may hold
-	var held int64  // the bytes of the values so far
-	count := 0      // the values so far, each node of a mapping one
-	// The budgets the files so far spent.
-	spent := Spent{stringLimit: s.limit, deadline: time.Now().Add(s.timeLimit), timeLimit: s.timeLimit}
-	read := map[string]bool{} // where each file read so far resolves
-	var files *Reader         // opened at the first file, for them all
-	defer func() {
-		if files != nil {
-			files.Close()
-		}
-	}()
+	r := setRead{
+		s: s, ctx: ctx, root: root,
+		out:   []check.Value{},
+		left:  s.limit,
+		spent: Spent{stringLimit: s.limit, deadline: time.Now().Add(s.timeLimit), timeLimit: s.timeLimit},
+		read:  map[string]bool{},
+	}
+	defer r.close()
 	for _, n := range named {
-		if files == nil {
-			if files, err = OpenReader(ctx, root); err != nil {
-				return nil, err
-			}
-		}
-		// Two names that resolve to one file, a link and its target, are
-		// one file, read at the first; a name that does not resolve is
-		// refused by the read, with the reason.
-		if at, err := files.Resolved(Source{File: n.File}); err == nil {
-			if read[at] {
-				continue
-			}
-			read[at] = true
-		}
-		data, err := files.Read(Source{File: n.File, Limit: left})
-		if errors.Is(err, ErrTooLarge) {
-			// The limit the message names is what the files before left,
-			// or max_bytes for the first.
-			return nil, fmt.Errorf("%s: %w; the files the extractor reads hold at most max_bytes, %d, in all", s.kind, err, s.limit)
-		}
-		if err != nil {
+		if err := r.file(n.File); err != nil {
 			return nil, err
-		}
-		// At least 1, since a reader's 0 is the default of 32 MiB.
-		r, err := s.one(n.File, max(left, 1))
-		if err != nil {
-			return nil, err
-		}
-		vs, err := r.FromShared(data, &spent)
-		if errors.Is(err, ErrTooDense) {
-			return nil, fmt.Errorf("%s: %w; in a set, max_bytes is what the files before it left, %d of %d", s.kind, err, left, s.limit)
-		}
-		if errors.Is(err, ErrFilterWork) {
-			return nil, fmt.Errorf("%s: %w; the files of a set share the limit", s.kind, err)
-		}
-		if err != nil {
-			return nil, err
-		}
-		left -= int64(len(data))
-		for _, v := range vs {
-			nodes, bytes := v.Size()
-			if count += nodes; count > MaxValues {
-				return nil, fmt.Errorf("%s: the files hold more than %d values, the limit, each node of a mapping one; narrow the path, the pattern or the files", s.kind, MaxValues)
-			}
-			if held += bytes; held > s.limit {
-				return nil, fmt.Errorf("%s: the values of the files hold more than %d bytes in all, the extractor's max_bytes; set max_bytes: higher", s.kind, s.limit)
-			}
-			out = append(out, v)
 		}
 	}
-	return out, nil
+	return r.out, nil
+}
+
+// setRead is an Extract of a set under way: the values so far and the
+// budgets the files so far spent.
+type setRead struct {
+	s     FileSet
+	ctx   context.Context
+	root  string
+	out   []check.Value
+	left  int64           // the bytes the files still to read may hold
+	held  int64           // the bytes of the values so far
+	count int             // the values so far, each node of a mapping one
+	spent Spent           // the budgets the files so far spent
+	read  map[string]bool // where each file read so far resolves
+	files *Reader         // opened at the first file, for them all
+}
+
+// close closes the reader of the files, if one was opened.
+func (r *setRead) close() {
+	if r.files != nil {
+		r.files.Close()
+	}
+}
+
+// file reads the file of the set named file and adds its values.
+func (r *setRead) file(file string) error {
+	if r.files == nil {
+		var err error
+		if r.files, err = OpenReader(r.ctx, r.root); err != nil {
+			return err
+		}
+	}
+	if r.seen(file) {
+		return nil
+	}
+	data, err := r.files.Read(Source{File: file, Limit: r.left})
+	if errors.Is(err, ErrTooLarge) {
+		// The limit the message names is what the files before left,
+		// or max_bytes for the first.
+		return fmt.Errorf("%s: %w; the files the extractor reads hold at most max_bytes, %d, in all", r.s.kind, err, r.s.limit)
+	}
+	if err != nil {
+		return err
+	}
+	vs, err := r.values(file, data)
+	if err != nil {
+		return err
+	}
+	r.left -= int64(len(data))
+	return r.keep(vs)
+}
+
+// seen reports whether file resolves to a file read before. Two names that
+// resolve to one file, a link and its target, are one file, read at the
+// first; a name that does not resolve is refused by the read, with the
+// reason.
+func (r *setRead) seen(file string) bool {
+	if at, err := r.files.Resolved(Source{File: file}); err == nil {
+		if r.read[at] {
+			return true
+		}
+		r.read[at] = true
+	}
+	return false
+}
+
+// values are the values the reader of file reads from its data, within
+// the budgets the files before it left.
+func (r *setRead) values(file string, data []byte) ([]check.Value, error) {
+	// At least 1, since a reader's 0 is the default of 32 MiB.
+	one, err := r.s.one(file, max(r.left, 1))
+	if err != nil {
+		return nil, err
+	}
+	vs, err := one.FromShared(data, &r.spent)
+	if errors.Is(err, ErrTooDense) {
+		return nil, fmt.Errorf("%s: %w; in a set, max_bytes is what the files before it left, %d of %d", r.s.kind, err, r.left, r.s.limit)
+	}
+	if errors.Is(err, ErrFilterWork) {
+		return nil, fmt.Errorf("%s: %w; the files of a set share the limit", r.s.kind, err)
+	}
+	return vs, err
+}
+
+// keep adds vs to the values, and refuses values that pass MaxValues nodes
+// or max_bytes in all.
+func (r *setRead) keep(vs []check.Value) error {
+	for _, v := range vs {
+		nodes, bytes := v.Size()
+		if r.count += nodes; r.count > MaxValues {
+			return fmt.Errorf("%s: the files hold more than %d values, the limit, each node of a mapping one; narrow the path, the pattern or the files", r.s.kind, MaxValues)
+		}
+		if r.held += bytes; r.held > r.s.limit {
+			return fmt.Errorf("%s: the values of the files hold more than %d bytes in all, the extractor's max_bytes; set max_bytes: higher", r.s.kind, r.s.limit)
+		}
+		r.out = append(r.out, v)
+	}
+	return nil
 }

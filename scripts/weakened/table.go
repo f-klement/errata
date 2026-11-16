@@ -15,14 +15,14 @@ type row struct {
 }
 
 // table is a slice or map literal whose elements are composite literals:
-// its rows with a name, in order, and its rows without one. seq is its key
-// by its place among the tables of its declaration.
+// its row names, in order, the rows of each name, and its rows without one.
+// seq is its key by its place among the tables of its declaration.
 type table struct {
 	pos     position
 	decl    string
 	seq     string
 	names   []string
-	named   map[string]row
+	named   map[string][]row
 	unnamed []row
 }
 
@@ -59,11 +59,14 @@ func (r *reader) table(lit *ast.CompositeLit) {
 	if len(rows) == 0 {
 		return
 	}
-	t := &table{pos: r.pos(lit.Pos()), decl: r.decl, named: map[string]row{}}
-	inputs := map[string]int{}
+	t := &table{pos: r.pos(lit.Pos()), decl: r.decl, named: map[string][]row{}}
+	names, inputs := map[string]int{}, map[string]int{}
+	for _, rw := range rows {
+		names[rw.name]++
+	}
 	for _, rw := range rows {
 		inputs[rw.inputs]++
-		r.addRow(t, key, rw, inputs[rw.inputs])
+		r.addRow(t, key, rw, inputs[rw.inputs], names[rw.name] > 1)
 	}
 	t.seq = fmt.Sprintf("%s table #%d", r.decl, r.next("table"))
 	r.f.tables[r.key(r.decl+" "+key)] = t
@@ -158,22 +161,37 @@ func (r *reader) inputs(elements []element) string {
 // addRow adds a row to t, with its want fields. A row with no name is keyed
 // by its inputs, so a row inserted before it does not move its wants, and,
 // when other rows of the table have the same inputs, by its place among them.
-func (r *reader) addRow(t *table, key string, rw tableRow, occurrence int) {
+// So is a row whose name other rows of the table share, after its name: keyed
+// by the name alone, each would take the wants of the one before it. Every
+// row's wants are also keyed that way, so a name unique at one side and shared
+// at the other still pairs the row with itself.
+func (r *reader) addRow(t *table, key string, rw tableRow, occurrence int, repeated bool) {
 	r.f.rows[rw.text] = true
-	id := rw.name
-	switch {
-	case rw.name == "":
-		id = "in " + rw.inputs + " #" + strconv.Itoa(occurrence)
+	id, alt := rowKeys(rw, occurrence, repeated)
+	if rw.name == "" {
 		t.unnamed = append(t.unnamed, rw.row)
-	case t.named[rw.name] == row{}:
-		t.names = append(t.names, rw.name)
-		t.named[rw.name] = rw.row
+	} else {
+		if len(t.named[rw.name]) == 0 {
+			t.names = append(t.names, rw.name)
+		}
+		t.named[rw.name] = append(t.named[rw.name], rw.row)
 	}
 	for _, e := range rw.elements {
 		if isWant(e.field) {
-			r.want(key+" row "+id+" "+e.field, e.field, e.value)
+			r.want(key+" row "+id+" "+e.field, key+" row "+alt+" "+e.field, e.field, e.value)
 		}
 	}
+}
+
+// rowKeys is a row's key, and its key by its name and inputs and its place
+// among the rows with the same inputs. The second is the first for a row with
+// no name or a name the table's other rows share.
+func rowKeys(rw tableRow, occurrence int, repeated bool) (id, alt string) {
+	alt = strings.TrimPrefix(rw.name+" in "+rw.inputs+" #"+strconv.Itoa(occurrence), " ")
+	if rw.name == "" || repeated {
+		return alt, alt
+	}
+	return rw.name, alt
 }
 
 // rowLit is e as a composite literal, or the one e takes the address of.

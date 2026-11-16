@@ -261,7 +261,8 @@ var prefilterOracles = []struct {
 	}},
 	{"the lines a context search finds", func(t *testing.T, e Search, data []byte) any {
 		t.Helper()
-		set, err := (&Around{}).lines(&e, "with", data, time.Now().Add(time.Minute), "f", time.Minute, "")
+		// Every caller of lines hands it text with its line ends read as LF.
+		set, err := (&Around{}).lines(&e, "with", LineFeeds(data), time.Now().Add(time.Minute), "f", time.Minute, "")
 		return fmt.Sprint(set, err)
 	}},
 	{"every group of every match with the comments blanked, as skip: [comments] reads a Go file", func(t *testing.T, e Search, data []byte) any {

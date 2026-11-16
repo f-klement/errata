@@ -91,28 +91,48 @@ func (g *gemfile) reset() { g.between, g.marks = g.between[:0], g.marks[:0] }
 // span reads the span s, after code, which starts at off.
 func (g *gemfile) span(code []byte, off int, s core.Span) error {
 	if g.in {
-		g.gather(code, off)
-		if s.Kind == core.SpanComment {
-			return nil
-		}
-		if s.Kind == core.SpanString && string(bytes.TrimSpace(g.between)) == "," && !g.key(s.End) {
-			g.reset()
-			body := string(g.data[s.BodyStart:s.BodyEnd])
-			computed := g.data[s.Start] == '`' || interpolates(g.data, s)
-			if !computed {
-				body = exactRange(body)
-			}
-			return g.rd.add(found{text: body, role: Range, line: g.at.At(s.Start), notLiteral: computed})
-		}
-		if err := g.other(); err != nil {
+		if done, err := g.within(code, off, s); done || err != nil {
 			return err
 		}
 	}
-	if s.Kind == core.SpanString && gemStarts(code, off == 0) && !interpolates(g.data, s) && g.rd.is(string(g.data[s.BodyStart:s.BodyEnd])) {
+	if g.starts(code, off, s) {
 		g.in = true
 		g.reset()
 	}
 	return nil
+}
+
+// within reads the span s, after code, inside a gem statement of the
+// package, and reports whether s is done with: a comment, or a string
+// after a comma, which is a requirement. Anything else ends the statement.
+func (g *gemfile) within(code []byte, off int, s core.Span) (bool, error) {
+	g.gather(code, off)
+	if s.Kind == core.SpanComment {
+		return true, nil
+	}
+	if s.Kind == core.SpanString && string(bytes.TrimSpace(g.between)) == "," && !g.key(s.End) {
+		g.reset()
+		return true, g.requirement(s)
+	}
+	return false, g.other()
+}
+
+// requirement adds the string s, a requirement of the package's gem
+// statement, as RubyGems reads it; a string the file computes is not
+// literal.
+func (g *gemfile) requirement(s core.Span) error {
+	body := string(g.data[s.BodyStart:s.BodyEnd])
+	computed := g.data[s.Start] == '`' || interpolates(g.data, s)
+	if !computed {
+		body = exactRange(body)
+	}
+	return g.rd.add(found{text: body, role: Range, line: g.at.At(s.Start), notLiteral: computed})
+}
+
+// starts reports whether the span s, after code, which starts at off, is
+// the name of a gem statement of the package.
+func (g *gemfile) starts(code []byte, off int, s core.Span) bool {
+	return s.Kind == core.SpanString && gemStarts(code, off == 0) && !interpolates(g.data, s) && g.rd.is(string(g.data[s.BodyStart:s.BodyEnd]))
 }
 
 // other ends a gem statement of the package at between, which is no comma
@@ -129,19 +149,33 @@ func (g *gemfile) other() error {
 		return nil
 	}
 	trimmed := bytes.TrimLeft(rest, " \t\r\n")
-	end := 0
-	for end < len(trimmed) && (isAlnum(trimmed[end]) || trimmed[end] == '_' || trimmed[end] == '.' || trimmed[end] == ':' && end+1 < len(trimmed) && trimmed[end+1] == ':') {
-		if trimmed[end] == ':' {
-			end++
-		}
-		end++
-	}
+	end := rubyName(trimmed)
 	name := trimmed[:end]
 	if len(name) == 0 || isDigit(name[0]) || end < len(trimmed) && trimmed[end] == ':' {
 		return nil
 	}
 	start := g.offset(len(code) - len(trimmed))
 	return g.rd.add(found{text: string(name), role: Range, line: g.at.At(start), notLiteral: true})
+}
+
+// rubyName is the length of the name code starts with, such as a
+// constant, ENV.fetch or Gem::Version, 0 for none.
+func rubyName(code []byte) int {
+	end := 0
+	for end < len(code) && rubyNameAt(code, end) {
+		if code[end] == ':' {
+			end++
+		}
+		end++
+	}
+	return end
+}
+
+// rubyNameAt reports whether a name goes on at i in code: a letter, a
+// digit, _, ., or the :: between the parts of a constant.
+func rubyNameAt(code []byte, i int) bool {
+	c := code[i]
+	return isAlnum(c) || c == '_' || c == '.' || c == ':' && i+1 < len(code) && code[i+1] == ':'
 }
 
 // key reports whether the string that ends at end is a key of a hash
@@ -186,32 +220,47 @@ func isDigit(c byte) bool { return c >= '0' && c <= '9' }
 // below a gem are its own dependencies' ranges, and the DEPENDENCIES
 // section repeats the Gemfile's, so neither is read.
 func readGemfileLock(rd *reading, data []byte) error {
-	data = core.DropBOM(data)
-	source := false
-	return eachLine(data, func(line []byte, n int) error {
-		if len(line) > 0 && line[0] != ' ' {
-			switch string(line) {
-			case "GEM", "PATH", "GIT", "PLUGIN SOURCE":
-				source = true
-			default:
-				source = false
-			}
-			return nil
-		}
-		// A gem's own dependencies are indented six spaces, so their
-		// names start with blanks and match no package.
-		rest, ok := bytes.CutPrefix(line, []byte("    "))
-		if !source || !ok {
-			return nil
-		}
-		i := bytes.Index(rest, []byte(" ("))
-		if i <= 0 || !bytes.HasSuffix(rest, []byte(")")) {
-			return nil
-		}
-		if !rd.is(string(rest[:i])) {
-			return nil
-		}
-		version, _, _ := strings.Cut(string(rest[i+2:len(rest)-1]), "-")
-		return rd.add(found{text: version, section: "specs", role: Resolved, line: n})
-	})
+	l := gemLock{rd: rd}
+	return eachLine(core.DropBOM(data), l.line)
+}
+
+// gemLock reads a Gemfile.lock a line at a time; source is whether the
+// section the lines are in is a source section.
+type gemLock struct {
+	rd     *reading
+	source bool
+}
+
+// line reads line n: a line at the margin starts a section, and a gem of a
+// source section's specs gives its version.
+func (l *gemLock) line(line []byte, n int) error {
+	if len(line) > 0 && line[0] != ' ' {
+		l.source = sourceSection(string(line))
+		return nil
+	}
+	// A gem's own dependencies are indented six spaces, so their
+	// names start with blanks and match no package.
+	rest, ok := bytes.CutPrefix(line, []byte("    "))
+	if !l.source || !ok {
+		return nil
+	}
+	i := bytes.Index(rest, []byte(" ("))
+	if i <= 0 || !bytes.HasSuffix(rest, []byte(")")) {
+		return nil
+	}
+	if !l.rd.is(string(rest[:i])) {
+		return nil
+	}
+	version, _, _ := strings.Cut(string(rest[i+2:len(rest)-1]), "-")
+	return l.rd.add(found{text: version, section: "specs", role: Resolved, line: n})
+}
+
+// sourceSection reports whether head, a section's heading, starts a
+// source section, whose specs list the gems resolved.
+func sourceSection(head string) bool {
+	switch head {
+	case "GEM", "PATH", "GIT", "PLUGIN SOURCE":
+		return true
+	}
+	return false
 }

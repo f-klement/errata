@@ -1,6 +1,7 @@
 package xml
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/f-klement/errata/internal/extract/extracttest"
@@ -37,6 +38,37 @@ func TestXMLNameStartIsTheProduction(t *testing.T) {
 	}
 	if isXMLNameStart(':') {
 		t.Error("isXMLNameStart(':') = true; a colon separates a prefix and is no part of a name")
+	}
+}
+
+// nameCharExtras is what NameChar adds to NameStartChar in XML 1.0 fifth
+// edition, section 2.3.
+var nameCharExtras = [][2]rune{
+	{'-', '-'}, {'.', '.'}, {'0', '9'}, {0xB7, 0xB7}, {0x300, 0x36F}, {0x203F, 0x2040},
+}
+
+// isXMLNameRune is the production: each range it adds, and each range of
+// NameStartChar, is tried at both its ends and one past each, so a range cut
+// short, widened or dropped fails here. The planted break is ending the
+// range from 0x203F at 0x203F.
+func TestXMLNameRuneIsTheProduction(t *testing.T) {
+	in := func(r rune) bool {
+		for _, rg := range append(slices.Clone(nameStartRanges), nameCharExtras...) {
+			if rg[0] <= r && r <= rg[1] {
+				return true
+			}
+		}
+		return false
+	}
+	for _, rg := range append(slices.Clone(nameStartRanges), nameCharExtras...) {
+		for _, r := range []rune{rg[0] - 1, rg[0], rg[1], rg[1] + 1} {
+			if got, want := isXMLNameRune(r), in(r); got != want {
+				t.Errorf("isXMLNameRune(%U) = %v, want %v", r, got, want)
+			}
+		}
+	}
+	if isXMLNameRune(':') {
+		t.Error("isXMLNameRune(':') = true; a colon separates a prefix and is no part of a name")
 	}
 }
 

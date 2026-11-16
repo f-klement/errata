@@ -719,3 +719,78 @@ func TestRowNamesOnOneLine(t *testing.T) {
 	same(t, findings(t, input{base: files("a/a_test.go", base), head: files("a/a_test.go", head)}),
 		"a/a_test.go:5 (base): row `a b` of a table in TestN is gone")
 }
+
+const sharedNames = `package a
+
+import "testing"
+
+func TestV(t *testing.T) {
+	for _, c := range []struct{ name, body, want string }{
+		{"V", "a", "1"},
+		{"V", "b", "2"},
+		{"W", "c", "3"},
+	} {
+		_ = c
+	}
+}
+`
+
+// Rows that share a name are keyed by their inputs after it, as unnamed rows
+// are: the want of the first is compared with its own row's at the base, a
+// row added with the same name is compared with none, and one of them gone is
+// a finding by the count of the name. A row with a name of its own keeps it
+// as its key. The planted breaks: a shared name taken for the row's key, and
+// the rows of a shared name read as kept while one is left.
+func TestRowsSharingAName(t *testing.T) {
+	in := input{base: files("a/a_test.go", sharedNames), code: "a/a.go"}
+	in.head = files("a/a_test.go", strings.Replace(sharedNames, `"a", "1"`, `"a", "9"`, 1))
+	same(t, findings(t, in), `a/a_test.go:7: want in TestV changed from "1" to "9", in a change that also edits a/a.go`)
+	for _, at := range []string{"\t\t{\"V\", \"a\", \"1\"},\n", "\t\t{\"W\", \"c\", \"3\"},\n"} {
+		in.head = files("a/a_test.go", strings.Replace(sharedNames, at, at+"\t\t{\"V\", \"d\", \"4\"},\n", 1))
+		same(t, findings(t, in))
+	}
+	in.head = files("a/a_test.go", strings.Replace(sharedNames, "\t\t{\"V\", \"a\", \"1\"},\n", "", 1))
+	same(t, findings(t, in), `a/a_test.go:7 (base): a table in TestV has 1 rows named "V", against 2 at the base`)
+	// A shared name's row edited and none gone is no finding.
+	in.head = files("a/a_test.go", strings.Replace(sharedNames, `"b", "2"`, `"e", "2"`, 1))
+	same(t, findings(t, in))
+	// A name of its own still keys its row, so an edited input does not hide
+	// its changed want.
+	in.head = files("a/a_test.go", strings.Replace(sharedNames, `"c", "3"`, `"f", "8"`, 1))
+	same(t, findings(t, in), `a/a_test.go:9: want in TestV changed from "3" to "8", in a change that also edits a/a.go`)
+	// Rows of a name reordered are no finding, and every row of a name gone
+	// is one by the count.
+	in.head = files("a/a_test.go", strings.Replace(sharedNames, "\t\t{\"V\", \"a\", \"1\"},\n\t\t{\"V\", \"b\", \"2\"},\n",
+		"\t\t{\"V\", \"b\", \"2\"},\n\t\t{\"V\", \"a\", \"1\"},\n", 1))
+	same(t, findings(t, in))
+	in.head = files("a/a_test.go", strings.Replace(sharedNames, "\t\t{\"V\", \"a\", \"1\"},\n\t\t{\"V\", \"b\", \"2\"},\n", "", 1))
+	same(t, findings(t, in), `a/a_test.go:7 (base): a table in TestV has 0 rows named "V", against 2 at the base`)
+}
+
+// A name unique at one side and shared at the other still pairs a row with
+// itself, by the name and inputs every row's wants are also keyed by, so its
+// changed want is a finding both ways. The planted break: the head's wants
+// not looked for by name and inputs.
+func TestRowsPairedAcrossSharedNames(t *testing.T) {
+	unique := strings.Replace(sharedNames, "\t\t{\"V\", \"b\", \"2\"},\n", "", 1)
+	for _, c := range []struct{ head, line string }{
+		{strings.Replace(sharedNames, `"a", "1"`, `"a", "9"`, 1), "7"},
+		{strings.Replace(sharedNames, "\t\t{\"V\", \"a\", \"1\"},\n\t\t{\"V\", \"b\", \"2\"},\n", "\t\t{\"V\", \"b\", \"2\"},\n\t\t{\"V\", \"a\", \"9\"},\n", 1), "8"},
+	} {
+		in := input{base: files("a/a_test.go", unique), head: files("a/a_test.go", c.head), code: "a/a.go"}
+		same(t, findings(t, in), "a/a_test.go:"+c.line+`: want in TestV changed from "1" to "9", in a change that also edits a/a.go`)
+	}
+	in := input{base: files("a/a_test.go", sharedNames), head: files("a/a_test.go", strings.Replace(unique, `"a", "1"`, `"a", "9"`, 1)), code: "a/a.go"}
+	same(t, findings(t, in), `a/a_test.go:7 (base): a table in TestV has 1 rows named "V", against 2 at the base`,
+		`a/a_test.go:7: want in TestV changed from "1" to "9", in a change that also edits a/a.go`)
+}
+
+// A want variable renamed in a change has no key at the head and no key by
+// name and inputs, which only a row's want has, so it is compared with no
+// other want of its declaration. The planted break: every want given a key
+// by name and inputs.
+func TestRenamedWantComparedWithNone(t *testing.T) {
+	base := "package a\n\nfunc TestR(t *testing.T) {\n\twant := 1\n\tf(want)\n}\n"
+	head := strings.Replace(strings.Replace(base, "want := 1", "expected := 2", 1), "f(want)", "f(expected)", 1)
+	same(t, findings(t, input{base: files("a/a_test.go", base), head: files("a/a_test.go", head), code: "a/a.go"}))
+}

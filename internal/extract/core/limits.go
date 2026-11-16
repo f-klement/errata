@@ -122,8 +122,12 @@ const OtherWay = "a regex extractor can still read the file"
 // TooManyValues refuses an extractor of file that selects more than
 // MaxValues values.
 func TooManyValues(file string) error {
-	return fmt.Errorf("%s: the extractor selects more than %d values, the limit; narrow the path or the pattern so it selects fewer", file, MaxValues)
+	return fmt.Errorf("%s: %w", file, errTooMany)
 }
+
+// errTooMany is the reason of TooManyValues without the file, for a refusal
+// that names the file before it.
+var errTooMany = fmt.Errorf("the extractor selects more than %d values, the limit; narrow the path or the pattern so it selects fewer", MaxValues)
 
 // TooDeep is the depth refusal of every format, at the line that crosses it.
 func TooDeep(line int) error {
@@ -247,7 +251,13 @@ func (f *Format) spaceAt(data []byte, i int) bool {
 	if i == len(data) || isSpace(data[i]) {
 		return true
 	}
-	if !f.yaml || i+1 == len(data) {
+	return f.yaml && yamlBreakAt(data, i)
+}
+
+// yamlBreakAt reports whether a NEL (C2 85), an LS (E2 80 A8) or a PS
+// (E2 80 A9) starts at data[i], which is in data.
+func yamlBreakAt(data []byte, i int) bool {
+	if i+1 == len(data) {
 		return false
 	}
 	switch data[i] {
@@ -276,23 +286,36 @@ func breakEndsAt(data []byte, i int) bool {
 // fromUTF16 is data in UTF-8 when it starts with a UTF-16 byte order mark,
 // as yaml.v3 decodes it, and data itself otherwise.
 func fromUTF16(data []byte) []byte {
-	if len(data) < 2 {
+	unit := utf16Order(data)
+	if unit == nil {
 		return data
 	}
-	var unit func(b []byte) uint16
+	return decodeUTF16(data[2:], unit)
+}
+
+// utf16Order is how to read a code unit of data in the byte order of the
+// mark data starts with, or nil when it starts with none.
+func utf16Order(data []byte) func(b []byte) uint16 {
 	switch {
+	case len(data) < 2:
+		return nil
 	case data[0] == 0xff && data[1] == 0xfe:
-		unit = func(b []byte) uint16 { return uint16(b[0]) | uint16(b[1])<<8 }
+		return func(b []byte) uint16 { return uint16(b[0]) | uint16(b[1])<<8 }
 	case data[0] == 0xfe && data[1] == 0xff:
-		unit = func(b []byte) uint16 { return uint16(b[0])<<8 | uint16(b[1]) }
-	default:
-		return data
+		return func(b []byte) uint16 { return uint16(b[0])<<8 | uint16(b[1]) }
 	}
-	out := make([]byte, 0, len(data)/2*3)
-	for i := 2; i+1 < len(data); i += 2 {
-		r := rune(unit(data[i:]))
-		if utf16.IsSurrogate(r) && i+3 < len(data) {
-			if pair := utf16.DecodeRune(r, rune(unit(data[i+2:]))); pair != utf8.RuneError {
+	return nil
+}
+
+// decodeUTF16 is units, the code units unit reads, in UTF-8, a surrogate
+// pair as the one character it stands for. A lone surrogate becomes
+// U+FFFD, and an odd byte at the end is dropped.
+func decodeUTF16(units []byte, unit func(b []byte) uint16) []byte {
+	out := make([]byte, 0, len(units)/2*3)
+	for i := 0; i+1 < len(units); i += 2 {
+		r := rune(unit(units[i:]))
+		if utf16.IsSurrogate(r) && i+3 < len(units) {
+			if pair := utf16.DecodeRune(r, rune(unit(units[i+2:]))); pair != utf8.RuneError {
 				r = pair
 				i += 2
 			}

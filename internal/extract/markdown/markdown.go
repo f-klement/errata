@@ -178,55 +178,75 @@ func (e extractor) read(r *reading) error {
 // visit appends the items of node n for a target other than section, and
 // says whether the walk goes on into n's children.
 func (e extractor) visit(r *reading, n ast.Node) ast.WalkStatus {
-	src := r.doc.Src
 	switch e.sel.Target {
 	case markup.TargetCode:
-		c, ok := n.(*ast.CodeBlock)
-		if !ok {
-			return ast.WalkContinue
-		}
-		if c.CodeBlockKind == ast.CodeBlockKindFenced && (e.sel.Language == "" || language(c, src) == e.sel.Language) {
-			start := len(r.prose.Text)
-			r.prose.Lines(src, c.Value.Segments())
-			at := mdparse.NodeStart(c)
-			if segs := c.Value.Segments(); len(segs) > 0 {
-				at = segs[0].Start
-			}
-			r.items = append(r.items, markup.Item{Start: start, End: trimNewline(r.prose.Text, start), Line: r.lines.At(at)})
-		}
-		return ast.WalkSkipChildren
+		return e.visitCode(r, n)
 	case markup.TargetComment:
-		switch h := n.(type) {
-		case *ast.HTMLBlock:
-			read, err := r.prose.HTMLComments(src, h, func(open, start, end int) {
-				from, to := markup.TrimBlanks(r.prose.Text, start, end)
-				r.items = append(r.items, markup.Item{Start: from, End: to, Line: r.lines.At(open), Fixed: true})
-			})
-			if err != nil && r.err == nil {
-				r.err = err
-			}
-			if !read && !scriptLike(h, src) {
-				start := len(r.prose.Text)
-				for _, s := range h.Value.Segments() {
-					r.prose.CopyFrom(src[s.Start:s.Stop], s.Start)
-				}
-				r.comments(start)
-			}
-			return ast.WalkSkipChildren
-		case *ast.RawHTML:
-			start := len(r.prose.Text)
-			for _, s := range h.Value.Indices() {
-				r.prose.CopyFrom(src[s.Start:s.Stop], s.Start)
-			}
-			r.comments(start)
-		}
-		return ast.WalkContinue
+		return r.visitComment(n)
 	default: // markup.TargetTable
 		if n.Kind() != east.KindTable {
 			return ast.WalkContinue
 		}
 		r.table(n, e.sel)
 		return ast.WalkSkipChildren
+	}
+}
+
+// visitCode appends an item for n when it is a fenced code block in the
+// language the extractor selects.
+func (e extractor) visitCode(r *reading, n ast.Node) ast.WalkStatus {
+	src := r.doc.Src
+	c, ok := n.(*ast.CodeBlock)
+	if !ok {
+		return ast.WalkContinue
+	}
+	if c.CodeBlockKind == ast.CodeBlockKindFenced && (e.sel.Language == "" || language(c, src) == e.sel.Language) {
+		start := len(r.prose.Text)
+		r.prose.Lines(src, c.Value.Segments())
+		at := mdparse.NodeStart(c)
+		if segs := c.Value.Segments(); len(segs) > 0 {
+			at = segs[0].Start
+		}
+		r.items = append(r.items, markup.Item{Start: start, End: trimNewline(r.prose.Text, start), Line: r.lines.At(at)})
+	}
+	return ast.WalkSkipChildren
+}
+
+// visitComment appends an item for each HTML comment of n, an HTML block
+// or inline HTML.
+func (r *reading) visitComment(n ast.Node) ast.WalkStatus {
+	switch h := n.(type) {
+	case *ast.HTMLBlock:
+		r.htmlBlock(h)
+		return ast.WalkSkipChildren
+	case *ast.RawHTML:
+		start := len(r.prose.Text)
+		for _, s := range h.Value.Indices() {
+			r.prose.CopyFrom(r.doc.Src[s.Start:s.Stop], s.Start)
+		}
+		r.comments(start)
+	}
+	return ast.WalkContinue
+}
+
+// htmlBlock appends an item for each HTML comment of the HTML block h:
+// those mdparse reads, or, in a block it does not read that is no script,
+// each one in the block's text.
+func (r *reading) htmlBlock(h *ast.HTMLBlock) {
+	src := r.doc.Src
+	read, err := r.prose.HTMLComments(src, h, func(open, start, end int) {
+		from, to := markup.TrimBlanks(r.prose.Text, start, end)
+		r.items = append(r.items, markup.Item{Start: from, End: to, Line: r.lines.At(open), Fixed: true})
+	})
+	if err != nil && r.err == nil {
+		r.err = err
+	}
+	if !read && !scriptLike(h, src) {
+		start := len(r.prose.Text)
+		for _, s := range h.Value.Segments() {
+			r.prose.CopyFrom(src[s.Start:s.Stop], s.Start)
+		}
+		r.comments(start)
 	}
 }
 
@@ -272,20 +292,38 @@ func (r *reading) table(t ast.Node, sel *markup.Select) {
 	}
 	for body := header.NextSibling(); body != nil; body = body.NextSibling() {
 		for tr := body.FirstChild(); tr != nil; tr = tr.NextSibling() {
-			cells := make([]ast.Node, 0, tr.ChildCount())
-			for c := tr.FirstChild(); c != nil; c = c.NextSibling() {
-				cells = append(cells, c)
-			}
-			if col >= len(cells) || (key >= 0 && (key >= len(cells) || r.cell(cells[key]) != sel.Row)) {
-				continue
-			}
-			start := len(r.prose.Text)
-			r.prose.Cell(r.doc.Src, cells[col])
-			from, end := markup.TrimBlanks(r.prose.Text, start, len(r.prose.Text))
-			r.items = append(r.items, markup.Item{Start: from, End: end, Line: r.lines.At(tr.Pos()), Fixed: true})
-			r.prose.EndBlock()
+			r.row(tr, col, key, sel)
 		}
 	}
+}
+
+// row appends an item for the cell in column col of the row tr, when the
+// row has one and, for a key column, the row's key is the one sel keeps.
+func (r *reading) row(tr ast.Node, col, key int, sel *markup.Select) {
+	cell := nthChild(tr, col)
+	if cell == nil {
+		return
+	}
+	if key >= 0 {
+		if k := nthChild(tr, key); k == nil || r.cell(k) != sel.Row {
+			return
+		}
+	}
+	start := len(r.prose.Text)
+	r.prose.Cell(r.doc.Src, cell)
+	from, end := markup.TrimBlanks(r.prose.Text, start, len(r.prose.Text))
+	r.items = append(r.items, markup.Item{Start: from, End: end, Line: r.lines.At(tr.Pos()), Fixed: true})
+	r.prose.EndBlock()
+}
+
+// nthChild is the child of n at index i, counted from 0, nil when n has
+// fewer children.
+func nthChild(n ast.Node, i int) ast.Node {
+	c := n.FirstChild()
+	for ; c != nil && i > 0; i-- {
+		c = c.NextSibling()
+	}
+	return c
 }
 
 // cell is the prose of a table cell, its blanks at either end left out. It

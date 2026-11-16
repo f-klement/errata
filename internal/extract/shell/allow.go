@@ -62,10 +62,8 @@ func quiet(s *syntax.Stmt) bool {
 	if s.Negated || s.Background || s.Coprocess || s.Disown {
 		return false
 	}
-	for _, r := range s.Redirs {
-		if !quietRedirect(r) {
-			return false
-		}
+	if !quietRedirects(s.Redirs) {
+		return false
 	}
 	if c, ok := s.Cmd.(*syntax.CallExpr); ok {
 		return quietCall(c, len(s.Redirs) == 0)
@@ -111,6 +109,15 @@ func quietAssigns(as []*syntax.Assign) bool {
 	return true
 }
 
+func quietRedirects(rs []*syntax.Redirect) bool {
+	for _, r := range rs {
+		if !quietRedirect(r) {
+			return false
+		}
+	}
+	return true
+}
+
 func quietRedirect(r *syntax.Redirect) bool {
 	if r.Op == syntax.Hdoc || r.Op == syntax.DashHdoc {
 		return false
@@ -146,18 +153,35 @@ func quietPart(part syntax.WordPart) bool {
 // ${Y}, $1, $@ and the like, alone or with a default that is quiet itself.
 // An index or a slice is arithmetic, which can assign.
 func quietParam(p *syntax.ParamExp) bool {
-	if p.Param == nil || p.Flags != nil || p.Excl || p.Length || p.Width || p.IsSet || p.NestedParam != nil ||
-		p.Index != nil || len(p.Modifiers) != 0 || p.Slice != nil || p.Repl != nil || p.Names != 0 {
+	if p.Param == nil || paramForm(p) || paramEdit(p) {
 		return false
 	}
 	if p.Exp == nil {
 		return true
 	}
-	op := p.Exp.Op
-	if op != syntax.DefaultUnset && op != syntax.DefaultUnsetOrNull && op != syntax.AlternateUnset && op != syntax.AlternateUnsetOrNull {
+	if !quietOp(p.Exp.Op) {
 		return false
 	}
 	return p.Exp.Word == nil || quietParts(p.Exp.Word.Parts)
+}
+
+// paramForm reports whether p reads its parameter in another form than
+// its value: with flags, as ${!Y}, ${#Y}, ${Y@Q} or a test of whether it is
+// set, through a nested expansion, or as the names of variables.
+func paramForm(p *syntax.ParamExp) bool {
+	return p.Flags != nil || p.Excl || p.Length || p.Width || p.IsSet || p.NestedParam != nil || p.Names != 0
+}
+
+// paramEdit reports whether p edits its value: an index, a modifier, a
+// slice or a replacement.
+func paramEdit(p *syntax.ParamExp) bool {
+	return p.Index != nil || len(p.Modifiers) != 0 || p.Slice != nil || p.Repl != nil
+}
+
+// quietOp reports whether op is one of the operators that give a default
+// or an alternative, and assign nothing: :-, -, :+ and +.
+func quietOp(op syntax.ParExpOperator) bool {
+	return op == syntax.DefaultUnset || op == syntax.DefaultUnsetOrNull || op == syntax.AlternateUnset || op == syntax.AlternateUnsetOrNull
 }
 
 // keeps reports whether a quiet statement leaves every variable as the walk
@@ -166,21 +190,34 @@ func quietParam(p *syntax.ParamExp) bool {
 // before it.
 func keeps(s *syntax.Stmt) bool {
 	if d, ok := s.Cmd.(*syntax.DeclClause); ok {
-		v := d.Variant.Value
-		if v != "export" && v != "readonly" {
-			return false
-		}
-		for _, a := range d.Args {
-			if a.Name == nil {
-				return false
-			}
-		}
-		return true
+		return keepsDecl(d)
 	}
 	c, ok := s.Cmd.(*syntax.CallExpr)
 	if !ok {
 		return false
 	}
+	return keepsCall(c)
+}
+
+// keepsDecl reports whether a declaration keeps the variables as the walk
+// records them: export or readonly with names and values and no option.
+func keepsDecl(d *syntax.DeclClause) bool {
+	v := d.Variant.Value
+	if v != "export" && v != "readonly" {
+		return false
+	}
+	for _, a := range d.Args {
+		if a.Name == nil {
+			return false
+		}
+	}
+	return true
+}
+
+// keepsCall reports whether a simple command keeps the variables as the
+// walk records them: assignments alone, or a command from keptCommands
+// with no assignment before it.
+func keepsCall(c *syntax.CallExpr) bool {
 	if len(c.Args) == 0 {
 		return true
 	}

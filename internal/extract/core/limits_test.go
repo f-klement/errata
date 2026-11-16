@@ -104,6 +104,8 @@ func TestCountNodesExactly(t *testing.T) {
 		{"- before a NEL, in JSON", JSONFormat, "-\u0085", 4},
 		{"UTF-16LE", YAMLFormat, le('a', ':'), 6},
 		{"UTF-16BE", YAMLFormat, "\xfe\xff\x00a\x00:", 6},
+		{"- before a space in UTF-16BE", YAMLFormat, "\xfe\xff\x00-\x00 ", 6},
+		{"- before a space after half a UTF-16BE mark", YAMLFormat, "\xfe\x00\x00-\x00 ", 4},
 		{"UTF-16 with an odd last byte", YAMLFormat, le('a') + ":", 4},
 		{"a surrogate pair", YAMLFormat, le(0xd83d, 0xde00, ':'), 6},
 		{"a lone high surrogate before :", YAMLFormat, le(0xd83d, ':'), 6},
@@ -118,6 +120,23 @@ func TestCountNodesExactly(t *testing.T) {
 	} {
 		if got := c.f.CountNodes([]byte(c.body)); got != c.want {
 			t.Errorf("%s: %q counts %d nodes, want %d", c.name, c.body, got, c.want)
+		}
+	}
+}
+
+// fromUTF16 drops the byte order mark, so a file that holds only the mark
+// is empty, and leaves a file with no mark as it is.
+func TestFromUTF16(t *testing.T) {
+	for in, want := range map[string]string{
+		"\xff\xfe":      "",
+		"\xfe\xff":      "",
+		"\xfe\xff\x00a": "a",
+		"\xff\xfea\x00": "a",
+		"\xfe\x00\x00a": "\xfe\x00\x00a",
+		"\xff":          "\xff",
+	} {
+		if got := string(fromUTF16([]byte(in))); got != want {
+			t.Errorf("fromUTF16(%q) = %q, want %q", in, got, want)
 		}
 	}
 }

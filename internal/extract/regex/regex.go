@@ -70,19 +70,31 @@ func Build(r Spec) (check.Extractor, error) {
 	if err := checkSkip(r.Skip); err != nil {
 		return nil, err
 	}
-	var around *core.Around
-	if r.Context != nil {
-		if around, err = core.CompileContext("regex", *r.Context); err != nil {
-			return nil, err
-		}
+	around, err := compileContext(r.Context)
+	if err != nil {
+		return nil, err
 	}
 	if ref == nil {
-		if r.ValuesAs != "" {
-			return nil, errors.New("regex: values_as applies to a pattern that references an extractor's values, as (?{name}) does, and this pattern references none")
-		}
-		return core.BuildOneOrSet(Kind.Key, r.Where, searchIn(r, around))
+		return buildSearch(r, around)
 	}
 	return buildReference(r, *ref, around)
+}
+
+// compileContext compiles context:, nil when the spec sets none.
+func compileContext(context *core.Context) (*core.Around, error) {
+	if context == nil {
+		return nil, nil
+	}
+	return core.CompileContext("regex", *context)
+}
+
+// buildSearch builds the extractor of r, whose pattern references no
+// values, with the context around keeps; values_as is then refused.
+func buildSearch(r Spec, around *core.Around) (check.Extractor, error) {
+	if r.ValuesAs != "" {
+		return nil, errors.New("regex: values_as applies to a pattern that references an extractor's values, as (?{name}) does, and this pattern references none")
+	}
+	return core.BuildOneOrSet(Kind.Key, r.Where, searchIn(r, around))
 }
 
 // searchIn builds the reader of one file for r, whose pattern references

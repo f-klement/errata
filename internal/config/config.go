@@ -19,6 +19,7 @@ import (
 	"unicode/utf8"
 
 	yamlv2 "go.yaml.in/yaml/v2"
+	"go.yaml.in/yaml/v3"
 
 	"github.com/f-klement/errata/internal/check"
 	"github.com/f-klement/errata/internal/extract"
@@ -199,38 +200,9 @@ var ErrNoChecks = errors.New("the file holds no checks: a config with none would
 // key that differs from a known one only in case. newExtractor makes each
 // rule's extractors.
 func parse(raw []byte, newExtractor Builder) (Config, error) {
-	// The document tree keeps each alias as a reference, so its expanded
-	// size is counted before toJSON expands it, whenever the first document
-	// decoded, even if a later one did not: toJSON reads only the first. A
-	// first document the tree cannot read is refused here, so toJSON never
-	// expands a tree nobody counted.
-	n, first, derr := documents(raw)
-	if first == nil && derr != nil {
-		return Config{}, firstDocumentError(raw, derr)
-	}
-	if first != nil {
-		if err := checkExpansion(first); err != nil {
-			return Config{}, fmt.Errorf("decode: %w", err)
-		}
-	}
-	doc, err := toJSON(raw)
+	f, first, err := decodeFile(raw)
 	if err != nil {
-		return Config{}, fmt.Errorf("decode: %w", err)
-	}
-	if derr != nil {
-		return Config{}, fmt.Errorf("decode: %w", derr)
-	}
-	if n > 1 {
-		return Config{}, fmt.Errorf("the file holds %d YAML documents; errata reads one, so put every check in one document under checks", n)
-	}
-	if errs := exactKeys(doc, reflect.TypeFor[file](), ""); len(errs) > 0 {
-		return Config{}, fmt.Errorf("decode: %w", errors.Join(errs...))
-	}
-	var f file
-	if !bytes.Equal(doc, []byte("null")) {
-		if err := decodeStrict(doc, &f); err != nil {
-			return Config{}, fmt.Errorf("decode: %w", err)
-		}
+		return Config{}, err
 	}
 	required, hasRequired, err := parseRequired(f.Required)
 	if err != nil {
@@ -245,60 +217,151 @@ func parse(raw []byte, newExtractor Builder) (Config, error) {
 	if errs = append(errs, plainKey(first, "defaults", reflect.TypeFor[defaults]())...); len(errs) > 0 {
 		return Config{}, errors.Join(errs...)
 	}
-
-	var (
-		checks []check.Check
-		seen   = map[string]bool{}
-		at     = lines(first)
-		plain  = plainStrings(first)
-		ids    = make([]string, 0, len(f.Checks))
-	)
-	for i, raw := range f.Checks {
-		id := entryID(raw)
-		if i < len(plain) && plain[i].id != "" {
-			id = plain[i].id // as written, as required must write it
-		}
-		ids = append(ids, id)
-		// A string YAML 1.1 read as a bool, a number or null is refused
-		// before the check is built, as a decode error is: the value the
-		// check would hold is not the text its author wrote.
-		if i < len(plain) && len(plain[i].errs) > 0 {
-			errs = append(errs, fmt.Errorf("checks[%d]: check %q: decode: %w", i, plain[i].id, errors.Join(plain[i].errs...)))
-			continue
-		}
-		c, err := build(raw, def, newExtractor)
-		if i < len(at) {
-			c.At.Line = at[i]
-		}
-		if err != nil {
-			errs = append(errs, fmt.Errorf("checks[%d]: %w", i, err))
-			continue
-		}
-		if seen[c.ID] {
-			errs = append(errs, fmt.Errorf("checks[%d]: duplicate id %q", i, c.ID))
-			continue
-		}
-		seen[c.ID] = true
-		checks = append(checks, c)
-	}
+	b := checksBuild{def: def, newExtractor: newExtractor, seen: map[string]bool{}, at: lines(first), plain: plainStrings(first)}
+	checks, ids, errs := b.checks(f.Checks)
 	// The built-in check is no entry of the file, so required does not
 	// list it.
-	if c, ok, err := unboundMarkers(checks); err != nil {
+	checks, err = withUnboundMarkers(checks)
+	if err != nil {
 		errs = append(errs, err)
-	} else if ok {
-		checks = append(checks, c)
 	}
 	if hasRequired {
-		if perrs := plainKey(first, "required", reflect.TypeFor[[]string]()); len(perrs) > 0 {
-			errs = append(errs, fmt.Errorf("decode: %w", errors.Join(perrs...)))
-		} else {
-			errs = append(errs, requiredErrors(required, ids)...)
-		}
+		errs = append(errs, requiredOf(first, required, ids)...)
 	}
 	if len(errs) > 0 {
 		return Config{}, errors.Join(errs...)
 	}
 	return Config{Checks: checks, Required: required}, nil
+}
+
+// decodeFile decodes raw strictly into a file, and returns with it the
+// tree of its first document.
+func decodeFile(raw []byte) (file, *yaml.Node, error) {
+	doc, first, err := oneDocument(raw)
+	if err != nil {
+		return file{}, nil, err
+	}
+	if errs := exactKeys(doc, reflect.TypeFor[file](), ""); len(errs) > 0 {
+		return file{}, nil, fmt.Errorf("decode: %w", errors.Join(errs...))
+	}
+	var f file
+	if !bytes.Equal(doc, []byte("null")) {
+		if err := decodeStrict(doc, &f); err != nil {
+			return file{}, nil, fmt.Errorf("decode: %w", err)
+		}
+	}
+	return f, first, nil
+}
+
+// oneDocument is raw's one YAML document as JSON, and its tree. The
+// document tree keeps each alias as a reference, so its expanded size is
+// counted before toJSON expands it, whenever the first document decoded,
+// even if a later one did not: toJSON reads only the first. A first
+// document the tree cannot read is refused here, so toJSON never expands a
+// tree nobody counted.
+func oneDocument(raw []byte) (json.RawMessage, *yaml.Node, error) {
+	n, first, derr := documents(raw)
+	if first == nil && derr != nil {
+		return nil, nil, firstDocumentError(raw, derr)
+	}
+	if first != nil {
+		if err := checkExpansion(first); err != nil {
+			return nil, nil, fmt.Errorf("decode: %w", err)
+		}
+	}
+	doc, err := toJSON(raw)
+	if err != nil {
+		return nil, nil, fmt.Errorf("decode: %w", err)
+	}
+	if derr != nil {
+		return nil, nil, fmt.Errorf("decode: %w", derr)
+	}
+	if n > 1 {
+		return nil, nil, fmt.Errorf("the file holds %d YAML documents; errata reads one, so put every check in one document under checks", n)
+	}
+	return doc, first, nil
+}
+
+// checksBuild builds the entries under checks of one file: def and
+// newExtractor build each, seen holds the ids built so far, at is each
+// entry's line and plain what plainStrings found in each.
+type checksBuild struct {
+	def          defaults
+	newExtractor Builder
+	seen         map[string]bool
+	at           []int
+	plain        []written
+}
+
+// checks builds every entry, and returns the checks that load, the id each
+// entry writes, in file order, and an error for each entry that does not
+// load.
+func (b *checksBuild) checks(entries []json.RawMessage) (checks []check.Check, ids []string, errs []error) {
+	ids = make([]string, 0, len(entries))
+	for i, raw := range entries {
+		id, c, err := b.entry(i, raw)
+		ids = append(ids, id)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		checks = append(checks, c)
+	}
+	return checks, ids, errs
+}
+
+// entry builds entry i, raw, and returns the id it writes, as written, as
+// required must write it.
+func (b *checksBuild) entry(i int, raw json.RawMessage) (string, check.Check, error) {
+	id := entryID(raw)
+	var p written
+	if i < len(b.plain) {
+		p = b.plain[i]
+	}
+	if p.id != "" {
+		id = p.id
+	}
+	// A string YAML 1.1 read as a bool, a number or null is refused
+	// before the check is built, as a decode error is: the value the
+	// check would hold is not the text its author wrote.
+	if len(p.errs) > 0 {
+		return id, check.Check{}, fmt.Errorf("checks[%d]: check %q: decode: %w", i, p.id, errors.Join(p.errs...))
+	}
+	c, err := build(raw, b.def, b.newExtractor)
+	if i < len(b.at) {
+		c.At.Line = b.at[i]
+	}
+	if err != nil {
+		return id, c, fmt.Errorf("checks[%d]: %w", i, err)
+	}
+	if b.seen[c.ID] {
+		return id, c, fmt.Errorf("checks[%d]: duplicate id %q", i, c.ID)
+	}
+	b.seen[c.ID] = true
+	return id, c, nil
+}
+
+// withUnboundMarkers is checks with the built-in check of unbound markers
+// added, when they need it.
+func withUnboundMarkers(checks []check.Check) ([]check.Check, error) {
+	c, ok, err := unboundMarkers(checks)
+	if err != nil {
+		return checks, err
+	}
+	if ok {
+		checks = append(checks, c)
+	}
+	return checks, nil
+}
+
+// requiredOf refuses the required key of first, the file's first
+// document, when it writes an id as YAML 1.1 loads as other text, and
+// otherwise compares required with ids.
+func requiredOf(first *yaml.Node, required, ids []string) []error {
+	if perrs := plainKey(first, "required", reflect.TypeFor[[]string]()); len(perrs) > 0 {
+		return []error{fmt.Errorf("decode: %w", errors.Join(perrs...))}
+	}
+	return requiredErrors(required, ids)
 }
 
 // parseRequired decodes raw, the value of the top-level required key, and
@@ -330,29 +393,9 @@ func requiredErrors(required, ids []string) []error {
 	if len(required) == 0 {
 		return []error{errors.New("required lists no check id: name the id of every check that must run, or remove the key")}
 	}
-	listed := make(map[string]bool, len(required))
-	var twice []string
-	for _, id := range required {
-		if listed[id] {
-			twice = append(twice, strconv.Quote(id))
-		}
-		listed[id] = true
-	}
-	has := make(map[string]bool, len(ids))
-	var extra []string
-	for _, id := range ids {
-		has[id] = true
-		if id != "" && !listed[id] {
-			extra = append(extra, strconv.Quote(id))
-		}
-	}
-	var missing []string
-	for _, id := range required {
-		if !has[id] {
-			missing = append(missing, strconv.Quote(id))
-			has[id] = true // named once, however often required lists it
-		}
-	}
+	listed, twice := listedIDs(required)
+	has, extra := unlisted(ids, listed)
+	missing := absent(required, has)
 	var errs []error
 	if len(twice) > 0 {
 		errs = append(errs, fmt.Errorf("required lists these ids more than once: %s", strings.Join(twice, ", ")))
@@ -364,6 +407,45 @@ func requiredErrors(required, ids []string) []error {
 		errs = append(errs, fmt.Errorf("these checks are not under required: %s; add each id to required, or remove the check", strings.Join(extra, ", ")))
 	}
 	return errs
+}
+
+// listedIDs is the set of the ids required lists, and each id it lists
+// again, quoted, once for each time after the first.
+func listedIDs(required []string) (listed map[string]bool, twice []string) {
+	listed = make(map[string]bool, len(required))
+	for _, id := range required {
+		if listed[id] {
+			twice = append(twice, strconv.Quote(id))
+		}
+		listed[id] = true
+	}
+	return listed, twice
+}
+
+// unlisted is the set of ids, and each id but "" that listed lacks,
+// quoted.
+func unlisted(ids []string, listed map[string]bool) (has map[string]bool, extra []string) {
+	has = make(map[string]bool, len(ids))
+	for _, id := range ids {
+		has[id] = true
+		if id != "" && !listed[id] {
+			extra = append(extra, strconv.Quote(id))
+		}
+	}
+	return has, extra
+}
+
+// absent is each id of required that has lacks, quoted, once however often
+// required lists it. It adds each to has.
+func absent(required []string, has map[string]bool) []string {
+	var missing []string
+	for _, id := range required {
+		if !has[id] {
+			missing = append(missing, strconv.Quote(id))
+			has[id] = true // named once, however often required lists it
+		}
+	}
+	return missing
 }
 
 // entryID is the id one entry under checks writes, or "" when it writes
@@ -381,41 +463,12 @@ func entryID(raw json.RawMessage) string {
 // build decodes one check strictly, applies the defaults def while the
 // entry's own keys are known, builds its extractors and validates it. err
 // names the check, by its id when the id itself decodes.
-func build(raw json.RawMessage, def defaults, newExtractor Builder) (c check.Check, err error) {
-	var named struct {
-		ID string `json:"id"`
+func build(raw json.RawMessage, def defaults, newExtractor Builder) (check.Check, error) {
+	e, keys, err := decodeEntry(raw)
+	if err != nil {
+		return check.Check{}, err
 	}
-	_ = json.Unmarshal(raw, &named) // best effort: the id names the check in an error
-	refuse := func(err error) (check.Check, error) {
-		return check.Check{}, fmt.Errorf("check %q: decode: %w", named.ID, err)
-	}
-
-	if errs := exactKeys(raw, reflect.TypeFor[checkEntry](), ""); len(errs) > 0 {
-		return refuse(errors.Join(errs...))
-	}
-	var keys map[string]json.RawMessage
-	_ = json.Unmarshal(raw, &keys) // a check that is not an object fails decodeStrict below
-	// Each of these takes names, and a bool (read as a switch) or one bare
-	// name are the likely mistakes, so the error says what to write instead
-	// of naming a Go type. null is a list with no name, refused below.
-	for _, key := range []string{"allow_empty", "skip_not_literal"} {
-		if v, ok := keys[key]; ok {
-			if b := string(bytes.TrimSpace(v)); b != "null" && !strings.HasPrefix(b, "[") {
-				return refuse(fmt.Errorf("%s takes a list of extractor names, such as %s: [name]; %s is not accepted", key, key, clip(b)))
-			}
-		}
-	}
-	if v, ok := keys["witness"]; ok {
-		if b := string(bytes.TrimSpace(v)); b != "null" && !strings.HasPrefix(b, "[") {
-			return refuse(fmt.Errorf("witness takes a list of fixture names, such as witness: [name]; %s is not accepted", clip(b)))
-		}
-	}
-	var e checkEntry
-	if err := decodeStrict(raw, &e); err != nil {
-		return refuse(err)
-	}
-
-	c = check.Check{
+	c := check.Check{
 		ID:      e.ID,
 		Reason:  e.Reason,
 		Scope:   check.Scope(e.Scope),
@@ -449,6 +502,58 @@ func build(raw json.RawMessage, def defaults, newExtractor Builder) (c check.Che
 		validate = c.ValidateKeys
 	}
 	return c, errors.Join(berr, validate())
+}
+
+// decodeEntry decodes one check strictly, and returns its keys as written
+// with it. err names the check, by its id when the id itself decodes.
+func decodeEntry(raw json.RawMessage) (checkEntry, map[string]json.RawMessage, error) {
+	var named struct {
+		ID string `json:"id"`
+	}
+	_ = json.Unmarshal(raw, &named) // best effort: the id names the check in an error
+	refuse := func(err error) (checkEntry, map[string]json.RawMessage, error) {
+		return checkEntry{}, nil, fmt.Errorf("check %q: decode: %w", named.ID, err)
+	}
+	if errs := exactKeys(raw, reflect.TypeFor[checkEntry](), ""); len(errs) > 0 {
+		return refuse(errors.Join(errs...))
+	}
+	var keys map[string]json.RawMessage
+	_ = json.Unmarshal(raw, &keys) // a check that is not an object fails decodeStrict below
+	if err := listShapes(keys); err != nil {
+		return refuse(err)
+	}
+	var e checkEntry
+	if err := decodeStrict(raw, &e); err != nil {
+		return refuse(err)
+	}
+	return e, keys, nil
+}
+
+// listShapes refuses a key of keys that takes names and holds no list.
+// Each of these takes names, and a bool (read as a switch) or one bare name
+// are the likely mistakes, so the error says what to write instead of
+// naming a Go type. null is a list with no name, refused later.
+func listShapes(keys map[string]json.RawMessage) error {
+	for _, key := range []string{"allow_empty", "skip_not_literal"} {
+		if b, bad := noList(keys, key); bad {
+			return fmt.Errorf("%s takes a list of extractor names, such as %s: [name]; %s is not accepted", key, key, clip(b))
+		}
+	}
+	if b, bad := noList(keys, "witness"); bad {
+		return fmt.Errorf("witness takes a list of fixture names, such as witness: [name]; %s is not accepted", clip(b))
+	}
+	return nil
+}
+
+// noList reports whether keys writes key with a value that is neither a
+// list nor null, and returns that value, trimmed.
+func noList(keys map[string]json.RawMessage, key string) (string, bool) {
+	v, ok := keys[key]
+	if !ok {
+		return "", false
+	}
+	b := string(bytes.TrimSpace(v))
+	return b, b != "null" && !strings.HasPrefix(b, "[")
 }
 
 // kindRow is one kind of check in config's kind decision: what an entry is
@@ -621,26 +726,34 @@ func buildGeneratedKind(e checkEntry, _ map[string]json.RawMessage, _ defaults, 
 // the rest.
 func buildRuleKind(e checkEntry, keys map[string]json.RawMessage, _ defaults, newExtractor Builder) (check.Kind, []error) {
 	var errs []error
-	if _, ok := keys["assert"]; ok && strings.TrimSpace(e.Assert) == "" {
-		errs = append(errs, errors.New("assert is blank: write the expression or remove the key"))
-	}
-	if _, ok := keys["compare"]; ok && e.Compare == "" {
-		errs = append(errs, errors.New("compare is blank: write text or semver, or remove the key for text"))
-	}
-	if _, ok := keys["syntax"]; ok && e.Syntax == "" {
-		errs = append(errs, fmt.Errorf("syntax is blank: write %s, or remove the key for the reading of all five", strings.Join(check.Syntaxes, ", ")))
-	}
-	if _, ok := keys["normalize"]; ok && len(e.Normalize) == 0 {
-		errs = append(errs, errors.New("normalize lists no option: name trim, lower or both, or remove the key"))
-	}
-	if _, ok := keys["allow_empty"]; ok && len(e.AllowEmpty) == 0 {
-		errs = append(errs, errors.New("allow_empty lists no extractor: name the extractors that may find no value, or remove the key"))
-	}
-	if _, ok := keys["skip_not_literal"]; ok && len(e.SkipNotLiteral) == 0 {
-		errs = append(errs, errors.New("skip_not_literal lists no extractor: name the extractors whose not literal values to leave out, or remove the key"))
+	for _, b := range blankRuleKeys(e) {
+		if _, ok := keys[b.key]; ok && b.blank {
+			errs = append(errs, errors.New(b.refusal))
+		}
 	}
 	r, rerrs := buildRule(e, newExtractor)
 	return r, append(errs, rerrs...)
+}
+
+// blankKey is a key of a rule that does nothing when it is blank: whether
+// an entry's value of it is, and the refusal of one that is.
+type blankKey struct {
+	key     string
+	blank   bool
+	refusal string
+}
+
+// blankRuleKeys is, in the order their refusals are given, the keys of a
+// rule that do nothing written blank, each with whether e's is.
+func blankRuleKeys(e checkEntry) []blankKey {
+	return []blankKey{
+		{"assert", strings.TrimSpace(e.Assert) == "", "assert is blank: write the expression or remove the key"},
+		{"compare", e.Compare == "", "compare is blank: write text or semver, or remove the key for text"},
+		{"syntax", e.Syntax == "", "syntax is blank: write " + strings.Join(check.Syntaxes, ", ") + ", or remove the key for the reading of all five"},
+		{"normalize", len(e.Normalize) == 0, "normalize lists no option: name trim, lower or both, or remove the key"},
+		{"allow_empty", len(e.AllowEmpty) == 0, "allow_empty lists no extractor: name the extractors that may find no value, or remove the key"},
+		{"skip_not_literal", len(e.SkipNotLiteral) == 0, "skip_not_literal lists no extractor: name the extractors whose not literal values to leave out, or remove the key"},
+	}
 }
 
 // buildGenerated builds a generated check from its generated key, g, for the
@@ -691,6 +804,23 @@ func buildRule(e checkEntry, newExtractor Builder) (*check.Rule, []error) {
 	var errs []error
 	names := slices.Sorted(maps.Keys(e.Extract))
 	errs = append(errs, samePlaces(e.Extract, names)...)
+	var xerrs []error
+	r.Extractors, xerrs = buildExtractors(e, names, newExtractor)
+	errs = append(errs, xerrs...)
+	if compiles(e, names) {
+		a, err := rule.Compile(e.Assert, r.Extractors)
+		if err != nil {
+			errs = append(errs, err)
+		}
+		r.Compiled = a
+	}
+	return r, errs
+}
+
+// buildExtractors builds the extractors of e, names in order.
+func buildExtractors(e checkEntry, names []string, newExtractor Builder) ([]check.NamedExtractor, []error) {
+	var out []check.NamedExtractor
+	var errs []error
 	for _, name := range names {
 		x, d, err := newExtractor(e.Extract[name].ForRule(e.ID))
 		switch {
@@ -703,21 +833,19 @@ func buildRule(e checkEntry, newExtractor Builder) (*check.Rule, []error) {
 		}
 		// Declared even when it did not build, so validation does not also
 		// report agree naming an extractor that extract does not declare.
-		r.Extractors = append(r.Extractors, check.NamedExtractor{
+		out = append(out, check.NamedExtractor{
 			Name: name, Extractor: x, Spec: e.Extract[name].Resolved(), Description: d,
 		})
 	}
-	// A rule with agree beside assert, or with an extractor's name that is
-	// no identifier, is refused by validation, so its expression is not
-	// compiled into a second error.
-	if strings.TrimSpace(e.Assert) != "" && len(e.Agree) == 0 && len(names) > 0 && !slices.ContainsFunc(names, misnamed) {
-		a, err := rule.Compile(e.Assert, r.Extractors)
-		if err != nil {
-			errs = append(errs, err)
-		}
-		r.Compiled = a
-	}
-	return r, errs
+	return out, errs
+}
+
+// compiles reports whether the assert of e, whose extractors are names, is
+// compiled. A rule with agree beside assert, or with an extractor's name
+// that is no identifier, is refused by validation, so its expression is not
+// compiled into a second error.
+func compiles(e checkEntry, names []string) bool {
+	return strings.TrimSpace(e.Assert) != "" && len(e.Agree) == 0 && len(names) > 0 && !slices.ContainsFunc(names, misnamed)
 }
 
 // misnamed reports whether check.ExtractorName refuses name.

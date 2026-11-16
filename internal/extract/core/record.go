@@ -49,6 +49,19 @@ func CheckFields(kind, as string, fields map[string]string) ([]Field, error) {
 	if len(fields) == 0 {
 		return nil, fmt.Errorf("%s: as: record takes fields, a name for each path read from the element the path selects, such as fields: {name: name, url: url}", kind)
 	}
+	out, err := readFields(kind, fields)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkPathsOnce(kind, out, fields); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// readFields checks each field's name and parses its path, and returns the
+// fields sorted by name.
+func readFields(kind string, fields map[string]string) ([]Field, error) {
 	out := make([]Field, 0, len(fields))
 	for name, p := range fields {
 		if err := checkFieldName(kind+": fields:", name); err != nil {
@@ -66,16 +79,21 @@ func CheckFields(kind, as string, fields map[string]string) ([]Field, error) {
 		}
 		return 1 // names are a map's keys, so no two are equal
 	})
-	// Two fields over one path hold the same node in every record, so an
-	// agree over both would compare each node with itself and hold.
+	return out, nil
+}
+
+// checkPathsOnce refuses two fields over one path, taken in the order of
+// out. Two fields over one path hold the same node in every record, so an
+// agree over both would compare each node with itself and hold.
+func checkPathsOnce(kind string, out []Field, fields map[string]string) error {
 	byPath := make(map[string]string, len(out))
 	for _, f := range out {
 		if first, ok := byPath[fields[f.Name]]; ok {
-			return nil, fmt.Errorf("%s: fields: %s and %s both read the path %s; two fields of one path hold the same node, so agree over them would compare it with itself; name the path once", kind, Quote(first), Quote(f.Name), Quote(fields[f.Name]))
+			return fmt.Errorf("%s: fields: %s and %s both read the path %s; two fields of one path hold the same node, so agree over them would compare it with itself; name the path once", kind, Quote(first), Quote(f.Name), Quote(fields[f.Name]))
 		}
 		byPath[fields[f.Name]] = f.Name
 	}
-	return out, nil
+	return nil
 }
 
 // records turns each node a reading selected into a record: a mapping of
@@ -94,43 +112,68 @@ func (r *reading) records(nodes []*Node, at []lineMap) ([]check.Value, error) {
 	w := wholeWalk{r: r}
 	out := make([]check.Value, 0, len(nodes))
 	for i, n := range nodes {
-		d := &check.Data{Kind: check.DataMap, At: check.Location{File: r.File, Line: r.line(at[i], n.Line)}}
-		if err := w.count(1, 0); err != nil {
+		v, err := r.record(&w, n, at[i])
+		if err != nil {
 			return nil, err
 		}
-		for _, f := range r.Fields {
-			sel, err := f.path.eval(&r.m, []*Node{n})
-			if err != nil {
-				return nil, fmt.Errorf("%s: %s, field %s: %w", r.File, r.chain, Quote(f.Name), clipTooMany(err, r.File))
-			}
-			if len(sel) == 0 {
-				continue
-			}
-			if len(sel) > 1 {
-				return nil, fmt.Errorf("%s: %s: field %s selects %d nodes in the element at line %d; a field holds one value, so select one, such as [0]",
-					r.File, r.chain, Quote(f.Name), len(sel), d.At.Line)
-			}
-			if err := w.count(0, int64(len(f.Name))); err != nil {
-				return nil, err
-			}
-			v, err := w.data(sel[0], at[i])
-			if err != nil {
-				return nil, err
-			}
-			d.Keys = append(d.Keys, f.Name)
-			d.Items = append(d.Items, v)
-		}
-		if len(d.Keys) == 0 && n.Shape != Mapping {
-			what := "a scalar"
-			if n.Shape == Sequence {
-				what = n.Shape.String()
-			}
-			return nil, fmt.Errorf("%s: %s selects %s at line %d, which holds none of the fields %s; as: record reads each field's path from the element, so check the paths, or select the elements that hold them",
-				r.File, r.chain, what, d.At.Line, strings.Join(r.fieldNames(), ", "))
-		}
-		out = append(out, check.Value{Text: d.Show(check.ShownBytes), At: d.At, Data: d})
+		out = append(out, v)
 	}
 	return out, nil
+}
+
+// record is the record of the element n, whose lines at maps, counted
+// through w.
+func (r *reading) record(w *wholeWalk, n *Node, at lineMap) (check.Value, error) {
+	d := &check.Data{Kind: check.DataMap, At: check.Location{File: r.File, Line: r.line(at, n.Line)}}
+	if err := w.count(1, 0); err != nil {
+		return check.Value{}, err
+	}
+	for _, f := range r.Fields {
+		if err := r.addField(w, d, f, n, at); err != nil {
+			return check.Value{}, err
+		}
+	}
+	if len(d.Keys) == 0 && n.Shape != Mapping {
+		return check.Value{}, r.noFieldsError(n, d.At.Line)
+	}
+	return check.Value{Text: d.Show(check.ShownBytes), At: d.At, Data: d}, nil
+}
+
+// addField adds to the record d the field f, the node its path selects
+// from the element n, if it selects one, counted through w.
+func (r *reading) addField(w *wholeWalk, d *check.Data, f Field, n *Node, at lineMap) error {
+	sel, err := f.path.eval(&r.m, []*Node{n})
+	if err != nil {
+		return fmt.Errorf("%s: %s, field %s: %w", r.File, r.chain, Quote(f.Name), clipTooMany(err))
+	}
+	if len(sel) == 0 {
+		return nil
+	}
+	if len(sel) > 1 {
+		return fmt.Errorf("%s: %s: field %s selects %d nodes in the element at line %d; a field holds one value, so select one, such as [0]",
+			r.File, r.chain, Quote(f.Name), len(sel), d.At.Line)
+	}
+	if err := w.count(0, int64(len(f.Name))); err != nil {
+		return err
+	}
+	v, err := w.data(sel[0], at)
+	if err != nil {
+		return err
+	}
+	d.Keys = append(d.Keys, f.Name)
+	d.Items = append(d.Items, v)
+	return nil
+}
+
+// noFieldsError refuses the element n at line, a scalar or a sequence that
+// holds none of the fields.
+func (r *reading) noFieldsError(n *Node, line int) error {
+	what := "a scalar"
+	if n.Shape == Sequence {
+		what = n.Shape.String()
+	}
+	return fmt.Errorf("%s: %s selects %s at line %d, which holds none of the fields %s; as: record reads each field's path from the element, so check the paths, or select the elements that hold them",
+		r.File, r.chain, what, line, strings.Join(r.fieldNames(), ", "))
 }
 
 // fieldNames are the names of the reading's fields, in a record's order.
@@ -142,11 +185,12 @@ func (r *reading) fieldNames() []string {
 	return names
 }
 
-// clipTooMany is err, or the refusal of too many values in file when err is
-// that one, which names the file on its own.
-func clipTooMany(err error, file string) error {
+// clipTooMany is err, or the reason of TooManyValues when err is a path's
+// refusal of too many values, which says only "too many values". The
+// caller names the file once, before it.
+func clipTooMany(err error) error {
 	if errors.Is(err, ErrTooManyValues) {
-		return TooManyValues(file)
+		return errTooMany
 	}
 	return err
 }
@@ -203,43 +247,65 @@ func RegexFields(pattern string) []string {
 func (e Search) records(data []byte) ([]check.Value, error) {
 	l := NewLineCursor(data)
 	out := []check.Value{}
-	nodes, size := 0, int64(0)
+	var b recordBudget
 	clock := e.clock()
 	in := e.around.of(data, clock.deadline, e.File, e.TimeLimit, e.whoseLimit())
 	err := e.each(data, clock, func(m []int) error {
 		// Each match counts, its fields with it, before the context drops
 		// any, as the matches of a search for group 1 do (ADR 0012).
-		nodes++
-		for g := 1; g < len(e.fields); g++ {
-			if start, end := m[2*g], m[2*g+1]; e.fields[g] != "" && start >= 0 {
-				nodes++
-				size += int64(len(e.fields[g]) + end - start)
-			}
-		}
-		if nodes > MaxValues {
-			return fmt.Errorf("%s: the records the pattern matches hold more than %d nodes in all, each record and each field one, the limit on an extractor's values; narrow the pattern", e.File, MaxValues)
-		}
-		if size > e.Limit {
-			return fmt.Errorf("%s: the records the pattern matches hold more than %d bytes of field names and text in all, the extractor's max_bytes; narrow the pattern, or set max_bytes: higher", e.File, e.Limit)
+		if err := b.add(e, m); err != nil {
+			return err
 		}
 		if ok, err := in.holds(m[0], m[1]); err != nil || !ok {
 			return err
 		}
-		d := &check.Data{Kind: check.DataMap, At: check.Location{File: e.File, Line: l.At(m[0])}}
-		for g := 1; g < len(e.fields); g++ {
-			start, end := m[2*g], m[2*g+1]
-			if e.fields[g] == "" || start < 0 {
-				continue
-			}
-			d.Keys = append(d.Keys, e.fields[g])
-			d.Items = append(d.Items, &check.Data{Kind: check.DataScalar, Text: string(data[start:end]),
-				At: check.Location{File: e.File, Line: l.At(start)}})
-		}
-		out = append(out, check.Value{Text: d.Show(check.ShownBytes), At: d.At, Data: d})
+		out = append(out, e.record(data, l, m))
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
+}
+
+// recordBudget is what the records of a search have counted so far: each
+// record and each field a node, and each field's name and text in bytes.
+type recordBudget struct {
+	nodes int
+	size  int64
+}
+
+// add counts the record of the match m and its fields, and refuses records
+// that pass MaxValues nodes or e's max_bytes.
+func (b *recordBudget) add(e Search, m []int) error {
+	b.nodes++
+	for g := 1; g < len(e.fields); g++ {
+		if start, end := m[2*g], m[2*g+1]; e.fields[g] != "" && start >= 0 {
+			b.nodes++
+			b.size += int64(len(e.fields[g]) + end - start)
+		}
+	}
+	if b.nodes > MaxValues {
+		return fmt.Errorf("%s: the records the pattern matches hold more than %d nodes in all, each record and each field one, the limit on an extractor's values; narrow the pattern", e.File, MaxValues)
+	}
+	if b.size > e.Limit {
+		return fmt.Errorf("%s: the records the pattern matches hold more than %d bytes of field names and text in all, the extractor's max_bytes; narrow the pattern, or set max_bytes: higher", e.File, e.Limit)
+	}
+	return nil
+}
+
+// record is the record of the match m: a field for each named group that
+// took part in it, at the line where the group starts.
+func (e Search) record(data []byte, l *LineCursor, m []int) check.Value {
+	d := &check.Data{Kind: check.DataMap, At: check.Location{File: e.File, Line: l.At(m[0])}}
+	for g := 1; g < len(e.fields); g++ {
+		start, end := m[2*g], m[2*g+1]
+		if e.fields[g] == "" || start < 0 {
+			continue
+		}
+		d.Keys = append(d.Keys, e.fields[g])
+		d.Items = append(d.Items, &check.Data{Kind: check.DataScalar, Text: string(data[start:end]),
+			At: check.Location{File: e.File, Line: l.At(start)}})
+	}
+	return check.Value{Text: d.Show(check.ShownBytes), At: d.At, Data: d}
 }

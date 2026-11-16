@@ -47,12 +47,22 @@ func (b *blocks) lineOf(y *yaml.Node) int32 {
 	if y.Style&yaml.LiteralStyle == 0 || strings.ContainsAny(y.Value, "\u2028\u2029") || b.off {
 		return 0
 	}
-	if y.Line < b.line {
+	if y.Line < b.line || !b.seek(y.Line) {
 		return 0
 	}
-	for b.line != y.Line {
+	i, ok := b.column(y.Column)
+	if !ok {
+		return 0
+	}
+	return indicatorLine(b.data[i:], y.Line)
+}
+
+// seek moves the cursor to the start of line, and reports whether the file
+// reaches it.
+func (b *blocks) seek(line int) bool {
+	for b.line != line {
 		if b.start == len(b.data) {
-			return 0
+			return false
 		}
 		n := breakAt(b.data[b.start:])
 		b.start += max(n, 1)
@@ -60,24 +70,31 @@ func (b *blocks) lineOf(y *yaml.Node) int32 {
 			b.line++
 		}
 	}
+	return true
+}
+
+// column is the offset of the column col, counted in runes from 1, of the
+// line the cursor is at, and whether the line reaches it.
+func (b *blocks) column(col int) (int, bool) {
 	i := b.start
-	for col := 1; col != y.Column; col++ {
+	for c := 1; c != col; c++ {
 		rest := b.data[i:]
 		if len(rest) == 0 || breakAt(rest) != 0 {
-			return 0
+			return 0, false
 		}
 		_, n := utf8.DecodeRune(rest)
 		i += n
 	}
-	return indicatorLine(b.data[i:], y.Line)
+	return i, true
 }
 
 // What indicatorLine is reading: blanks between the parts before the |, an
-// anchor or a tag, or a comment.
+// anchor or a tag, a comment, or the | itself.
 const (
 	between = iota
 	property
 	comment
+	indicator
 )
 
 // indicatorLine reads rest, which starts on line, past what may stand
@@ -90,36 +107,48 @@ func indicatorLine(rest []byte, line int) int32 {
 		n := breakAt(rest)
 		c := rest[0]
 		rest = rest[max(n, 1):]
-		if n != 0 {
+		switch {
+		case n != 0:
 			line++
 			state = between
-			continue
-		}
-		if state == comment {
-			continue
-		}
-		if state == property {
-			if c == ' ' || c == '\t' {
-				state = between
+		case state == property:
+			state = afterProperty(c)
+		case state == between:
+			var ok bool
+			if state, ok = betweenNext(c); !ok {
+				return 0
 			}
-			continue
-		}
-		if c == '|' {
-			return int32(line) //nolint:gosec // a line of a file of at most MaxMaxBytes, under 2^31
-		}
-		if c == '#' {
-			state = comment
-			continue
-		}
-		if c == '&' || c == '!' {
-			state = property
-			continue
-		}
-		if c != ' ' && c != '\t' {
-			return 0
+			if state == indicator {
+				return int32(line) //nolint:gosec // a line of a file of at most MaxMaxBytes, under 2^31
+			}
 		}
 	}
 	return 0
+}
+
+// afterProperty is what indicatorLine reads after the byte c of an anchor
+// or a tag: a blank ends it.
+func afterProperty(c byte) int {
+	if c == ' ' || c == '\t' {
+		return between
+	}
+	return property
+}
+
+// betweenNext is what indicatorLine reads after the byte c between the
+// parts before the |, and false for a byte that may not stand there.
+func betweenNext(c byte) (int, bool) {
+	switch c {
+	case '|':
+		return indicator, true
+	case '#':
+		return comment, true
+	case '&', '!':
+		return property, true
+	case ' ', '\t':
+		return between, true
+	}
+	return 0, false
 }
 
 // lineBreaks are the line breaks yaml.v3 breaks lines on, CR LF before CR.

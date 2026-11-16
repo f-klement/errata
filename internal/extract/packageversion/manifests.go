@@ -118,13 +118,22 @@ func readPyproject(x *extractor, f file, data []byte, add func(string, int, bool
 		return core.LineError(dynamic.Line, "dynamic lists version and project.version sets it at line %d, which PEP 621 forbids", set.Line)
 	case set != nil:
 		return version(set, "project.version", add)
-	case dynamic != nil && poetry != nil && poetryBackend(tree):
-		return poetryVersion(tree, poetry, add)
 	case dynamic != nil:
-		computed(dynamic.Line)
+		return dynamicPyproject(tree, dynamic, poetry, add, computed)
 	case poetry != nil:
 		return poetryVersion(tree, poetry, add)
 	}
+	return nil
+}
+
+// dynamicPyproject reads a pyproject.toml whose project.dynamic lists the
+// version, at dynamic: tool.poetry.version under Poetry's backend, which
+// fills the version from it, and otherwise a version the backend computes.
+func dynamicPyproject(tree, dynamic, poetry *core.Node, add func(string, int, bool) error, computed func(int)) error {
+	if poetry != nil && poetryBackend(tree) {
+		return poetryVersion(tree, poetry, add)
+	}
+	computed(dynamic.Line)
 	return nil
 }
 
@@ -179,32 +188,64 @@ func readCargo(x *extractor, f file, data []byte, add func(string, int, bool) er
 	if err != nil {
 		return err
 	}
-	own := tree.Member("package", "version")
 	shared := tree.Member("workspace", "package", "version")
-	type found struct {
-		n          *core.Node
-		what       string
-		notLiteral bool
+	own, err := cargoOwn(tree, tree.Member("package", "version"), shared)
+	if err != nil {
+		return err
 	}
-	var all []found
-	if own != nil && own.Shape == core.Mapping {
-		inherit := own.Member("workspace")
-		if !isTrue(inherit) {
-			return core.LineError(own.Line, "package.version is a table other than { workspace = true }, which Cargo refuses")
-		}
-		if root := tree.Member("workspace"); shared == nil && root != nil && root.Shape == core.Mapping {
-			return core.LineError(inherit.Line, "package.version inherits the workspace's version, and this file is the workspace's root but sets no workspace.package.version, which Cargo refuses")
-		}
-		if shared == nil {
-			all = append(all, found{inherit, "", true})
-		}
-	} else if own != nil {
-		all = append(all, found{own, "package.version", false})
+	var all []cargoValue
+	if own != nil {
+		all = append(all, *own)
 	}
 	if shared != nil {
-		all = append(all, found{shared, "workspace.package.version", false})
+		all = append(all, cargoValue{shared, "workspace.package.version", false})
 	}
-	slices.SortStableFunc(all, func(a, b found) int { return a.n.Line - b.n.Line })
+	slices.SortStableFunc(all, func(a, b cargoValue) int { return a.n.Line - b.n.Line })
+	return addCargo(all, add, computed)
+}
+
+// cargoValue is a version Cargo.toml gives: its node, the key it is at, and
+// whether it is inherited from a Cargo.toml further up, and so not literal.
+type cargoValue struct {
+	n          *core.Node
+	what       string
+	notLiteral bool
+}
+
+// cargoOwn is the version package.version, own, gives: nil when there is
+// none or it inherits shared, the workspace's own version. It refuses a
+// table other than { workspace = true }, and an inherited version in a
+// workspace's root that sets none.
+func cargoOwn(tree, own, shared *core.Node) (*cargoValue, error) {
+	if own == nil {
+		return nil, nil
+	}
+	if own.Shape != core.Mapping {
+		return &cargoValue{own, "package.version", false}, nil
+	}
+	inherit := own.Member("workspace")
+	if !isTrue(inherit) {
+		return nil, core.LineError(own.Line, "package.version is a table other than { workspace = true }, which Cargo refuses")
+	}
+	if shared != nil {
+		return nil, nil
+	}
+	if workspaceRoot(tree) {
+		return nil, core.LineError(inherit.Line, "package.version inherits the workspace's version, and this file is the workspace's root but sets no workspace.package.version, which Cargo refuses")
+	}
+	return &cargoValue{inherit, "", true}, nil
+}
+
+// workspaceRoot reports whether the Cargo.toml has a [workspace] table, which
+// makes it its workspace's root.
+func workspaceRoot(tree *core.Node) bool {
+	root := tree.Member("workspace")
+	return root != nil && root.Shape == core.Mapping
+}
+
+// addCargo adds the versions, in order: a literal one with add, an
+// inherited one with computed.
+func addCargo(all []cargoValue, add func(string, int, bool) error, computed func(int)) error {
 	for _, v := range all {
 		if v.notLiteral {
 			computed(v.n.Line)

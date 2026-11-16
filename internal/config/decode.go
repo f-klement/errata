@@ -41,30 +41,38 @@ var typedTarget = asWritten(reflect.TypeFor[typedFile]())
 // such as its own UnmarshalJSON, stay. A struct that holds one is rebuilt
 // from its exported fields, the only ones a decode reads.
 func asWritten(t reflect.Type) reflect.Type {
-	if t == specType {
+	switch {
+	case t == specType:
 		return extract.Schema()
+	case t.Kind() == reflect.Struct:
+		return structAsWritten(t)
 	}
-	if t.Kind() == reflect.Pointer {
-		if e := asWritten(t.Elem()); e != t.Elem() {
-			return reflect.PointerTo(e)
-		}
+	return elemAsWritten(t)
+}
+
+// elemAsWritten is asWritten of t, a pointer, a slice or a map, rebuilt
+// around its element as written when that differs, or t when it is none of
+// these.
+func elemAsWritten(t reflect.Type) reflect.Type {
+	var wrap func(reflect.Type) reflect.Type
+	switch t.Kind() {
+	case reflect.Pointer:
+		wrap = reflect.PointerTo
+	case reflect.Slice:
+		wrap = reflect.SliceOf
+	case reflect.Map:
+		wrap = func(e reflect.Type) reflect.Type { return reflect.MapOf(t.Key(), e) }
+	default:
 		return t
 	}
-	if t.Kind() == reflect.Slice {
-		if e := asWritten(t.Elem()); e != t.Elem() {
-			return reflect.SliceOf(e)
-		}
-		return t
+	if e := asWritten(t.Elem()); e != t.Elem() {
+		return wrap(e)
 	}
-	if t.Kind() == reflect.Map {
-		if e := asWritten(t.Elem()); e != t.Elem() {
-			return reflect.MapOf(t.Key(), e)
-		}
-		return t
-	}
-	if t.Kind() != reflect.Struct {
-		return t
-	}
+	return t
+}
+
+// structAsWritten is asWritten of the struct t.
+func structAsWritten(t reflect.Type) reflect.Type {
 	var fields []reflect.StructField
 	changed := false
 	for f := range t.Fields() {
@@ -240,47 +248,70 @@ func exactKeys(raw json.RawMessage, t reflect.Type, path string) []error {
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
-	if t == rawMessageType {
+	switch {
+	case t == rawMessageType:
+		return nil
+	case t.Kind() == reflect.Struct:
+		return structKeys(raw, t, path)
+	case t.Kind() == reflect.Map:
+		return mapKeys(raw, t, path)
+	case t.Kind() == reflect.Slice:
+		return sliceKeys(raw, t, path)
+	}
+	return nil // a scalar has no keys
+}
+
+// structKeys is exactKeys of an object raw read as the struct t.
+func structKeys(raw json.RawMessage, t reflect.Type, path string) []error {
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(raw, &obj) != nil {
 		return nil
 	}
 	var errs []error
-	switch t.Kind() {
-	case reflect.Struct:
-		var obj map[string]json.RawMessage
-		if json.Unmarshal(raw, &obj) != nil {
-			return nil
+	fields := jsonFields(t)
+	names := slices.Sorted(maps.Keys(fields))
+	for _, k := range slices.Sorted(maps.Keys(obj)) {
+		if ft, ok := fields[k]; ok {
+			errs = append(errs, exactKeys(obj[k], ft, join(path, k))...)
+		} else if name, ok := foldMatch(k, names); ok {
+			errs = append(errs, fmt.Errorf("%skey %q must be spelled %q", prefix(path), k, name))
 		}
-		fields := jsonFields(t)
-		names := slices.Sorted(maps.Keys(fields))
-		for _, k := range slices.Sorted(maps.Keys(obj)) {
-			if ft, ok := fields[k]; ok {
-				errs = append(errs, exactKeys(obj[k], ft, join(path, k))...)
-				continue
-			}
-			for _, name := range names {
-				if strings.EqualFold(k, name) {
-					errs = append(errs, fmt.Errorf("%skey %q must be spelled %q", prefix(path), k, name))
-					break
-				}
-			}
+	}
+	return errs
+}
+
+// foldMatch is the first of names that k matches when case is ignored.
+func foldMatch(k string, names []string) (string, bool) {
+	for _, name := range names {
+		if strings.EqualFold(k, name) {
+			return name, true
 		}
-	case reflect.Map:
-		var obj map[string]json.RawMessage
-		if json.Unmarshal(raw, &obj) != nil {
-			return nil
-		}
-		for _, k := range slices.Sorted(maps.Keys(obj)) {
-			errs = append(errs, exactKeys(obj[k], t.Elem(), join(path, k))...)
-		}
-	case reflect.Slice:
-		var arr []json.RawMessage
-		if json.Unmarshal(raw, &arr) != nil {
-			return nil
-		}
-		for i, v := range arr {
-			errs = append(errs, exactKeys(v, t.Elem(), fmt.Sprintf("%s[%d]", path, i))...)
-		}
-	default: // a scalar has no keys
+	}
+	return "", false
+}
+
+// mapKeys is exactKeys of an object raw read as the map t.
+func mapKeys(raw json.RawMessage, t reflect.Type, path string) []error {
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(raw, &obj) != nil {
+		return nil
+	}
+	var errs []error
+	for _, k := range slices.Sorted(maps.Keys(obj)) {
+		errs = append(errs, exactKeys(obj[k], t.Elem(), join(path, k))...)
+	}
+	return errs
+}
+
+// sliceKeys is exactKeys of an array raw read as the slice t.
+func sliceKeys(raw json.RawMessage, t reflect.Type, path string) []error {
+	var arr []json.RawMessage
+	if json.Unmarshal(raw, &arr) != nil {
+		return nil
+	}
+	var errs []error
+	for i, v := range arr {
+		errs = append(errs, exactKeys(v, t.Elem(), fmt.Sprintf("%s[%d]", path, i))...)
 	}
 	return errs
 }
@@ -299,22 +330,11 @@ func jsonFields(t reflect.Type) map[string]reflect.Type {
 	fields := make(map[string]reflect.Type, t.NumField())
 	promoted := map[string]reflect.Type{}
 	for f := range t.Fields() {
-		name, _, _ := strings.Cut(f.Tag.Get("json"), ",")
-		embedded := f.Type
-		if embedded.Kind() == reflect.Pointer {
-			embedded = embedded.Elem()
-		}
-		if f.Anonymous && name == "" && embedded.Kind() == reflect.Struct {
+		if embedded, ok := promotes(f); ok {
 			maps.Copy(promoted, jsonFields(embedded))
-			continue
+		} else if name, ok := jsonName(f); ok {
+			fields[name] = f.Type
 		}
-		if name == "-" || !f.IsExported() {
-			continue
-		}
-		if name == "" {
-			name = f.Name
-		}
-		fields[name] = f.Type
 	}
 	for k, ft := range promoted {
 		if _, own := fields[k]; !own {
@@ -322,6 +342,35 @@ func jsonFields(t reflect.Type) map[string]reflect.Type {
 		}
 	}
 	return fields
+}
+
+// jsonTag is the name f's json tag gives it, or "" for none.
+func jsonTag(f reflect.StructField) string {
+	name, _, _ := strings.Cut(f.Tag.Get("json"), ",")
+	return name
+}
+
+// promotes is the struct f embeds with no JSON name, directly or through a
+// pointer, whose keys encoding/json promotes.
+func promotes(f reflect.StructField) (reflect.Type, bool) {
+	embedded := f.Type
+	if embedded.Kind() == reflect.Pointer {
+		embedded = embedded.Elem()
+	}
+	return embedded, f.Anonymous && jsonTag(f) == "" && embedded.Kind() == reflect.Struct
+}
+
+// jsonName is the JSON key of the field f, which embeds no struct
+// encoding/json promotes, if a decode reads it.
+func jsonName(f reflect.StructField) (string, bool) {
+	name := jsonTag(f)
+	if name == "-" || !f.IsExported() {
+		return "", false
+	}
+	if name == "" {
+		name = f.Name
+	}
+	return name, true
 }
 
 func join(path, key string) string {
@@ -441,28 +490,45 @@ func (w *stringWalk) walk(n *yaml.Node, t reflect.Type, path string) {
 			w.errs = append(w.errs, plainError(path, n.Value, "", what, loads))
 		}
 	case reflect.Struct:
-		fields := jsonFields(t)
-		for _, p := range pairs(n, nil) {
-			if ft, ok := fields[p.key.Value]; ok {
-				w.walk(p.value, ft, join(path, p.key.Value))
-			}
-		}
+		w.walkStruct(n, t, path)
 	case reflect.Map:
-		for _, p := range pairs(n, nil) {
-			if t.Key().Kind() == reflect.String {
-				if what, loads, ok := coerced(p.key, true); ok {
-					w.errs = append(w.errs, plainError(path, p.key.Value, "the name ", what, loads))
-				}
-			}
-			w.walk(p.value, t.Elem(), join(path, p.key.Value))
-		}
+		w.walkMap(n, t, path)
 	case reflect.Slice:
-		if n.Kind == yaml.SequenceNode {
-			for i, item := range n.Content {
-				w.walk(item, t.Elem(), fmt.Sprintf("%s[%d]", path, i))
+		w.walkSlice(n, t, path)
+	default: // a number or a bool field takes what YAML reads
+	}
+}
+
+// walkStruct is walk of n as the struct t.
+func (w *stringWalk) walkStruct(n *yaml.Node, t reflect.Type, path string) {
+	fields := jsonFields(t)
+	for _, p := range pairs(n, nil) {
+		if ft, ok := fields[p.key.Value]; ok {
+			w.walk(p.value, ft, join(path, p.key.Value))
+		}
+	}
+}
+
+// walkMap is walk of n as the map t, whose string keys are read too.
+func (w *stringWalk) walkMap(n *yaml.Node, t reflect.Type, path string) {
+	stringKeys := t.Key().Kind() == reflect.String
+	for _, p := range pairs(n, nil) {
+		if stringKeys {
+			if what, loads, ok := coerced(p.key, true); ok {
+				w.errs = append(w.errs, plainError(path, p.key.Value, "the name ", what, loads))
 			}
 		}
-	default: // a number or a bool field takes what YAML reads
+		w.walk(p.value, t.Elem(), join(path, p.key.Value))
+	}
+}
+
+// walkSlice is walk of n as the slice t.
+func (w *stringWalk) walkSlice(n *yaml.Node, t reflect.Type, path string) {
+	if n.Kind != yaml.SequenceNode {
+		return
+	}
+	for i, item := range n.Content {
+		w.walk(item, t.Elem(), fmt.Sprintf("%s[%d]", path, i))
 	}
 }
 
@@ -480,49 +546,75 @@ func plainError(path, text, noun, what, loads string) error {
 // block scalar is the text written, and so is a plain one over several
 // lines, since no bool, number or null holds a line break.
 func coerced(n *yaml.Node, key bool) (what, loads string, ok bool) {
+	text, ok := plainText(n)
+	if !ok {
+		return "", "", false
+	}
+	loads, ok = loadsAs(text, key)
+	if !ok || loads == n.Value {
+		return "", "", false
+	}
+	return yamlReads(text, n.Tag), loads, true
+}
+
+// plainText is the text of n, with its tag when it has one, when it is a
+// plain scalar on one line.
+func plainText(n *yaml.Node) (string, bool) {
 	const written = yaml.DoubleQuotedStyle | yaml.SingleQuotedStyle | yaml.LiteralStyle | yaml.FoldedStyle
 	if n.Kind != yaml.ScalarNode || n.Style&written != 0 || strings.ContainsAny(n.Value, "\n\r") {
-		return "", "", false
+		return "", false
 	}
-	text := n.Value
 	if n.Style&yaml.TaggedStyle != 0 {
-		text = n.Tag + " " + text
+		return n.Tag + " " + n.Value, true
 	}
+	return n.Value, true
+}
+
+// loadsAs is the string text loads as, a map's key with key set, else a
+// string field's value, and whether it decodes.
+func loadsAs(text string, key bool) (string, bool) {
 	if key {
-		var m map[string]int
-		if sigsyaml.Unmarshal([]byte(text+": 0"), &m) != nil || len(m) != 1 {
-			return "", "", false // a key that does not decode fails the whole file
-		}
-		for k := range m {
-			loads = k
-		}
-	} else {
-		var v struct {
-			V string `json:"v"`
-		}
-		if sigsyaml.Unmarshal([]byte("v: "+text), &v) != nil {
-			return "", "", false
-		}
-		loads = v.V
+		return keyLoadsAs(text)
 	}
-	if loads == n.Value {
-		return "", "", false
+	var v struct {
+		V string `json:"v"`
 	}
+	if sigsyaml.Unmarshal([]byte("v: "+text), &v) != nil {
+		return "", false
+	}
+	return v.V, true
+}
+
+// keyLoadsAs is the string text loads as when it is a map's key.
+func keyLoadsAs(text string) (string, bool) {
+	var m map[string]int
+	if sigsyaml.Unmarshal([]byte(text+": 0"), &m) != nil || len(m) != 1 {
+		return "", false // a key that does not decode fails the whole file
+	}
+	var loads string
+	for k := range m {
+		loads = k
+	}
+	return loads, true
+}
+
+// yamlReads is what yaml/v2 reads text, with the tag tag, as: "null", "the
+// bool true", "the number 1000", or the tag's name and the value.
+func yamlReads(text, tag string) string {
 	var v map[string]any
 	// yaml/v2 names what the text is; it decodes, since the library, which
 	// decodes with yaml/v2, just did.
 	_ = yamlv2.Unmarshal([]byte("v: "+text), &v)
 	switch x := v["v"].(type) {
 	case nil:
-		what = "null"
+		return "null"
 	case bool:
-		what = fmt.Sprintf("the bool %t", x)
+		return fmt.Sprintf("the bool %t", x)
 	case int, int64, uint64, float64:
-		what = fmt.Sprintf("the number %v", x)
+		return fmt.Sprintf("the number %v", x)
 	default:
-		what = fmt.Sprintf("the %s %q", strings.TrimPrefix(n.Tag, "!!"), x)
+		return fmt.Sprintf("the %s %q", strings.TrimPrefix(tag, "!!"), x)
 	}
-	return what, loads, true
 }
 
 // pair is one key of a mapping and its value.
@@ -547,20 +639,32 @@ func pairs(n *yaml.Node, visiting map[*yaml.Node]bool) []pair {
 		k, v := n.Content[i], n.Content[i+1]
 		if k.Tag != "!!merge" {
 			own = append(own, pair{k, v})
-			continue
-		}
-		v = resolve(v)
-		if v.Kind == yaml.SequenceNode {
-			for _, m := range v.Content {
-				merged = append(merged, pairs(m, visiting)...)
-			}
 		} else {
-			merged = append(merged, pairs(v, visiting)...)
+			merged = append(merged, mergedPairs(v, visiting)...)
 		}
 	}
+	return firstOfEach(append(own, merged...))
+}
+
+// mergedPairs is the pairs a << key whose value is v brings in: those of
+// one mapping, or of each in a sequence of them.
+func mergedPairs(v *yaml.Node, visiting map[*yaml.Node]bool) []pair {
+	v = resolve(v)
+	if v.Kind != yaml.SequenceNode {
+		return pairs(v, visiting)
+	}
+	var merged []pair
+	for _, m := range v.Content {
+		merged = append(merged, pairs(m, visiting)...)
+	}
+	return merged
+}
+
+// firstOfEach is ps with each key once, the first one kept.
+func firstOfEach(ps []pair) []pair {
 	var out []pair
 	seen := map[string]bool{}
-	for _, p := range append(own, merged...) {
+	for _, p := range ps {
 		if !seen[p.key.Value] {
 			seen[p.key.Value] = true
 			out = append(out, p)

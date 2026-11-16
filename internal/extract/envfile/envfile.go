@@ -422,49 +422,66 @@ func (r *envReader) entry(e *core.Entry) error {
 func (r *envReader) value(e *core.Entry) error {
 	src := r.data[r.pos:]
 	if len(src) == 0 || (src[0] != '\'' && src[0] != '"') {
-		raw, _, _ := bytes.Cut(src, []byte("\n"))
-		r.pos += min(len(raw)+1, len(src))
-		raw, _, _ = bytes.Cut(raw, []byte(" #"))
-		raw = bytes.TrimRightFunc(raw, unicode.IsSpace)
-		r.raw = raw
-		return r.substituteValue(e, raw, raw)
+		return r.unquoted(e, src)
 	}
+	return r.quoted(e, src)
+}
+
+// unquoted reads src, a value with no quote, to the end of its line.
+func (r *envReader) unquoted(e *core.Entry, src []byte) error {
+	raw, _, _ := bytes.Cut(src, []byte("\n"))
+	r.pos += min(len(raw)+1, len(src))
+	raw, _, _ = bytes.Cut(raw, []byte(" #"))
+	raw = bytes.TrimRightFunc(raw, unicode.IsSpace)
+	r.raw = raw
+	return r.substituteValue(e, raw, raw)
+}
+
+// quoted reads src, a value that starts with its quote, to the quote that
+// closes it, with the escapes in it into chars.
+func (r *envReader) quoted(e *core.Entry, src []byte) error {
 	quote := src[0]
 	r.chars = r.chars[:0]
 	escape := false
 	for i := 1; i < len(src); i++ {
-		c := src[i]
-		if c != quote {
-			if !escape && c == '\\' {
-				escape = true
-				continue
-			}
-			if escape {
-				escape = false
-				r.chars = append(r.chars, '\\')
-			}
-			r.chars = append(r.chars, c)
+		if c := src[i]; c != quote || escape {
+			escape = r.quotedChar(c, quote, escape)
 			continue
 		}
-		if escape {
-			escape = false
-			r.chars = append(r.chars, c)
-			continue
-		}
-		raw := src[1:i]
-		r.raw = raw
-		r.pos += i + 1
-		if quote == '\'' {
-			e.Value = r.chars
-			return nil
-		}
-		if err := r.m.Charge(len(r.chars)); err != nil {
-			return err
-		}
-		r.escaped = expandEscapes(r.escaped[:0], r.chars)
-		return r.substituteValue(e, r.escaped, raw)
+		return r.closeQuoted(e, src, i)
 	}
 	return core.LineError(e.Line, "the value's %c is not closed, which compose refuses", quote)
+}
+
+// quotedChar appends c, read in a value in quote, to chars, after a \ when
+// escape is set, and reports whether c starts an escape. A \ before the
+// quote is dropped, and every other kept.
+func (r *envReader) quotedChar(c, quote byte, escape bool) bool {
+	if !escape && c == '\\' {
+		return true
+	}
+	if escape && c != quote {
+		r.chars = append(r.chars, '\\')
+	}
+	r.chars = append(r.chars, c)
+	return false
+}
+
+// closeQuoted sets e from a quoted value src whose quote closes at i: as
+// written in ', and in " with its escapes read and substituted.
+func (r *envReader) closeQuoted(e *core.Entry, src []byte, i int) error {
+	raw := src[1:i]
+	r.raw = raw
+	r.pos += i + 1
+	if src[0] == '\'' {
+		e.Value = r.chars
+		return nil
+	}
+	if err := r.m.Charge(len(r.chars)); err != nil {
+		return err
+	}
+	r.escaped = expandEscapes(r.escaped[:0], r.chars)
+	return r.substituteValue(e, r.escaped, raw)
 }
 
 // substituteValue sets e's value to v substituted, or to raw, marked
@@ -495,39 +512,46 @@ func expandEscapes(out, s []byte) []byte {
 			out = append(out, s[i])
 			continue
 		}
-		c := s[i+1]
-		var match string
-		switch c {
-		case '$':
-			out = append(out, "$$"...)
-			i++
-			continue
-		case '0':
-			// The regular expression's \d{0,3} takes 8 and 9 too, but a match
-			// with either is one UnquoteChar refuses and is kept as written,
-			// as the shorter match of octal digits here is with the rest
-			// after it: the bytes come out the same.
-			n := 0
-			for n < 3 && i+2+n < len(s) && isOctal(s[i+2+n]) {
-				n++
-			}
-			match = `\` + string(s[i+2:i+2+n])
-			i += 1 + n
-		case 'a', 'b', 'c', 'f', 'n', 'r', 't', 'v', '"', '\\':
-			match = string(s[i : i+2])
-			i++
-		default:
-			out = append(out, '\\')
-			continue
-		}
-		v, _, _, err := strconv.UnquoteChar(match, '"')
-		if err != nil {
-			out = append(out, match...)
-			continue
-		}
-		out = utf8.AppendRune(out, v)
+		out, i = expandEscape(out, s, i)
 	}
 	return out
+}
+
+// expandEscape appends what the \ at i, not the last byte of s, gives, and
+// returns the index of the escape's last byte.
+func expandEscape(out, s []byte, i int) ([]byte, int) {
+	var match string
+	switch s[i+1] {
+	case '$':
+		return append(out, "$$"...), i + 1
+	case '0':
+		n := octalRun(s[i+2:])
+		match = `\` + string(s[i+2:i+2+n])
+		i += 1 + n
+	case 'a', 'b', 'c', 'f', 'n', 'r', 't', 'v', '"', '\\':
+		match = string(s[i : i+2])
+		i++
+	default:
+		return append(out, '\\'), i
+	}
+	v, _, _, err := strconv.UnquoteChar(match, '"')
+	if err != nil {
+		return append(out, match...), i
+	}
+	return utf8.AppendRune(out, v), i
+}
+
+// octalRun is how many octal digits, up to three, b starts with. The
+// regular expression's \d{0,3} takes 8 and 9 too, but a match with either
+// is one UnquoteChar refuses and is kept as written, as the shorter match
+// of octal digits here is with the rest after it: the bytes come out the
+// same.
+func octalRun(b []byte) int {
+	n := 0
+	for n < 3 && n < len(b) && isOctal(b[n]) {
+		n++
+	}
+	return n
 }
 
 // isOctal reports whether b is an octal digit.
@@ -557,88 +581,113 @@ func (r *envReader) substitute(out, s []byte, line, depth int) ([]byte, bool, er
 	if err := r.m.Charge(len(s)); err != nil {
 		return out, false, err
 	}
-	unknown := false
-	// The last } of the line, for the ${ from p on, until nextLine.
-	var lastBrace int
-	nextLine := 0
+	sc := subScan{s: s, line: line, depth: depth}
 	for i := 0; ; {
 		j := bytes.IndexByte(s[i:], '$')
 		if j < 0 {
-			out = append(out, s[i:]...)
-			break
+			return append(out, s[i:]...), sc.unknown, nil
 		}
 		p := i + j
 		out = append(out, s[i:p]...)
-		if p+1 == len(s) {
-			out = append(out, '$')
-			break
-		}
-		if s[p+1] == '$' {
-			out = append(out, '$')
-			i = p + 2
-			continue
-		}
-		if s[p+1] != '{' {
-			n := nameLen(s[p+1:])
-			if n == 0 {
-				out = append(out, '$')
-				i = p + 1
-				continue
-			}
-			var known bool
-			var err error
-			if out, known, err = r.lookup(out, s[p+1:p+1+n]); err != nil {
-				return out, false, err
-			}
-			unknown = unknown || !known
-			i = p + 1 + n
-			continue
-		}
-		n := nameLen(s[p+2:])
-		if n == 0 {
-			return out, false, invalid(line, s[p:])
-		}
-		name, q := s[p+2:p+2+n], p+2+n
-		if q < len(s) && s[q] == '}' {
-			var known bool
-			var err error
-			if out, known, err = r.lookup(out, name); err != nil {
-				return out, false, err
-			}
-			unknown = unknown || !known
-			i = q + 1
-			continue
-		}
-		opEnd := q
-		if opEnd < len(s) && s[opEnd] == ':' {
-			opEnd++
-		}
-		if opEnd == len(s) || bytes.IndexByte([]byte("-+?"), s[opEnd]) < 0 {
-			return out, false, invalid(line, s[p:])
-		}
-		opEnd++
-		if p >= nextLine {
-			lineEnd := len(s)
-			if e := bytes.IndexByte(s[p:], '\n'); e != -1 {
-				lineEnd = p + e
-			}
-			lastBrace = p + bytes.LastIndexByte(s[p:lineEnd], '}')
-			nextLine = lineEnd + 1
-		}
-		if lastBrace < opEnd {
-			return out, false, invalid(line, s[p:])
-		}
-		end := closingBrace(s[:lastBrace+1], p)
-		var known bool
 		var err error
-		out, known, err = r.operator(out, name, string(s[q:opEnd]), s[opEnd:end], line, depth)
-		if err != nil {
+		if out, i, err = r.dollar(out, &sc, p); err != nil {
 			return out, false, err
 		}
-		unknown = unknown || !known
-		i = end + 1
 	}
-	return out, unknown, nil
+}
+
+// subScan is one call of substitute: the text it scans, whether what it
+// appended so far depends on the environment, and the last } of the line,
+// for the ${ before nextLine.
+type subScan struct {
+	s           []byte
+	line, depth int
+	unknown     bool
+	lastBrace   int
+	nextLine    int
+}
+
+// add notes whether a value appended is known, for a call that appends
+// one, and returns what it returned.
+func (sc *subScan) add(out []byte, known bool, err error) ([]byte, error) {
+	sc.unknown = sc.unknown || !known
+	return out, err
+}
+
+// braceOfLine is the last } of the line that holds p.
+func (sc *subScan) braceOfLine(p int) int {
+	if p >= sc.nextLine {
+		lineEnd := len(sc.s)
+		if e := bytes.IndexByte(sc.s[p:], '\n'); e != -1 {
+			lineEnd = p + e
+		}
+		sc.lastBrace = p + bytes.LastIndexByte(sc.s[p:lineEnd], '}')
+		sc.nextLine = lineEnd + 1
+	}
+	return sc.lastBrace
+}
+
+// dollar appends what the $ at p gives, and returns where the scan goes on.
+func (r *envReader) dollar(out []byte, sc *subScan, p int) ([]byte, int, error) {
+	s := sc.s
+	switch {
+	case p+1 == len(s):
+		return append(out, '$'), p + 1, nil
+	case s[p+1] == '$':
+		return append(out, '$'), p + 2, nil
+	case s[p+1] != '{':
+		return r.bare(out, sc, p)
+	}
+	return r.braced(out, sc, p)
+}
+
+// bare appends what $NAME at p gives, or the $ when no name follows it.
+func (r *envReader) bare(out []byte, sc *subScan, p int) ([]byte, int, error) {
+	n := nameLen(sc.s[p+1:])
+	if n == 0 {
+		return append(out, '$'), p + 1, nil
+	}
+	out, err := sc.add(r.lookup(out, sc.s[p+1:p+1+n]))
+	return out, p + 1 + n, err
+}
+
+// braced appends what the ${ at p gives: ${NAME}, or ${NAME with an
+// operator.
+func (r *envReader) braced(out []byte, sc *subScan, p int) ([]byte, int, error) {
+	s := sc.s
+	n := nameLen(s[p+2:])
+	if n == 0 {
+		return out, p, invalid(sc.line, s[p:])
+	}
+	name, q := s[p+2:p+2+n], p+2+n
+	if q < len(s) && s[q] == '}' {
+		out, err := sc.add(r.lookup(out, name))
+		return out, q + 1, err
+	}
+	return r.withOperator(out, sc, p, name, q)
+}
+
+// withOperator appends what ${name, at p, with the operator at q gives.
+func (r *envReader) withOperator(out []byte, sc *subScan, p int, name []byte, q int) ([]byte, int, error) {
+	s := sc.s
+	opEnd, ok := operatorEnd(s, q)
+	if !ok || sc.braceOfLine(p) < opEnd {
+		return out, p, invalid(sc.line, s[p:])
+	}
+	end := closingBrace(s[:sc.lastBrace+1], p)
+	out, err := sc.add(r.operator(out, name, string(s[q:opEnd]), s[opEnd:end], sc.line, sc.depth))
+	return out, end + 1, err
+}
+
+// operatorEnd is the end of the operator at q: :-, -, :+, +, :? or ?.
+func operatorEnd(s []byte, q int) (int, bool) {
+	if q < len(s) && s[q] == ':' {
+		q++
+	}
+	if q == len(s) || bytes.IndexByte([]byte("-+?"), s[q]) < 0 {
+		return q, false
+	}
+	return q + 1, true
 }
 
 // closingBrace is the } of s that closes the ${ at p, as
@@ -669,23 +718,33 @@ func (r *envReader) operator(out, name []byte, op string, word []byte, line, dep
 		// compose would ask the environment for the name.
 		return out, false, nil
 	}
-	empty := b.value == ""
+	takes, err := takesWord(op, b.value == "", name, line)
+	if err != nil {
+		return out, false, err
+	}
+	if takes {
+		return r.word(out, word, line, depth)
+	}
+	out, err = r.copyValue(out, b.value)
+	return out, true, err
+}
+
+// takesWord reports whether op gives its word for a name set, empty or
+// not, rather than the name's value, and refuses :? on an empty one.
+func takesWord(op string, empty bool, name []byte, line int) (bool, error) {
 	switch op {
-	case ":-", "-":
-		if op == ":-" && empty {
-			return r.word(out, word, line, depth)
-		}
-	case ":+", "+":
-		if op == "+" || !empty {
-			return r.word(out, word, line, depth)
-		}
-	default: // :? and ?
-		if op == ":?" && empty {
-			return out, false, core.LineError(line, "${%s:?} needs a value that is not empty and the file sets it empty, which compose refuses", core.Clip(string(name)))
+	case ":-":
+		return empty, nil
+	case ":+":
+		return !empty, nil
+	case "+":
+		return true, nil
+	case ":?":
+		if empty {
+			return false, core.LineError(line, "${%s:?} needs a value that is not empty and the file sets it empty, which compose refuses", core.Clip(string(name)))
 		}
 	}
-	out, err := r.copyValue(out, b.value)
-	return out, true, err
+	return false, nil // - and ?
 }
 
 // word appends an operator's word substituted, and reports whether that is

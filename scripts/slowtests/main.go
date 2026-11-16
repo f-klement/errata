@@ -21,6 +21,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -28,19 +29,24 @@ import (
 	"strings"
 )
 
-func main() {
-	if len(os.Args) != 2 {
-		fmt.Fprintln(os.Stderr, "usage: slowtests <module root>")
-		os.Exit(2)
+func main() { os.Exit(cli(os.Args[1:], os.Stdout, os.Stderr)) }
+
+// cli runs the command line args, which follow the program's name, and
+// returns the status to exit with: 2 on a misuse, 1 on an error.
+func cli(args []string, stdout, stderr io.Writer) int {
+	if len(args) != 1 {
+		fmt.Fprintln(stderr, "usage: slowtests <module root>")
+		return 2
 	}
-	found, err := slowTests(os.Args[1])
+	found, err := slowTests(args[0])
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "slowtests:", err)
-		os.Exit(1)
+		fmt.Fprintln(stderr, "slowtests:", err)
+		return 1
 	}
 	for _, t := range found {
-		fmt.Fprintln(os.Stdout, t)
+		fmt.Fprintln(stdout, t)
 	}
+	return 0
 }
 
 // slowTests is every slow test under root's internal directory, sorted, or
@@ -60,62 +66,83 @@ func slowTests(root string) ([]string, error) {
 		if !strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
-		fset := token.NewFileSet()
-		f, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(root, filepath.Dir(path))
-		if err != nil {
-			return err
-		}
-		for _, decl := range f.Decls {
-			fn, ok := decl.(*ast.FuncDecl)
-			if !ok || fn.Body == nil {
-				continue
-			}
-			calls, err := slowCalls(fset, fn)
-			if err != nil {
-				return err
-			}
-			if calls {
-				found = append(found, "./"+filepath.ToSlash(rel)+":"+fn.Name.Name)
-			}
-		}
-		return nil
+		tests, err := fileSlowTests(root, path)
+		found = append(found, tests...)
+		return err
 	})
 	slices.Sort(found)
 	return found, err
+}
+
+// fileSlowTests is the slow tests of the test file at path under root, or
+// the first call it would miss.
+func fileSlowTests(root, path string) ([]string, error) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+	if err != nil {
+		return nil, err
+	}
+	rel, err := filepath.Rel(root, filepath.Dir(path))
+	if err != nil {
+		return nil, err
+	}
+	var found []string
+	for _, decl := range f.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Body == nil {
+			continue
+		}
+		calls, err := slowCalls(fset, fn)
+		if err != nil {
+			return found, err
+		}
+		if calls {
+			found = append(found, "./"+filepath.ToSlash(rel)+":"+fn.Name.Name)
+		}
+	}
+	return found, nil
 }
 
 // slowCalls reports whether fn is a test whose body calls slowOnly, and
 // refuses a call this list would not see: slowOnly called by a function that
 // is not a test, and extracttest.SlowOnly called by one that is not slowOnly.
 func slowCalls(fset *token.FileSet, fn *ast.FuncDecl) (bool, error) {
-	test := fn.Recv == nil && strings.HasPrefix(fn.Name.Name, "Test")
-	calls := false
-	var refused error
+	v := &slowVisit{fset: fset, fn: fn, test: fn.Recv == nil && strings.HasPrefix(fn.Name.Name, "Test")}
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
 		c, ok := n.(*ast.CallExpr)
-		if !ok || refused != nil {
-			return refused == nil
+		if ok && v.refused == nil {
+			v.call(c)
 		}
-		switch f := c.Fun.(type) {
-		case *ast.Ident:
-			if f.Name == "slowOnly" {
-				if !test {
-					refused = fmt.Errorf("%s: %s calls slowOnly, but only a test that calls it in its own body is listed, so make slow would not run the test that reaches it: call slowOnly in the test", fset.Position(c.Pos()), fn.Name.Name)
-				}
-				calls = true
-			}
-		case *ast.SelectorExpr:
-			if f.Sel.Name == "SlowOnly" && fn.Name.Name != "slowOnly" {
-				refused = fmt.Errorf("%s: %s calls %s.SlowOnly, but only a call of the package's own slowOnly is listed, so make slow would not run it: call slowOnly, which calls SlowOnly", fset.Position(c.Pos()), fn.Name.Name, exprName(f.X))
-			}
-		}
-		return refused == nil
+		return v.refused == nil
 	})
-	return calls && test, refused
+	return v.calls && v.test, v.refused
+}
+
+// slowVisit is slowCalls' walk of fn's body: whether fn is a test, whether
+// the body calls slowOnly, and the first call refused.
+type slowVisit struct {
+	fset        *token.FileSet
+	fn          *ast.FuncDecl
+	test, calls bool
+	refused     error
+}
+
+// call reads one call of the body.
+func (v *slowVisit) call(c *ast.CallExpr) {
+	switch f := c.Fun.(type) {
+	case *ast.Ident:
+		if f.Name != "slowOnly" {
+			return
+		}
+		if !v.test {
+			v.refused = fmt.Errorf("%s: %s calls slowOnly, but only a test that calls it in its own body is listed, so make slow would not run the test that reaches it: call slowOnly in the test", v.fset.Position(c.Pos()), v.fn.Name.Name)
+		}
+		v.calls = true
+	case *ast.SelectorExpr:
+		if f.Sel.Name == "SlowOnly" && v.fn.Name.Name != "slowOnly" {
+			v.refused = fmt.Errorf("%s: %s calls %s.SlowOnly, but only a call of the package's own slowOnly is listed, so make slow would not run it: call slowOnly, which calls SlowOnly", v.fset.Position(c.Pos()), v.fn.Name.Name, exprName(f.X))
+		}
+	}
 }
 
 func exprName(e ast.Expr) string {

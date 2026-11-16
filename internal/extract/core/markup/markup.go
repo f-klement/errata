@@ -87,13 +87,29 @@ func (s Selector) Build(kind string, src core.Source) (*Select, error) {
 // check refuses a target errata does not read, a field the target does not
 // read, and a field it needs left out.
 func (s Selector) check(kind string) error {
+	if err := s.checkTarget(kind); err != nil {
+		return err
+	}
+	if err := s.checkFields(kind); err != nil {
+		return err
+	}
+	return s.checkNeeds(kind)
+}
+
+// checkTarget refuses a target that is missing or not one errata reads.
+func (s Selector) checkTarget(kind string) error {
 	switch s.Target {
 	case "":
 		return errors.New(kind + ": target is required; write comment, section, code or table")
 	case TargetComment, TargetSection, TargetCode, TargetTable:
+		return nil
 	default:
 		return fmt.Errorf("%s: target %s is not one of comment, section, code and table", kind, core.Quote(s.Target))
 	}
+}
+
+// checkFields refuses a field set that the target does not read.
+func (s Selector) checkFields(kind string) error {
 	for _, f := range []struct {
 		name, value, target string
 	}{
@@ -106,6 +122,12 @@ func (s Selector) check(kind string) error {
 			return fmt.Errorf("%s: %s is read only by target %s, and this one is %s", kind, f.name, f.target, s.Target)
 		}
 	}
+	return nil
+}
+
+// checkNeeds refuses a field the target needs left out: a section's heading
+// path, a table's column, and key without row or row without key.
+func (s Selector) checkNeeds(kind string) error {
 	switch {
 	case s.Target == TargetSection && s.Section == "":
 		return errors.New(kind + ": target section needs section, the heading path, such as Install > Requirements")
@@ -223,17 +245,28 @@ type Item struct {
 // one cap on values. lineAt is the line of the file that holds an offset of
 // text.
 func (s *Select) Values(file string, text []byte, items []Item, lineAt func(int) int) ([]check.Value, error) {
-	out := []check.Value{}
-	at := func(line int) check.Location { return check.Location{File: file, Line: line} }
 	if s.Search == nil {
-		if len(items) > core.MaxValues {
-			return nil, core.TooManyValues(file)
-		}
-		for _, it := range items {
-			out = append(out, check.Value{Text: string(text[it.Start:it.End]), At: at(it.Line)})
-		}
-		return out, nil
+		return wholeValues(file, text, items)
 	}
+	return s.matchValues(file, text, items, lineAt)
+}
+
+// wholeValues is each item whole as a value of file, at its line.
+func wholeValues(file string, text []byte, items []Item) ([]check.Value, error) {
+	if len(items) > core.MaxValues {
+		return nil, core.TooManyValues(file)
+	}
+	out := []check.Value{}
+	for _, it := range items {
+		out = append(out, check.Value{Text: string(text[it.Start:it.End]), At: check.Location{File: file, Line: it.Line}})
+	}
+	return out, nil
+}
+
+// matchValues is capture group 1 of every match of the search in each item,
+// as values of file. A match is at its item's line when the item is Fixed,
+// else at the line of the file that holds it.
+func (s *Select) matchValues(file string, text []byte, items []Item, lineAt func(int) int) ([]check.Value, error) {
 	texts := make([][]byte, len(items))
 	for i, it := range items {
 		texts[i] = text[it.Start:it.End]
@@ -242,6 +275,7 @@ func (s *Select) Values(file string, text []byte, items []Item, lineAt func(int)
 	if err != nil {
 		return nil, err
 	}
+	out := []check.Value{}
 	for i, it := range items {
 		for _, m := range matches[i] {
 			if m[2] < 0 {
@@ -251,7 +285,7 @@ func (s *Select) Values(file string, text []byte, items []Item, lineAt func(int)
 			if !it.Fixed {
 				line = lineAt(it.Start + m[0])
 			}
-			out = append(out, check.Value{Text: string(texts[i][m[2]:m[3]]), At: at(line)})
+			out = append(out, check.Value{Text: string(texts[i][m[2]:m[3]]), At: check.Location{File: file, Line: line}})
 		}
 	}
 	return out, nil

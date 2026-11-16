@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -362,5 +363,36 @@ func TestRunAppendsToTheProfile(t *testing.T) {
 	}
 	if err := run(t.TempDir(), filepath.Join(dir, "profile.out")); err == nil {
 		t.Error("a root without go.mod gave no error")
+	}
+}
+
+// cli exits 2 with the usage on a misuse, 1 with the error when run fails,
+// and 0 when it does not.
+func TestCliExitsByHowTheRunEnded(t *testing.T) {
+	dir := t.TempDir()
+	for name, data := range map[string]string{
+		"go.mod":      "module example.com/p\n\ngo 1.21\n",
+		"p.go":        sign,
+		"profile.out": signProfile,
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(data), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	missing := filepath.Join(dir, "missing.out")
+	for _, tc := range []struct {
+		args   []string
+		rc     int
+		stderr string
+	}{
+		{nil, 2, "usage: casecover <module root> <profile>\n"},
+		{[]string{dir, "profile.out", "extra"}, 2, "usage: casecover <module root> <profile>\n"},
+		{[]string{dir, missing}, 1, "casecover: open " + missing + ": no such file or directory\n"},
+		{[]string{dir, filepath.Join(dir, "profile.out")}, 0, ""},
+	} {
+		var errs bytes.Buffer
+		if rc := cli(tc.args, &errs); rc != tc.rc || errs.String() != tc.stderr {
+			t.Errorf("%q: exit %d, stderr %q; want %d, %q", tc.args, rc, errs.String(), tc.rc, tc.stderr)
+		}
 	}
 }

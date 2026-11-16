@@ -21,6 +21,22 @@ func readPyproject(rd *reading, data []byte) error {
 	if err != nil {
 		return err
 	}
+	for _, l := range pep508Lists(t) {
+		if err := requirements(rd, l.n, l.section); err != nil {
+			return err
+		}
+	}
+	for _, p := range poetryTables(t) {
+		if err := poetryTable(rd, p.n, p.section); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// pep508Lists are the lists of PEP 508 requirements of the pyproject.toml
+// t, in the order readPyproject reads them.
+func pep508Lists(t *core.Node) []part {
 	lists := []part{
 		{"project.dependencies", t.Member("project", "dependencies")},
 		{"build-system.requires", t.Member("build-system", "requires")},
@@ -35,11 +51,12 @@ func readPyproject(rd *reading, data []byte) error {
 	for _, group := range groups(t.Member("dependency-groups")) {
 		lists = append(lists, part{"dependency-groups", group})
 	}
-	for _, l := range lists {
-		if err := requirements(rd, l.n, l.section); err != nil {
-			return err
-		}
-	}
+	return lists
+}
+
+// poetryTables are Poetry's dependency tables of the pyproject.toml t:
+// the main and dev tables, then each group's.
+func poetryTables(t *core.Node) []part {
 	poetry := []part{
 		{"tool.poetry.dependencies", t.Member("tool", "poetry", "dependencies")},
 		{"tool.poetry.dev-dependencies", t.Member("tool", "poetry", "dev-dependencies")},
@@ -47,12 +64,7 @@ func readPyproject(rd *reading, data []byte) error {
 	for _, group := range groups(t.Member("tool", "poetry", "group")) {
 		poetry = append(poetry, part{"tool.poetry.group", group.Member("dependencies")})
 	}
-	for _, p := range poetry {
-		if err := poetryTable(rd, p.n, p.section); err != nil {
-			return err
-		}
-	}
-	return nil
+	return poetry
 }
 
 // part is a part of a file, by the name its values' origin gives it.
@@ -112,38 +124,63 @@ func requirement(rd *reading, s string, at func(off int) int, section string, pi
 	}
 	// rest stays a suffix of s, so len(s)-len(rest) is where it starts in
 	// s, which at turns into the line that offset is on.
-	rest = strings.TrimLeftFunc(rest, unicode.IsSpace)
-	if r, ok := strings.CutPrefix(rest, "["); ok {
-		_, rest, _ = strings.Cut(r, "]")
-		rest = strings.TrimLeftFunc(rest, unicode.IsSpace)
-	}
+	rest = afterExtras(strings.TrimLeftFunc(rest, unicode.IsSpace))
 	if url, ok := strings.CutPrefix(rest, "@"); ok {
 		url = strings.TrimLeftFunc(url, unicode.IsSpace)
 		text, _, _ := strings.Cut(url, ";")
 		return rd.add(found{text: strings.TrimSpace(text), section: section, role: Range, line: at(len(s) - len(url)), notLiteral: true})
 	}
+	spec, start := specifier(s, rest)
+	if spec == "" {
+		return nil
+	}
+	f := found{text: spec, section: section, role: Range, line: at(start), notLiteral: pip && strings.Contains(spec, "${")}
+	if pins && !f.notLiteral {
+		pin(&f, at, start)
+	}
+	return rd.add(f)
+}
+
+// afterExtras is rest after the extras a requirement's name may take, such
+// as [socks], and the blanks after them.
+func afterExtras(rest string) string {
+	if r, ok := strings.CutPrefix(rest, "["); ok {
+		_, rest, _ = strings.Cut(r, "]")
+		rest = strings.TrimLeftFunc(rest, unicode.IsSpace)
+	}
+	return rest
+}
+
+// specifier is the version specifier of the requirement s whose suffix
+// rest follows its name and extras, up to any marker, without the
+// parentheses PEP 508 allows around it, and the offset in s it starts at.
+func specifier(s, rest string) (spec string, start int) {
 	p, paren := strings.CutPrefix(rest, "(")
 	if paren {
 		rest = strings.TrimLeftFunc(p, unicode.IsSpace)
 	}
 	// The specifier starts where rest does, the last time rest is a
 	// suffix of s: what follows cuts its end.
-	start := len(s) - len(rest)
+	start = len(s) - len(rest)
 	rest, _, _ = strings.Cut(rest, ";")
-	spec := strings.TrimSpace(rest)
+	spec = strings.TrimSpace(rest)
 	if paren {
 		spec = strings.TrimSpace(strings.TrimSuffix(spec, ")"))
 	}
-	if spec == "" {
-		return nil
+	return spec, start
+}
+
+// pin makes f, a range that starts at the offset start of its requirement,
+// the version resolved when it pins one version, ==2.31.0, at the line at
+// gives for that version's offset.
+func pin(f *found, at func(off int) int, start int) {
+	v, ok := strings.CutPrefix(f.text, "==")
+	if !ok {
+		return
 	}
-	f := found{text: spec, section: section, role: Range, line: at(start), notLiteral: pip && strings.Contains(spec, "${")}
-	if v, ok := strings.CutPrefix(spec, "=="); pins && ok && !f.notLiteral {
-		if t := strings.TrimSpace(v); t != "" && !strings.ContainsAny(t, "=*, \t") {
-			f.text, f.role, f.line = t, Resolved, at(start+2+len(v)-len(strings.TrimLeftFunc(v, unicode.IsSpace)))
-		}
+	if t := strings.TrimSpace(v); t != "" && !strings.ContainsAny(t, "=*, \t") {
+		f.text, f.role, f.line = t, Resolved, at(start+2+len(v)-len(strings.TrimLeftFunc(v, unicode.IsSpace)))
 	}
-	return rd.add(f)
 }
 
 // pep508Name cuts the name a PEP 508 requirement starts with, after any
@@ -179,24 +216,32 @@ func poetryTable(rd *reading, n *core.Node, section string) error {
 		if !rd.is(key) {
 			continue
 		}
-		v := n.Vals[i]
-		items := []*core.Node{v}
-		if v.Shape == core.Sequence {
-			items = v.Items
+		if err := poetryValue(rd, n.Vals[i], section); err != nil {
+			return err
 		}
-		for _, item := range items {
-			if item.Shape == core.Mapping {
-				if item = item.Member("version"); item == nil {
-					continue
-				}
+	}
+	return nil
+}
+
+// poetryValue adds the range of v, the package's value in a Poetry table:
+// a string, a table's version, or the version of each table of a list.
+func poetryValue(rd *reading, v *core.Node, section string) error {
+	items := []*core.Node{v}
+	if v.Shape == core.Sequence {
+		items = v.Items
+	}
+	for _, item := range items {
+		if item.Shape == core.Mapping {
+			if item = item.Member("version"); item == nil {
+				continue
 			}
-			s, err := text(item, section+" of the package")
-			if err != nil {
-				return err
-			}
-			if err := rd.add(found{text: exactRange(s), section: section, role: Range, line: item.Line}); err != nil {
-				return err
-			}
+		}
+		s, err := text(item, section+" of the package")
+		if err != nil {
+			return err
+		}
+		if err := rd.add(found{text: exactRange(s), section: section, role: Range, line: item.Line}); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -215,61 +260,78 @@ func readRequirements(rd *reading, data []byte) error {
 	// A pin in pip-tools' input, a .in file, is what a person asks for,
 	// which pip-compile resolves into the .txt; only a .txt file's pin is
 	// resolved.
-	pins := !strings.HasSuffix(rd.src.File, ".in")
+	j := pipJoin{rd: rd, pins: !strings.HasSuffix(rd.src.File, ".in")}
+	if err := eachLine(data, j.line); err != nil || !j.pending {
+		return err
+	}
+	// The last line ends in a backslash: pip reads what it joined.
+	return j.end()
+}
+
+// pipJoin joins the lines of a requirements file as pip does, and reads
+// each requirement they join.
+type pipJoin struct {
+	rd   *reading
+	pins bool
 	// joined is the requirement so far, the lines a backslash joins, and
 	// starts holds where in it each of those lines starts, the first at 0,
 	// so a value is at the line its text starts on. pending is whether a
 	// backslash left joined open; first is its first line.
-	var joined []byte
-	var starts []int
-	first, pending := 0, false
-	end := func() error {
-		whole := string(joined)
-		joined, pending = joined[:0], false
-		if i := comment([]byte(whole)); i >= 0 {
-			whole = whole[:i]
-		}
-		lead := len(whole) - len(strings.TrimLeftFunc(whole, unicode.IsSpace))
-		whole = strings.TrimSpace(whole)
-		if whole == "" || whole[0] == '-' {
-			return nil
-		}
-		if i := option(whole); i >= 0 {
-			whole = whole[:i]
-		}
-		at := func(off int) int {
-			i := 0
-			for i+1 < len(starts) && starts[i+1] <= lead+off {
-				i++
-			}
-			return first + i
-		}
-		return requirement(rd, whole, at, "", true, pins)
+	joined  []byte
+	starts  []int
+	first   int
+	pending bool
+}
+
+// line joins line, the file's line n, to the requirement so far, and reads
+// the requirement once a line ends it.
+func (j *pipJoin) line(line []byte, n int) error {
+	if !j.pending {
+		j.first, j.starts = n, j.starts[:0]
 	}
-	err := eachLine(data, func(line []byte, n int) error {
-		if !pending {
-			first, starts = n, starts[:0]
-		}
-		starts = append(starts, len(joined))
-		isComment := bytes.HasPrefix(bytes.TrimLeftFunc(line, unicode.IsSpace), []byte("#"))
-		// pip strips every backslash at both ends of a line it continues.
-		if bytes.HasSuffix(line, []byte(`\`)) && !isComment {
-			joined, pending = append(joined, bytes.Trim(line, `\`)...), true
-			return nil
-		}
-		if isComment {
-			// pip puts a blank before a comment line, so the comment
-			// starts after a blank in the joined text too.
-			joined = append(joined, ' ')
-		}
-		joined = append(joined, line...)
-		return end()
-	})
-	if err != nil || !pending {
-		return err
+	j.starts = append(j.starts, len(j.joined))
+	isComment := bytes.HasPrefix(bytes.TrimLeftFunc(line, unicode.IsSpace), []byte("#"))
+	// pip strips every backslash at both ends of a line it continues.
+	if bytes.HasSuffix(line, []byte(`\`)) && !isComment {
+		j.joined, j.pending = append(j.joined, bytes.Trim(line, `\`)...), true
+		return nil
 	}
-	// The last line ends in a backslash: pip reads what it joined.
-	return end()
+	if isComment {
+		// pip puts a blank before a comment line, so the comment
+		// starts after a blank in the joined text too.
+		j.joined = append(j.joined, ' ')
+	}
+	j.joined = append(j.joined, line...)
+	return j.end()
+}
+
+// end reads the requirement joined so far, without its comment and its
+// options, and starts the next.
+func (j *pipJoin) end() error {
+	whole := string(j.joined)
+	j.joined, j.pending = j.joined[:0], false
+	if i := comment([]byte(whole)); i >= 0 {
+		whole = whole[:i]
+	}
+	lead := len(whole) - len(strings.TrimLeftFunc(whole, unicode.IsSpace))
+	whole = strings.TrimSpace(whole)
+	if whole == "" || whole[0] == '-' {
+		return nil
+	}
+	if i := option(whole); i >= 0 {
+		whole = whole[:i]
+	}
+	at := func(off int) int { return j.lineAt(lead + off) }
+	return requirement(j.rd, whole, at, "", true, j.pins)
+}
+
+// lineAt is the line of the file the offset off of the joined text is on.
+func (j *pipJoin) lineAt(off int) int {
+	i := 0
+	for i+1 < len(j.starts) && j.starts[i+1] <= off {
+		i++
+	}
+	return j.first + i
 }
 
 // option is where the options after a requirement start, such as
