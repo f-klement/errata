@@ -21,3 +21,5 @@ coverage.product.out
 /scripts/loccensus/loccensus
 /scripts/slowtests/slowtests
 /scripts/testreach/testreach
+# Python bytecode, written when a hook or script is imported rather than run.
+__pycache__/
