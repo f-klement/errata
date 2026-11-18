@@ -12,7 +12,7 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.1.0
 	github.com/theory/jsonpath v0.12.3
-	github.com/yuin/goldmark/v2 v2.1.11
+	github.com/yuin/goldmark/v2 v2.1.16
 	go.yaml.in/yaml/v2 v2.4.5
 	go.yaml.in/yaml/v3 v3.0.6
 	golang.org/x/mod v0.43.0
