@@ -233,6 +233,7 @@ internal/provider                  85        85      5
 internal/report                    85        85      5      mutant 8.7 measuring 29 measured 3010608824
 internal/rule                      85        85      5      mutant 15.7 measuring 59 measured 3010608824
 internal/semver                    85        85      5
+internal/treecopy                  85        85      5
 # The gate's tools under scripts/, in scope since a mutant of package main
 # builds against its own package (scripts/goshim.sh). Each measured alone on
 # builder on 2026-11-14, whole, with case expressions covered; the times are

@@ -66,6 +66,7 @@ func TestValidateRule(t *testing.T) {
 		{"live rule", func(c *Check) { c.Scope = ScopeLive }, `scope "live": a rule reads files, so its scope is repo; a live extractor comes with a provider`},
 		{"applied rule", func(c *Check) { c.Scope = ScopeApplied }, `scope "applied": a rule reads files, so its scope is repo`},
 		{"timeout on a rule", func(c *Check) { c.Timeout = time.Second }, "timeout applies to a program check and a generated check"},
+		{"in_place on a rule", func(c *Check) { c.InPlace = true }, "in_place applies to a program check and a generated check"},
 		{"no extractor", func(c *Check) { c.Rule().Extractors = nil; c.Rule().Agree = nil; c.Rule().Assert = "x" }, "extract is required for a rule"},
 		{"neither agree nor assert", func(c *Check) { c.Rule().Agree = nil }, "a rule needs agree or assert"},
 		{"empty agree", func(c *Check) { c.Rule().Agree = []string{} }, "a rule needs agree or assert"},

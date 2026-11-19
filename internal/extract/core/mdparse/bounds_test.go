@@ -155,13 +155,19 @@ func markdownBounds(t *testing.T, large bool) {
 		{name: "a line in an HTML block at the limit", body: "<pre>\n" + strings.Repeat("b", MaxHTMLLine-1) + "\n</pre>\n\na\n", large: true},
 		{name: "a line of HTML over the limit", body: "a\n\n<x" + strings.Repeat(" a=b", MaxHTMLLine/4) + "\n", refused: "README.md: line 3: a line of HTML of 1048579 bytes, over the limit of 1048576" + tail},
 		{name: "a line in an HTML block over the limit", body: "<pre>\n" + strings.Repeat("a", MaxHTMLLine+1) + "\n", refused: "README.md: line 2: a line of HTML of 1048578 bytes, over the limit of 1048576" + tail},
-		// Time: a comment opened on every line, which goldmark scans to the
-		// end of the paragraph for each: quadratic, 54 s for 256 KB. The
-		// guard looks at the clock on every call into a parser goldmark
-		// makes, so the parse ends soon after its limit.
-		{name: "unclosed comments", body: strings.Repeat("a <!-- b\n", 50_000), parse: 100 * time.Millisecond,
+		// Time: code spans opened by runs of backticks, each run longer than
+		// the one before, so none closes. goldmark scans the rest of the
+		// paragraph for a closer from each run, and keeps no record of the
+		// scans: 3000 runs in 4.5 MB take 2.4 s on the build node and 3.3 s
+		// on a node of two cores, cubic in the runs. The guard looks at the
+		// clock on every call into a parser goldmark makes, so the parse
+		// ends soon after its limit. Planted break: guardedInline.Parse not
+		// looking at the clock, which let the parse run 2.4 s before a later
+		// look refused it. Unclosed comments and link destinations cost the
+		// same until goldmark v2.1.16, which scans past each only once.
+		{name: "unclosed code spans", body: codeSpans(3000, " "), parse: 100 * time.Millisecond,
 			refused: "README.md: parsing the Markdown took more than 100ms, the limit" + tail, bound: time.Second},
-		{name: "unclosed link destinations", body: strings.Repeat("[a](<b ", 50_000), parse: 100 * time.Millisecond,
+		{name: "unclosed code spans across lines", body: codeSpans(3000, "\n"), parse: 100 * time.Millisecond,
 			refused: "README.md: parsing the Markdown took more than 100ms, the limit" + tail, bound: time.Second},
 		// One tag whose attributes run over a line of 16 MiB. goldmark v1
 		// matched it with a regular expression, which took 14 s, and errata
@@ -251,6 +257,16 @@ func readProse(body string, limit int64, parse time.Duration) error {
 		return errors.New("README.md: no a in the prose")
 	}
 	return nil
+}
+
+// codeSpans is n runs of backticks, of 1 to n of them, each after an a and
+// followed by sep. The a keeps a line from starting with a fence.
+func codeSpans(n int, sep string) string {
+	var b strings.Builder
+	for i := 1; i <= n; i++ {
+		b.WriteString("a" + strings.Repeat("`", i) + sep)
+	}
+	return b.String()
 }
 
 // quoteLines is n lines of text in depth block quotes.

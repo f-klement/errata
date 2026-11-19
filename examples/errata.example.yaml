@@ -1032,8 +1032,10 @@ checks:
 
   # Claim: the migrations are numbered in sequence. A program check runs any program; this one
   # sets its own run and timeout, and reads the tree from ERRATA_ROOT, so its witness
-  # migration-gap, a copy of the directory with 002 missing, shows it can fail.
-  # See docs/reference.md#checks; #witness; #the-check-protocol.
+  # migration-gap, a copy of the directory with 002 missing, shows it can fail. The script keeps
+  # the last number it saw in .cache/migrations for its next run, and a write in a copy of the
+  # tree is gone when the check ends, so in_place keeps it in the repository.
+  # See docs/reference.md#checks; #witness; #the-check-protocol; #in_place.
   - id: migrations-are-numbered
     reason: >
       The migrator applies files in name order and records the last number. A gap or a number
@@ -1041,6 +1043,7 @@ checks:
     scope: repo
     run: [sh, scripts/check-migrations.sh]
     timeout: 10s
+    in_place: true
     witness: [migration-gap]
 
   # Claim: every TODO in the API's code names its issue. The check writes no run, so it runs
@@ -1088,8 +1091,10 @@ checks:
       max_bytes: 4096
 
   # Claim: the cluster runs the tag the chart names. A live check asks the running system, so
-  # errata skips it until a provider can read one, and the coverage line names the gap.
-  # See docs/reference.md#scopes.
+  # errata skips it until a provider can read one, and the coverage line names the gap. Its
+  # script writes the cluster's address to .cache/cluster, which the live check after it reads,
+  # so in_place keeps it in the repository, alone, rather than in a copy of the tree.
+  # See docs/reference.md#scopes; #in_place.
   - id: deployed-image-matches-chart
     reason: >
       Argo can report Synced while a hand edit pins an older image. The chart then describes a
@@ -1097,6 +1102,7 @@ checks:
     scope: live
     run: [sh, checks/live/deployed-image.sh]
     timeout: 20s
+    in_place: true
 
   # Claim: the public host answers on HTTPS. Another live check, this one taking defaults.run.
   # See docs/reference.md#scopes; #defaults.

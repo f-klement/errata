@@ -94,15 +94,24 @@ A repo check runs on the files. A live or applied check needs a provider for
 a running system, which errata does not have yet, so errata skips it and
 prints a line naming the check, its scope and the gap, such as "skipped
 pinned-image (live): no provider can read a live system". A program check
-runs with the repository root as its working directory.
+runs with the repository root as its working directory. When two or more
+program or generated checks that last took a second or more can run at
+once, each runs in a copy of the repository of its own, made in the user's
+cache with the working tree's changes and ignored files on it, so nothing
+one writes reaches the repository or another check; in_place: true keeps a
+check in the repository. A repository whose ignored files hold more than
+32 MiB runs every check in place.
 
-errata check never applies anything. It writes no file but the ones --output
-names, and it prints the report whatever the run found.
+errata check never applies anything. Outside the user's cache it writes no
+file but the ones --output names; in the cache it keeps the copies while
+they run and how long each check took. It prints the report whatever the
+run found.
 
 Flags
   --root DIR (default .)
-      The repository root. Checks run with it as their working directory,
-      and errata reads <root>/errata.yaml unless --config names a file.
+      The repository root. Checks run with it, or a copy of it, as their
+      working directory, and errata reads <root>/errata.yaml unless
+      --config names a file.
   --config FILE, -c FILE (default <root>/errata.yaml)
       The config file. A relative FILE is read from the working directory,
       not from --root, as a shell redirect is. --root still sets where the

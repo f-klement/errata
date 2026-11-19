@@ -295,6 +295,14 @@ func TestParseRejectsRules(t *testing.T) {
 		"zero timeout on a rule": {
 			head + ex + "  agree: [v]\n  timeout: 0s\n", "timeout applies to a program check and a generated check: a rule's extractors take no timeout",
 		},
+		"in_place on a rule": {
+			head + ex + "  agree: [v]\n  in_place: true\n", "in_place applies to a program check and a generated check: a rule only reads",
+		},
+		// in_place: false leaves the field false, which validation reads
+		// as no key. Planted break: inPlace refusing only a true value.
+		"in_place false on a rule": {
+			head + ex + "  agree: [v]\n  in_place: false\n", "in_place applies to a program check and a generated check",
+		},
 		"extractor with no kind": {
 			head + "  extract: {v: {}}\n  agree: [v]\n", `extractor "v": an extractor sets exactly one of yaml, json, jsonc, json5, toml, regex`,
 		},

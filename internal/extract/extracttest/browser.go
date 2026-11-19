@@ -644,6 +644,38 @@ var BrowserShapes = []string{
 	"<h1><optgroup>a<optgroup>b</optgroup>c</optgroup>d</h1>",
 }
 
+// FramesetShapes are pages with a frameset or a frame, which BrowserShapes
+// holds. A frameset takes the page while the frameset-ok flag holds, and a
+// browser draws nothing of it; elsewhere it is ignored, as a frame always
+// is outside a frameset (#278: the first three are the ticket's).
+// StandardReads holds the shapes where x/net decides otherwise.
+var FramesetShapes = []string{
+	"<pre><frameset>\nx",
+	"x<frameset><pre>a</frameset>b",
+	"<frameset><pre>a</pre>",
+	"<pre><frame>\nx",
+	"<h1><b><frame></b>x</h1>",
+	"<h1></h1><frameset><h2>b</h2>",
+	"<h1><frameset><pre>a",
+	"<div> <frameset><pre>a",
+	"<title>t</title><frameset><pre>a",
+	"<template></template><frameset><pre>a",
+	"<noscript></noscript><template></template><frameset><pre>a",
+	"<input type=HIDDEN><frameset><pre>a",
+	"<input type=a type=hidden><frameset><pre>a", // the tokenizer keeps the first type
+	"<input><frameset><pre>a",
+	"</br><frameset><pre>a",
+	"<div><svg> </svg><frameset><pre>a",
+	"<svg>x</svg><frameset><pre>a",
+	"<svg><frameset></svg><pre>a",
+	"<frameset><frame></frameset><noframes>n</noframes><template><pre>a</template><pre>b",
+	"&#32;<frameset><pre>a",
+	"<div>&#32;<frameset><pre>a",
+	"<div>&Tab;&NewLine;<frameset><pre>a",
+	"<svg><![CDATA[&#32;]]></svg><frameset><pre>a",
+	"<template><frameset><svg></frameset><style>a</template><pre>z</pre>", // the svg stays open, so its style is no raw text (the planted break: a frameset opened in the content)
+}
+
 // BrowserRefusals are the shapes of BrowserShapes a reader refuses, each
 // with its refusal's words: every other shape it must read.
 var BrowserRefusals = map[string]string{
@@ -794,4 +826,16 @@ func templates(src string) int {
 	}
 	walk(doc)
 	return count
+}
+
+// FramedHeadings is a reader's headings less the empty ones when a
+// frameset took the page (htmlparse.Scanner.Framed). A browser removes the
+// body the frameset replaces, and the headings in it; that body holds no
+// text, so each heading a reader ended there is empty and names nothing. A
+// heading with text stays, for the comparison to catch.
+func FramedHeadings(headings []string, framed bool) []string {
+	if !framed {
+		return headings
+	}
+	return slices.DeleteFunc(headings, func(h string) bool { return h == "" })
 }

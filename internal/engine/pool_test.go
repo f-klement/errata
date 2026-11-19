@@ -155,14 +155,15 @@ func (v *events) add(s string) {
 	v.log = append(v.log, s)
 }
 
-// A program check, and a check of a kind the engine has no row for, runs
-// alone: every job before it has ended when it starts, and none after it
-// starts before it ends, since a program may write what a rule reads. The
-// rules on either side still run at once. Planted break: alone always
-// false, which started the program beside the rules before it.
+// A program check, and a check of a kind the engine has no row for, that
+// runs in the repository runs alone: every job before it has ended when it
+// starts, and none after it starts before it ends, since a program may
+// write what a rule reads. The rules on either side still run at once.
+// Planted break: alone always false, which started the program beside the
+// rules before it.
 func TestAProgramRunsAlone(t *testing.T) {
 	checks := rules("a", "b", "c", "d", "e", "f")
-	checks = slices.Insert(checks, 2, check.Check{ID: "program", Scope: check.ScopeRepo, Kind: &check.Program{}})
+	checks = slices.Insert(checks, 2, check.Check{ID: "program", Scope: check.ScopeRepo, Kind: &check.Program{}, InPlace: true})
 	checks = slices.Insert(checks, 5, check.Check{ID: "kindless", Scope: check.ScopeRepo})
 	var log events
 	var f flight
@@ -401,6 +402,36 @@ func TestAPanicOnThePoolReachesTheCaller(t *testing.T) {
 	}()
 	e.Execute(t.Context(), rules("a", "b", "c"))
 	t.Fatal("Execute returned")
+}
+
+// A panic stops the run at the next check alone: it does not start, since
+// the run is to end as it ended when every check ran on the caller's
+// goroutine. Planted breaks: runAll that ran on past the panic, which
+// started the program; a job that let go of the repository before its
+// panic was caught, which started it in most runs.
+func TestAPanicStopsTheRunBeforeACheckAlone(t *testing.T) {
+	var ran atomic.Int32
+	e := &Engine{workers: 2, Run: func(_ context.Context, _ string, c check.Check) check.Result {
+		if c.ID == "program" {
+			ran.Add(1)
+		}
+		if c.ID == "b" {
+			panic(errBoom)
+		}
+		return check.Result{Check: c, Verdict: check.VerdictTrue}
+	}}
+	checks := append(rules("a", "b"), check.Check{ID: "program", Scope: check.ScopeRepo, Kind: &check.Program{}, InPlace: true})
+	// The order it guards is between goroutines, so one run may pass by
+	// luck: 100 runs fail on the break nearly every time.
+	for range 100 {
+		func() {
+			defer func() { _ = recover() }()
+			e.Execute(t.Context(), checks)
+		}()
+	}
+	if n := ran.Load(); n != 0 {
+		t.Errorf("the program after the panic ran %d times in 100 runs", n)
+	}
 }
 
 // errBoom is what a check panics with in a test.

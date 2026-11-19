@@ -60,6 +60,9 @@ type checkEntry struct {
 	Timeout string   `json:"timeout,omitempty"`
 	// Witness names the fixtures the check must report false on.
 	Witness []string `json:"witness,omitempty"`
+	// InPlace keeps a program or generated check in the repository rather
+	// than in a copy of the tree (ADR 0019).
+	InPlace bool `json:"in_place,omitempty"`
 
 	Extract    map[string]extract.Spec `json:"extract,omitempty"`
 	Agree      []string                `json:"agree,omitempty"`
@@ -481,6 +484,7 @@ func build(raw json.RawMessage, def defaults, newExtractor Builder) (check.Check
 	var kerrs []error
 	if row != nil {
 		c.Timeout, errs = timeout(row, e.Timeout, errs)
+		c.InPlace, errs = inPlace(row, keys, e.InPlace, errs)
 		c.Kind, kerrs = row.build(e, keys, def, newExtractor)
 		errs = append(errs, kerrs...)
 	}
@@ -569,6 +573,9 @@ type kindRow struct {
 	// noTimeout refuses the timeout key on a kind that takes none, whatever
 	// its value, or is nil when the kind takes one.
 	noTimeout error
+	// noInPlace refuses the in_place key on a kind that takes none, as
+	// noTimeout does timeout.
+	noInPlace error
 	// build builds the kind from the entry e, whose keys as written are
 	// keys, with the defaults def and the extractors of newExtractor.
 	build func(e checkEntry, keys map[string]json.RawMessage, def defaults, newExtractor Builder) (check.Kind, []error)
@@ -581,7 +588,7 @@ type kindRow struct {
 // the default run.
 var kindRows = []kindRow{
 	{is: "a program check", kind: &check.Program{}, keys: []string{"run"}, isDefault: true, build: buildProgram},
-	{is: "a rule", kind: &check.Rule{}, keys: ruleKeys, noTimeout: check.ErrRuleTimeout, build: buildRuleKind},
+	{is: "a rule", kind: &check.Rule{}, keys: ruleKeys, noTimeout: check.ErrRuleTimeout, noInPlace: check.ErrRuleInPlace, build: buildRuleKind},
 	{is: "a generated check", kind: &check.Generated{}, keys: []string{"generated"}, build: buildGeneratedKind},
 }
 
@@ -693,6 +700,18 @@ func timeout(row *kindRow, written string, errs []error) (time.Duration, []error
 		return d, append(errs, fmt.Errorf("timeout is %s: write a positive duration such as 10s, or leave the key out for the default of %s", written, DefaultTimeout))
 	}
 	return parsed, errs
+}
+
+// inPlace is the in_place of an entry of the kind row, written as the
+// entry's keys hold it. On a kind that takes none the key is refused
+// whatever its value, since in_place: false would load as a key that does
+// nothing, and the check keeps false, so validation does not refuse it a
+// second time.
+func inPlace(row *kindRow, keys map[string]json.RawMessage, written bool, errs []error) (bool, []error) {
+	if _, ok := keys["in_place"]; ok && row.noInPlace != nil {
+		return false, append(errs, row.noInPlace)
+	}
+	return written, errs
 }
 
 // buildProgram builds a program check: its own run, or the default run

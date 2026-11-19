@@ -53,6 +53,7 @@ func scanReadsIn(src string, xnet bool) (extracttest.BrowserRead, error) {
 		}
 	}
 	out.StandardOnly, out.Rebuilt, out.XNetMoved = s.StandardOnly(), s.nest.rebuilds > 0, s.XNetMovesText()
+	out.Headings = extracttest.FramedHeadings(out.Headings, s.Framed())
 	if err := s.Err(); err != nil {
 		return out, err
 	}

@@ -23,6 +23,11 @@ func FuzzHTML(f *testing.F) {
 			f.Add(s, uint8(i))
 		}
 	}
+	for _, s := range extracttest.FramesetShapes {
+		for i := range specs {
+			f.Add(s, uint8(i))
+		}
+	}
 	f.Fuzz(func(t *testing.T, data string, which uint8) {
 		s := specs[int(which)%len(specs)]
 		s.File = "f"

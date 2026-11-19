@@ -19,6 +19,18 @@ import (
 // A seeker only narrows where find searches, so a literal set that holds
 // more than it must costs time and never a match. What it may never do is
 // leave out a literal some match holds; litsOf errs toward knowing nothing.
+//
+// A pattern whose best literal is one byte, as the : of
+// ([0-9]{6,}:[A-Za-z0-9_-]{25,}), gains little from it: a : is on 64457 of
+// the 269076 lines of Endpaper's backend Python, six digits in a row on
+// 1501. When such a pattern cannot cross a line and requires minRun or more
+// bytes in a row of one ASCII class of at most maxClass bytes, its seeker
+// looks for that run as well (runOf), and find searches only a line that
+// holds both the run and a literal (both). Neither the run nor the literal
+// is known to be the rarer: on a CSV of numbers the digits are on every
+// line and the : on none. So a line is searched only where both are, and
+// a search is never slower than a search near the literal alone but for
+// the scan for runs.
 
 const (
 	// maxLits is the most texts a node's set may hold: a class or an
@@ -30,12 +42,24 @@ const (
 	// maxSpan is the most newlines a match may hold for find to search near
 	// a literal: it searches that many lines either side of the literal's.
 	maxSpan = 3
+	// minRun is the fewest bytes of a class in a row a seeker looks for:
+	// four digits are on 4202 of the lines of Endpaper's backend Python,
+	// three on 12380. minLit is the shortest literal whose seeker looks
+	// for no run as well.
+	minRun = 4
+	minLit = 2
+	// maxClass is the most bytes a class of a run may hold. Four bytes of
+	// \w, or of [A-Za-z0-9_-], in a row are on nearly every line of any
+	// text, so a run of a wider class narrows no search.
+	maxClass = 16
 )
 
-// seeker is the literals one of which every match of a pattern holds, and
-// span, the most newlines a match holds.
+// seeker is the literals one of which every match of a pattern holds, the
+// run of a class every match holds, or both, and span, the most newlines a
+// match holds.
 type seeker struct {
 	lits [][]byte
+	run  *classRun // nil for a seeker of literals alone
 	span int
 }
 
@@ -49,11 +73,27 @@ func seekerOf(pattern string) *seeker {
 		return nil
 	}
 	span := newlines(parsed)
-	lits := shorten(litsOf(parsed).need)
+	need := litsOf(parsed).need
+	if run := runSeeker(parsed, span, need); run != nil {
+		return run
+	}
+	lits := shorten(need)
 	if span > maxSpan || lits == nil {
 		return nil
 	}
 	return &seeker{lits: lits, span: span}
+}
+
+// runSeeker is the seeker of the run of a class every match of re holds,
+// with the literals of need when it has any: nil when a match may cross a
+// line, the run is shorter than minRun, or the literals of need are minLit
+// bytes long or longer.
+func runSeeker(re *syntax.Regexp, span int, need []string) *seeker {
+	run := runOf(re)
+	if length, _ := score(need); span > 0 || run.k < minRun || length >= minLit {
+		return nil
+	}
+	return &seeker{lits: shorten(need), run: &run}
 }
 
 // holdsOp reports whether re or a node below it is one of ops.
@@ -439,6 +479,132 @@ func asBytes(set []string) [][]byte {
 	return out
 }
 
+// classRun is k or more bytes in a row, each in set: size is how many
+// bytes set holds. A zero classRun is no run.
+type classRun struct {
+	set  [256]bool
+	size int
+	k    int
+}
+
+// runOf is the run of a class every match of re holds: the longest of
+// the narrowest class that a node requires, as a class repeated at least
+// k times. A class that holds a rune past ASCII or more than maxClass
+// bytes, a run of fewer than minRun bytes and the subs of an alternation
+// are no run; runOf errs toward knowing nothing, as litsOf does.
+func runOf(re *syntax.Regexp) classRun {
+	switch re.Op {
+	case syntax.OpCharClass:
+		return classRunOf(re.Rune, 1)
+	case syntax.OpCapture:
+		return runOf(re.Sub[0])
+	case syntax.OpPlus, syntax.OpRepeat:
+		return repeatRun(re)
+	case syntax.OpConcat:
+		return concatRun(re.Sub)
+	default:
+		return classRun{}
+	}
+}
+
+// repeatRun is the run a repeat requires: its class's run of its fewest
+// repeats, its node's run when the node is not a class, and none when it
+// may repeat no times.
+func repeatRun(re *syntax.Regexp) classRun {
+	fewest, _ := bounds(re)
+	switch sub := re.Sub[0]; {
+	case fewest == 0:
+		return classRun{}
+	case sub.Op == syntax.OpCharClass:
+		return classRunOf(sub.Rune, fewest)
+	default:
+		return runOf(sub)
+	}
+}
+
+// concatRun is the better of the runs the nodes of a concatenation
+// require.
+func concatRun(subs []*syntax.Regexp) classRun {
+	best := classRun{}
+	for _, sub := range subs {
+		best = betterRun(best, runOf(sub))
+	}
+	return best
+}
+
+// betterRun is the run of a and b that a seeker looks for: one of minRun
+// bytes or more, then the narrower class, then the longer run. A narrower
+// class is rarer in text: digits are fewer than the letters around them.
+func betterRun(a, b classRun) classRun {
+	switch {
+	case b.k < minRun:
+		return a
+	case a.k < minRun, b.size < a.size, b.size == a.size && b.k > a.k:
+		return b
+	default:
+		return a
+	}
+}
+
+// classRunOf is the run of k of the class ranges, none when it holds a
+// rune past ASCII or more than maxClass bytes. regexp reads an ASCII
+// rune as its one byte, and any other byte as part of a longer rune or
+// as U+FFFD, so a match holds k bytes of the set in a row.
+func classRunOf(ranges []rune, k int) classRun {
+	run := classRun{k: k}
+	for pair := range slices.Chunk(ranges, 2) {
+		lo, hi := pair[0], pair[len(pair)-1]
+		if hi >= utf8.RuneSelf {
+			return classRun{}
+		}
+		for r := lo; r <= hi; r++ {
+			run.set[r] = true
+			run.size++
+		}
+	}
+	if run.size > maxClass {
+		return classRun{}
+	}
+	return run
+}
+
+// index is where the first k bytes of the set in a row start in data at
+// or after pos, -1 for nowhere: n counts the bytes of the set in a row,
+// and the run ends at the byte that makes them k. Nowhere is
+// slices.IndexFunc's own -1, so no fault in the count can report a place
+// for a run that is not there.
+func (r *classRun) index(data []byte, pos int) int {
+	n := 0
+	last := slices.IndexFunc(data[pos:], func(c byte) bool {
+		if n++; !r.set[c] {
+			n = 0
+		}
+		return n == r.k
+	})
+	if last < 0 {
+		return last
+	}
+	return pos + last + 1 - r.k
+}
+
+// places is how many places the seeker looks for: its literals, then its
+// run when it has one.
+func (s *seeker) places() int {
+	if s.run != nil {
+		return len(s.lits) + 1
+	}
+	return len(s.lits)
+}
+
+// index is where place i of the seeker first occurs in data at or after
+// pos, -1 for nowhere.
+func (s *seeker) index(i int, data []byte, pos int) int {
+	if i == len(s.lits) {
+		return s.run.index(data, pos)
+	}
+	return indexFrom(data, pos, s.lits[i])
+}
+
 // found is where each literal of a seeker next occurs in one text, so a
 // literal is looked for again only once the search has passed it.
 type found struct {
@@ -467,20 +633,61 @@ func (r *clockedReader) foundFor(data []byte, pos, n int) *found {
 	return f
 }
 
-// next returns where the first literal at or after pos starts in data, -1
-// when none does.
+// next returns where the first literal or run at or after pos starts in
+// data, -1 when none does. A seeker of both returns the first place of a
+// line that holds both at or after pos (both).
 func (s *seeker) next(data []byte, pos int, clock *clockedReader) int {
-	f := clock.foundFor(data, pos, len(s.lits))
+	f := clock.foundFor(data, pos, s.places())
+	n := len(s.lits)
+	switch {
+	case s.run == nil:
+		return s.firstOf(f, data, pos, 0, n)
+	case n == 0:
+		return s.firstOf(f, data, pos, n, n+1)
+	default:
+		return s.both(f, data, pos)
+	}
+}
+
+// firstOf is where the first of places from to to occurs at or after pos,
+// -1 for none, looking again for a place the record has before pos.
+func (s *seeker) firstOf(f *found, data []byte, pos, from, to int) int {
 	first := -1
-	for i, lit := range s.lits {
+	for i := from; i < to; i++ {
 		if f.at[i] != -1 && f.at[i] < pos {
-			f.at[i] = indexFrom(data, pos, lit)
+			f.at[i] = s.index(i, data, pos)
 		}
 		if at := f.at[i]; at >= 0 && (first < 0 || at < first) {
 			first = at
 		}
 	}
 	return first
+}
+
+// both is the earlier of a literal and a run at or after pos in the first
+// line that holds both there, -1 for none. While the first literal and
+// the first run are on two lines, no line before the later one's holds
+// both, so the look goes on from the start of that line, which the record
+// then knows as its last look. That start is past pos; the look moves on
+// by a byte at least should a scan report a place before it.
+func (s *seeker) both(f *found, data []byte, pos int) int {
+	n := len(s.lits)
+	for {
+		lit := s.firstOf(f, data, pos, 0, n)
+		if lit < 0 {
+			return lit
+		}
+		run := s.firstOf(f, data, pos, n, n+1)
+		if run < 0 {
+			return run
+		}
+		a, b := min(lit, run), max(lit, run)
+		if bytes.IndexByte(data[a:b], '\n') < 0 {
+			return a
+		}
+		pos = max(pos+1, lineStart(data, b))
+		f.from = pos
+	}
 }
 
 // indexFrom is where lit first occurs in data at or after pos, -1 for
@@ -504,13 +711,19 @@ func indexFrom(data []byte, pos int, lit []byte) int {
 // the end of the cut as they see the newline; a pattern with \A or \z,
 // which would not, has no seeker. A search from past the start of the
 // window looks back from there as Search.search does.
+//
+// No match starts at the end of the text, since a match holds a literal or
+// a run, and the window is of a place at or after pos whatever place next
+// reports, so each turn moves pos past the window's line. A fault in a
+// seeker's scan then costs matches, which the property test sees, rather
+// than a search that never ends.
 func (e Search) findNear(data []byte, start int, clock *clockedReader) []int {
 	for pos := start; ; {
 		c := e.seek.next(data, pos, clock)
-		if c < 0 {
+		if c < 0 || pos == len(data) {
 			return nil
 		}
-		w := e.windowOf(data, c, clock)
+		w := e.windowOf(data, max(c, pos), clock)
 		if clock.stopped {
 			return nil
 		}

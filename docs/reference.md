@@ -15,6 +15,7 @@ new user needs it, with four checks worked through from the files to the fix, an
 - [Checks](#checks)
   - [`generated`](#generated)
   - [`witness`](#witness)
+  - [`in_place`](#in_place)
 - [Rules](#rules)
   - [`compare`](#compare)
   - [`assert`](#assert)
@@ -181,14 +182,14 @@ has `generated`. A check with two of them does not load, and neither does a chec
 the file sets no default run. A file with no checks does not load
 either: it would run nothing and pass.
 
-A program check is code. Its `run`, or the [default run](#defaults) it takes, is a program
-errata starts, and so is a generated check's generator. Each runs from the repository root with
-the environment of the job that runs errata, secrets included, plus the variables
-[the check protocol](#the-check-protocol) names. A rule's extractors read files and start
-nothing. On a ref you do not trust, such as a merge request from a fork, the config's
-programs, its default `run` and its generators are that ref's, and so are the scripts they start.
-Run errata there in a job without secrets, or with a config of rules only that a ref you trust
-holds, named with `--config`: the ref's own `errata.yaml` can add a `run`.
+A program check is code. Its `run`, or the [default run](#defaults) it takes, is a program errata
+starts, and so is a generated check's generator. Each runs from the repository root, or from a copy
+of it ([`in_place`](#in_place)), with the environment of the job that runs errata, secrets
+included, plus the variables [the check protocol](#the-check-protocol) names. A rule's extractors
+read files and start nothing. On a ref you do not trust, such as a merge request from a fork, the
+config's programs, its default `run` and its generators are that ref's, and so are the scripts they
+start. Run errata there in a job without secrets, or with a config of rules only that a ref you
+trust holds, named with `--config`: the ref's own `errata.yaml` can add a `run`.
 
 Every check has these keys:
 
@@ -208,6 +209,7 @@ Every check has these keys:
 | `allow_empty` | no | rule only: the extractors that may find no value, such as `[client]` |
 | `skip_not_literal` | no | rule only: the extractors whose not literal values are left out, such as `[php]`; only an extractor that can return a not literal value may be listed (see [Values a file only computes](#values-a-file-only-computes)) |
 | `normalize` | no | rule only: `trim`, `lower` or both, in order, applied before `agree` compares or `assert` sees the values |
+| `in_place` | no | program check and generated check: `true` runs the check in the repository, alone, rather than in a copy of the tree beside the others; default `false`: see [`in_place`](#in_place). A rule does not load with it |
 | `witness` | no | scope `repo` only: one to eight fixtures under `.errata/witness/` on which the check must report false, such as `[toolchain-drifts]`: see [`witness`](#witness) |
 
 ### `generated`
@@ -367,6 +369,97 @@ fixture as in the repository, and can bump both sides of a planted break into ag
 `.errata/witness/` among the paths it ignores.
 [ADR 0015](adr/0015-a-check-names-witnesses-on-which-it-must-report-false.md) says why the
 witnesses run on every `errata check` and why a fixture is a tree of the repository.
+
+### `in_place`
+
+Rules run at once on a pool as wide as the CPUs errata may use. A program check or a generated
+check may write to the tree, so when it runs in the repository it runs alone: every check before
+it ends first, and none after it starts until it ends. When a config has two or more of them and
+the pool has two workers or more, errata runs each one, and each of their witnesses, in a copy of
+the repository of its own, on the pool beside the rules. Nothing a check writes in its copy
+reaches the repository or another check, and the copy is removed when the check ends.
+[ADR 0019](adr/0019-a-program-check-runs-in-a-copy-of-the-tree.md) says why.
+
+A program check whose last run took less than a second gains less from running beside another
+than its copy costs, so errata copies a check only when it has no record of the check or its last
+run took 1 s or more. The record is `durations.json` in the repository's directory of the user's
+cache (below), a map from each program and generated check's name in the report to how long its
+last run took. errata writes it after each run that used copies, to a file beside it renamed over
+it, so two runs at once read one record or the other whole. A record that is missing, cannot be
+read or does not decode is no record, so every check copies, as in a CI job that starts with an
+empty cache.
+
+The copy holds what the disk holds, not only what is committed. It is a git repository of its
+own on the repository's branch, made in the user's cache (`$XDG_CACHE_HOME/errata` or
+`~/.cache/errata` on Linux, `~/Library/Caches/errata` on macOS, `%LocalAppData%\errata` on
+Windows), in a directory for the repository named by a hash of its path. The copy borrows the
+repository's objects through git's alternates and takes a copy of its config, its refs, its
+stash and `HEAD`, so a branch, a stash or a key set in the copy is the copy's own. On it errata
+lays:
+
+- every file the working tree changed, added or deleted, staged or not, every untracked file git
+  does not ignore, and every file git assumes unchanged or skips (`git update-index
+  --assume-unchanged` or `--skip-worktree`), copied with its mode, and a symlink as the same
+  symlink;
+- git's index, when a tracked file differs from `HEAD` or git assumes one unchanged or skips it,
+  refreshed in the copy, so `git ls-files`, `git status` and `git diff-files` in the copy print
+  what they print in the repository;
+- every entry git ignores, such as `node_modules/`, a virtual environment or a `.env`, copied.
+
+So a check finds the dependencies it needs installed, and nothing it writes, into an ignored
+entry or anywhere else, reaches the repository. The ignored entries may hold 32 MiB at most: a
+repository whose ignored files hold more, such as a workstation's tree with build output or a
+nested clone, runs every check in place, as before. When a check in place grows them past 32
+MiB, the checks after it run in place too. A copy costs about 0.1 s and the size of the tracked
+tree, whatever the size of `.git`.
+
+The pool has one directory for each of its workers, `copy-0`, `copy-1` and so on, and each check
+in a copy takes its worker's, emptied before it and removed after it. So a check runs at the same path from
+one run to the next, and a cache keyed by the directory, such as Go's build cache, stays warm.
+A second errata on the same repository at once takes spare directories, `spare-0`, `spare-1` and
+so on, locked the same way. On Windows, which has no such lock, every copy is in a new directory
+of its own. A check in a copy sees these differences from one in place: its working directory
+and `ERRATA_ROOT` are the copy's paths, one of those directories, so a path it prints in a message
+differs from the repository's; a file's modification time is when the copy was made; the copy's
+git config is the repository's `.git/config` in another directory, so an `includeIf "gitdir:..."`
+section matches the copy's path rather than the repository's, and a relative `include.path`
+resolves against the copy's `.git`, where the file it names is missing, so a value such as
+`user.email` or a URL rewrite from such a file can differ; and a rule or check after it does not
+read what it wrote.
+
+errata runs every check in the repository, as before, when copies cannot pay or cannot be true
+to the tree: a config with fewer than two program and generated checks to run, including their
+witnesses, that took a second or more; a pool of one worker; no `git` on the `PATH`, as in
+errata's image; a root in no git repository or in one with no commit; a repository with a
+`.gitmodules`, whose submodules a copy would hold empty; a sparse checkout, or one that was
+sparse, which a copy would hold whole; a tracked file with a `filter` attribute, such as Git LFS,
+which would run for every copy; a config that sets `core.worktree`, `core.splitIndex`,
+`extensions.worktreeConfig` or `extensions.refStorage`; ignored files over 32 MiB; `GIT_DIR`,
+`GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_COMMON_DIR` or `GIT_OBJECT_DIRECTORY` set, as a git hook
+sets them; and a user cache that is inside the repository or cannot be made. A copy that cannot
+be made once errata has chosen copies, such as on a full disk, leaves its check unknown, with
+why.
+
+Set `in_place: true` on a check that must write a file for a check after it to read, or that
+keeps state in the repository for its next run. It runs in the repository, alone, as every
+program did before copies: the checks before it end first, and a rule after it reads what it
+wrote. A check in place among checks in copies waits only until the checks in copies before it
+have made their copies, which then run on beside it, and errata reads the disk again after it,
+so the copies made after it hold what it wrote. A check whose last run took under a second runs
+in place the same way, so it does not keep two long checks around it apart.
+
+```yaml
+checks:
+  - id: regenerated-client-builds
+    reason: The client is generated, and the build after it reads it.
+    scope: repo
+    in_place: true
+    run: [make, client]
+```
+
+When errata is stopped by an interrupt, `SIGTERM` or `SIGHUP`, it removes its copies. When it is
+killed, its copy stays in the cache: the next run that takes the same directory empties it, and
+the next run removes a spare directory no run holds.
 
 ## Rules
 
@@ -2661,12 +2754,13 @@ or the math's, and the tags in it are tags, so a `<b>` in an svg's `<style>` end
 text after it shows. HTML resumes in an svg's `<foreignObject>`, `<title>` and `<desc>`, in a math
 `<mi>`, `<mo>`, `<mn>`, `<ms>` and `<mtext>`, and in an `<annotation-xml>` whose encoding is HTML,
 where a `<style>` or a `<textarea>` is HTML's again and its text raw. errata's tests hold it to
-golang.org/x/net/html's tree builder, which follows the standard but in four places, where errata
+golang.org/x/net/html's tree builder, which follows the standard but in five places, where errata
 follows the standard: x/net drops a `<template>` opened below an integration point and everything
 after it, it leaves open each formatting element past the third that the adoption agency takes off
 its list below a block, it matches an end tag in svg or math to its element by Unicode case folding,
-so `</test>` closes `<teſt>`, and its caption mode leaves `<th>` out of the tags that end a
-`<caption>`. The tests leave pages with a caption out of the comparison. errata compares tag names
+so `</test>` closes `<teſt>`, its caption mode leaves `<th>` out of the tags that end a
+`<caption>`, and it lets a `<frameset>` replace a body it implies after a `<template>` in the
+head. The tests leave pages with a caption out of the comparison. errata compares tag names
 byte for byte, with ASCII letters in either case: the standard's match for names in UTF-8, and a
 windows-1252 browser's for bytes that are not UTF-8.
 
@@ -2708,6 +2802,24 @@ tag's line rather than read it otherwise; close the elements in order. Elsewhere
 adoption agency's passes, so what the rebuild leaves open, an svg among it, is what the builder
 leaves open. Text a page puts in a table outside a cell, which
 a browser moves before the table, errata reads where it is written.
+
+A `<frameset>` replaces the page's body only while the HTML standard's frameset-ok flag holds:
+before the body starts, after nothing but head elements such as `<title>` or `<meta>`, or in a body
+that so far holds only blanks and elements that leave the flag set, such as a `<div>` or a heading.
+Text other than blanks and NULs clears the flag, a character reference such as `&#32;` read as the
+character it stands for. So do the start tags of a `pre`, a `listing`, a list item, a `dd` or `dt`,
+a `button`, a `table`, an `hr`, a `textarea`, an `xmp`, an `iframe`, a `select`, an `applet`, a
+`marquee`, an `object`, a `body`, a `template`, an `img` or `image`, a `br`, an `embed`, an `area`,
+a `wbr`, a `keygen`, and an `input` whose type is not `hidden`, and a `</br>`, which a browser
+reads as a `<br>`. Once a frameset replaces the body, errata reads nothing after it but comments,
+since a browser draws the frames' pages and nothing of this one: a `code`, `section` or `table`
+target finds no value there, and `<frameset><pre>a</pre>` holds no code block. Anywhere else a
+browser ignores a `<frameset>`, as it always ignores a `<frame>` outside a frameset, and errata
+does too: neither opens an element, so in `x<frameset><pre>a</frameset>b` the `</frameset>`
+closes nothing and the code block is `ab`, and in `<pre><frameset>` and a line feed the line feed
+is still the `<pre>` tag's. A comment in the body a frameset replaces still reads, as the comment
+is in the file. A Markdown file's HTML block is part of a page's body, so a frameset in one never
+replaces it.
 
 - **comment.** Each comment, `<!--` to `-->` or `--!>`. One in a `<script>`, `<style>`,
   `<textarea>`, `<title>` or a tag's attribute is no comment, as in a browser; neither is a
@@ -5300,11 +5412,12 @@ Stdout is the message. If stdout is a JSON object with a `message` string, errat
 errata holds at most 33554432 bytes (32 MiB) of stdout, and of stderr apart. It reads what the
 program writes past that and drops it, and the program runs on to its exit or its timeout: the
 verdict is still the exit code, and the message ends with a line naming each stream errata cut and
-the bound. A cut stdout is no longer a whole JSON object, so the message is the text errata held.
-A program check takes no `max_bytes`. The program runs with the repository root as its working
-directory and receives `ERRATA_ROOT`, `ERRATA_CHECK_ID` and `ERRATA_SCOPE` in its environment. Its
-stdin is empty. Read the tree from `ERRATA_ROOT`, not the working directory: on a
-[witness](#witness) it is the fixture, while the working directory stays the repository root.
+the bound. A cut stdout is no longer a whole JSON object, so the message is the text errata held. A
+program check takes no `max_bytes`. The program runs with the repository root, or a copy of it
+([`in_place`](#in_place)), as its working directory and receives `ERRATA_ROOT`, `ERRATA_CHECK_ID`
+and `ERRATA_SCOPE` in its environment. Its stdin is empty. Read the tree from `ERRATA_ROOT`, not
+the working directory: on a [witness](#witness) it is the fixture, while the working directory
+stays the repository root.
 
 On Linux and macOS the program runs in a process group of its own, which errata kills on a timeout
 and again once the program exits, so a child it starts in the background does not outlive the
@@ -5358,6 +5471,7 @@ Every value is the one the loader resolved, with these defaults written out:
   placeholders replaced by the check's id in either;
 - `run` of a generated check's generator: the placeholders replaced by the check's id;
 - `timeout` of a program check and a generated check: `30s` when the check sets none;
+- `in_place` of a program check and a generated check: false when the check sets none;
 - `max_bytes` of every extractor and of a generated check: 33554432 (32 MiB) when it sets none;
 - `dialect` of an `ini` extractor: the one the file's name chooses when the extractor names none
   (see [`ini`](#ini));
@@ -5419,6 +5533,7 @@ required:
       "type": "program",
       "run": ["make", "lint"],
       "timeout": "30s",
+      "in_place": false,
       "witness": []
     },
     {
@@ -5462,6 +5577,7 @@ required:
       "type": "generated",
       "generated": {"file": "docs/api.md", "run": ["python3", "scripts/api-docs.py"], "max_bytes": 33554432},
       "timeout": "30s",
+      "in_place": false,
       "witness": []
     }
   ],
@@ -5481,6 +5597,7 @@ required:
 | `type` | `program`, `rule` or `generated` |
 | `run` | program check: the command, as a list of arguments, placeholders replaced |
 | `timeout` | program check and generated check: a Go duration as Go prints it, so `2m` reads `2m0s` |
+| `in_place` | program check and generated check: true when the check runs in the repository rather than in a copy of it (see [`in_place`](#in_place)) |
 | `generated` | generated check: the committed file and the generator errata will run |
 | `generated.file` | the committed file, as the config writes it |
 | `generated.run` | the generator, as a list of arguments, placeholders replaced |

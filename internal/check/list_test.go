@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -64,19 +65,19 @@ func TestKindsList(t *testing.T) {
 			[]Line{{"extract:", ""}, {"assert:", ""}}},
 		{"program check",
 			&Program{Run: []string{"sh", "a b"}},
-			`{"run":["sh","a b"],"timeout":"1m30s"}`,
+			`{"run":["sh","a b"],"timeout":"1m30s","in_place":false}`,
 			[]Line{{"run:", "[sh] [a b]"}, {"timeout:", "1m30s"}}},
 		{"program check with no run",
 			&Program{},
-			`{"run":[],"timeout":"1m30s"}`,
+			`{"run":[],"timeout":"1m30s","in_place":false}`,
 			[]Line{{"run:", ""}, {"timeout:", "1m30s"}}},
 		{"generated check",
 			&Generated{File: "a.md", Run: []string{"gen"}, MaxBytes: 4096},
-			`{"generated":{"file":"a.md","run":["gen"],"max_bytes":4096},"timeout":"1m30s"}`,
+			`{"generated":{"file":"a.md","run":["gen"],"max_bytes":4096},"timeout":"1m30s","in_place":false}`,
 			[]Line{{"file:", "[a.md]"}, {"run:", "[gen]"}, {"max_bytes:", "4096"}, {"timeout:", "1m30s"}}},
 		{"generated check with no generator",
 			&Generated{File: "a.md"},
-			`{"generated":{"file":"a.md","run":[],"max_bytes":0},"timeout":"1m30s"}`,
+			`{"generated":{"file":"a.md","run":[],"max_bytes":0},"timeout":"1m30s","in_place":false}`,
 			[]Line{{"file:", "[a.md]"}, {"run:", ""}, {"max_bytes:", "0"}, {"timeout:", "1m30s"}}},
 	}
 	for _, tc := range cases {
@@ -89,6 +90,22 @@ func TestKindsList(t *testing.T) {
 				t.Errorf("ListLines = %q, want %q", got, tc.lines)
 			}
 		})
+	}
+}
+
+// A program check and a generated check with in_place list it, in JSON as
+// true and in text as a line after timeout. The planted break: the line
+// written whatever in_place holds, which TestKindsList then fails.
+func TestInPlaceLists(t *testing.T) {
+	c := Check{Timeout: time.Second, InPlace: true}
+	for _, kind := range []Kind{&Program{}, &Generated{}} {
+		if got := fieldsJSON(t, kind.ListFields(c)); !strings.HasSuffix(got, `"timeout":"1s","in_place":true}`+"\n") {
+			t.Errorf("%T ListFields = %s, want in_place true after timeout", kind, got)
+		}
+		lines := kind.ListLines(c, brackets{})
+		if last := lines[len(lines)-1]; last != (Line{"in_place:", "true"}) || lines[len(lines)-2].Label != "timeout:" {
+			t.Errorf("%T ListLines = %q, want in_place: true after timeout", kind, lines)
+		}
 	}
 }
 

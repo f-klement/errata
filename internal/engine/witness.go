@@ -16,9 +16,10 @@ import (
 )
 
 // witness runs c on its witness name, the fixture check.Fixture(name)
-// below the root, and returns the witness's result (ADR 0015). The runner
-// is given the fixture's absolute path as its root and a context that holds
-// the repository's root (check.OnWitness): a rule reads the fixture's files
+// below root, the repository's or a copy's (ADR 0019), and returns the
+// witness's result (ADR 0015). The runner is given the fixture's absolute
+// path as its root and a context that holds the repository's root
+// (check.OnWitness): a rule reads the fixture's files
 // and the real index cut to them, and a program and a generator start in
 // the repository's root with ERRATA_ROOT at the fixture. The check's
 // verdict there decides the witness's: false holds it, true is an erratum,
@@ -29,12 +30,12 @@ import (
 // (fixtureDir), as a file a rule cannot read is. The directory fixtureDir
 // opens is the one a rule reads the fixture through (core.OnFixture), so a
 // symlink swapped in after the check moves no read.
-func (e *Engine) witness(ctx context.Context, c check.Check, name string) (out check.Result) {
+func (e *Engine) witness(ctx context.Context, root string, c check.Check, name string) (out check.Result) {
 	start := time.Now()
 	out = check.Result{Check: c, Witness: name}
 	// out is a named result so this assignment reaches the caller.
 	defer func() { out.Duration = time.Since(start) }()
-	root, err := filepath.Abs(e.Root)
+	root, err := filepath.Abs(root)
 	var dir *os.Root
 	if err == nil {
 		dir, err = fixtureDir(root, name)

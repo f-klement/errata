@@ -23,9 +23,9 @@ import (
 )
 
 // errata runs goldmark as CommonMark, without extensions. Its parse is
-// quadratic in the file on several shapes, unclosed comments and link
-// destinations, deep block quotes and long lists among them, and nothing
-// outside it can stop it. So errata gives it parsers that wrap goldmark's own
+// quadratic in the file on several shapes, unclosed code spans, deep block
+// quotes and long lists among them, and nothing outside it can stop it. So
+// errata gives it parsers that wrap goldmark's own
 // and look at a guard on every call. The guard stops the parse, by a panic
 // that parse recovers, once it has run past its time limit or past
 // one of the bounds below. Between two looks at the guard, goldmark does at

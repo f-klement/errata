@@ -54,6 +54,7 @@ func errataReadsFoster(src string) (extracttest.BrowserRead, bool, error) {
 	}
 	err = r.read()
 	out.StandardOnly, out.XNetMoved = r.s.StandardOnly(), r.s.XNetMovesText()
+	out.Headings = extracttest.FramedHeadings(out.Headings, r.s.Framed())
 	if err != nil {
 		return out, foster, err
 	}
@@ -397,5 +398,42 @@ func TestInCellTagsCloseTheCell(t *testing.T) {
 	got, _, err := errataReadsFoster("<tABle><td><Col >0")
 	if err != nil || !slices.Equal(got.Rows, []string{""}) {
 		t.Errorf("<tABle><td><Col >0: %q, %v; want the empty cell alone, the 0 moved before the table", got.Rows, err)
+	}
+}
+
+// errata reads a frameset and a frame as a browser does (#278): a
+// frameset takes the page only while the frameset-ok flag holds, and then
+// nothing after it shows; elsewhere it is ignored, as a frame always is
+// outside a frameset, and opens no element. Each row's pres are also
+// x/net's. The planted breaks: the flag never cleared, which reads the
+// second page as nothing; a frameset that never takes the page, which
+// reads the third as a; an ignored frameset that still opens an element,
+// which reads the first as a line feed and x, and the second as a.
+func TestFramesetReadsAsABrowser(t *testing.T) {
+	for _, row := range []struct {
+		src  string
+		pres []string
+	}{
+		{"<pre><frameset>\nx", []string{"x"}},
+		{"x<frameset><pre>a</frameset>b", []string{"ab"}},
+		{"<frameset><pre>a</pre>", nil},
+		{"<pre><frame>\nx", []string{"x"}},
+		{"<input><frameset><pre>a", []string{"a"}},
+		{"<input type=hidden><frameset><pre>a", nil},
+		{"</br><frameset><pre>a", []string{"a"}},
+		{"<frameset><frame></frameset><noframes>n</noframes><pre>b", nil},
+		// A reference to a blank is a blank, in CDATA too, as errata reads
+		// CDATA's text and x/net does (fix round 1, finding 1; the planted
+		// break: the raw bytes judged).
+		{"&#32;<frameset><pre>a", nil},
+		{"<div>&#32;<frameset><pre>a", nil},
+		{"<div>&Tab;&NewLine;<frameset><pre>a", nil},
+		{"<svg><![CDATA[&#32;]]></svg><frameset><pre>a", nil},
+	} {
+		got, err := errataReads(row.src)
+		want := extracttest.BrowserReads(row.src, htmlparse.LineTag, true)
+		if err != nil || !slices.Equal(got.Pres, row.pres) || !slices.Equal(want.Pres, row.pres) {
+			t.Errorf("%q: errata %q, %v; x/net %q; want %q", row.src, got.Pres, err, want.Pres, row.pres)
+		}
 	}
 }

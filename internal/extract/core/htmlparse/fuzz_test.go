@@ -30,7 +30,7 @@ func FuzzScan(f *testing.F) {
 	} {
 		f.Add(s, uint32(0x00070301))
 	}
-	for _, s := range slices.Concat(extracttest.ForeignShapes, extracttest.LonecrShapes, extracttest.RoundTwoShapes) {
+	for _, s := range slices.Concat(extracttest.ForeignShapes, extracttest.LonecrShapes, extracttest.RoundTwoShapes, extracttest.FramesetShapes) {
 		f.Add(s, uint32(0x00070301))
 	}
 	f.Fuzz(func(t *testing.T, data string, cuts uint32) {

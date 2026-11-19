@@ -55,22 +55,23 @@ func (g *Generated) Validate(Check) []error {
 }
 
 // ListFields are generated, with the file, the generator and the bound,
-// and timeout.
+// timeout and in_place.
 func (g *Generated) ListFields(c Check) Fields {
 	return Fields{
 		{"generated", Fields{{"file", g.File}, {"run", OrEmpty(g.Run)}, {"max_bytes", g.MaxBytes}}},
 		{"timeout", c.Timeout.String()},
+		{"in_place", c.InPlace},
 	}
 }
 
 // ListLines are the file, the generator under run, as a program check's
-// run is written since it is the program errata starts, the bound and
-// timeout.
+// run is written since it is the program errata starts, the bound,
+// timeout, and in_place when it is set.
 func (g *Generated) ListLines(c Check, q Quoter) []Line {
-	return []Line{
+	return inPlaceLine(c, []Line{
 		{"file:", q.Value(g.File)},
 		{"run:", quoted(q, g.Run, " ")},
 		{"max_bytes:", strconv.FormatInt(g.MaxBytes, 10)},
 		{"timeout:", c.Timeout.String()},
-	}
+	})
 }

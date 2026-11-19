@@ -210,6 +210,10 @@ func (r Rule) Normalized(text string) string {
 // does nothing.
 var ErrRuleTimeout = errors.New("timeout applies to a program check and a generated check: a rule's extractors take no timeout")
 
+// ErrRuleInPlace refuses in_place on a rule. A rule only reads, so it runs
+// in the repository beside the others and never in a copy (ADR 0019).
+var ErrRuleInPlace = errors.New("in_place applies to a program check and a generated check: a rule only reads and always runs in the repository")
+
 // Name is rule.
 func (*Rule) Name() string { return "rule" }
 
@@ -295,6 +299,9 @@ func (r *Rule) Validate(c Check) []error {
 	var errs []error
 	if c.Timeout != 0 {
 		errs = append(errs, ErrRuleTimeout)
+	}
+	if c.InPlace {
+		errs = append(errs, ErrRuleInPlace)
 	}
 	hasAgree, hasAssert := r.relations()
 	errs = append(errs, r.shapeErrors(hasAgree, hasAssert)...)

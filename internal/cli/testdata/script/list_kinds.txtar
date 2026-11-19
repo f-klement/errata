@@ -83,6 +83,7 @@ checks:
         "lint"
       ],
       "timeout": "30s",
+      "in_place": false,
       "witness": []
     },
     {
@@ -101,6 +102,7 @@ checks:
         "echo \"a b\" > out"
       ],
       "timeout": "2m0s",
+      "in_place": false,
       "witness": []
     }
   ],

@@ -147,8 +147,10 @@ var RoundThreeShapes = []string{
 // them. x/net leaves on the stack a fourth formatting element the adoption
 // agency's inner loop takes off the list (the standard's tree
 // construction, adoption agency, inner loop steps 4.4 and 4.5; the
-// foreign delta review, finding B), and it drops a template opened in an
-// integration point and everything after it (XNetDropsTemplate).
+// foreign delta review, finding B), it drops a template opened in an
+// integration point and everything after it (XNetDropsTemplate), and it
+// lets a frameset take the page after a template in the head, where the
+// standard does not (htmlparse's frameset.go).
 var StandardReads = map[string]BrowserRead{
 	// The i is the fourth below the div: off the list and the stack, so
 	// </i> closes nothing and the svg stays open, its desc veiled and its
@@ -160,6 +162,11 @@ var StandardReads = map[string]BrowserRead{
 	"<svg><title><template>t</template></title></svg><pre>x</pre>":                             {Pres: []string{"x"}},
 	"<math><mi><template>t</template></mi></math><h2>H</h2>":                                   {Headings: []string{"H"}},
 	"<svg><foreignObject><template>t</template></foreignObject></svg><table><tr><td>c</table>": {Rows: []string{"c"}},
+	// A template in the head clears the frameset-ok flag, which x/net sets
+	// back at the body it implies: the frameset is ignored, where x/net
+	// lets it take the page.
+	"<template></template><p><frameset><pre>a":                          {Pres: []string{"a"}},
+	"<template></template></head><noscript></noscript><frameset><pre>a": {Pres: []string{"a"}},
 }
 
 func init() {
@@ -169,6 +176,9 @@ func init() {
 	BrowserShapes = append(BrowserShapes, LonecrShapes...)
 	BrowserShapes = append(BrowserShapes, RoundTwoShapes...)
 	BrowserShapes = append(BrowserShapes, RoundThreeShapes...)
+	FramesetShapes = append(FramesetShapes, "<template></template><p><frameset><pre>a",
+		"<template></template></head><noscript></noscript><frameset><pre>a")
+	BrowserShapes = append(BrowserShapes, FramesetShapes...)
 	// The adoption agency's last pass closes the svg above the p it
 	// rebuilt around, so the style after it is HTML's, and its <pre> text
 	// (TestTheReadingIsTheBrowsers, 20000 checks).

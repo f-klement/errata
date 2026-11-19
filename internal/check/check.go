@@ -49,6 +49,10 @@ type Check struct {
 	// the check must report false (ADR 0015). Every run runs the check on
 	// each of them after its own run.
 	Witness []string
+	// InPlace keeps a program or generated check in the repository, alone,
+	// where any other may run in a copy of the tree on the pool (ADR 0019).
+	// A rule only reads and takes none.
+	InPlace bool
 }
 
 var idPattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)

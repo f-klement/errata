@@ -123,7 +123,7 @@ func TestPrefilterOnBlankedComments(t *testing.T) {
 			t.Fatalf("BlankComments(%q) = %q, %v; want %q", text.String(), got, err, folded)
 		}
 		for range 4 {
-			if prefilterCase(t, "("+randomPattern(r, 4)+")", text.String()) {
+			if prefilterCase(t, "("+randomPattern(r, 4)+")", text.String()) != nil {
 				seeking++
 			}
 		}

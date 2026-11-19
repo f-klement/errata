@@ -255,7 +255,7 @@ func TestSpecText(t *testing.T) {
 // printed from the rule rather than as a constant.
 var listedFields = map[reflect.Type]map[string]string{
 	reflect.TypeFor[check.Check](): {
-		"ID": "id", "Reason": "reason", "Scope": "scope", "Timeout": "timeout",
+		"ID": "id", "Reason": "reason", "Scope": "scope", "Timeout": "timeout", "InPlace": "in_place",
 		"At": "fields", "Kind": "kinds", "Witness": "witness",
 	},
 	reflect.TypeFor[check.Program]():   {"Run": "run"},

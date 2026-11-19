@@ -263,6 +263,11 @@ names its condition after its place.
 **Check protocol.** The way errata runs a program check. errata runs the
 program and reads its result. The program can be in any language.
 
+**Copy of the tree.** A throwaway git repository in the user's cache that holds what the
+repository's working tree holds, ignored files included, and borrows its objects, in which errata
+runs a program check or a generated check beside the others, so nothing it writes reaches the
+repository or another check. A check with `in_place: true` runs in the repository instead, alone.
+
 **Gap.** What a run lacks to reach a check's scope: a provider operation that no available provider
 has, for example read for a live check. A check whose scope the run cannot reach is skipped, and its
 gap is printed in the coverage. A skip does not fail the run unless `errata check` is given

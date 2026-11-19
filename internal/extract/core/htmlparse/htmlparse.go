@@ -87,7 +87,8 @@ const restartTokens = 4096 / BytesPerToken
 // other bogus comments, the text of the hidden elements, and everything
 // from a <template> to its </template>. Inside an svg or a math element it
 // reads CDATA as text and every element as foreign content (foreign.go),
-// as a browser does, and leaves out the text of the veiled ones.
+// as a browser does, and leaves out the text of the veiled ones. After a
+// frameset that replaces the body it gives only comments (frameset.go).
 //
 // src may hold several blocks of HTML, one after another, each read as a
 // file of its own (Blocks): the Markdown readers scan every HTML block of a
@@ -111,6 +112,8 @@ type Scanner struct {
 	fontAttr   bool   // whether the start tag has a color, a face or a size
 	encoding   []byte // the start tag's encoding attribute
 	cond       bool   // whether the start tag has a requiredExtensions or a systemLanguage
+	typeHidden bool   // whether the start tag's type is hidden
+	frames     frames // the page's frameset-ok flag (frameset.go)
 	tokens     int64
 	maxTokens  int64
 	err        error
@@ -148,6 +151,7 @@ func NewScanner(src []byte, maxTokens int64) *Scanner {
 func (s *Scanner) Blocks(ends []int) {
 	// A Markdown file's page is in standards mode, as a site renders it.
 	s.ends, s.nest.outside, s.nest.quirks = ends, true, false
+	s.frames = insideBody()
 }
 
 // Headings has the scanner follow headings as it follows pre elements:
@@ -375,19 +379,28 @@ func lineFeed(text []byte) int {
 // element raw and with dropLF, and reports whether Next gives it.
 func (s *Scanner) keep(tt html.TokenType, raw string, dropLF bool) bool {
 	s.name, s.foreign = "", false
+	if s.frames.took && tt != html.CommentToken {
+		return false // a frameset took the page: nothing after it shows but comments
+	}
 	switch tt {
 	case html.TextToken:
 		return s.keepText(raw, dropLF)
 	case html.StartTagToken, html.SelfClosingTagToken, html.EndTagToken:
 		return s.keepTag(tt, dropLF)
 	case html.CommentToken:
-		s.kind = Comment
-		return s.tmpl == nil && bytes.HasPrefix(s.src[s.start:s.end], []byte("<!--"))
+		return s.keepComment()
 	case html.DoctypeToken:
 		s.doctype(dropLF)
 	case html.ErrorToken: // Next stops at an error before keep
 	}
 	return false
+}
+
+// keepComment classifies a comment token, and reports whether Next gives
+// it: a comment, not a bogus one, outside a template's content.
+func (s *Scanner) keepComment() bool {
+	s.kind = Comment
+	return s.tmpl == nil && bytes.HasPrefix(s.src[s.start:s.end], []byte("<!--"))
 }
 
 // keepText classifies a text token, after the raw element raw and with
@@ -398,6 +411,7 @@ func (s *Scanner) keepText(raw string, dropLF bool) bool {
 		return false
 	}
 	s.cdata()
+	s.frames.text(s.shownText())
 	if dropLF {
 		s.dropFirstLF()
 	}
@@ -421,6 +435,18 @@ func (s *Scanner) cdata() {
 	if bytes.HasSuffix(s.src[s.start:s.end], []byte("]]>")) {
 		s.end -= len("]]>")
 	}
+}
+
+// shownText is the text of the token as the readers read it, its
+// character references decoded, so that &#32; is a blank. A reader decodes
+// a CDATA section's references too (Unescape), as x/net's tokenizer does,
+// where the standard reads them as written.
+func (s *Scanner) shownText() []byte {
+	b := s.src[s.start:s.end]
+	if bytes.IndexByte(b, '&') < 0 {
+		return b
+	}
+	return []byte(html.UnescapeString(string(b)))
 }
 
 // dropFirstLF drops the line feed that starts the text after the start tag
@@ -466,7 +492,7 @@ func (s *Scanner) keepTag(tt html.TokenType, dropLF bool) bool {
 	s.modeSet = true // no doctype first: quirks mode
 	name, attrs := s.z.TagName()
 	s.name, s.attrs, s.class, s.href, s.attrsRead = string(name), attrs, "", "", false
-	s.fontAttr, s.encoding, s.cond = false, nil, false
+	s.fontAttr, s.encoding, s.cond, s.typeHidden = false, nil, false, false
 	s.closing = tt == html.EndTagToken
 	s.nest.ignored = false // a tag in a template's content leaves the page's nest alone
 	kept := s.tag(tt == html.SelfClosingTagToken)
@@ -521,6 +547,7 @@ func (s *Scanner) tag(selfClosing bool) bool {
 	}
 	if s.name == "template" {
 		if !s.closing {
+			s.frames.start(s.name, false)
 			s.tmpl = &nest{inert: true, quirks: s.nest.quirks, xnet: s.nest.xnet}
 		}
 		return false
@@ -547,6 +574,7 @@ func (s *Scanner) rawText() {
 // gives it: false when the nest refuses it.
 func (s *Scanner) endTag() bool {
 	s.kind = EndTag
+	s.frames.end(s.name)
 	if err := s.nest.end(s.name); err != "" {
 		s.err = &NestError{At: s.start, msg: err}
 		return false
@@ -560,6 +588,10 @@ func (s *Scanner) endTag() bool {
 // closing: a browser takes any start tag in their namespace as written.
 func (s *Scanner) startTag(selfClosing bool) bool {
 	s.kind = StartTag
+	if s.name == "frameset" || s.name == "frame" {
+		return s.frameTag()
+	}
+	s.frames.start(s.name, s.inputHidden())
 	name, opens := s.name, !selfClosing
 	if s.name == "svg" || s.name == "math" {
 		name, s.foreign = foreignKey(s.name, s.name), true
@@ -633,8 +665,8 @@ func (s *Scanner) Href() string {
 	return s.href
 }
 
-// readAttrs reads a start tag's class and href once: the tokenizer gives
-// a tag's attributes one pass only.
+// readAttrs reads a start tag's attributes once: the tokenizer gives a
+// tag's attributes one pass only.
 func (s *Scanner) readAttrs() {
 	if s.attrsRead || s.kind != StartTag {
 		return
@@ -643,18 +675,25 @@ func (s *Scanner) readAttrs() {
 	for more := s.attrs; more; {
 		var key, val []byte
 		key, val, more = s.z.TagAttr()
-		switch string(key) {
-		case "class":
-			s.class = string(val)
-		case "href":
-			s.href = string(val)
-		case "color", "face", "size":
-			s.fontAttr = true
-		case "encoding":
-			s.encoding = val
-		case "requiredextensions", "systemlanguage":
-			s.cond = true
-		}
+		s.attr(key, val)
+	}
+}
+
+// attr follows a start tag's attribute key, of value val.
+func (s *Scanner) attr(key, val []byte) {
+	switch string(key) {
+	case "class":
+		s.class = string(val)
+	case "href":
+		s.href = string(val)
+	case "color", "face", "size":
+		s.fontAttr = true
+	case "encoding":
+		s.encoding = val
+	case "requiredextensions", "systemlanguage":
+		s.cond = true
+	case "type":
+		s.typeHidden = bytes.EqualFold(val, []byte("hidden"))
 	}
 }
 
@@ -695,16 +734,18 @@ func (s *Scanner) BreaksLine() bool {
 // StandardOnly reports whether the scan has followed a rule of the HTML
 // standard that golang.org/x/net/html v0.62.0, the browser tests' oracle,
 // does not: the adoption agency took a fourth formatting element below a
-// block off the stack (adopt). The browser tests compare no such page
-// with the oracle.
-func (s *Scanner) StandardOnly() bool { return s.nest.standardOnly }
+// block off the stack (adopt), or the two decide a frameset apart
+// (frameset.go). The browser tests compare no such page with the oracle.
+func (s *Scanner) StandardOnly() bool { return s.nest.standardOnly || s.frames.standardOnly }
 
 // FollowXNetAdoption has the scan follow golang.org/x/net/html v0.62.0,
-// the browser tests' oracle, in the one rule where StandardOnly says it is
+// the browser tests' oracle, in the rules where StandardOnly says it is
 // not the standard: the adoption agency takes a fourth formatting element
 // below a block off the list, and x/net leaves it on the stack, where the
-// standard takes it off. The browser tests compare a page StandardOnly
-// marks with x/net so, and no page goes uncompared. No reader calls it.
+// standard takes it off; and a frameset takes the page by x/net's
+// frameset-ok flag (frameset.go). The browser tests compare a page
+// StandardOnly marks with x/net so, and no page goes uncompared. No
+// reader calls it.
 func (s *Scanner) FollowXNetAdoption() { s.nest.xnet = true }
 
 // XNetMovesText reports whether, in x/net's way, text came while an

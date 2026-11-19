@@ -32,12 +32,22 @@ func (p *Program) Validate(Check) []error {
 	return nil
 }
 
-// ListFields are run and timeout.
+// ListFields are run, timeout and in_place.
 func (p *Program) ListFields(c Check) Fields {
-	return Fields{{"run", OrEmpty(p.Run)}, {"timeout", c.Timeout.String()}}
+	return Fields{{"run", OrEmpty(p.Run)}, {"timeout", c.Timeout.String()}, {"in_place", c.InPlace}}
 }
 
-// ListLines are run, each argument written by q, and timeout.
+// ListLines are run, each argument written by q, timeout, and in_place
+// when it is set.
 func (p *Program) ListLines(c Check, q Quoter) []Line {
-	return []Line{{"run:", quoted(q, p.Run, " ")}, {"timeout:", c.Timeout.String()}}
+	return inPlaceLine(c, []Line{{"run:", quoted(q, p.Run, " ")}, {"timeout:", c.Timeout.String()}})
+}
+
+// inPlaceLine is lines with in_place after them when c sets it. A check
+// without it lists as before the key was added.
+func inPlaceLine(c Check, lines []Line) []Line {
+	if c.InPlace {
+		lines = append(lines, Line{"in_place:", "true"})
+	}
+	return lines
 }

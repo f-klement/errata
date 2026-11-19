@@ -36,7 +36,10 @@ flowchart TD
     checks --> exec["engine.Execute: rules at once on a pool, the report in config order"]
     exec --> reach{"provider.Reaches the check's scope?"}
     reach -->|"no"| skip["skipped, with its gap"]
-    reach -->|"yes"| dispatch["engine.Dispatch by the check's kind"]
+    reach -->|"yes"| copies{"engine.inCopies: two or more programs or generators to run, and two workers?"}
+    copies -->|"yes, for each program and generator"| copy["treecopy.Tree.Make: a copy of the tree of its own, on the pool"]
+    copies -->|"no, or a rule"| dispatch["engine.Dispatch by the check's kind"]
+    copy --> dispatch
     dispatch -->|"program"| prun["protocol.Run"]
     dispatch -->|"generated"| pgen["protocol.RunGenerated"]
     dispatch -->|"rule"| rrun["rule.Run"]
@@ -88,7 +91,9 @@ runs each check through a function, `engine.Runner`. Production passes `engine.D
 sends each check by its kind to `protocol.Run`, `protocol.RunGenerated` or `rule.Run` (The
 seams, 1).
 Rules and their witnesses run at once on a pool of `GOMAXPROCS` workers, fewer under a smaller CPU
-quota; a check of any other kind runs alone. The report keeps the order of the config (Decisions taken in the code).
+quota. A program or generated check runs on the pool too, in a copy of the tree that `treecopy`
+makes, when two or more can run at once; otherwise, or under `in_place`, it runs alone in the
+repository. The report keeps the order of the config (Decisions taken in the code).
 
 **rule** (`internal/rule`) evaluates a rule. It runs the rule's extractors, holds what they
 return to the bounds, and either compares their values (`agree:`) or evaluates the compiled CEL
@@ -151,6 +156,7 @@ flowchart TB
     minimatch["internal/minimatch"]
     protocol["internal/protocol"]
     program["internal/program"]
+    treecopy["internal/treecopy"]
     provider["internal/provider"]
     report["internal/report"]
     extract["internal/extract"]
@@ -173,6 +179,8 @@ flowchart TB
     engine --> provider
     engine --> core
     engine --> check
+    engine --> treecopy
+    treecopy --> program
     rule --> semver
     rule --> minimatch
     rule --> check
@@ -303,6 +311,7 @@ reader imports `core` and no other reader, and `core` imports no reader.
 | `internal/config` | the `errata.yaml` format, strict decoding, load errors, the line each check starts on; builds each rule's extractors and compiles its assert through `rule.Compile`, so a type error is a load error | running anything |
 | `internal/engine` | which checks run, in what order, and which are skipped; the run of each witness on its fixture | the check protocol's details, output formats |
 | `internal/protocol` | the check protocol: run a program, map its exit code to a verdict; run a generated check's generator and compare its stdout with the committed file | config, providers, output |
+| `internal/treecopy` | a throwaway copy of the repository's working tree for a check to run in, at a stable path for each slot of the pool in the user's cache: a git repository of its own that borrows the objects through alternates, on the same branch, with the working tree's changes, untracked files and ignored files copied on top and git's index when a tracked file differs; whether a tree can be copied truly (ADR [0019](adr/0019-a-program-check-runs-in-a-copy-of-the-tree.md)) | checks, the pool, what a check writes, which checks pay for a copy |
 | `internal/program` | starting a program and waiting for it: argv, working directory, environment, stdin, timeout, a bound on each output stream, the kill of the process group | what its exit or its output means; checks, config, output |
 | `internal/rule` | evaluating a rule: run its extractors, compare their values or evaluate its assert, fail closed; the CEL environment, the assert helpers, the embedded time zone database and the limits | how an extractor reads a file, config, output |
 | `internal/semver` | versions and ranges as npm, Cargo, PEP 440, Go modules and RubyGems write them: their order, precision, satisfaction and overlap, for agree's `compare: semver` and the assert helpers alike | files, rules, CEL |
@@ -583,7 +592,8 @@ checked at load and bounded twice](#decisions-taken-in-the-code).
 A program check runs a command and reads its exit code; a generated check (ADR
 [0011](adr/0011-a-generated-check-runs-its-generator-and-compares-what-it-prints.md)) runs a
 generator and compares what it prints with a committed file. Both start their program through
-`program.Run`, with the repository as the working directory, `ERRATA_ROOT`, `ERRATA_CHECK_ID` and
+`program.Run`, with the repository, or a copy of it (Decisions taken in the code), as the working
+directory, `ERRATA_ROOT`, `ERRATA_CHECK_ID` and
 `ERRATA_SCOPE` in the environment, no stdin, the check's timeout, and a process group of its own
 that a timeout kills whole.
 
@@ -712,12 +722,13 @@ open read in pieces and a head go to the disk each time. A run keeps at most `co
 bytes, 64 MiB, the most one extractor may read, and holds them for the whole run on top of what
 each rule reads (about 60 MiB more peak anon on a tree of 28 MiB); a file past that is read
 again by each extractor, as before. What the run kept holds until a check that may write to the
-repository runs, a program check or a generated check (ADR
+repository runs there, a program check or a generated check in place (ADR
 [0011](adr/0011-a-generated-check-runs-its-generator-and-compares-what-it-prints.md)): the engine
 then moves the run's generation on (`check.Wrote`) and drops every result the run kept through
 `check.Shared`, such as a marker walk's read of git's index and of each marked file, so the next
-read goes to the disk and every verdict is the one a run that keeps nothing gives. A witness's
-run shares nothing, since each check opens its fixture again. A read that finds another read of
+read goes to the disk and every verdict is the one a run that keeps nothing gives. A check in a
+copy writes nothing the run reads, and runs in a run of its own (`check.WithRun`), so what it
+reads under the copy's root is dropped with the copy. A witness's run shares nothing, since each check opens its fixture again. A read that finds another read of
 the same file under way waits for it, so checks that run at once read a file once.
 
 **Rules run at once; the report keeps the config's order.** A config of seventeen rules ran one
@@ -726,7 +737,8 @@ and each of its witnesses, in the order of the config, and runs the rules' jobs 
 `GOMAXPROCS` workers, each taking the next job and writing its result at the job's own index. So
 the report's order does not depend on which job ends first, and on one core the one worker runs
 the jobs in the config's order, as before. A check of any other kind than a rule (a program, a
-generated check, or a kind with no runner) runs alone: every job before it ends first, and none
+generated check, or a kind with no runner) that runs in the repository runs alone: every job
+before it that reads the repository ends first (a job in a copy only makes its copy), and none
 after it starts until it ends, since a generator may write a file a rule reads. A rule only
 reads, so what rules share has to be safe for concurrent use: the run's store (`check.Shared`),
 the shared read, and the marker walks' one read of git's index (`core.Tracked`) each take a lock
@@ -737,6 +749,24 @@ to `GOMAXPROCS` rules hold what they read at once, so a run's peak memory grows 
 [0003](adr/0003-extractors-bound-time-and-size-and-let-memory-fail-closed.md) lets it fail closed.
 A check that panics on the pool panics again on the goroutine that called `engine.Execute`, once
 the pool's workers are done, so the caller's deferred cleanup runs as it did one at a time.
+
+**A program runs in a copy of the tree when it pays.** A config whose time goes to test suites
+spent it one suite after another: the GitOps repository's 22 program and generated checks took
+65 s of its 67 s on two CPUs. When two or more jobs would run alone, each with no record of its
+last run or one of a second or more (`engine.durations`, a file in the repository's directory of
+the user's cache), and the pool has two workers or more, `engine.inCopies` marks each of them,
+and each runs on the pool in a copy that `treecopy.Tree.Make` makes in its worker's slot and
+removes when it ends: a git repository of its own that borrows the objects, on the same branch,
+with the working tree's changes, untracked and ignored files copied on, and git's index when a
+tracked file differs. Nothing a check writes there reaches the repository or another check, and
+its verdict and message are the ones it gives in place. A check with `in_place`, or every check
+when copies cannot pay or `treecopy.Open` finds a tree it cannot copy truly (no git, no commit,
+submodules, a sparse checkout, a filter such as LFS, more than 32 MiB ignored, `GIT_DIR` set),
+runs alone in the repository as above, once every rule before it has ended and every copy
+before it is made, and the tree is read again after it. A copy that cannot
+be made leaves its check unknown. ADR
+[0019](adr/0019-a-program-check-runs-in-a-copy-of-the-tree.md) has the measurements and the
+choices.
 
 **The pool is as wide as the CPU quota, rounded down.** Go sets `GOMAXPROCS` from a cgroup's CPU
 limit rounded up, and to at least 2, so in a pod limited to one CPU two workers shared it and the

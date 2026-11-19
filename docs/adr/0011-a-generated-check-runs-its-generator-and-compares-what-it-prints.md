@@ -40,7 +40,8 @@ The limits are what keep that honest:
   (`<errata.id>`, `<errata.id_underscored>`) are replaced inside one argument, as there.
 - **The rules of a program check, through the same code.** The generator and a program check
   start through one function, `Run` in `internal/program`: the repository root as the working
-  directory; errata's environment with `ERRATA_ROOT`, `ERRATA_CHECK_ID` and `ERRATA_SCOPE` added;
+  directory, or the root of a copy of the repository when the run uses copies (ADR
+  [0019](0019-a-program-check-runs-in-a-copy-of-the-tree.md)); errata's environment with `ERRATA_ROOT`, `ERRATA_CHECK_ID` and `ERRATA_SCOPE` added;
   the check's `timeout`, 30 seconds when it sets none; on Linux and macOS a process group of its
   own, which the timeout kills while the program runs and errata kills once the program exits, so
   a child left running does not outlive the check unless it leaves the group, as `setsid` does,

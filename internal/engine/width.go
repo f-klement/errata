@@ -15,7 +15,7 @@ import (
 var hostRoot fs.FS = os.DirFS("/")
 
 // width is the most jobs that run at once: e.workers when a test sets it,
-// else the CPUs the process may use (defaultWidth). runAll reads it once
+// else the CPUs the process may use (defaultWidth). Execute reads it once
 // for the run.
 func (e *Engine) width() int {
 	if e.workers > 0 {

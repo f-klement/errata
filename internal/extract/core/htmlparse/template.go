@@ -41,9 +41,14 @@ func (s *Scanner) templateTag(selfClosing bool) bool {
 
 // templateStart follows a start tag read as HTML's inside a template's
 // content, which opens its element in the content's nest. An svg or a
-// math opens foreign content, unless it is self closing.
+// math opens foreign content, unless it is self closing. A frameset or a
+// frame opens nothing, as the template cleared the frameset-ok flag
+// (frameset.go).
 func (s *Scanner) templateStart(selfClosing bool) {
 	name, opens := s.name, true
+	if name == "frameset" || name == "frame" {
+		return
+	}
 	if name == "svg" || name == "math" {
 		name, opens = foreignKey(name, name), !selfClosing
 	}
