@@ -83,6 +83,38 @@ FALSE docs-name-the-ci-node (repo)
 1 erratum, 0 unknown. Coverage: ran 1, skipped 0.
 ```
 
+## Plugins
+
+A reader errata does not build in, such as `csv`, is a plugin. Install it before the first check
+that reads with it:
+
+```bash
+errata plugin install csv
+```
+
+errata installs a plugin from errata's own GitHub releases, and from nowhere else by name.
+`errata plugin install csv` downloads `errata-ext-csv` for your system, checks it against the
+checksums file published with its release, and writes its version and the sha256 of every
+platform's build into `errata.lock`. Commit the lock. Every run checks the plugin's file against
+the lock before it starts it, and a run never downloads anything: in CI, run `errata plugin
+install` first, or commit the plugins with `errata plugin install --vendor`.
+
+The checksums file comes from the same release page as errata itself, so it proves what that page
+published, as `sha256sum -c checksums.txt` does for errata's download. errata's releases carry no
+signature. Once a version is in the lock, a release or a mirror that later serves other bytes is
+refused.
+
+Set `ERRATA_PLUGIN_SOURCE` to install from a mirror of the releases. A mirror installs any version
+the lock already pins, and the pin checks what it serves. A version the lock does not pin yet is
+refused through a mirror, since the mirror would also serve the checksums file and so choose what
+is pinned: pin each version once from GitHub and commit the lock, or, on a network that cannot
+reach GitHub, pass `--trust-source` to trust the mirror as GitHub would be.
+
+A plugin from elsewhere is installed from a file, `errata plugin install --file
+./errata-ext-name`, or from a URL with the sha256 you give, `errata plugin install --url <url>
+--sha256 <sum>`, which errata checks before it keeps the file. Its lock entry says where it came
+from; errata vouches only that the bytes match your sum.
+
 ## Features
 
 **Status: early.** What works today:

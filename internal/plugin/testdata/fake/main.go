@@ -19,8 +19,19 @@ import (
 	"github.com/f-klement/errata/internal/plugin/wire"
 )
 
+// fixedName and version are what the fake describes itself as. An
+// install's tests set them with -ldflags -X, to build one fake for each
+// release; fixedName left empty takes the name from the executable's.
+var (
+	fixedName string
+	version   = "0.1.0"
+)
+
 func main() {
-	name := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(os.Args[0]), "errata-ext-"), ".exe")
+	name := fixedName
+	if name == "" {
+		name = strings.TrimSuffix(strings.TrimPrefix(filepath.Base(os.Args[0]), "errata-ext-"), ".exe")
+	}
 	in, err := io.ReadAll(os.Stdin)
 	if err != nil {
 		fail(err)
@@ -59,17 +70,17 @@ func reply(v any) {
 func describe(name string) {
 	switch name {
 	case "newer":
-		reply(map[string]any{"protocols": []int{2, 3}, "name": name, "version": "0.1.0"})
+		reply(map[string]any{"protocols": []int{2, 3}, "name": name, "version": version})
 		return
 	case "liar":
 		name = "other"
 	case "hang":
 		time.Sleep(time.Minute)
 	case "broken":
-		os.Stdout.WriteString(`{"protocol": 1, "name": "broken", "version": "0.1.0", "where": "files", "fields": [], "extra": 1}`)
+		os.Stdout.WriteString(`{"protocol": 1, "name": "broken", "version": "` + version + `", "where": "files", "fields": [], "extra": 1}`)
 		return
 	}
-	reply(wire.DescribeReply{Protocol: 1, Name: name, Version: "0.1.0", Where: wire.WhereFiles, Fields: []wire.Field{
+	reply(wire.DescribeReply{Protocol: 1, Name: name, Version: version, Where: wire.WhereFiles, Fields: []wire.Field{
 		{Name: "word", Type: wire.TypeString, Required: true},
 		{Name: "mode", Type: wire.TypeString},
 		{Name: "tags", Type: wire.TypeMap},

@@ -118,6 +118,48 @@ linters:
             - unicode/utf8$
             - github.com/f-klement/errata/internal/plugin/wire$
             - github.com/f-klement/errata/internal/extract/core/lineend$
+        # errata plugin install fetches, and a run never does (ADR 0021), so one package
+        # reaches the network: internal/plugin/install. Every other package of internal and cmd
+        # is held off the packages that open a connection (net, net/http, crypto/tls, net/rpc,
+        # net/smtp, log/syslog, and golang.org/x/net but for golang.org/x/net/html, which parses
+        # and opens none), so a verdict cannot depend on a network. net/url and net/netip open
+        # none. only-cli-installs holds every file but internal/cli/plugin.go off the installer
+        # itself, so no other package fetches through it.
+        only-install-fetches:
+          list-mode: lax
+          files:
+            - "**/internal/**/*.go"
+            - "**/cmd/**/*.go"
+            - "!**/internal/plugin/install/*.go"
+            - "!$test"
+          deny:
+            - pkg: net$
+              desc: only internal/plugin/install reaches the network; a run never fetches (ADR 0021)
+            - pkg: net/http
+              desc: only internal/plugin/install reaches the network; a run never fetches (ADR 0021)
+            - pkg: crypto/tls
+              desc: only internal/plugin/install reaches the network; a run never fetches (ADR 0021)
+            - pkg: net/rpc
+              desc: only internal/plugin/install reaches the network; a run never fetches (ADR 0021)
+            - pkg: net/smtp
+              desc: only internal/plugin/install reaches the network; a run never fetches (ADR 0021)
+            - pkg: log/syslog
+              desc: only internal/plugin/install reaches the network; a run never fetches (ADR 0021)
+            - pkg: golang.org/x/net
+              desc: only internal/plugin/install reaches the network; a run never fetches (ADR 0021)
+          allow:
+            - golang.org/x/net/html
+        only-cli-installs:
+          list-mode: lax
+          files:
+            - "**/internal/**/*.go"
+            - "**/cmd/**/*.go"
+            - "!**/internal/cli/plugin.go"
+            - "!**/internal/plugin/install/*.go"
+            - "!$test"
+          deny:
+            - pkg: github.com/f-klement/errata/internal/plugin/install$
+              desc: only errata plugin install (internal/cli/plugin.go) calls the installer; a run never fetches (ADR 0021)
         plugin-main-is-offline:
           list-mode: strict
           files:

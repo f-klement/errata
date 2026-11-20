@@ -5265,8 +5265,10 @@ declare, a key in another case, a field of the wrong type and a string YAML 1.1 
 type do not load. A map field reaches the plugin in the order the config writes its keys.
 [The plugin protocol](plugin-protocol.md) is how errata speaks to one.
 
-errata runs a plugin it finds installed and never fetches one. An install command will write the
-lock and the cache; until it is there, a build is put in place by hand.
+A run starts a plugin it finds installed and never fetches one. `errata plugin install` fetches
+it, writes the lock and the cache, and with `--vendor` the vendored directory; the README's
+[Plugins](../README.md#plugins) says where it fetches from and [the command's
+reference](cli.md#errata-plugin-install) gives its flags.
 
 ### `errata.lock`
 
@@ -5297,6 +5299,10 @@ with `#` and a blank line are skipped. Any other line errata cannot read makes t
 load, naming the line, and so does a file over 1 MiB. A repository with no `errata.lock` uses no
 plugin.
 
+`errata plugin install` rewrites the file in the form above, one line for each build in the
+order of the platforms. It keeps the comment and blank lines at the top of the file, before the
+first build, as they were, and drops a comment between builds (owner, 2026-11-20).
+
 ### Where errata looks for a plugin
 
 errata looks in one directory, never on `PATH`:
@@ -5305,6 +5311,10 @@ errata looks in one directory, never on `PATH`:
 - else errata's cache: `errata/plugins` in the user's cache directory, which is
   `$XDG_CACHE_HOME` or `~/.cache` on Linux, `~/Library/Caches` on macOS and `%LocalAppData%` on
   Windows.
+
+Since a run looks in `.errata/plugins` alone once it is there, `errata plugin install` vendors
+what it installs into it, as `--vendor` does, whenever the repository has it, and says so (owner,
+2026-11-20). A build missing from it is reported with `errata plugin install --vendor` to run.
 
 Below it a build is at `<name>/<version>/<os>_<arch>/<sha256>/errata-ext-<name>`, with `.exe` on
 Windows, so the vendored directory is a copy of the part of a cache the repository needs. This

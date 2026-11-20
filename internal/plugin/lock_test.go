@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -125,5 +126,97 @@ func TestBuildPath(t *testing.T) {
 	}
 	if BuildPath("/c", "csv", "0.1.0", "linux/arm64", a) == BuildPath("/c", "csv", "0.1.0", "linux/arm64", b) {
 		t.Fatal("two builds of one version share a path")
+	}
+}
+
+// Format writes a line for each build, each plugin's platforms in the
+// order of Platforms and its source as ParseLock reads it, and Put sets a
+// pin in its place or after the others. Planted breaks: sourceField
+// writing no URL; Put appending a pin the lock holds already, or the
+// first pin it holds.
+func TestALockIsWrittenAsItIsRead(t *testing.T) {
+	text := "csv 0.1.0 darwin/arm64 " + sumA + "\ncsv 0.1.0 linux/amd64 sha256:" + strings.Repeat("b", 64) + "\n" +
+		"toml 1.2.3 linux/amd64 " + sumA + " source=file\n" +
+		"ini 0.2.0 darwin/arm64 " + sumA + " source=url:https://example.com/a\n" +
+		"ini 0.2.0 linux/amd64 " + sumA + " source=url:https://example.com/b\n"
+	l, err := ParseLock([]byte(text))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(l.Format()); got != text {
+		t.Fatalf("Format wrote\n%s\nwant\n%s", got, text)
+	}
+	l.Put(Pin{Name: "toml", Version: "1.3.0", Sums: map[string]string{"linux/amd64": strings.Repeat("c", 64)}, Source: SourceFile})
+	l.Put(Pin{Name: "zip", Version: "0.1.0", Sums: map[string]string{"linux/amd64": strings.Repeat("d", 64)}})
+	l.Put(Pin{Name: "csv", Version: "0.1.0", Sums: map[string]string{"darwin/arm64": strings.Repeat("a", 64), "linux/amd64": strings.Repeat("b", 64)}})
+	want := strings.Replace(text, "toml 1.2.3 linux/amd64 "+sumA, "toml 1.3.0 linux/amd64 sha256:"+strings.Repeat("c", 64), 1) +
+		"zip 0.1.0 linux/amd64 sha256:" + strings.Repeat("d", 64) + "\n"
+	if got := string(l.Format()); got != want {
+		t.Fatalf("after Put, Format wrote\n%s\nwant\n%s", got, want)
+	}
+}
+
+// WriteLock renames a whole file over the lock, keeping its mode, and
+// refuses a pin ParseLock would not read back, such as a version that is
+// no semantic version, writing nothing. Planted breaks: WriteLock skipping
+// the read back; writeRenamed leaving the temporary file's 0600.
+func TestWriteLockWritesAWholeFileItReadsBack(t *testing.T) {
+	root := t.TempDir()
+	good := Lock{Pins: []Pin{{Name: "csv", Version: "0.1.0", Sums: map[string]string{"linux/amd64": strings.Repeat("a", 64)}, Source: SourceRelease}}}
+	if err := WriteLock(root, good); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, LockFile)
+	info, err := os.Stat(path)
+	if err != nil || info.Mode().Perm() != 0o644 {
+		t.Fatalf("the lock is %v, %v; want mode 0644", info, err)
+	}
+	if err := os.Chmod(path, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	bad := Lock{Pins: []Pin{{Name: "csv", Version: "../..", Sums: map[string]string{"linux/amd64": strings.Repeat("b", 64)}, Source: SourceRelease}}}
+	if err := WriteLock(root, bad); err == nil {
+		t.Fatal("a pin of version ../.. was written")
+	}
+	if err := WriteLock(root, good); err != nil {
+		t.Fatal(err)
+	}
+	if info, _ := os.Stat(path); info.Mode().Perm() != 0o640 {
+		t.Errorf("the lock's mode is %v, want the 0640 it had", info.Mode())
+	}
+	if l, err := ReadLock(root); err != nil || !l.Pins[0].same(good.Pins[0]) {
+		t.Errorf("read back %+v, %v", l, err)
+	}
+	if entries, _ := os.ReadDir(root); len(entries) != 1 {
+		t.Errorf("the root holds %v", entries)
+	}
+}
+
+// The blank and comment lines before the first pin are the lock's header,
+// which Format writes back as the file had them; a comment between pins is
+// dropped, and WriteLock refuses a header that would not read back as one
+// (owner, 2026-11-20). Planted breaks: keepHeader keeping comments after a
+// pin; Format leaving the header out; WriteLock not comparing headers.
+func TestALockKeepsItsLeadingComments(t *testing.T) {
+	text := "# Plugins this repository runs.\r\n\n# Update with errata plugin install.\n" +
+		"csv 0.1.0 linux/amd64 " + sumA + "\n# dropped\ntoml 1.2.3 linux/amd64 " + sumA + "\n"
+	l, err := ParseLock([]byte(text))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := strings.Replace(text, "# dropped\n", "", 1)
+	if got := string(l.Format()); got != want {
+		t.Fatalf("Format wrote\n%q\nwant\n%q", got, want)
+	}
+	if l, err := ParseLock([]byte("# only a comment\n")); err != nil || string(l.Format()) != "# only a comment\n" {
+		t.Fatalf("a lock of a comment alone: %q, %v", l.Format(), err)
+	}
+	if l, err := ParseLock(nil); err != nil || len(l.Header) != 0 {
+		t.Fatalf("an empty lock has the header %q, %v", l.Header, err)
+	}
+	root := t.TempDir()
+	l.Header = []string{"# two lines\n# in one"}
+	if err := WriteLock(root, l); err == nil {
+		t.Fatal("WriteLock wrote a header that reads back as another")
 	}
 }

@@ -48,6 +48,10 @@ docker run --rm -v "$PWD:/repo" -w /repo fklement/errata check
 [DOCKERHUB.md](../DOCKERHUB.md) lists its tags, what is in it, and how to add the tools a check
 needs.
 
+A reader that is a plugin, such as `csv`, is installed with `errata plugin install`. The README's
+[Plugins](../README.md#plugins) says where errata fetches one from, what it checks, and how CI
+runs with no network.
+
 ## The first check
 
 A check tests one claim. This repository's README tells a new developer which Node to install:

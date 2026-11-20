@@ -15,6 +15,8 @@ The help of errata and of each of its commands, as `errata --help` and
 - [errata completion zsh](#errata-completion-zsh)
 - [errata help](#errata-help)
 - [errata list](#errata-list)
+- [errata plugin](#errata-plugin)
+- [errata plugin install](#errata-plugin-install)
 - [errata version](#errata-version)
 
 ## errata
@@ -28,7 +30,8 @@ skipped, and why it skipped each.
 
 errata never applies anything. It reads files and runs the programs the
 config names. The only files it writes itself are the ones a --output flag
-of errata check names, each through a temporary file beside it.
+of errata check names, each through a temporary file beside it, and the
+plugins errata plugin install installs, with errata.lock.
 
 The config
   errata check and errata list read errata.yaml in the repository root.
@@ -74,6 +77,7 @@ Available Commands:
   completion  Print a shell's completion script for errata
   help        Print the help of a command
   list        Print the checks errata.yaml holds, as errata check loads them
+  plugin      Install the plugins errata.lock pins
   version     Print the errata version
 
 Flags:
@@ -477,6 +481,168 @@ Flags:
                       (default "text")
   -h, --help          help for list
       --root DIR      the repository root DIR (default ".")
+```
+
+## errata plugin
+
+```text
+Install the plugins a repository's checks read. A plugin is a program that
+reads one more kind of file for errata, such as CSV. errata installs one
+from errata's own GitHub releases, checks it against the checksums its
+release published, and pins it in errata.lock; every run checks the plugin
+against the lock before it starts it, and a run never downloads anything.
+
+errata plugin with no command prints this help.
+
+Exit codes
+  0  errata printed the help.
+  2  a command or a flag errata does not know.
+
+Usage:
+  errata plugin [command]
+
+Examples:
+  # Install the CSV plugin and pin it in errata.lock.
+  errata plugin install csv
+
+  # In CI, install every plugin errata.lock pins.
+  errata plugin install
+
+Available Commands:
+  install     Install plugins into the cache and pin them in errata.lock
+
+Flags:
+  -h, --help   help for plugin
+
+Use "errata plugin [command] --help" for more information about a command.
+```
+
+## errata plugin install
+
+```text
+Install plugins into the user's cache and pin them in errata.lock.
+
+errata plugin install csv downloads errata-ext-csv for this system from
+errata's releases, tagged errata-ext-csv/v<version>, and checks it against
+errata-ext-csv_checksums.txt of the same release. It sends the build the
+plugin protocol's describe request, as a run does, keeps it in the cache
+under its sha256, and writes the version and the sha256 of every platform's
+build into errata.lock. Commit the lock. csv@0.1.0 names a version; without
+one errata installs the version the lock pins, else the newest release that
+is neither a draft nor a prerelease.
+
+With no name, errata installs every plugin the lock pins, at the pinned
+version: what a CI job runs before errata check. A plugin the lock pins from
+a file cannot be fetched again, and errata stops on it unless the cache or
+the vendored directory holds it.
+
+Once a version is in the lock, errata refuses a release or a mirror that
+serves other bytes, and never rewrites the pin: delete the plugin's lines
+from errata.lock to pin it anew. errata writes errata.lock last, and only
+when every plugin installed, in its own form: it keeps the comment lines at
+the top of the file and drops every other comment. A failed install leaves
+the lock as it was, at most files in the cache no lock pins, and in
+.errata/plugins whole files git status shows. Every download is at most
+256 MiB, and one fails when its server sends no answer within 30 s, or
+nothing for 60 s while errata reads the body.
+
+A run looks for plugins in .errata/plugins alone once the repository has
+it, so while it is there every install vendors what it installs, as
+--vendor does, and says so.
+
+errata names no plugin it does not install from errata's releases. A plugin
+from elsewhere comes from a file, or from an https URL with the sha256 you
+give, which errata checks before it keeps the file; errata vouches only
+that the bytes match. The first install of a URL is for this platform, and
+names the plugin's version; --platform then adds another platform's build,
+which errata checks and does not run.
+
+Flags
+  --root DIR (default .)
+      The repository root, which holds errata.lock and .errata/plugins.
+  --source URL (default $ERRATA_PLUGIN_SOURCE, else errata's releases)
+      A mirror of errata's releases: https://<host>/<path>, or a directory
+      as file:///<path>, holding each release's assets under its tag, such
+      as errata-ext-csv/v0.1.0/. A mirror has no API, so name a version or
+      pin one.
+  --trust-source (default off)
+      Pin a version the lock does not pin yet through --source or
+      $ERRATA_PLUGIN_SOURCE. Without it errata refuses, since the mirror
+      would serve the checksums file too and so choose the pin. Pin each
+      version once from errata's releases instead, where you can.
+  --vendor (default off, on when .errata/plugins exists)
+      Also write every platform's build the lock pins, the release's notices
+      file and errata's LICENSE into .errata/plugins, so CI with no network
+      runs from the commit. errata never writes over a file there, and
+      leaves a LICENSE or notices file that differs, saying so.
+  --file PATH (default none)
+      Install the build at PATH, named errata-ext-<name>, for this platform,
+      and pin it as a file.
+  --url URL (default none)
+      Install the build at the https URL, checked against --sha256, and pin
+      it with its URL.
+  --sha256 HEX (default none)
+      The sha256 of the build at --url, as 64 hex digits.
+  --platform OS/ARCH (default the platform errata runs on)
+      The platform the build at --url is for, such as darwin/arm64. Another
+      platform than this one names the plugin, which the lock pins from a
+      URL already.
+  --replace (default off)
+      Let --file or --url take the place of a release the lock pins.
+
+Environment
+  ERRATA_PLUGIN_SOURCE  the plugin source, when --source is not given.
+  GITHUB_TOKEN          sent to api.github.com alone, when errata looks up
+                        the newest release; never to a mirror or a URL.
+
+Exit codes
+  0  every plugin is installed, and errata.lock pins it.
+  2  bad flags, or a plugin errata did not install; the lock is unchanged.
+
+Usage:
+  errata plugin install [<name>[@<version>]...] [flags]
+
+Examples:
+  # Install the newest CSV plugin, or the version errata.lock pins.
+  errata plugin install csv
+
+  # Install every plugin errata.lock pins, and commit them for CI.
+  errata plugin install --vendor
+
+  # Install a pinned version from a mirror; pin a new one from it.
+  errata plugin install csv --source file:///srv/errata-plugins
+  errata plugin install csv@0.2.0 --source https://m.example --trust-source
+
+  # Install a build of your own, in place of the release.
+  errata plugin install --file ./bin/errata-ext-csv --replace
+
+  # Install a plugin from a URL with its sum, then another platform's.
+  errata plugin install --url https://p.example/errata-ext-nginx \
+    --sha256 <its sha256>
+  errata plugin install nginx --platform darwin/arm64 \
+    --url https://p.example/errata-ext-nginx_darwin_arm64 --sha256 <its sha256>
+
+  # Install what another checkout's errata.lock pins.
+  errata plugin install --root ../infra
+
+Flags:
+      --file PATH          install the build at PATH, pinned as a file
+  -h, --help               help for install
+      --platform OS/ARCH   the platform OS/ARCH the build at --url is for
+                           (default the platform errata runs on)
+      --replace            let --file or --url take the place of a release
+                           the lock pins
+      --root DIR           the repository root DIR (default ".")
+      --sha256 HEX         the sha256 of the build at --url, as 64 HEX digits
+      --source URL         a mirror of errata's releases, as an https or
+                           file URL (default $ERRATA_PLUGIN_SOURCE, else
+                           errata's releases)
+      --trust-source       pin a version the lock does not pin yet through
+                           the mirror
+      --url URL            install the build at the https URL, checked
+                           against --sha256
+      --vendor             also write every platform's build into
+                           .errata/plugins
 ```
 
 ## errata version

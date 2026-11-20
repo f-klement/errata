@@ -87,7 +87,7 @@ func newRoot(load loader, stdout, stderr io.Writer) *cobra.Command {
 	root.SetVersionTemplate("{{.Version}}\n")
 	root.SetOut(stdout)
 	root.SetErr(stderr)
-	root.AddCommand(newCheckCmd(load), newListCmd(load), newVersionCmd())
+	root.AddCommand(newCheckCmd(load), newListCmd(load), newPluginCmd(), newVersionCmd())
 	root.InitDefaultHelpCmd()
 	root.InitDefaultCompletionCmd()
 	documentBuiltIns(root)

@@ -273,17 +273,51 @@ func TestABuildIsHashedOnceARun(t *testing.T) {
 }
 
 // A plugin the lock pins and nothing holds is not installed: its entry
-// loads and its extractor names the plugin and where errata looked.
-// Planted break: unusable's extractor returning no error, which found no
-// value.
+// loads and its extractor names the plugin, where errata looked, and the
+// install that puts it there: with --vendor when errata looked in the
+// vendored directory, which a plain install into the cache would not fill.
+// Planted breaks: unusable's extractor returning no error, which found no
+// value; installHint never naming --vendor.
 func TestAPluginNotInstalledNamesItself(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cache := xdgCache(t)
 	root := newRepo(t, map[string]string{"a": "x\n"})
 	writeFile(t, root, LockFile, pinLine("csv", strings.Repeat("a", 64))+"\n")
-	mkdir(t, filepath.Join(root, VendorDir))
+	at := func(base string) string { return BuildPath(base, "csv", "0.1.0", Platform(), strings.Repeat("a", 64)) }
 	_, err := extractOne(t, root, "csv", `{"file": "a", "anything": [1]}`)
-	want := "plugin errata-ext-csv 0.1.0 is not installed: errata looks for it at " + BuildPath(filepath.Join(root, VendorDir), "csv", "0.1.0", Platform(), strings.Repeat("a", 64))
+	want := "plugin errata-ext-csv 0.1.0 is not installed: errata looks for it at " + at(cache) +
+		"; install what errata.lock pins with errata plugin install"
 	if err == nil || err.Error() != want {
 		t.Fatalf("got %v, want %s", err, want)
+	}
+	mkdir(t, filepath.Join(root, VendorDir))
+	_, err = extractOne(t, root, "csv", `{"file": "a", "anything": [1]}`)
+	want = "plugin errata-ext-csv 0.1.0 is not installed: errata looks for it at " + at(filepath.Join(root, VendorDir)) +
+		"; errata looks in .errata/plugins alone while the repository has it: vendor what errata.lock pins with errata plugin install --vendor"
+	if err == nil || err.Error() != want {
+		t.Fatalf("got %v, want %s", err, want)
+	}
+}
+
+// A build the lock pins from a file, which nothing can fetch again, is
+// said to have come from one when it is not installed, and to be vendored
+// by its install when errata looked in the vendored directory. Planted
+// breaks: installHint giving the release's hint for every source;
+// installHint giving the cache's hint for a file in a repository that
+// vendors.
+func TestAPluginFromAFileNotInstalledSaysSo(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	xdgCache(t)
+	root := newRepo(t, map[string]string{"a": "x\n"})
+	writeFile(t, root, LockFile, pinLine("csv", strings.Repeat("a", 64))+" source=file\n")
+	_, err := extractOne(t, root, "csv", `{"file": "a", "anything": [1]}`)
+	if err == nil || !strings.HasSuffix(err.Error(), "; its entry in errata.lock came from a file, which errata cannot fetch: install that file with errata plugin install --file") {
+		t.Fatalf("got %v", err)
+	}
+	mkdir(t, filepath.Join(root, VendorDir))
+	_, err = extractOne(t, root, "csv", `{"file": "a", "anything": [1]}`)
+	if err == nil || !strings.HasSuffix(err.Error(), "and errata looks in .errata/plugins alone while the repository has it: install that file with errata plugin install --file, which vendors it") {
+		t.Fatalf("got %v", err)
 	}
 }
 
@@ -318,7 +352,7 @@ func TestTheVendoredDirectoryTakesThePlaceOfTheCache(t *testing.T) {
 	}
 	mkdir(t, filepath.Join(root, VendorDir))
 	want := BuildPath(filepath.Join(root, VendorDir), "fake", "0.1.0", Platform(), sum)
-	if _, err := extractOne(t, root, "fake", `{"file": "a", "word": "x"}`); err == nil || !strings.HasSuffix(err.Error(), "errata looks for it at "+want) {
+	if _, err := extractOne(t, root, "fake", `{"file": "a", "word": "x"}`); err == nil || !strings.Contains(err.Error(), "errata looks for it at "+want+";") {
 		t.Fatalf("with a vendored directory: %v, want not installed at %s", err, want)
 	}
 }
@@ -576,5 +610,28 @@ func mkdir(t *testing.T, dir string) {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Describe returns the version a build gives once its sum matches: any
+// semantic version when none is asked for, else only the one asked for,
+// naming the build with that version when it refuses. Planted breaks:
+// sameRelease taking any version when one is pinned; Describe leaving the
+// version out of the label.
+func TestDescribeReturnsTheVersionTheBuildGives(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, Executable("nginx", runtime.GOOS))
+	copyFake(t, path)
+	sum := sumOf(t, path)
+	for _, want := range []string{"", "0.1.0"} {
+		if got, err := Describe(t.Context(), dir, path, "nginx", want, sum); err != nil || got != "0.1.0" {
+			t.Fatalf("Describe asking for %q = %q, %v; want 0.1.0", want, got, err)
+		}
+	}
+	if _, err := Describe(t.Context(), dir, path, "nginx", "0.2.0", sum); err == nil || !strings.Contains(err.Error(), "plugin errata-ext-nginx 0.2.0 describes itself as release") {
+		t.Fatalf("Describe asking for 0.2.0: %v", err)
+	}
+	if _, err := Describe(t.Context(), dir, path, "nginx", "", strings.Repeat("0", 64)); err == nil {
+		t.Fatal("Describe ran a build whose sum differs")
 	}
 }

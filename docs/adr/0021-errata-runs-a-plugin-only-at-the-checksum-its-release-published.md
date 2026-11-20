@@ -321,7 +321,10 @@ For the lock as a whole, and for a release by name (the file and URL forms are a
 5. It fetches the checksums file from `<source>/<tag>/`, then the asset for the platform it runs
    on, and checks them in the order "What errata checks" gives.
 6. With `--vendor`, it also fetches and checks every platform's asset the checksums file lists
-   and writes them into the vendored directory, so CI on any platform runs from the commit.
+   and writes them into the vendored directory, so CI on any platform runs from the commit. When
+   the repository has the vendored directory, where a run looks alone, an install without
+   `--vendor` vendors as if it were given, and says so; this holds for the install with no name
+   too (owner, 2026-11-20).
 7. It writes the lock, and prints for each plugin its version, the platform installed and what was
    checked: `errata-ext-csv 0.1.0 linux/amd64: sha256 3f2a... matches errata-ext-csv_checksums.txt
    and errata.lock`.
@@ -330,7 +333,12 @@ The lock is written last and only when every plugin of the install succeeded. Fi
 the cache and the vendored directory under their sums, by rename; in the cache never over a good
 file, and in the vendored directory never over any file. So an install that fails leaves the lock
 as it was, at most files in the cache no lock pins, and in the vendored directory whole files that
-`git status` shows. Installs take no lock (The cache holds a file under its sum, above).
+`git status` shows; a directory of the repository it made and left empty is removed. Installs take
+no lock (The cache holds a file under its sum, above).
+
+The lock is written in one form, a line for each build. The comment and blank lines at its top,
+before the first build, are kept as written, and a comment between builds is dropped (owner,
+2026-11-20).
 
 ## What the README will say beside it
 

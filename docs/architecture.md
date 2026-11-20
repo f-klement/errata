@@ -120,6 +120,19 @@ strict decoding and the check of a describe reply, which a plugin built from thi
 imports too, with `internal/extract/core/lineend` to count lines as errata does and nothing else
 of errata.
 
+**install** (`internal/plugin/install`) is `errata plugin install`
+([ADR 0021](adr/0021-errata-runs-a-plugin-only-at-the-checksum-its-release-published.md)). It
+fetches a plugin's build from a release, a mirror of the releases or a URL, or copies a file;
+checks it against the release's checksums file, the lock's pin or the sum the user gave; has
+`plugin.Describe` run it once under a run's rules; keeps it in the cache, and with `--vendor` in
+`.errata/plugins`, by rename under its sha256; and writes `errata.lock` last through
+`plugin.WriteLock`. It is the one package of errata that imports a package that opens a
+connection, `net/http`, and the depguard rule `only-install-fetches` in `.golangci.yml` holds every
+other package off `net`, `net/http`, `crypto/tls`, `net/rpc`, `net/smtp`, `log/syslog` and
+`golang.org/x/net` but for `golang.org/x/net/html`; the rule `only-cli-installs` holds every file
+but `internal/cli/plugin.go` off `internal/plugin/install` itself. `plugin`, which a run uses,
+imports none of them, so a run never fetches.
+
 **The plugins** (`cmd/errata-ext-<name>`, `internal/ext/<name>`) are executables built and
 released from this repository, which errata runs only through the host. Each is a `main` that
 hands stdin, stdout and stderr to its package under `internal/ext`, which answers one request. The
@@ -178,6 +191,7 @@ flowchart TB
     program["internal/program"]
     plugin["internal/plugin"]
     wire["internal/plugin/wire"]
+    install["internal/plugin/install"]
     treecopy["internal/treecopy"]
     provider["internal/provider"]
     report["internal/report"]
@@ -192,6 +206,11 @@ flowchart TB
     cli --> engine
     cli --> report
     cli --> check
+    cli --> extract
+    cli --> plugin
+    cli --> install
+    install --> plugin
+    install --> semver
     config --> extract
     config --> rule
     config --> core
@@ -343,7 +362,8 @@ reader imports `core` and no other reader, and `core` imports no reader.
 | `internal/engine` | which checks run, in what order, and which are skipped; the run of each witness on its fixture | the check protocol's details, output formats |
 | `internal/protocol` | the check protocol: run a program, map its exit code to a verdict; run a generated check's generator and compare its stdout with the committed file | config, providers, output |
 | `internal/treecopy` | a throwaway copy of the repository's working tree for a check to run in, at a stable path for each slot of the pool in the user's cache: a git repository of its own that borrows the objects through alternates, on the same branch, with the working tree's changes, untracked files and ignored files copied on top and git's index when a tracked file differs; whether a tree can be copied truly (ADR [0019](adr/0019-a-program-check-runs-in-a-copy-of-the-tree.md)) | checks, the pool, what a check writes, which checks pay for a copy |
-| `internal/plugin` | the plugin host: `errata.lock`, where a build sits and the check of its sha256, the describe, build and extract requests, the check of each reply against the protocol and the rule's bounds, a plugin's extractor kind | the plugin's format; fetching or installing a build; which rules need it |
+| `internal/plugin` | the plugin host: `errata.lock` and its writing, where a build sits and the check of its sha256, the describe, build and extract requests, the check of each reply against the protocol and the rule's bounds, a plugin's extractor kind | the plugin's format; fetching a build or the network; which rules need it |
+| `internal/plugin/install` | `errata plugin install`: the plugin source and its mirrors, the releases API, the checksums file, every download and its 256 MiB bound, the trust of a first pin, a file or a URL with its sum, the cache's and the vendored directory's files and the order they are written in | how a run finds and runs a build; the protocol beyond describe; which rules need a plugin |
 | `internal/ext/csv` | the csv kind of plugin protocol 1: its fields, its specs and their defaults, the read of a file with `encoding/csv` and each cell's line as errata counts it | errata's other packages but `wire` and `core/lineend`; files, programs and the network |
 | `internal/plugin/wire` | the messages of plugin protocol 1 and their strict decoding | errata's other packages: it imports only the standard library, so a plugin can import it |
 | `internal/program` | starting a program and waiting for it: argv, working directory, environment, stdin, timeout, a bound on each output stream, the kill of the process group | what its exit or its output means; checks, config, output |
@@ -692,6 +712,19 @@ repositories that pin different builds of one version never share a file and a l
 the run starts the bytes the first one hashed. The plugin starts in an empty directory with only
 the Go runtime's variables of errata's environment, under the protocol's timeouts and bounds, so
 it reads nothing errata did not send it.
+
+**Only the install reaches the network.** `errata plugin install` fetches, and a run never does
+([ADR 0021](adr/0021-errata-runs-a-plugin-only-at-the-checksum-its-release-published.md)), so
+one package, `internal/plugin/install`, imports `net/http`, and the depguard rule
+`only-install-fetches` refuses `net`, `net/http`, `crypto/tls`, `net/rpc`, `net/smtp`,
+`log/syslog` and `golang.org/x/net` in every other package of `internal` and `cmd`;
+`golang.org/x/net/html`, `net/url` and `net/netip`, which open no connection, stay allowed, and
+`only-cli-installs` lets no file but `internal/cli/plugin.go` import `internal/plugin/install`.
+A run's verdict
+then cannot depend on a network, and a reviewer finds every request errata makes in one place. The
+install checks a build against the release's checksums file, or the lock's pin once there is one,
+before it describes or keeps it; writes each file by rename under its sum, never over a good file
+in the cache or over any file in the vendored directory; and writes the lock last.
 
 **cobra for the CLI, not Bubble Tea.** Bubble Tea is a framework for interactive terminal
 programs. errata runs in CI first, where there is no terminal, and its contract is an exit code and

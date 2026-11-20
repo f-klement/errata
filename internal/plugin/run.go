@@ -41,10 +41,15 @@ func Executable(name, goos string) string {
 // CacheDir is errata's plugin cache: errata/plugins in the user's cache
 // directory, as os.UserCacheDir names it (XDG_CACHE_HOME or ~/.cache on
 // Linux, ~/Library/Caches on macOS, %LocalAppData% on Windows).
-// errata plugin install, which is still to come, writes into it.
+// errata plugin install writes into it.
 func CacheDir() (string, error) {
 	_, base, err := cacheBase()
 	return base, err
+}
+
+// CacheIn is errata's plugin cache below owner, a user's cache directory.
+func CacheIn(owner string) string {
+	return filepath.Join(owner, "errata", "plugins")
 }
 
 // cacheBase is the user's cache directory, which errata does not own, and
@@ -54,7 +59,7 @@ func cacheBase() (owner, base string, err error) {
 	if err != nil {
 		return "", "", err
 	}
-	return d, filepath.Join(d, "errata", "plugins"), nil
+	return d, CacheIn(d), nil
 }
 
 // BuildPath is where the build of the plugin name at version for platform
@@ -118,6 +123,9 @@ type exe struct {
 	owner   string
 	sum     string
 	checked *checked
+	// install is how a user installs the build, which a message that it is
+	// not installed ends with.
+	install string
 }
 
 // checked is the result of hashing a build, kept for the run once it is
@@ -227,7 +235,7 @@ func (x exe) verify() error {
 func (x exe) regular() (fs.FileInfo, error) {
 	link, err := os.Lstat(x.path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil, fmt.Errorf("plugin %s is not installed: errata looks for it at %s", x.label, x.path)
+		return nil, fmt.Errorf("plugin %s is not installed: errata looks for it at %s%s", x.label, x.path, x.install)
 	}
 	if err != nil {
 		return nil, err
@@ -272,22 +280,36 @@ func (x exe) hashed(link fs.FileInfo) error {
 // errata does not own, may be links, so a cache below a linked home
 // directory is still read.
 func (x exe) noLink() error {
-	rel, err := filepath.Rel(x.owner, filepath.Dir(x.path))
-	if err != nil || !filepath.IsLocal(rel) {
-		return fmt.Errorf("plugin %s at %s is not below %s", x.label, x.path, x.owner)
+	link, err := linkBelow(x.owner, filepath.Dir(x.path))
+	if err != nil {
+		return fmt.Errorf("plugin %s at %s: %w", x.label, x.path, err)
 	}
-	dir := x.owner
-	for _, part := range strings.Split(rel, string(filepath.Separator)) {
-		dir = filepath.Join(dir, part)
-		info, err := os.Lstat(dir)
-		if err != nil {
-			return err
-		}
-		if info.Mode()&fs.ModeSymlink != 0 {
-			return fmt.Errorf("plugin %s at %s is below %s, which is a symbolic link, so errata does not run it: install the build itself there, not a link to it", x.label, x.path, dir)
-		}
+	if link != "" {
+		return fmt.Errorf("plugin %s at %s is below %s, which is a symbolic link, so errata does not run it: install the build itself there, not a link to it", x.label, x.path, link)
 	}
 	return nil
+}
+
+// linkBelow is the first directory from owner down to dir, owner left out,
+// that is a symbolic link, or "" when none is. dir must be below owner and
+// every directory on the way must exist.
+func linkBelow(owner, dir string) (string, error) {
+	rel, err := filepath.Rel(owner, dir)
+	if err != nil || !filepath.IsLocal(rel) {
+		return "", fmt.Errorf("%s is not below %s", dir, owner)
+	}
+	at := owner
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		at = filepath.Join(at, part)
+		info, err := os.Lstat(at)
+		if err != nil {
+			return "", err
+		}
+		if info.Mode()&fs.ModeSymlink != 0 {
+			return at, nil
+		}
+	}
+	return "", nil
 }
 
 // notRegular refuses the build at x's path, which is a file of mode m.

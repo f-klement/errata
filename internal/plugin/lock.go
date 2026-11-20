@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -86,9 +87,13 @@ func checkURL(at string) error {
 // a line names one of them.
 var Platforms = []string{"darwin/amd64", "darwin/arm64", "linux/amd64", "linux/arm64", "windows/amd64", "windows/arm64"}
 
-// Lock is the plugins the lock file pins, in the order of their first line.
+// Lock is the plugins the lock file pins, in the order of their first line,
+// and Header, the lines before the first of them that are blank or
+// comments, as the file has them. errata plugin install writes Header back
+// as it was and drops every other comment (owner, 2026-11-20).
 type Lock struct {
-	Pins []Pin
+	Header []string
+	Pins   []Pin
 }
 
 // Pin is the pin of the plugin name, and whether the lock has one.
@@ -133,13 +138,15 @@ func ReadLock(root string) (Lock, error) {
 // executable, and where it came from when that is not a release of this
 // repository (Pin). Every line of one name names the same version and the
 // same kind of source, and no platform twice. A line that breaks any of
-// this is refused with its number, and so is the whole file.
+// this is refused with its number, and so is the whole file. The blank and
+// comment lines before the first line that pins a build are the Header.
 func ParseLock(data []byte) (Lock, error) {
 	var l Lock
 	at := map[string]int{}
-	for i, line := range bytes.Split(data, []byte("\n")) {
+	for i, line := range lockLines(data) {
 		text := strings.TrimSpace(string(line))
 		if text == "" || strings.HasPrefix(text, "#") {
+			l.keepHeader(line)
 			continue
 		}
 		if err := l.add(text, at); err != nil {
@@ -147,6 +154,23 @@ func ParseLock(data []byte) (Lock, error) {
 		}
 	}
 	return l, nil
+}
+
+// lockLines are the lines of a lock file's data, with no empty line after
+// its last newline.
+func lockLines(data []byte) [][]byte {
+	if len(data) == 0 {
+		return nil
+	}
+	return bytes.Split(bytes.TrimSuffix(data, []byte("\n")), []byte("\n"))
+}
+
+// keepHeader adds line, a blank or comment line, to l's Header while no
+// line has pinned a build yet.
+func (l *Lock) keepHeader(line []byte) {
+	if len(l.Pins) == 0 {
+		l.Header = append(l.Header, string(line))
+	}
 }
 
 // add reads one line of the lock into l. at is where each name's pin is in
@@ -259,4 +283,102 @@ func CheckName(name string) error {
 		return fmt.Errorf("the plugin name %s is not 1 to 64 lower case letters, digits, _ and -, starting with a letter", strconv.Quote(name))
 	}
 	return nil
+}
+
+// Put sets the pin of p's name to p, in its place when the lock pins that
+// name already, else after the others.
+func (l *Lock) Put(p Pin) {
+	i := slices.IndexFunc(l.Pins, func(q Pin) bool { return q.Name == p.Name })
+	if i < 0 {
+		l.Pins = append(l.Pins, p)
+		return
+	}
+	l.Pins[i] = p
+}
+
+// Format is the lock file that pins what l pins, as ParseLock reads it: a
+// line for each build, the plugins in l's order and each plugin's
+// platforms in the order of Platforms, after the lines of l's Header. A
+// comment between the lines that pin builds is not kept.
+func (l Lock) Format() []byte {
+	var b strings.Builder
+	for _, line := range l.Header {
+		b.WriteString(line + "\n")
+	}
+	for _, p := range l.Pins {
+		for _, platform := range Platforms {
+			if sum, ok := p.Sums[platform]; ok {
+				b.WriteString(p.Name + " " + p.Version + " " + platform + " sha256:" + sum + p.sourceField(platform) + "\n")
+			}
+		}
+	}
+	return []byte(b.String())
+}
+
+// sourceField is the fifth field of p's line for platform, after its
+// space, or "" for a release.
+func (p Pin) sourceField(platform string) string {
+	switch p.Source {
+	case SourceFile:
+		return " source=file"
+	case SourceURL:
+		return " source=url:" + p.URLs[platform]
+	}
+	return ""
+}
+
+// WriteLock writes l as the lock file in root, through a temporary file
+// beside it renamed over it, so the lock is the old file or the whole new
+// one, never a part. It refuses a lock that ParseLock would not read back
+// as l, before it writes anything.
+func WriteLock(root string, l Lock) error {
+	data := l.Format()
+	back, err := ParseLock(data)
+	if err != nil {
+		return err
+	}
+	if !slices.Equal(back.Header, l.Header) || !slices.EqualFunc(back.Pins, l.Pins, Pin.same) {
+		return fmt.Errorf("%s would not read back as the pins errata means to write", LockFile)
+	}
+	return writeRenamed(filepath.Join(root, LockFile), data)
+}
+
+// same reports whether p and q pin the same builds from the same source.
+func (p Pin) same(q Pin) bool {
+	return p.Name == q.Name && p.Version == q.Version && p.Source == q.Source && maps.Equal(p.Sums, q.Sums) && maps.Equal(p.URLs, q.URLs)
+}
+
+// writeRenamed writes data to path by a temporary file in its directory,
+// synced and renamed over it. The file keeps the mode of the one it
+// replaces, and a new one is 0644, so a lock is readable as a committed
+// file is.
+func writeRenamed(path string, data []byte) error {
+	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	if err := errors.Join(writeSynced(f, data, modeOf(path)), f.Close()); err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), path)
+}
+
+// writeSynced gives f mode, writes data to it and syncs it.
+func writeSynced(f *os.File, data []byte, mode fs.FileMode) error {
+	if err := f.Chmod(mode); err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		return err
+	}
+	return f.Sync()
+}
+
+// modeOf is the permission bits of the file at path, or 0644 for none.
+func modeOf(path string) fs.FileMode {
+	if info, err := os.Stat(path); err == nil {
+		return info.Mode().Perm()
+	}
+	return 0o644
 }

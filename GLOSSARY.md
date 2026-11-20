@@ -280,7 +280,7 @@ or a reply is a new version.
 
 **Plugin host.** The part of errata that installs, verifies and runs plugins, and implements
 `check.Extractor` for a plugin's kind, so a rule reads a plugin's values as it reads a built in
-reader's. It is `internal/plugin`; installing is still to come.
+reader's. It is `internal/plugin`, and `internal/plugin/install` installs a plugin.
 
 **Lock file.** `errata.lock`, at the top of a repository: the version of each plugin the
 repository uses, the sha256 of its executable for each platform, and where the build came from.

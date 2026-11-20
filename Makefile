@@ -113,7 +113,7 @@ precheck:
 	GO=$(GO) sh scripts/floors-gaps.sh
 	$(MAKE) --no-print-directory lint $(if $(wildcard ci/public-tree.sh),public-dry)
 
-# What a seat runs on its final commit before handing it back (docs/agents/waves.md, item 7), in
+# What a seat runs on its final commit before handing it back (docs/agents/waves-seat.md, item 7), in
 # one call: ci/run-suite.sh make seat-check PKGS="internal/a internal/b", the package directories
 # it touched. In the v0.4.0 wave 3, 7 of 30 gates went red on a check this runs in minutes: a fuzz
 # find in the seat's own package (3), a CRAP score of 10 or more (2), and a slow test that
@@ -125,7 +125,7 @@ precheck:
 # Last, ci/seat-review.sh prints the review checks report.txt holds (weakened, atbase, shuffle)
 # against SEAT_BASE, by default the merge base with main. Their findings go to the reviewer and
 # never fail seat-check. A runner's pod has no main, so through ci/run-suite.sh pass SEAT_BASE
-# and ERRATA_CI_HISTORY=1 (docs/agents/waves.md, item 7). The public mirror has no ci/, so there
+# and ERRATA_CI_HISTORY=1 (docs/agents/waves-seat.md, item 7). The public mirror has no ci/, so there
 # seat-check ends with cover. SEAT_TEST_TIMEOUT, from the environment, is make test's -timeout
 # in cover: ci/run-on-node.sh sets it in the pod on a node slower than the gate's, and empty
 # leaves TEST_BOUND.

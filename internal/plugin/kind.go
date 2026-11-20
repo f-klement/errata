@@ -108,8 +108,26 @@ func (s *Set) load(ctx context.Context, pin Pin) *Plugin {
 		return p
 	}
 	p.exe = newExe("errata-ext-"+pin.Name+" "+pin.Version, owner, BuildPath(base, pin.Name, pin.Version, s.platform, sum), sum)
+	p.exe.install = installHint(pin, owner == s.root)
 	p.unusable = p.describe(ctx)
 	return p
+}
+
+// installHint is what a message that pin's build is not installed ends
+// with: the command that installs what the lock pins, or for a build the
+// lock pins from a file, which nothing can fetch again, that it came from
+// one. vendored says errata looked in the vendored directory, where only
+// an install that vendors puts a build.
+func installHint(pin Pin, vendored bool) string {
+	switch {
+	case pin.Source == SourceFile && vendored:
+		return "; its entry in " + LockFile + " came from a file, which errata cannot fetch, and errata looks in " + VendorDir + " alone while the repository has it: install that file with errata plugin install --file, which vendors it"
+	case pin.Source == SourceFile:
+		return "; its entry in " + LockFile + " came from a file, which errata cannot fetch: install that file with errata plugin install --file"
+	case vendored:
+		return "; errata looks in " + VendorDir + " alone while the repository has it: vendor what " + LockFile + " pins with errata plugin install --vendor"
+	}
+	return "; install what " + LockFile + " pins with errata plugin install"
 }
 
 // base is the directory errata looks for builds in, the repository's
@@ -151,6 +169,27 @@ func (p *Plugin) describe(ctx context.Context) error {
 	return nil
 }
 
+// Describe sends the build at path the describe request, under the rules
+// a run's requests have (an environment of the Go runtime's variables
+// alone, an empty working directory, the 10 s bound), once it has checked
+// that the build is a regular file whose sha256 is sum, below owner with
+// no symbolic link between. It refuses a reply that names another plugin
+// than name, gives another version than version, or speaks no protocol
+// errata speaks, as a run does; version "" takes any semantic version. It
+// returns the version the build gives. errata plugin install describes a
+// build this way before it keeps it (ADR 0021).
+func Describe(ctx context.Context, owner, path, name, version, sum string) (string, error) {
+	label := "errata-ext-" + name
+	if version != "" {
+		label += " " + version
+	}
+	p := &Plugin{pin: Pin{Name: name, Version: version}, exe: newExe(label, owner, path, sum)}
+	if err := p.describe(ctx); err != nil {
+		return "", err
+	}
+	return p.desc.Version, nil
+}
+
 // refuse is the error of a reply to op that errata does not read, with
 // the end of stderr, the plugin's own word on what went wrong.
 func (p *Plugin) refuse(op string, err error, stderr []byte) error {
@@ -159,7 +198,8 @@ func (p *Plugin) refuse(op string, err error, stderr []byte) error {
 
 // sameRelease refuses a describe reply whose name is not the plugin's, or
 // whose version is not the one the lock pins or holds a character a
-// terminal acts on.
+// terminal acts on. A plugin with no version pinned yet, which an install
+// from a file or a URL describes, may give any semantic version.
 func (p *Plugin) sameRelease(v wire.Version) error {
 	if v.Name != p.pin.Name {
 		return fmt.Errorf("plugin %s names itself %s in its describe reply, not %s", p.exe.label, strconv.Quote(v.Name), p.pin.Name)
@@ -167,8 +207,20 @@ func (p *Plugin) sameRelease(v wire.Version) error {
 	if err := core.VersionError(v.Version); err != nil {
 		return p.refuse("describe", err, nil)
 	}
+	if p.pin.Version == "" {
+		return p.anyVersion(v.Version)
+	}
 	if v.Version != p.pin.Version {
 		return fmt.Errorf("plugin %s describes itself as release %s, and %s pins %s", p.exe.label, strconv.Quote(v.Version), LockFile, p.pin.Version)
+	}
+	return nil
+}
+
+// anyVersion refuses a version a describe reply gives that is no semantic
+// version, before any path is built from it.
+func (p *Plugin) anyVersion(version string) error {
+	if err := CheckVersion(version); err != nil {
+		return p.refuse("describe", err, nil)
 	}
 	return nil
 }
