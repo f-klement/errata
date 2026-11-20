@@ -73,14 +73,19 @@
 #
 # A figure at or below its floor fails. Efficacy is 85 for every package.
 # Mutant coverage is 85 but where Go's coverage profile cannot see a test reach
-# a mutant: it leaves package-level declarations and code after a statement's
-# first func literal outside every block, so their mutants always read as not
-# covered, however the tests run them. Such a package's floor is its measured
-# figure rounded down, and one under it when the figure is whole. Case
-# expressions no longer count against a package: since #209 scripts/mutation.sh
-# covers one whose clause body ran (scripts/casecover), so a measurement before
-# 2026-10-30 counts case expressions among its mutants not covered, and one
-# from that day on runs them.
+# a mutant: it leaves code after a statement's first func literal outside every
+# block, so its mutants always read as not covered, however the tests run them.
+# Such a package's floor is its measured figure rounded down, and one under it
+# when the figure is whole. Package-level const and var values no longer count
+# against a package: since 2026-11-20 scripts/casecover covers them in every
+# package whose tests ran a block of it, so a measurement before that day
+# counts them among its mutants not covered, and one from that day on runs
+# them. A file of them alone under a build constraint, or one that imports
+# "C", stays not covered. Case expressions no longer count against a package
+# either: since #209 scripts/mutation.sh covers one whose clause body ran
+# (scripts/casecover), so a measurement before 2026-10-30 counts case
+# expressions among its mutants not covered, and one from that day on runs
+# them.
 #
 # The least coefficient is .gremlins.yaml's 5 but where a package's tests wait
 # longer than the limit floor of 10 s per mutant allows for; the comment above
@@ -104,6 +109,8 @@ internal/config                    85        85      5
 internal/engine                    85        85      5
 # ext/csv: new with the CSV plugin (#51), held to the floor every reader has.
 internal/ext/csv                   85        85      5
+# ext/hcl: new with the HCL plugin (#39), held to the same floor.
+internal/ext/hcl                   85        85      5
 # The facade: 100%, efficacy 100%, 22 of 22 covered since tool_version (#46) on
 # 2026-10-23. It read 65.00% before, 7 of its 20 mutants after the first func
 # literal of the kinds table, with a floor of 64, until the comparisons that say

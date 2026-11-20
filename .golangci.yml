@@ -95,7 +95,16 @@ linters:
         # path no deny list names is refused too. It holds wire and lineend,
         # the two packages of errata's a plugin imports, as well. Its main,
         # below, adds os for stdin, stdout and the exit status, and nothing
-        # else.
+        # else. time gives wire the extract timeout and the hcl plugin its
+        # deadline, for timers and durations; it reads the zone database in
+        # LoadLocation and on first use of Local, such as formatting
+        # time.Now(), neither of which a plugin may call. The hcl plugin
+        # imports hcl/v2, its hclsyntax and go-cty's cty;
+        # depguard reads only this repository's files, so a test of
+        # cmd/errata-ext-hcl holds the modules it links to an allow list of
+        # its own, the standard packages they import today, and refuses an
+        # assembly or cgo file in any of them, on every platform errata
+        # ships for.
         plugin-is-offline:
           list-mode: strict
           files:
@@ -115,9 +124,14 @@ linters:
             - slices$
             - strconv$
             - strings$
+            - time$
+            - unicode$
             - unicode/utf8$
             - github.com/f-klement/errata/internal/plugin/wire$
             - github.com/f-klement/errata/internal/extract/core/lineend$
+            - github.com/hashicorp/hcl/v2$
+            - github.com/hashicorp/hcl/v2/hclsyntax$
+            - github.com/zclconf/go-cty/cty$
         # errata plugin install fetches, and a run never does (ADR 0021), so one package
         # reaches the network: internal/plugin/install. Every other package of internal and cmd
         # is held off the packages that open a connection (net, net/http, crypto/tls, net/rpc,

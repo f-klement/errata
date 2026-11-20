@@ -12,7 +12,8 @@ whose key is `<name>`, so an entry `csv:` under a rule's `extract:` needs `errat
 message about a missing plugin names it from the config alone. errata starts it with no argument,
 writes one JSON request to its stdin and closes it, and reads one JSON reply from its stdout. The
 plugin reads nothing else: errata resolves `file:`, `files:` and `max_bytes:`, reads the files
-with the checks a built in reader gets, and hands the plugin their bytes. Every request is a
+with the checks a built in reader gets, and hands the plugin their bytes with the entry's
+`max_bytes`, by which the plugin bounds its own work (owner, 2026-11-20). Every request is a
 process of its own, which ends when the reply is written.
 
 The [plugin protocol](../plugin-protocol.md) is the specification: the three requests, the values

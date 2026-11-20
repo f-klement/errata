@@ -28,6 +28,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -43,6 +44,11 @@ var Protocols = []int{1}
 // plugin stops reading at one more and replies with an error, as a built
 // in reader does, so it never builds a reply errata would refuse.
 const MaxValues = 100_000
+
+// ExtractTimeout is how long errata waits for an extract reply before it
+// kills the plugin (docs/plugin-protocol.md, Bounds). A plugin that keeps
+// a deadline of its own keeps it below this, so it still answers.
+const ExtractTimeout = 30 * time.Second
 
 // The requests' ops.
 const (
@@ -453,18 +459,29 @@ func (d *Description) UnmarshalJSON(data []byte) error {
 }
 
 // ExtractRequest asks for the values of one entry in its files.
+// MaxBytes is the entry's max_bytes, its default written out: the bound
+// on its files together, which a plugin divides to bound the work it does
+// on them, as a built in reader does (owner, 2026-11-20).
 type ExtractRequest struct {
 	Protocol int                `json:"protocol"`
 	Op       string             `json:"op"`
 	Spec     json.RawMessage    `json:"spec"`
 	Files    []File             `json:"files"`
 	Values   map[string][]Value `json:"values"`
+	MaxBytes int64              `json:"max_bytes"`
 }
 
-// UnmarshalJSON reads an extract request strictly, with every member it requires.
+// UnmarshalJSON reads an extract request strictly, with every member it
+// requires, and refuses a max_bytes below 1, which errata never sends.
 func (r *ExtractRequest) UnmarshalJSON(data []byte) error {
 	type plain ExtractRequest
-	return strict(data, (*plain)(r), "protocol", "op", "spec", "files", "values")
+	if err := strict(data, (*plain)(r), "protocol", "op", "spec", "files", "values", "max_bytes"); err != nil {
+		return err
+	}
+	if r.MaxBytes < 1 {
+		return fmt.Errorf("max_bytes is %d; errata sends a bound of 1 byte or more", r.MaxBytes)
+	}
+	return nil
 }
 
 // File is one file of an extract request: its path from the root, with

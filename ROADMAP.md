@@ -306,6 +306,9 @@ The files that describe containers and clusters, read in core.
 - Container image references parsed once for every place an image is named, with `compare: image`
   so a Dockerfile, a compose file, a manifest and Helm values agree on one image.
 - Argo CD and Flux resources: sources, revisions and chart versions.
+- Helm chart files as the chart states them: `Chart.yaml`, values files in their override order,
+  and `Chart.lock`. Kustomize files as they state them: images, namespace, name prefix, generator
+  literals and chart versions, through local resources and components. Neither renders anything.
 - `--base`, the diff range, detected in GitLab, GitHub Actions and Jenkins.
 
 ## v0.6.1: fields git cannot remove
@@ -319,9 +322,8 @@ The feature no other tool ships.
 - Applies that cannot succeed: immutable field changes and admission rejections, before the push.
 - A running image that is not the pinned image.
 - Beside it, the errata-ext-kubernetes plugin v0.1.0: a Kubernetes provider that renders (Helm and
-  Kustomize, in process), reads live objects, and predicts an apply with a server-side dry run,
-  with extractors for Helm charts and values and for Kustomize files. errata never applies
-  anything.
+  Kustomize, in process), reads live objects, and predicts an apply with a server-side dry run.
+  errata never applies anything.
 
 ## v0.7.0: drift verdicts
 
@@ -350,7 +352,8 @@ properties, version files, package versions, Markdown prose, env files and `env:
 GitLab CI, GitHub Actions and Jenkins readers, Markdown structure, code comments, markers, the
 literal reader, source code literals, HTML, AsciiDoc and reStructuredText, dependency versions,
 systemd units, Unix configuration files, JSONC and JSON5, Dockerfiles, Compose, Kubernetes
-manifests and their `env:` entries, image references, GitOps resources, and Starlark.
+manifests and their `env:` entries, image references, GitOps resources, Helm chart and Kustomize
+files as they are written, and Starlark.
 
 Planned as plugins, with no release yet:
 

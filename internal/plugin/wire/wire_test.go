@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 // A message is read strictly: it is valid UTF-8 and one JSON value, holds
@@ -161,5 +162,38 @@ func TestADescriptionIsCheckedFieldByField(t *testing.T) {
 	}
 	if err := field("b", TypeMap).Check(); err != nil {
 		t.Fatalf("a good description: %v", err)
+	}
+}
+
+// An extract request carries max_bytes, the entry's bound on its files,
+// which errata always sends as 1 byte or more (owner, 2026-11-20).
+// Planted breaks: max_bytes left out of the required members; the bound
+// checked with < 0.
+func TestAnExtractRequestHoldsMaxBytes(t *testing.T) {
+	const head = `{"protocol": 1, "op": "extract", "spec": {}, "files": [], "values": {}`
+	for raw, want := range map[string]string{
+		head + `}`:                   `the member "max_bytes" is missing`,
+		head + `, "max_bytes": 0}`:   "max_bytes is 0; errata sends a bound of 1 byte or more",
+		head + `, "max_bytes": -5}`:  "max_bytes is -5",
+		head + `, "max_bytes": "1"}`: "cannot unmarshal",
+		head + `, "Max_bytes": 1}`:   `the member "Max_bytes" must be written "max_bytes"`,
+	} {
+		var r ExtractRequest
+		if err := Decode([]byte(raw), &r); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: got %v, want %s", raw, err, want)
+		}
+	}
+	var r ExtractRequest
+	if err := Decode([]byte(head+`, "max_bytes": 1}`), &r); err != nil || r.MaxBytes != 1 {
+		t.Fatalf("a request of max_bytes 1: %+v, %v", r, err)
+	}
+}
+
+// The extract timeout is the protocol's 30 s (docs/plugin-protocol.md,
+// Bounds), held here where it is defined so a change to it fails in this
+// package. Planted break: the constant set to 20 s.
+func TestTheExtractTimeoutIsThirtySeconds(t *testing.T) {
+	if ExtractTimeout != 30*time.Second {
+		t.Fatalf("ExtractTimeout is %v, the protocol says 30s", ExtractTimeout)
 	}
 }

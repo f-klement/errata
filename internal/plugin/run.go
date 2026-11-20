@@ -18,6 +18,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/f-klement/errata/internal/plugin/wire"
 	"github.com/f-klement/errata/internal/program"
 )
 
@@ -92,7 +93,7 @@ func cut(platform string) (goos, arch string, ok bool) {
 var (
 	describeTimeout = 10 * time.Second
 	buildTimeout    = 10 * time.Second
-	extractTimeout  = 30 * time.Second
+	extractTimeout  = wire.ExtractTimeout
 )
 
 // The protocol's bounds on output.

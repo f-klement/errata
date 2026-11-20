@@ -202,7 +202,7 @@ defaults to true. `description` is what the entry's extractor returns, as
 
 | Member | What it is |
 |---|---|
-| `label` | the kind as a message names it, such as `csv`, or `hcl, terraform dialect` |
+| `label` | the kind as a message names it, such as `csv`, or `csv, tsv dialect` |
 | `not_literal` | whether a value may be marked not literal; a rule's `skip_not_literal` may list the extractor only when it is true |
 | `shape` | `flat`: each value is text; `map`: each value is a mapping handed to `assert` whole; `record`: each value is a mapping of the fields `fields` names |
 | `fields` | for `record`, the keys of each record in order; empty for any other shape |
@@ -239,7 +239,8 @@ repository and once for each witness the rule's check names.
   "files": [
     {"path": "deploy/services.csv", "data": "bmFtZSxwb3J0CmFwaSw4MDgwCg=="}
   ],
-  "values": {}
+  "values": {},
+  "max_bytes": 33554432
 }
 ```
 
@@ -248,6 +249,16 @@ repository and once for each witness the rule's check names.
 | `spec` | the spec as the build reply wrote it out |
 | `files` | the files the entry reads, in the order a built in reader reads them: its `file`, or each file of its `files` in path order. Each has its `path`, relative to the root with `/` between names, as messages print it, and its bytes in `data` |
 | `values` | for each name in the description's `reads`, that extractor's literal values, after `skip_not_literal`, in the order they were found, each as the Values section below writes it |
+| `max_bytes` | the entry's `max_bytes`, with its default of 32 MiB written out when the entry sets none: the bound errata holds the files to together. Always 1 or more; a request with less is refused |
+
+A plugin bounds its work by `max_bytes`, as a built in reader does (owner, 2026-11-20). Before it
+builds a whole document from the files, it counts in one pass over their bytes an upper bound on
+what its parser can build, and refuses the files with an error when the count passes `max_bytes`
+divided by a constant the plugin measures and names: the Markdown reader allows one node for every
+4 bytes of `max_bytes`, the go.mod reader one token for every 64. The bound then scales with what
+the config author allows, and a denser file than the constant permits needs a larger `max_bytes`,
+which the error names. errata itself sets no memory bound on a plugin (Bounds, below), so a plugin
+that skips this can be killed for its memory, or have the system kill errata.
 
 errata reads the files before the plugin starts, with every check a built in reader's file gets:
 inside the repository, no link out of it, not a directory, a device or a FIFO, and at most
@@ -356,7 +367,7 @@ built in reader reads and returns, and lets memory fail closed. A plugin runs un
 | stdout of an extract request | 6 times `max_bytes`, plus 160 bytes and 6 times the longest `path` of the request for each of `MaxValues` values, plus 64 KiB: about 230 MiB at the default 32 MiB with paths of 40 bytes | the plugin is stopped at the byte past it, as on a timeout, and the rule is unknown, naming the stream and the bound |
 | stderr of any request | 1 MiB, of which a message uses the last 256 bytes | the plugin is stopped at the byte past it, as on a timeout, and the rule is unknown, naming the stream and the bound |
 | the values a reply returns | `MaxValues` (100000, `wire.MaxValues` to a plugin built from this repository) nodes and `max_bytes` bytes in all | the rule is unknown, with the message a built in reader's values get past the same bound |
-| memory | none set by errata | a plugin the system or the runner kills for its memory ended by a signal: the rule is unknown, naming the signal. If the system kills errata instead, the CI job fails |
+| memory | none set by errata; the plugin bounds its own work by the request's `max_bytes` (extract, above) | a plugin the system or the runner kills for its memory ended by a signal: the rule is unknown, naming the signal. If the system kills errata instead, the CI job fails |
 
 The output bound stops the plugin rather than dropping what passes it, since errata cannot decode
 a reply it did not read whole. It is the largest compact reply whose values pass the values

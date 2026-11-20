@@ -2,12 +2,14 @@ package main
 
 import (
 	"bytes"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
 	"testing"
+	"testing/fstest"
 )
 
 // sign is the source of the profile below. TestSign called Sign(-1), Sign(0)
@@ -48,21 +50,23 @@ var (
 	emptyArm   = pos{11, 9} // n == 7, whose empty body ran
 )
 
-func readSign(rel string) ([]byte, error) {
-	if rel != "p.go" {
-		return nil, os.ErrNotExist
-	}
-	return []byte(sign), nil
-}
+// signFS is the module root of sign, which holds it alone.
+var signFS = fstest.MapFS{"p.go": {Data: []byte(sign)}}
 
 // gremlinsCovers is how gremlins v0.6.0 decides that a mutant is covered
 // (internal/coverage/profile.go): the position lies in a block a test ran,
 // read line by line.
 func gremlinsCovers(t *testing.T, profile string, p pos) bool {
 	t.Helper()
+	return gremlinsCoversIn(t, profile, "example.com/p/p.go", p)
+}
+
+// gremlinsCoversIn is gremlinsCovers for a mutant in the profile's file name.
+func gremlinsCoversIn(t *testing.T, profile, name string, p pos) bool {
+	t.Helper()
 	for _, line := range strings.Split(profile, "\n") {
 		m := blockLine.FindStringSubmatch(line)
-		if m == nil || m[1] != "example.com/p/p.go" || m[7] == "0" {
+		if m == nil || m[1] != name || m[7] == "0" {
 			continue
 		}
 		n := make([]int, 4)
@@ -83,7 +87,7 @@ func gremlinsCovers(t *testing.T, profile string, p pos) bool {
 
 func withCaseBlocks(t *testing.T) string {
 	t.Helper()
-	lines, err := caseBlocks([]byte(signProfile), "example.com/p", readSign)
+	lines, err := addedBlocks([]byte(signProfile), "example.com/p", signFS)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,13 +130,13 @@ func TestAClauseNoTestReachesStaysNotCovered(t *testing.T) {
 // The block runs from the case keyword to the colon, so it holds the
 // expressions and nothing of the body.
 func TestTheBlockSpansCaseToColon(t *testing.T) {
-	lines, err := caseBlocks([]byte(signProfile), "example.com/p", readSign)
+	lines, err := addedBlocks([]byte(signProfile), "example.com/p", signFS)
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := []string{"example.com/p/p.go:6.2,6.12 0 1", "example.com/p/p.go:11.2,11.13 0 1"}
 	if !reflect.DeepEqual(lines, want) {
-		t.Errorf("caseBlocks gave %q, want %q", lines, want)
+		t.Errorf("addedBlocks gave %q, want %q", lines, want)
 	}
 }
 
@@ -172,16 +176,12 @@ example.com/p/p.go:17.3,17.20 1 1
 example.com/p/p.go:19.2,19.16 1 0
 `
 
-func readPick(rel string) ([]byte, error) {
-	if rel != "p.go" {
-		return nil, os.ErrNotExist
-	}
-	return []byte(pick), nil
-}
+// pickFS is the module root of pick, which holds it alone.
+var pickFS = fstest.MapFS{"p.go": {Data: []byte(pick)}}
 
 func pickBlocks(t *testing.T) []string {
 	t.Helper()
-	lines, err := caseBlocks([]byte(pickProfile), "example.com/p", readPick)
+	lines, err := addedBlocks([]byte(pickProfile), "example.com/p", pickFS)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +203,7 @@ func TestARunSelectArmCoversItsStatement(t *testing.T) {
 		}
 	}
 	if len(lines) == 0 || lines[0] != "example.com/p/p.go:6.2,6.17 0 1" {
-		t.Errorf("caseBlocks gave %q, want the first arm's block 6.2,6.17 first", lines)
+		t.Errorf("addedBlocks gave %q, want the first arm's block 6.2,6.17 first", lines)
 	}
 }
 
@@ -214,7 +214,7 @@ func TestALineDirectiveLeavesPositionsAsWritten(t *testing.T) {
 	lines := pickBlocks(t)
 	want := "example.com/p/p.go:16.2,16.12 0 1"
 	if len(lines) != 2 || lines[1] != want {
-		t.Errorf("caseBlocks gave %q, want Sign's block %q", lines, want)
+		t.Errorf("addedBlocks gave %q, want Sign's block %q", lines, want)
 	}
 }
 
@@ -224,9 +224,9 @@ func TestALineDirectiveLeavesPositionsAsWritten(t *testing.T) {
 // removed, fails here.
 func TestAProfileNameNoFileHasIsSkipped(t *testing.T) {
 	profile := pickProfile + "example.com/p/other.go:15.2,15.9 1 1\n"
-	lines, err := caseBlocks([]byte(profile), "example.com/p", readPick)
+	lines, err := addedBlocks([]byte(profile), "example.com/p", pickFS)
 	if err != nil || !reflect.DeepEqual(lines, pickBlocks(t)) {
-		t.Errorf("caseBlocks gave %q, %v; want pick's blocks and no error", lines, err)
+		t.Errorf("addedBlocks gave %q, %v; want pick's blocks and no error", lines, err)
 	}
 }
 
@@ -250,7 +250,7 @@ func runOnRoot(t *testing.T, mod, profile string) (string, error) {
 // tests ran in, and run fails with the count and the root rather than add
 // nothing and exit 0. The count is of the in-module names a test ran:
 // signProfile's p.go and q.go, not z.go, whose block never ran, nor r.go,
-// outside the module. The planted break, that check in caseBlocks removed,
+// outside the module. The planted break, that check in addedBlocks removed,
 // fails here.
 func TestARootHoldingNoneOfTheProfilesFilesFails(t *testing.T) {
 	dir, err := runOnRoot(t, "example.com/p", signProfile+
@@ -264,7 +264,7 @@ func TestARootHoldingNoneOfTheProfilesFilesFails(t *testing.T) {
 // A root whose go.mod names another module, a sibling checkout or a module
 // nested in the one the tests ran in, holds none of the profile's names, ran
 // or not, and run fails rather than add nothing and exit 0. The planted
-// break, the in-module check in caseBlocks removed, fails here.
+// break, the in-module check in addedBlocks removed, fails here.
 func TestARootOfAnotherModuleFails(t *testing.T) {
 	profile := signProfile + "example.com/p/z.go:1.1,2.2 1 0\n"
 	for _, mod := range []string{"example.org/other", "example.com/p/sub"} {
@@ -287,13 +287,18 @@ func TestAProfileNamingNoFileIsAccepted(t *testing.T) {
 // A file outside the module, and one no block of which ran, are not read.
 func TestFilesOutsideTheModuleOrNeverRunAreNotRead(t *testing.T) {
 	profile := "mode: set\nother.org/q/q.go:1.1,2.2 1 1\nexample.com/p/z.go:1.1,2.2 1 0\n"
-	lines, err := caseBlocks([]byte(profile), "example.com/p", func(rel string) ([]byte, error) {
-		t.Errorf("read %s", rel)
-		return nil, os.ErrNotExist
-	})
+	lines, err := addedBlocks([]byte(profile), "example.com/p", noReads{t})
 	if err != nil || len(lines) != 0 {
-		t.Errorf("caseBlocks gave %q, %v; want nothing", lines, err)
+		t.Errorf("addedBlocks gave %q, %v; want nothing", lines, err)
 	}
+}
+
+// noReads is a module root that fails the test on any read.
+type noReads struct{ t *testing.T }
+
+func (r noReads) Open(name string) (fs.File, error) {
+	r.t.Errorf("read %s", name)
+	return nil, fs.ErrNotExist
 }
 
 // A profile it cannot read fails, so gremlins' coverage pass fails with it
@@ -303,13 +308,11 @@ func TestABadProfileFails(t *testing.T) {
 		"no mode line":    "example.com/p/p.go:5.2,5.9 1 1\n",
 		"a line not read": "mode: set\nexample.com/p/p.go 5.2,5.9 1 1\n",
 	} {
-		if _, err := caseBlocks([]byte(profile), "example.com/p", readSign); err == nil {
-			t.Errorf("%s: caseBlocks gave no error", name)
+		if _, err := addedBlocks([]byte(profile), "example.com/p", signFS); err == nil {
+			t.Errorf("%s: addedBlocks gave no error", name)
 		}
 	}
-	if _, err := caseBlocks([]byte(signProfile), "example.com/p", func(string) ([]byte, error) {
-		return []byte("package p\nfunc {"), nil
-	}); err == nil {
+	if _, err := addedBlocks([]byte(signProfile), "example.com/p", fstest.MapFS{"p.go": {Data: []byte("package p\nfunc {")}}); err == nil {
 		t.Error("a source that does not parse gave no error")
 	}
 }

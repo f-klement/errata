@@ -68,6 +68,7 @@ new user needs it, with four checks worked through from the files to the fix, an
   - [Where errata looks for a plugin](#where-errata-looks-for-a-plugin)
   - [How a plugin runs](#how-a-plugin-runs)
   - [The `csv` plugin](#the-csv-plugin)
+  - [The `hcl` plugin](#the-hcl-plugin)
 - [Limits](#limits)
 - [When a rule is unknown](#when-a-rule-is-unknown)
 - [The check protocol](#the-check-protocol)
@@ -5382,6 +5383,117 @@ A row ends at a LF or a CRLF. A lone CR is part of a cell, so a file whose rows 
 as Excel for Mac's "CSV (Macintosh)" writes them, is one row; save it with CRLF or LF line ends.
 Lines are counted as errata counts them everywhere, so a lone CR inside a quoted cell moves the
 rows after it a line down.
+
+### The `hcl` plugin
+
+`errata-ext-hcl` provides the kind `hcl`, which reads an attribute of a file in HashiCorp's
+configuration language: Terraform's `.tf` and `.tfvars`, Packer's `.pkr.hcl` and Nomad's job
+files. It parses with HashiCorp's `hcl/v2` (`hclsyntax`, the native syntax; a `.tf.json` file is
+JSON, which the `json` kind reads) and evaluates nothing.
+
+```yaml
+extract:
+  default_region:
+    hcl: {file: infra/variables.tf, path: variable.region.default}
+  prod_region:
+    hcl: {file: infra/prod.tfvars, path: region}
+  instance_types:
+    hcl: {files: [infra/*.tf], path: "resource.aws_instance[*].instance_type"}
+```
+
+| Key | Type | What it does |
+|---|---|---|
+| `file`, `files`, `max_bytes` | | errata's, as for any kind: one file, or a list or glob of files, such as a module's `*.tf` |
+| `path` | string, required | the steps to the value, below |
+
+A path is steps after one another, the first without a dot:
+
+| Step | Selects | Example |
+|---|---|---|
+| `.name` | in a body, the attribute `name` and every block of type `name`; in an object, the item whose key is `name` | `variable.region.default`, `locals.tags.Name` |
+| `["name"]` or `['name']` | the same, for a name with a dot, a space or another character `.name` cannot hold; `\\` is a backslash and a backslash before the quote is the quote | `resource.aws_s3_bucket["logs.example"].bucket` |
+| `[n]` | element `n` of a list, from 0 | `availability_zones[0]` |
+| `[*]` | in a body, every attribute; in a block's label, every label; in an object, every item; in a list, every element | `resource.aws_instance[*].instance_type` |
+
+After a block type, the path names each of the block's labels in turn, or `[*]` for any, and goes
+on in the block's body: `resource.aws_instance.web.ami` is the `ami` of `resource "aws_instance"
+"web"`. A block with no labels, such as `ingress` or `lifecycle`, is named by its type alone, so
+two `ingress` blocks of one resource each give a value. The top of a `.tfvars` file is a body like
+a block's, so its key `region` reads as `variable.region.default` does. A name after a dot starts
+with a letter or `_` and goes on with letters, digits, `_` and `-`, as HCL writes an identifier.
+Every path is written one way when the config loads, so `resource["aws_instance"].web.ami` and
+`resource.aws_instance.web.ami` read one place.
+
+Each value is at the line its expression starts on, as errata counts lines, with the attribute or
+key it is set under as its key. A heredoc's line is the line of its `<<`. When the path holds
+`[*]`, each value's condition is the path it matched, such as
+`resource.aws_instance.web.instance_type`. Values come in the file's order, file by file.
+
+A literal is the value as the file writes it: a number as written (`1.50` stays `1.50`, and `- 1`
+is `-1`, a minus sign and the number with nothing between), `true`,
+`false` and `null`, and a string with no `${` or `%{`, its escapes read and its text in Unicode NFC
+as HCL hands it to Terraform; a heredoc's text keeps its last line end, and `<<-` cuts the indent.
+Anything else is returned as the file wrote it and marked not literal: a reference such as
+`var.region`, an interpolation, a directive, a function call, an operator, a conditional, a `for`
+expression and a value in parentheses (see [Values a file only computes](#values-a-file-only-computes)).
+So is a value whose object key the file computes, and a value the path goes on past, such as
+`tags.Name` where `tags = merge(local.tags, {...})`: only evaluating it would give the part the
+path names. Nothing is ever evaluated, so no variable, provider or module is read or fetched.
+Past a literal, a path selects nothing.
+
+A path that selects nothing in any file finds no value and says so, so `allow_empty` decides. A file
+that does not parse makes the rule unknown, naming the file, the line and HCL's message, and so do
+a path that ends at a block, an object or a list, which hold no value to compare (add an attribute,
+a key, an index or `[*]`), and more than 100000 values across the files. So does a file nested
+more than 1000 levels deep, refused before it is parsed, since HCL's parser has no limit of its own
+and 100000 brackets, 200 KB, overflow its stack and kill the plugin. Each bracket, brace,
+parenthesis, quote, heredoc and `${` counts a level, and so do `%{if}` and `%{for}` until their end,
+and each minus sign, `!`, `?` and full splat `[*]` until its expression ends: at a comma, or at a
+line end at the top of the file or in braces, but not in a `for` expression, which reads across
+line ends as parentheses and brackets do. A splat counts with comments or line ends inside its
+brackets too, as HCL reads it, and whatever token closes its bracket, since after an error in the
+file HCL takes `[*)` and `[*}` as splats as well. A number longer than 1000 bytes makes the rule
+unknown too, refused before it is parsed and naming its line, since HCL reads a number in time that
+grows with the square of its length: 3.2 MB of digits took 13.9 s. Real numbers are far shorter.
+A template that costs more than 128 times `max_bytes` to join, 4294967296 at the default, makes
+the rule unknown as well, refused before it is parsed and naming the line of its quote or heredoc.
+HCL joins each literal part of a template into the literal before it when no `${` or `%{` comes
+between, and for each join it copies the text joined so far and every part of the template after
+it, interpolations and directives included. So the cost counts two terms: the template's joins
+times its parts, and over each run of adjacent literals, the run's parts times its bytes, divided
+by 16. Each heredoc line is a literal part, and so is the text up to a `$${` or `%%{`; each `${`
+and `%{` is a part too. A `%{` does not end a run in the count, since HCL drops a directive it cannot
+read, such as `%{z}`, and still joins the literals either side of it. On a 6 core machine, joins times parts cost 1.28 ns each when the parts
+moved are interpolations, so a string of 20000 `$${` and 187258 `${a}`, near the limit, parsed in
+5.3 s. A run's parts times bytes cost 0.041 ns each: a 32 MiB heredoc parsed in 2.4 s in 32 lines,
+3.9 s in 1024 and 8.0 s in 4096, and the limit falls at 2048 lines, about 5.2 s by that rate. A 2
+core laptop processor (i7-6500U) takes about twice as long: the string at the limit, with 191008
+`${a}`, parses in 7.4 s, and a heredoc of 2040 lines of 16 KiB, 33.4 MB, the slowest template
+measured that the default limit lets through, in 11.4 s. A heredoc of 8000 lines with two interpolations on each, 424 KB, costs 3.2e8 and parsed in 0.11 s.
+
+The plugin's memory grows with the tokens a file holds, not its bytes, so a file may make at most
+one token for every 16 bytes of the entry's `max_bytes`, 2097152 at the default, and is refused past
+that before it is lexed, naming the count and the limit (owner, 2026-11-20). The plugin counts in
+one pass an upper bound on HCL's tokens: a run of letters, digits and `_` counts one, and one more
+where a letter follows a digit; a run of spaces and tabs counts one; every other byte counts one,
+so a comment or a string counts one for each word. 30 real Terraform and HCL files of 0.6 to 26 KB
+count one for every 2.2 to 5 bytes, so an ordinary file of about 4.5 MB or more needs a larger `max_bytes`,
+set on its entry. 16 comes from memory: a list of one-digit numbers counts one for each byte, the
+densest shape, and parses at 400 to 530 bytes of memory for each counted token at 256 KiB, while 2
+MiB of it, at the limit of the default, peaks near 810 MiB. 2 MiB of ordinary Terraform peaks near
+230 MiB. The limit then holds the plugin near 25 times `max_bytes`, as the built in readers hold
+theirs.
+
+The plugin also gives the files of one request 20 s, below errata's 30 s for an extract, and refuses
+them past that with an error naming the file and the 20 s, so the rule is unknown with the plugin's
+message and not with a timeout. The bounds above refuse a file the same way on every machine,
+since they count its bytes and tokens; this one depends on the machine, so a file that parses in
+close to 20 s can be read on a fast machine and refused on a slower or busier one. At the default
+`max_bytes` the slowest file the bounds let through took about 6 s on the 6 core machine and 14.9 s
+on the 2 core one, its whole read. The template limit grows with `max_bytes` and the deadline does
+not, so at the top of `max_bytes`, 64 MiB, the slowest templates the bounds allow meet the deadline
+on the 2 core machine: a heredoc of 2040 lines of 32 KiB, 66.8 MB, parses in 20.5 s there and is
+refused with the plugin's message, and a string of 8150 `$${` and 1040000 `${a}` parses in 16.6 s.
 
 ## Limits
 

@@ -385,6 +385,12 @@ fi
 # expressions of each case clause, and the statement of each select arm, whose body the tests
 # ran. Gremlins then runs those mutants and
 # judges them killed or lived like any other; a clause whose body no test ran stays not covered.
+# The profile has no block for a package level const or var either, so a mutant in one read as
+# not covered however a test pinned it, and a diff run of such a line alone failed with no test
+# reaching it (landing F, wire.go's ExtractTimeout). casecover also covers the values of each
+# package level const and var of a package whose tests ran any block of it: its initializers ran
+# and its constants are compiled into the binary the tests ran. A func literal in such a value
+# keeps the blocks go test gives its body.
 # Every other call goes to go unchanged, a mutant's go test among them. The helper is in
 # scripts/, not ci/, because the public tree has no ci/ and make mutation runs there too. The
 # script's own go test runs (measure_pass, measure_mutant) call go itself, not the shim. The
@@ -450,9 +456,10 @@ export GOFLAGS
 # figures are those of the new code alone, over a denominator that may be a handful: one lived
 # mutant of six is 83.33% efficacy, under 85, and fails the run until a test kills it. That is
 # the intent: new code meets the bar the package meets. The other side of a small denominator:
-# a mutant in a package level declaration, or after a statement's first func literal, always
-# reads as not covered, so a change made only of such lines can fall under its package's mutant
-# coverage floor with every line tested. So a diff
+# a mutant after a statement's first func literal always reads as not covered, so a change made
+# only of such lines can fall under its package's mutant coverage floor with every line tested.
+# (A mutant in a package level const or var read so too until casecover covered their values.)
+# So a diff
 # run judges mutant coverage only from MCOVER_MIN_DIFF mutants on its changed lines, and
 # efficacy always (owner decision 2026-10-24); a whole run judges both at any count. Efficacy
 # needs a mutant some test reaches, so a diff run whose changed lines hold mutants and no test

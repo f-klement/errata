@@ -190,6 +190,8 @@ func extract(in []byte) {
 			paths = append(paths, f.Path+"="+string(f.Data))
 		}
 		reply(wire.ExtractReply{Values: texts(first, paths)})
+	case "maxbytes":
+		reply(wire.ExtractReply{Values: texts(first, []string{strconv.FormatInt(req.MaxBytes, 10)})})
 	case "sleep":
 		time.Sleep(time.Minute)
 	case "stderr":

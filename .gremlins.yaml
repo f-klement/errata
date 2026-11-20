@@ -50,6 +50,7 @@ unleash:
   exclude-files:
     - cmd/errata/main.go
     - cmd/errata-ext-csv/main.go
+    - cmd/errata-ext-hcl/main.go
     # The heap watchdog every test binary links under the mutation tag: a
     # mutant of it would only change when other mutants stop.
     - ^internal/heapcap/

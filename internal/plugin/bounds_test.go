@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -44,7 +45,8 @@ func TestWireMaxValuesIsCheckMaxValues(t *testing.T) {
 }
 
 // The timeouts are the protocol's: 10 seconds to describe and to build,
-// 30 to extract (docs/plugin-protocol.md, Bounds).
+// 30 to extract (docs/plugin-protocol.md, Bounds). The hcl plugin's
+// deadline test holds its own deadline below the extract timeout.
 func TestTheTimeoutsAreTheProtocols(t *testing.T) {
 	if describeTimeout != 10*time.Second || buildTimeout != 10*time.Second || extractTimeout != 30*time.Second {
 		t.Fatalf("describe %v, build %v, extract %v", describeTimeout, buildTimeout, extractTimeout)
@@ -129,6 +131,23 @@ func TestASetSendsEachFileOnce(t *testing.T) {
 	got, err := extractOne(t, root, "fake", `{"files": ["a.txt", "b.txt"], "word": "x", "mode": "files"}`)
 	if err != nil || len(got) != 1 || got[0].Text != "a.txt=x\n" {
 		t.Fatalf("got %+v, %v", got, err)
+	}
+}
+
+// An extract request carries the entry's max_bytes, the default written
+// out when the entry sets none, so a plugin can bound its work as a built
+// in reader does (owner, 2026-11-20). Planted breaks: ExtractWith sending
+// no max_bytes; ExtractWith sending the entry's own, 0 when unset.
+func TestAnExtractRequestCarriesMaxBytes(t *testing.T) {
+	root := newRepo(t, map[string]string{"a.txt": "x\n"}, "fake")
+	for raw, want := range map[string]string{
+		`{"file": "a.txt", "word": "x", "mode": "maxbytes", "max_bytes": 100}`: "100",
+		`{"file": "a.txt", "word": "x", "mode": "maxbytes"}`:                   strconv.Itoa(32 << 20),
+	} {
+		got, err := extractOne(t, root, "fake", raw)
+		if err != nil || len(got) != 1 || got[0].Text != want {
+			t.Errorf("%s: got %+v, %v, want the one value %s", raw, got, err, want)
+		}
 	}
 }
 

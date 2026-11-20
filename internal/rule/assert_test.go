@@ -402,6 +402,21 @@ func TestAssertCostLimit(t *testing.T) {
 // Work the cost limit allows still stops at the timeout, with the timeout
 // named. CEL sees the context end between comprehension steps and stops, so
 // the error is CEL's interruption.
+// Compile evaluates under the default limits, and its grace is the 100 ms
+// stopGrace gives, long enough for CEL to finish a comprehension step and
+// look at the context. The planted break, stopGrace at 100 / time.Millisecond,
+// fails here.
+func TestCompileEvaluatesUnderTheDefaultLimits(t *testing.T) {
+	a, err := Compile("true", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := limits{cost: CostLimit, timeout: EvalTimeout, grace: 100 * time.Millisecond}
+	if got := a.(*assertion).limits; got != want {
+		t.Errorf("Compile's limits are %+v, want %+v", got, want)
+	}
+}
+
 func TestAssertTimeout(t *testing.T) {
 	a, err := compile("v.all(a, v.all(b, a + b != 'x'))", []string{"v"}, limits{cost: 1 << 62, timeout: time.Millisecond, grace: 10 * time.Second})
 	if err != nil {

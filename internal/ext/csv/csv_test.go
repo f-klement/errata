@@ -67,7 +67,7 @@ func extractReply(t tb, spec string, files ...wire.File) wire.ExtractReply {
 	if b.Error != nil {
 		t.Fatalf("build %s: %s", spec, *b.Error)
 	}
-	out := respond(t, wire.ExtractRequest{Protocol: 1, Op: wire.OpExtract, Spec: b.Spec, Files: files, Values: map[string][]wire.Value{}})
+	out := respond(t, wire.ExtractRequest{Protocol: 1, Op: wire.OpExtract, Spec: b.Spec, Files: files, Values: map[string][]wire.Value{}, MaxBytes: 32 << 20})
 	var reply wire.ExtractReply
 	if err := wire.Decode(out, &reply); err != nil {
 		t.Fatalf("errata refuses the extract reply %s: %v", out, err)
@@ -223,12 +223,12 @@ func TestARequestThatBreaksTheProtocolIsRefused(t *testing.T) {
 	for req, want := range map[string]string{
 		`{"op": "list"}`: `the request's op is "list"`,
 		`[]`:             "the request is no JSON object",
-		`{"protocol": 2, "op": "build", "entries": []}`:                                       "written in protocol 2, and errata-ext-csv speaks 1",
-		`{"protocol": 2, "op": "extract", "spec": {}, "files": [], "values": {}}`:             "written in protocol 2",
-		`{"protocol": 1, "op": "build", "entries": [], "extra": 1}`:                           "unknown field",
-		`{"protocol": 1, "op": "extract", "spec": {"column": "a"}, "files": []}`:              `"values" is missing`,
-		`{"protocol": 1, "op": "extract", "spec": {"column": ""}, "files": [], "values": {}}`: `the extract request's spec: a column is named ""`,
-		`{"op": "describe", "protocols": null}`:                                               "null",
+		`{"protocol": 2, "op": "build", "entries": []}`:                                                       "written in protocol 2, and errata-ext-csv speaks 1",
+		`{"protocol": 2, "op": "extract", "spec": {}, "files": [], "values": {}, "max_bytes": 1}`:             "written in protocol 2",
+		`{"protocol": 1, "op": "build", "entries": [], "extra": 1}`:                                           "unknown field",
+		`{"protocol": 1, "op": "extract", "spec": {"column": "a"}, "files": []}`:                              `"values" is missing`,
+		`{"protocol": 1, "op": "extract", "spec": {"column": ""}, "files": [], "values": {}, "max_bytes": 1}`: `the extract request's spec: a column is named ""`,
+		`{"op": "describe", "protocols": null}`:                                                               "null",
 	} {
 		var stdout, stderr bytes.Buffer
 		code := Main(strings.NewReader(req), &stdout, &stderr)

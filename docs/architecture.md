@@ -136,10 +136,17 @@ imports none of them, so a run never fetches.
 **The plugins** (`cmd/errata-ext-<name>`, `internal/ext/<name>`) are executables built and
 released from this repository, which errata runs only through the host. Each is a `main` that
 hands stdin, stdout and stderr to its package under `internal/ext`, which answers one request. The
-first is `csv`, which reads a cell of a CSV or TSV file with `encoding/csv`. A plugin package
-imports `wire` and `core/lineend`, so it numbers lines by errata's rule, and no other package of
-errata's. The depguard rule `plugin-is-offline` in `.golangci.yml` holds it, `wire` and
-`core/lineend` to imports that open no file, start no program and use no network.
+first is `csv`, which reads a cell of a CSV or TSV file with `encoding/csv`; the second is `hcl`,
+which reads an attribute of a Terraform, Packer or Nomad file with HashiCorp's `hcl/v2` and
+evaluates nothing. A plugin package imports `wire` and `core/lineend`, so it numbers lines by
+errata's rule, and no other package of errata's. The depguard rule `plugin-is-offline` in
+`.golangci.yml` holds it, `wire` and `core/lineend` to imports that open no file, start no program
+and use no network. depguard reads only this repository's files, so a test of `cmd/errata-ext-hcl`
+holds every package that plugin links from outside the standard library, `hcl/v2` and its
+dependencies among them, to an allow list of its own: the standard packages they import today,
+none of which opens a file by name, starts a program or uses the network, and no assembly or cgo
+file, on every platform errata ships for. The same test checks its release's notices against the
+modules it links.
 
 **report** (`internal/report`) writes a `check.Report` as text, JUnit or SARIF, and a listing as
 text or JSON.
@@ -180,6 +187,8 @@ flowchart TB
     cmd_errata["cmd/errata"]
     cmd_errata_ext_csv["cmd/errata-ext-csv"]
     extcsv["internal/ext/csv"]
+    cmd_errata_ext_hcl["cmd/errata-ext-hcl"]
+    exthcl["internal/ext/hcl"]
     lineend["internal/extract/core/lineend"]
     cli["internal/cli"]
     config["internal/config"]
@@ -223,6 +232,9 @@ flowchart TB
     cmd_errata_ext_csv --> extcsv
     extcsv --> wire
     extcsv --> lineend
+    cmd_errata_ext_hcl --> exthcl
+    exthcl --> wire
+    exthcl --> lineend
     engine --> protocol
     engine --> rule
     engine --> provider
@@ -357,6 +369,7 @@ reader imports `core` and no other reader, and `core` imports no reader.
 |---|---|---|
 | `cmd/errata` | `main`: signal handling and the exit code | anything else; it calls `cli.Execute` |
 | `cmd/errata-ext-csv` | the CSV plugin's `main`: it hands stdin, stdout and stderr to `internal/ext/csv` and exits with its status | anything else |
+| `cmd/errata-ext-hcl` | the HCL plugin's `main`: it hands stdin, stdout and stderr to `internal/ext/hcl` and exits with its status; its tests hold what it links offline and keep its release's `NOTICES.txt` | anything else |
 | `internal/cli` | flags, wiring, the exit code contract (0 clean, 1 errata, 2 usage) | how a check runs or how output looks |
 | `internal/config` | the `errata.yaml` format, strict decoding, load errors, the line each check starts on; builds each rule's extractors and compiles its assert through `rule.Compile`, so a type error is a load error | running anything |
 | `internal/engine` | which checks run, in what order, and which are skipped; the run of each witness on its fixture | the check protocol's details, output formats |
@@ -365,6 +378,7 @@ reader imports `core` and no other reader, and `core` imports no reader.
 | `internal/plugin` | the plugin host: `errata.lock` and its writing, where a build sits and the check of its sha256, the describe, build and extract requests, the check of each reply against the protocol and the rule's bounds, a plugin's extractor kind | the plugin's format; fetching a build or the network; which rules need it |
 | `internal/plugin/install` | `errata plugin install`: the plugin source and its mirrors, the releases API, the checksums file, every download and its 256 MiB bound, the trust of a first pin, a file or a URL with its sum, the cache's and the vendored directory's files and the order they are written in | how a run finds and runs a build; the protocol beyond describe; which rules need a plugin |
 | `internal/ext/csv` | the csv kind of plugin protocol 1: its fields, its specs and their defaults, the read of a file with `encoding/csv` and each cell's line as errata counts it | errata's other packages but `wire` and `core/lineend`; files, programs and the network |
+| `internal/ext/hcl` | the hcl kind of plugin protocol 1: its path and the one way it is written, the parse of a file with `hclsyntax`, the walk of a path through blocks, attributes, objects and lists, which values are literal, and each value's line as errata counts it | errata's other packages but `wire` and `core/lineend`; evaluating an expression; files, programs and the network |
 | `internal/plugin/wire` | the messages of plugin protocol 1 and their strict decoding | errata's other packages: it imports only the standard library, so a plugin can import it |
 | `internal/program` | starting a program and waiting for it: argv, working directory, environment, stdin, timeout, a bound on each output stream, the kill of the process group | what its exit or its output means; checks, config, output |
 | `internal/rule` | evaluating a rule: run its extractors, compare their values or evaluate its assert, fail closed; the CEL environment, the assert helpers, the embedded time zone database and the limits | how an extractor reads a file, config, output |
@@ -931,9 +945,10 @@ its own, so a mutant of a reader counts as killed only when that reader's own te
 thresholds are 85% efficacy and 85% mutant coverage. Go's coverage profile has no block for a case
 expression, only for its clause's body, so `scripts/mutation.sh` runs `scripts/casecover` on
 Gremlins' coverage profile: a case expression whose clause body a test ran gets a covered block,
-and Gremlins mutates it like any other line. The coverage figure is still not 100%, because the
-profile also leaves package-level declarations and code after a statement's first func literal
-outside every block. Where such mutants cap a package, its floor is the figure it reaches;
+and Gremlins mutates it like any other line. It adds one too for the values of the package level
+consts and vars of each package the tests ran, which the profile has no block for. The coverage
+figure is still not 100%, because the profile also leaves code after a statement's first func
+literal outside every block. Where such mutants cap a package, its floor is the figure it reaches;
 `scripts/mutation-floors.txt` has each package's floors and the count behind a lowered one.
 
 CI's test job runs `make gate` with fuzzing scoped to the packages a push changed, and its

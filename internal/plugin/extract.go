@@ -97,7 +97,7 @@ func (x *extractor) ExtractWith(ctx context.Context, root string, values map[str
 	if err != nil {
 		return nil, err
 	}
-	req := wire.ExtractRequest{Protocol: wire.Protocol, Op: wire.OpExtract, Spec: object(x.s.res.fields), Files: files, Values: sent}
+	req := wire.ExtractRequest{Protocol: wire.Protocol, Op: wire.OpExtract, Spec: object(x.s.res.fields), Files: files, Values: sent, MaxBytes: x.limit}
 	out, stderr, err := x.s.plugin.exe.run(ctx, req, limits{extractTimeout, x.stdoutBound(files)})
 	if err != nil {
 		return nil, err

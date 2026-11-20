@@ -32,7 +32,7 @@ func FuzzCSV(f *testing.F) {
 		if b.Error != nil {
 			return
 		}
-		out := respond(t, wire.ExtractRequest{Protocol: 1, Op: wire.OpExtract, Spec: b.Spec, Files: []wire.File{{Path: "f.csv", Data: data}}, Values: map[string][]wire.Value{}})
+		out := respond(t, wire.ExtractRequest{Protocol: 1, Op: wire.OpExtract, Spec: b.Spec, Files: []wire.File{{Path: "f.csv", Data: data}}, Values: map[string][]wire.Value{}, MaxBytes: 32 << 20})
 		var reply wire.ExtractReply
 		if err := wire.Decode(out, &reply); err != nil {
 			t.Fatalf("errata refuses the reply %s: %v", out, err)

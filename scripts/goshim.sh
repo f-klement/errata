@@ -5,8 +5,8 @@
 #
 # A `go test` with -coverprofile is gremlins' coverage pass. The shim runs it with the real go,
 # then scripts/casecover on the profile, which adds a covered block for the expressions of each
-# case clause and the statement of each select arm whose body ran (scripts/mutation.sh says
-# why).
+# case clause and the statement of each select arm whose body ran, and for the values of the
+# package level consts and vars of each package the tests ran (scripts/mutation.sh says why).
 #
 # Any other `go test`, while ERRATA_MUTATION_REACH names a package's index of the tests that
 # reach each line, goes to scripts/testreach, which runs a mutant's go test narrowed to the tests
