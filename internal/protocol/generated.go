@@ -29,8 +29,9 @@ import (
 // the generator printed a file the repository lacks. It is unknown when
 // the generator exits with any status but 0, does not finish within the
 // timeout or writes more than generated.max_bytes to stdout or to stderr,
-// and when the file cannot be read: past max_bytes, a link that leads out
-// of the repository, a directory. An exit status of 1 is unknown too: the
+// when errata's run is cancelled before it finishes, and when the file
+// cannot be read: past max_bytes, a link that leads out of the
+// repository, a directory. An exit status of 1 is unknown too: the
 // generator's exit status says whether it ran, and only the comparison
 // says whether the file is current.
 //
@@ -62,7 +63,7 @@ func RunGenerated(ctx context.Context, root string, c check.Check) (res check.Re
 	}
 
 	p := run(ctx, root, c, g.Run, g.MaxBytes, false)
-	if msg := generatorFailed(p, c); msg != "" {
+	if msg := generatorFailed(ctx, p, c); msg != "" {
 		res.Verdict, res.Message = check.VerdictUnknown, msg
 		return res
 	}
@@ -99,9 +100,12 @@ func fixtureName(real, root string) string {
 
 // generatorFailed is the message of a generator that ended without an
 // output to compare, or "" for one that exited 0 within its bounds.
-func generatorFailed(p program.Ended, c check.Check) string {
+func generatorFailed(ctx context.Context, p program.Ended, c check.Check) string {
 	if p.OverBound != "" {
 		return fmt.Sprintf("the generator wrote more than %d bytes to %s, generated.max_bytes, so errata stopped it; raise max_bytes if the file is that large", c.Generated().MaxBytes, p.OverBound)
+	}
+	if p.Cancelled {
+		return cancelled(ctx, "the generator")
 	}
 	if p.TimedOut {
 		return fmt.Sprintf("the generator did not finish within %s", c.Timeout)

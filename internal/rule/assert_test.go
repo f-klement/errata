@@ -303,7 +303,7 @@ func TestAssertUnknownBeforeCELRuns(t *testing.T) {
 	var calls int
 	c := check.Check{ID: "r", Kind: &check.Rule{Extractors: []check.NamedExtractor{named("a", fake{values: one})}, Assert: "x", Compiled: counting{&calls}}}
 	res := Run(ctx, "", c)
-	if res.Verdict != check.VerdictUnknown || !strings.Contains(res.Message, `cancelled before extractor "a" ran`) || calls != 0 {
+	if res.Verdict != check.VerdictUnknown || res.Message != `cancelled: errata's run stopped before extractor "a" ran (context canceled)` || calls != 0 {
 		t.Fatalf("cancelled: verdict %s message %q calls %d", res.Verdict, res.Message, calls)
 	}
 }
@@ -423,9 +423,12 @@ func TestAssertTimeout(t *testing.T) {
 		t.Fatalf("Eval returned after %s", took)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if _, err := a.Eval(ctx, asExtracted(map[string][]string{"v": values}, nil, nil)); err == nil || !strings.HasPrefix(err.Error(), "cancelled: context canceled") {
+	// A cancel names its cause, as an interrupt's signal, the way a
+	// program check's message does. Planted break: stopped naming
+	// parent.Err(), which gave "context canceled".
+	ctx, cancel := context.WithCancelCause(context.Background())
+	cancel(errors.New("interrupt signal received"))
+	if _, err := a.Eval(ctx, asExtracted(map[string][]string{"v": values}, nil, nil)); err == nil || err.Error() != "cancelled: interrupt signal received" {
 		t.Fatalf("cancelled: error = %v", err)
 	}
 }

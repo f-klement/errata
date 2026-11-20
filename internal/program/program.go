@@ -1,7 +1,7 @@
 // Package program starts every program errata runs and waits for it: a
 // program check's, a generated check's generator, and later a plugin's.
 // Each starts through Run, so all of them get the same handling of the
-// working directory, environment, stdin, timeout, bound on output and, on
+// working directory, environment (Spec.Env), stdin, timeout, bound on output and, on
 // unix, kill of the process group, during the run and once the program
 // exits. What a program's exit and output mean is its caller's: the check
 // protocol reads a verdict from them (internal/protocol), a generated check
@@ -19,7 +19,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"os"
 	"os/exec"
 	"time"
 )
@@ -31,7 +30,13 @@ type Spec struct {
 	Argv []string
 	// Dir is the working directory.
 	Dir string
-	// Env is added to errata's own environment, each entry KEY=value.
+	// Env is the program's whole environment, each entry KEY=value. nil
+	// or empty gives it none: errata passes on none of its own variables
+	// unless the caller names them, so a program that is not the
+	// repository's own, such as a plugin, does not see the CI job's tokens
+	// by default. A caller that runs the repository's own code, as a
+	// program check, a generator and git do, passes os.Environ() with its
+	// variables appended.
 	Env []string
 	// Stdin is what the program reads on stdin. nil is the null device, so
 	// a program that reads stdin reads nothing and goes on, where a
@@ -44,6 +49,11 @@ type Spec struct {
 	// the byte after it on either stops the program as a timeout does,
 	// unless Drain is set. 0 holds all of both.
 	Bound int64
+	// StderrBound, when above 0, is the most bytes errata holds of stderr
+	// in place of Bound, which then bounds stdout alone. A plugin's
+	// stdout holds its reply and may be large, where its stderr is for a
+	// message, which uses only its last bytes.
+	StderrBound int64
 	// Drain makes Bound hold without stopping the program: errata reads
 	// what the program writes past it on either stream and drops it, and
 	// the program runs to its exit or its timeout.
@@ -51,15 +61,23 @@ type Spec struct {
 }
 
 // Ended is how one run of a program ended: what it wrote, the error
-// exec.Cmd.Run returned, whether errata stopped it for running past its
-// timeout, and the stream, "stdout" or "stderr", it wrote past a stopping
-// bound on, "" when it wrote past none. Cut lists the streams, stdout
-// before stderr, that the program wrote past a draining bound on, whose
-// bytes past it errata dropped; it is nil when the bound stops or the
-// program wrote past none.
+// exec.Cmd.Run returned, and what stopped it, when errata did. Both flags
+// are read once the run has returned, on a run that ended with an error
+// and not by its bound. Cancelled is set when the caller's context has
+// ended by then, as when an interrupt stops errata's run; TimedOut when
+// the Spec's timeout has ended and the caller's context has not. A
+// program that fails on its own, or that the timeout killed, just before
+// the caller's context ends reads as cancelled. At most one of the two is
+// set. OverBound is the stream, "stdout" or "stderr", the program wrote
+// past a stopping bound on, "" when it wrote past none; a run stopped by
+// its bound is neither cancelled nor timed out. Cut lists the streams,
+// stdout before stderr, that the program wrote past a draining bound on,
+// whose bytes past it errata dropped; it is nil when the bound stops or
+// the program wrote past none.
 type Ended struct {
 	Stdout, Stderr []byte
 	Err            error
+	Cancelled      bool
 	TimedOut       bool
 	OverBound      string
 	Cut            []string
@@ -91,7 +109,9 @@ func Run(ctx context.Context, s Spec) Ended {
 
 	cmd := exec.CommandContext(stopped, s.Argv[0], s.Argv[1:]...)
 	cmd.Dir = s.Dir
-	cmd.Env = append(os.Environ(), s.Env...)
+	// Never nil: exec gives a command with a nil Env errata's whole
+	// environment.
+	cmd.Env = append([]string{}, s.Env...)
 	if s.Stdin != nil {
 		cmd.Stdin = bytes.NewReader(s.Stdin)
 	}
@@ -100,15 +120,35 @@ func Run(ctx context.Context, s Spec) Ended {
 	// the program is cancelled, stop waiting for it.
 	cmd.WaitDelay = time.Second
 	stdout := &bounded{limit: s.Bound, drain: s.Drain, stop: stop}
-	stderr := &bounded{limit: s.Bound, drain: s.Drain, stop: stop}
+	stderr := &bounded{limit: s.stderrBound(), drain: s.Drain, stop: stop}
 	cmd.Stdout, cmd.Stderr = stdout, stderr
 
 	err := cmd.Run()
 	reap(cmd)
 	e := Ended{Stdout: stdout.buf.Bytes(), Stderr: stderr.buf.Bytes(), Err: err}
 	e.overflow(s.Drain, stdout, stderr)
-	e.TimedOut = err != nil && e.OverBound == "" && timed.Err() != nil
+	e.stopped(ctx, timed)
 	return e
+}
+
+// stderrBound is the bound on stderr: StderrBound when set, else Bound.
+func (s Spec) stderrBound() int64 {
+	if s.StderrBound > 0 {
+		return s.StderrBound
+	}
+	return s.Bound
+}
+
+// stopped records which context had ended once a run that failed for a
+// reason other than its bound returned: the caller's, ctx, or the
+// timeout's, timed, which is ctx itself when the Spec has no timeout. The
+// caller's comes first, since its end ends timed as well.
+func (e *Ended) stopped(ctx, timed context.Context) {
+	if e.Err == nil || e.OverBound != "" {
+		return
+	}
+	e.Cancelled = ctx.Err() != nil
+	e.TimedOut = !e.Cancelled && timed.Err() != nil
 }
 
 // overflow records the streams that passed the bound: each one cut, for a

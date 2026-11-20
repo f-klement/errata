@@ -272,7 +272,7 @@ func TestChecksThatShareFilesGiveTheSameResultsOnThePool(t *testing.T) {
 	}
 	git(t, root, "init", "-q")
 	track(t, root)
-	cfg, err := config.Load(root, filepath.Join(root, "errata.yaml"))
+	cfg, err := config.Load(t.Context(), root, filepath.Join(root, "errata.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -359,7 +359,7 @@ func TestARuleAfterAProgramReadsWhatItWrote(t *testing.T) {
 	}
 	git(t, root, "init", "-q")
 	track(t, root)
-	cfg, err := config.Load(root, filepath.Join(root, "errata.yaml"))
+	cfg, err := config.Load(t.Context(), root, filepath.Join(root, "errata.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -486,7 +486,7 @@ func TestAMarkerRuleAfterAProgramReadsWhatItWrote(t *testing.T) {
 		}
 		git(t, root, "init", "-q")
 		track(t, root)
-		cfg, err := config.Load(root, filepath.Join(root, "errata.yaml"))
+		cfg, err := config.Load(t.Context(), root, filepath.Join(root, "errata.yaml"))
 		if err != nil {
 			t.Fatal(err)
 		}

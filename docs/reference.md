@@ -63,6 +63,11 @@ new user needs it, with four checks worked through from the files to the fix, an
   - [`systemd`](#systemd)
   - [`env`](#env)
   - [`exists` and `size`](#exists-and-size)
+- [Plugins](#plugins)
+  - [`errata.lock`](#erratalock)
+  - [Where errata looks for a plugin](#where-errata-looks-for-a-plugin)
+  - [How a plugin runs](#how-a-plugin-runs)
+  - [The `csv` plugin](#the-csv-plugin)
 - [Limits](#limits)
 - [When a rule is unknown](#when-a-rule-is-unknown)
 - [The check protocol](#the-check-protocol)
@@ -457,9 +462,10 @@ checks:
     run: [make, client]
 ```
 
-When errata is stopped by an interrupt, `SIGTERM` or `SIGHUP`, it removes its copies. When it is
-killed, its copy stays in the cache: the next run that takes the same directory empties it, and
-the next run removes a spare directory no run holds.
+When errata is stopped by an interrupt, `SIGTERM` or `SIGHUP`, it removes its copies and still
+prints the report, in which each check that had not finished is unknown with a message that
+starts `cancelled:`. When it is killed, its copy stays in the cache: the next run that takes the
+same directory empties it, and the next run removes a spare directory no run holds.
 
 ## Rules
 
@@ -5249,6 +5255,124 @@ would look for a file of that very name, find none, and say `false`, so a rule t
 removed would hold whatever the glob matched. `exists` and `size` take no `files:`. A file whose
 name holds one of these characters, such as `app/[slug]/page.tsx`, cannot be named yet.
 
+## Plugins
+
+A plugin is an executable, `errata-ext-<name>`, that provides the extractor kind whose key is
+`<name>`. Once `errata.lock` pins it, an entry such as `csv:` under `extract:` is the plugin's,
+written as any other kind's, with `file` or `files`, `max_bytes` and the fields the plugin
+declares. errata decodes it as strictly as a built in kind's entry: a key the plugin does not
+declare, a key in another case, a field of the wrong type and a string YAML 1.1 reads as another
+type do not load. A map field reaches the plugin in the order the config writes its keys.
+[The plugin protocol](plugin-protocol.md) is how errata speaks to one.
+
+errata runs a plugin it finds installed and never fetches one. An install command will write the
+lock and the cache; until it is there, a build is put in place by hand.
+
+### `errata.lock`
+
+`errata.lock`, at the top of the repository beside `.errata/`, pins every plugin the repository
+uses. A line pins one build. The file's place and its one line for each build are the owner's
+choices, made with ADR 0021's layout of the vendored directory:
+
+```text
+# name  version  platform     checksum of the executable
+csv     0.1.0    linux/amd64  sha256:3b4c...e1f0
+csv     0.1.0    darwin/arm64 sha256:91aa...07c2
+toml2   1.2.0    linux/amd64  sha256:5d6e...a9b8 source=file
+ini2    0.3.0    linux/amd64  sha256:0c1d...44f5 source=url:https://x.example/ini2_linux_amd64
+ini2    0.3.0    darwin/arm64 sha256:7e2a...19c0 source=url:https://x.example/ini2_darwin_arm64
+```
+
+Fields are separated by spaces or tabs. The name is 1 to 64 lower case letters, digits, `_` and
+`-`, starting with a letter, and is not the key of a built in kind. The version is the release's,
+in [semantic versioning](https://semver.org) with no `v`, such as `0.1.0` or `1.2.0-rc.1`. The
+platform is one of the six errata ships for, as Go names them: `linux`, `darwin` or `windows`,
+then `/amd64` or `/arm64`. The checksum is the sha256 of the bare executable, in 64 lower case hex
+digits. The fifth field records where the build came from: none for a release of errata's
+repository (tagged `errata-ext-<name>/v<version>`), `source=file` for a file the user installed,
+on one platform only, and `source=url:<url>` for a download the user gave the sum of, one https
+URL with no user name or password for each platform. A mirror is not recorded. Every line of one
+name gives the same version and the same kind of source, and no platform twice. A line that starts
+with `#` and a blank line are skipped. Any other line errata cannot read makes the config fail to
+load, naming the line, and so does a file over 1 MiB. A repository with no `errata.lock` uses no
+plugin.
+
+### Where errata looks for a plugin
+
+errata looks in one directory, never on `PATH`:
+
+- the repository's vendored directory, `.errata/plugins`, when the repository has one;
+- else errata's cache: `errata/plugins` in the user's cache directory, which is
+  `$XDG_CACHE_HOME` or `~/.cache` on Linux, `~/Library/Caches` on macOS and `%LocalAppData%` on
+  Windows.
+
+Below it a build is at `<name>/<version>/<os>_<arch>/<sha256>/errata-ext-<name>`, with `.exe` on
+Windows, so the vendored directory is a copy of the part of a cache the repository needs. This
+layout is the owner's choice (ADR 0021). The
+path holds the checksum, so two repositories that pin different builds of one version never share
+a file, and a build's file is written once and never changed.
+
+### How a plugin runs
+
+Before a plugin's first request in a run, errata checks its build once. A build that is not there
+makes every rule with an entry of its kind unknown, naming the plugin and the path errata looked
+at. So does a build that is not a regular file (a symbolic link is refused, wherever it points),
+a build below a symbolic link anywhere from the repository's root, or the user's cache directory,
+down, a lock that pins no build for the platform errata runs on, and a build whose sha256 is not
+the lock's, with both sums named. errata does not start any of these. Such a rule still loads,
+and since errata cannot ask the plugin which extractors it reads, no extractor of the rule is
+refused as unused.
+
+Each request starts the plugin once, in an empty directory of its own, with an environment that
+holds only `GOMAXPROCS`, `GOMEMLIMIT` and `GOGC` when errata has them, and `SYSTEMROOT` on
+Windows. A CI job's tokens, `HOME` and `PATH` do not reach it. The plugin protocol's
+[bounds](plugin-protocol.md#bounds) stop it: 10 s for describe and build, 30 s for an extract, a
+bound on stdout for each request, and 1 MiB of stderr, whose last 256 bytes a message quotes.
+
+A plugin that fails to describe itself, or that speaks no protocol version errata speaks, makes
+every rule with an entry of its kind unknown. A reply errata refuses is quoted with the end of the
+plugin's stderr, whatever its exit status. An interrupt while the config loads stops the plugins
+describing and building, and their rules are unknown with a message that starts `cancelled:`. errata sends a plugin's entries in one build request
+when the config loads; an entry the plugin refuses makes the config fail to load, with the
+plugin's message quoted. A rule is unknown when its plugin fails an extract or replies with values
+the protocol does not allow. errata counts each value's text toward `max_bytes`, as it does for a
+built in kind, and for a plugin the key and the condition too.
+
+### The `csv` plugin
+
+`errata-ext-csv` provides the kind `csv`, which reads a cell of a CSV or TSV file. It parses with
+Go's `encoding/csv` (RFC 4180): a cell that holds the delimiter, a quote or a line end is quoted,
+and a quote inside it is written twice.
+
+```yaml
+extract:
+  builder_ip:
+    csv: {file: data/hosts.csv, column: ip, where: {name: builder}}
+```
+
+| Key | Type | What it does |
+|---|---|---|
+| `file`, `files`, `max_bytes` | | errata's, as for any kind: one file, or a list or glob of files, each read with its own header |
+| `column` | string, required | the column whose cell is the value |
+| `where` | map | the cells the row must hold, each key a column and each value its text; each row that holds all of them gives a value, so two such rows give two. Without it, every row does |
+| `header` | bool, default `true` | the first row names the columns. With `false` the first row is data, and `column` and the keys of `where` name a column by its number from 1, quoted so YAML reads a string: `column: "2"` |
+| `dialect` | `csv` or `tsv`, default `csv` | `csv` separates cells with a comma, `tsv` with a tab. Quoting is the same in both, so a `tsv` cell may be quoted, which the IANA TSV format does not allow |
+| `delimiter` | one character | a delimiter other than a comma or a tab, such as `";"`. A tab is the `tsv` dialect, so a `dialect` that disagrees with `delimiter` is refused |
+
+Each value is the cell's text, at the line its cell starts on, as errata counts lines; its key is
+the column and its condition the `where`. A file whose rows do not parse, such as a row with more
+cells than the first, a stray quote or a quote never closed, makes the rule unknown, naming the
+file and the line. So do a header that does not name the column or a `where` key, a header that
+names one twice, a file with no header row, a value's cell that is not UTF-8, and more than
+100000 values across the files. When `where` matches no row, the extractor finds no value and
+says which row it looked for, so `allow_empty` decides. A UTF-8 byte order mark at the start of
+the file is not part of the first cell, quoted or not.
+
+A row ends at a LF or a CRLF. A lone CR is part of a cell, so a file whose rows end in a lone CR,
+as Excel for Mac's "CSV (Macintosh)" writes them, is one row; save it with CRLF or LF line ends.
+Lines are counted as errata counts them everywhere, so a lone CR inside a quoted cell moves the
+rows after it a line down.
+
 ## Limits
 
 A file in a pull request can be large or hostile, and an extractor must not stall or kill the run
@@ -5407,6 +5531,7 @@ that does not lex ([`jenkins`](#jenkins)). A Markdown file parses whatever it ho
 | 0 | the claim is true |
 | 1 | the claim is false |
 | anything else, or a timeout | unknown: the check could not evaluate. Not an erratum, but it fails the run |
+| none: an interrupt, `SIGTERM` or `SIGHUP` stopped errata before the program finished | unknown, with a message that starts `cancelled:` and names no timeout |
 
 Stdout is the message. If stdout is a JSON object with a `message` string, errata uses that string.
 errata holds at most 33554432 bytes (32 MiB) of stdout, and of stderr apart. It reads what the

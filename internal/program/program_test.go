@@ -12,8 +12,10 @@ import (
 	"time"
 )
 
+// sh is a Spec that runs script in a shell with errata's environment, so
+// the shell finds the programs the script names.
 func sh(script string) Spec {
-	return Spec{Argv: []string{"sh", "-c", script}, Dir: ".", Timeout: 5 * time.Second}
+	return Spec{Argv: []string{"sh", "-c", script}, Dir: ".", Env: os.Environ(), Timeout: 5 * time.Second}
 }
 
 // Stdin is what the program reads: cat prints it back whole without a
@@ -132,7 +134,7 @@ func TestRunTimeout(t *testing.T) {
 	s.Timeout = 50 * time.Millisecond
 	start := time.Now()
 	e := Run(context.Background(), s)
-	if !e.TimedOut || e.Err == nil {
+	if !e.TimedOut || e.Cancelled || e.Err == nil {
 		t.Fatalf("%+v, want timed out", e)
 	}
 	if took := time.Since(start); took > 2*time.Second {
@@ -145,17 +147,76 @@ func TestRunTimeout(t *testing.T) {
 	}
 }
 
-// The program runs in Dir with errata's environment and Env added.
+// A run whose caller cancels its context is cancelled, not timed out:
+// with no timeout, with a timeout that has not passed, and with a context
+// cancelled before the program starts. Each sleep would run 3 s, so a
+// cancel that does not stop the program fails on the time it took.
+// Planted breaks: Cancelled never set; TimedOut set whenever the timeout's
+// context ended, which the caller's cancel ends too, as before #212.
+func TestRunCancelled(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		timeout time.Duration
+		after   time.Duration
+	}{
+		{"no timeout", 0, 100 * time.Millisecond},
+		{"a timeout not reached", 5 * time.Second, 100 * time.Millisecond},
+		{"cancelled before the start", 0, 0},
+	} {
+		ctx, cancel := context.WithCancel(context.Background())
+		if tc.after == 0 {
+			cancel()
+		} else {
+			time.AfterFunc(tc.after, cancel)
+		}
+		s := sh("sleep 3")
+		s.Timeout = tc.timeout
+		start := time.Now()
+		e := Run(ctx, s)
+		cancel()
+		if !e.Cancelled || e.TimedOut || e.Err == nil {
+			t.Fatalf("%s: %+v, want cancelled", tc.name, e)
+		}
+		if took := time.Since(start); took > 2*time.Second {
+			t.Fatalf("%s: a cancelled run took %s to return", tc.name, took)
+		}
+	}
+}
+
+// The program runs in Dir, and a caller that passes errata's environment
+// with its own variables appended, as a program check's run does, gets
+// both.
 func TestRunDirAndEnvironment(t *testing.T) {
 	t.Setenv("ERRATA_PROGRAM_TEST", "kept")
 	dir := t.TempDir()
 	s := sh(`printf '%s %s %s' "$PWD" "$ERRATA_PROGRAM_TEST" "$ADDED"`)
-	s.Dir, s.Env = dir, []string{"ADDED=yes"}
+	s.Dir, s.Env = dir, append(os.Environ(), "ADDED=yes")
 	e := Run(context.Background(), s)
 	got, _ := filepath.EvalSymlinks(strings.Fields(string(e.Stdout) + " ")[0])
 	want, _ := filepath.EvalSymlinks(dir)
 	if e.Err != nil || got != want || !strings.HasSuffix(string(e.Stdout), " kept yes") {
 		t.Fatalf("%v: printed %q, want %s kept yes", e.Err, e.Stdout, dir)
+	}
+}
+
+// Env is the program's whole environment: a nil or empty Env gives it no
+// variable of errata's, and the variables a Spec names arrive. env prints
+// its whole environment, one variable a line. Planted breaks: Env added to
+// os.Environ() as before, which passed ERRATA_PROGRAM_SECRET; s.Env handed
+// to exec as it is, whose nil exec reads as errata's whole environment.
+func TestRunEnvIsTheWholeEnvironment(t *testing.T) {
+	t.Setenv("ERRATA_PROGRAM_SECRET", "leaked")
+	for _, tc := range []struct{ env, want []string }{
+		{nil, nil},
+		{[]string{}, nil},
+		{[]string{"ADDED=yes", "OTHER=too"}, []string{"ADDED=yes", "OTHER=too"}},
+	} {
+		e := Run(context.Background(), Spec{Argv: []string{"env"}, Dir: ".", Env: tc.env, Timeout: 5 * time.Second})
+		got := strings.Fields(string(e.Stdout))
+		slices.Sort(got)
+		if e.Err != nil || !slices.Equal(got, tc.want) {
+			t.Fatalf("env %q: %v, the program saw %q, want %q", tc.env, e.Err, got, tc.want)
+		}
 	}
 }
 
@@ -166,5 +227,23 @@ func TestRunRefusesAnEmptyArgv(t *testing.T) {
 		if e := Run(context.Background(), Spec{Argv: argv, Dir: "."}); !errors.Is(e.Err, errNoArgv) {
 			t.Fatalf("argv %q: %+v", argv, e)
 		}
+	}
+}
+
+// StderrBound bounds stderr apart from Bound, which then bounds stdout
+// alone: a stderr past its own bound stops the program, and a stdout past
+// the stderr bound but within Bound does not. Planted breaks: stderr
+// bounded by Bound whatever StderrBound holds; StderrBound applied to
+// stdout too.
+func TestRunStderrBoundIsApartFromBound(t *testing.T) {
+	s := sh("head -c 5000 /dev/zero >&2")
+	s.Bound, s.StderrBound = 1<<20, 100
+	if e := Run(context.Background(), s); e.OverBound != "stderr" || len(e.Stderr) != 100 {
+		t.Fatalf("stderr past its own bound: over %q, %d bytes", e.OverBound, len(e.Stderr))
+	}
+	s = sh("head -c 5000 /dev/zero")
+	s.Bound, s.StderrBound = 1<<20, 100
+	if e := Run(context.Background(), s); e.Err != nil || e.OverBound != "" || len(e.Stdout) != 5000 {
+		t.Fatalf("stdout within Bound: %v, over %q, %d bytes", e.Err, e.OverBound, len(e.Stdout))
 	}
 }

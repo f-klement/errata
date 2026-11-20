@@ -24,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -326,6 +327,17 @@ func Of[S any](k core.Kind[S], s S) Spec {
 		panic(fmt.Sprintf("extract: no kind %q of %v is registered", k.Key, reflect.TypeFor[S]()))
 	}
 	return Spec{set: []entry{{r, s}}}
+}
+
+// With is s with the kind k set to spec beside any kind s sets: an entry
+// of a plugin's kind, which config decodes with the plugin's kind
+// (internal/plugin) since kinds lists only the built in ones. Build then
+// returns the plugin's extractor as it returns a built in reader's, and an
+// entry that sets a built in kind too is refused as one that sets two.
+func (s Spec) With(k *check.ExtractorKind, spec any) Spec {
+	out := Spec{set: slices.Clone(s.set)}
+	out.set = append(out.set, entry{k, spec})
+	return out
 }
 
 // UnmarshalJSON reads an extract: entry: an object whose every key is a

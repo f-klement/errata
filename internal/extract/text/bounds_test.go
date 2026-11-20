@@ -63,11 +63,14 @@ func markdownBounds(t *testing.T, large bool) {
 		{name: "a piece more", body: strings.Repeat("a\t", 251), limit: 2000,
 			refused: "README.md: line 1: the prose is made of more than 500 pieces of the file, the limit, one for every 4 bytes of max_bytes; set max_bytes: higher to read a file this broken up"},
 		{name: "a line of HTML over the limit", body: "a\n\n<x" + strings.Repeat(" a=b", mdparse.MaxHTMLLine/4) + "\n", refused: "README.md: line 3: a line of HTML of 1048579 bytes, over the limit of 1048576" + tail},
-		// Time: a comment opened on every line, which goldmark scans to the
-		// end of the paragraph for each: quadratic, 54 s for 256 KB. The
-		// guard looks at the clock on every call into a parser goldmark
-		// makes, so the parse ends soon after its limit.
-		{name: "unclosed comments", body: strings.Repeat("a <!-- b\n", 50_000), parse: 100 * time.Millisecond,
+		// Time: code spans opened by runs of backticks, each run longer than
+		// the one before, so none closes. goldmark scans the rest of the
+		// paragraph for a closer from each run: 3000 runs in 4.5 MB take
+		// seconds. The guard looks at the clock on every call into a parser
+		// goldmark makes, so the parse ends soon after its limit. Unclosed
+		// comments cost the same until goldmark v2.1.16, which scans past
+		// each only once, so they no longer reach the limit without -race.
+		{name: "unclosed code spans", body: codeSpans(3000), parse: 100 * time.Millisecond,
 			refused: "README.md: parsing the Markdown took more than 100ms, the limit" + tail, bound: time.Second},
 		// The search reuses the regex extractor's, its time limit and its
 		// cap on values with it; TestExtractValueLimit reaches the cap in
@@ -153,4 +156,14 @@ func TestCheckProse(t *testing.T) {
 	if err == nil || err.Error() != want {
 		t.Errorf("error %v, want %q", err, want)
 	}
+}
+
+// codeSpans is n runs of backticks, of 1 to n of them, each after an a and
+// on a line of its own. The a keeps a line from starting with a fence.
+func codeSpans(n int) string {
+	var b strings.Builder
+	for i := 1; i <= n; i++ {
+		b.WriteString("a" + strings.Repeat("`", i) + "\n")
+	}
+	return b.String()
 }

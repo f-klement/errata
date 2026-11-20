@@ -46,9 +46,14 @@ func TestRunVerdicts(t *testing.T) {
 	}
 }
 
+// A program check runs in the root and gets errata's whole environment,
+// since it is the repository's own code, with ERRATA_ROOT, ERRATA_CHECK_ID
+// and ERRATA_SCOPE added. Planted break: os.Environ() dropped from run's
+// Env, which program.Run reads as no variable of errata's.
 func TestRunEnvironmentAndDir(t *testing.T) {
+	t.Setenv("ERRATA_PROTOCOL_TEST", "kept")
 	root := t.TempDir()
-	c := sh(`[ "$PWD" = "$ERRATA_ROOT" ] && [ "$ERRATA_CHECK_ID" = c ] && [ "$ERRATA_SCOPE" = repo ]`)
+	c := sh(`[ "$PWD" = "$ERRATA_ROOT" ] && [ "$ERRATA_CHECK_ID" = c ] && [ "$ERRATA_SCOPE" = repo ] && [ "$ERRATA_PROTOCOL_TEST" = kept ]`)
 	if res := Run(context.Background(), root, c); res.Verdict != check.VerdictTrue {
 		t.Fatalf("environment not as documented: %+v", res)
 	}
@@ -107,6 +112,25 @@ func TestRunTimeout(t *testing.T) {
 	// must not hold the run open until it exits on its own.
 	if took := time.Since(start); took > 2*time.Second {
 		t.Fatalf("a 50ms timeout took %s to return", took)
+	}
+}
+
+// A program check whose run errata cancels, as an interrupt does, says so,
+// with no timeout and with one it has not reached, where it said it did not
+// finish within its timeout, 0s for none. Planted break: the case for a
+// cancelled run dropped, which read it as one that failed.
+func TestRunCancelledIsNoTimeout(t *testing.T) {
+	for _, timeout := range []time.Duration{0, 5 * time.Second} {
+		c := sh("sleep 5")
+		c.Timeout = timeout
+		ctx, cancel := context.WithCancel(context.Background())
+		time.AfterFunc(100*time.Millisecond, cancel)
+		res := Run(ctx, t.TempDir(), c)
+		cancel()
+		want := "cancelled: errata's run stopped before the program finished (context canceled)"
+		if res.Verdict != check.VerdictUnknown || res.Message != want {
+			t.Fatalf("timeout %s: got %s %q, want unknown and %q", timeout, res.Verdict, res.Message, want)
+		}
 	}
 }
 

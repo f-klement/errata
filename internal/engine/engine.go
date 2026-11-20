@@ -201,8 +201,8 @@ func mayWrite(c check.Check) bool {
 // in the directory of slot, the pool's worker that runs it, and removed
 // once it ends, in a run of its own, so the copy shares no read with the
 // repository's checks. A copy that cannot be made leaves the check
-// unknown, since it did not run. made is called once a copy is made, or
-// fails to be: from then on j no longer reads the repository.
+// unknown, since it did not run (copyFailed). made is called once a copy
+// is made, or fails to be: from then on j no longer reads the repository.
 func (e *Engine) run(ctx context.Context, j job, slot int, made func()) check.Result {
 	if j.gap != "" {
 		return check.Result{Check: j.c, Gap: j.gap}
@@ -213,13 +213,23 @@ func (e *Engine) run(ctx context.Context, j job, slot int, made func()) check.Re
 	cp, err := j.copies.Make(ctx, slot)
 	made()
 	if err != nil {
-		return check.Result{Check: j.c, Witness: j.witness, Verdict: check.VerdictUnknown,
-			Message: fmt.Sprintf("errata could not copy the repository to run the check in, so it did not run: %v; in_place: true runs it in the repository", err)}
+		return check.Result{Check: j.c, Witness: j.witness, Verdict: check.VerdictUnknown, Message: copyFailed(ctx, err)}
 	}
 	// A copy that cannot be removed stays in the cache; the check's
 	// result stands, since the check ran.
 	defer func() { _ = cp.Remove() }()
 	return e.runAt(check.WithRun(ctx), cp.Root(), j)
+}
+
+// copyFailed is the message of a check whose copy could not be made, with
+// err, why. A copy cut short because the caller cancelled errata's run, as
+// an interrupt does, says so, and gives no advice: in_place would not have
+// run the check either.
+func copyFailed(ctx context.Context, err error) string {
+	if cause := context.Cause(ctx); cause != nil {
+		return fmt.Sprintf("cancelled: errata's run stopped before the check's copy was made, so it did not run (%v)", cause)
+	}
+	return fmt.Sprintf("errata could not copy the repository to run the check in, so it did not run: %v; in_place: true runs it in the repository", err)
 }
 
 // runAt runs j's check, or its witness, with root as the repository's root.

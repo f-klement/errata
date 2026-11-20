@@ -111,6 +111,23 @@ protocol: run a program and map its exit code to a verdict, or run a generator a
 prints with the committed file. `program` starts every program errata runs, under one timeout,
 one output bound and one process group.
 
+**plugin** (`internal/plugin`) is the plugin host. It reads `errata.lock`, finds each pinned
+plugin's build in the repository's `.errata/plugins` or the user's cache, refuses one whose
+sha256 is not the lock's, and speaks the [plugin protocol](plugin-protocol.md) to it, one process
+a request through `program.Run`. To `config` a plugin is one more extractor kind, which it learns
+when the plugin describes itself; `internal/plugin/wire` holds the protocol's messages, their
+strict decoding and the check of a describe reply, which a plugin built from this repository
+imports too, with `internal/extract/core/lineend` to count lines as errata does and nothing else
+of errata.
+
+**The plugins** (`cmd/errata-ext-<name>`, `internal/ext/<name>`) are executables built and
+released from this repository, which errata runs only through the host. Each is a `main` that
+hands stdin, stdout and stderr to its package under `internal/ext`, which answers one request. The
+first is `csv`, which reads a cell of a CSV or TSV file with `encoding/csv`. A plugin package
+imports `wire` and `core/lineend`, so it numbers lines by errata's rule, and no other package of
+errata's. The depguard rule `plugin-is-offline` in `.golangci.yml` holds it, `wire` and
+`core/lineend` to imports that open no file, start no program and use no network.
+
 **report** (`internal/report`) writes a `check.Report` as text, JUnit or SARIF, and a listing as
 text or JSON.
 
@@ -148,6 +165,9 @@ with any other title.
 flowchart TB
     %% packages: TestArchitectureDrawsEveryImport compares this graph with the imports
     cmd_errata["cmd/errata"]
+    cmd_errata_ext_csv["cmd/errata-ext-csv"]
+    extcsv["internal/ext/csv"]
+    lineend["internal/extract/core/lineend"]
     cli["internal/cli"]
     config["internal/config"]
     engine["internal/engine"]
@@ -156,6 +176,8 @@ flowchart TB
     minimatch["internal/minimatch"]
     protocol["internal/protocol"]
     program["internal/program"]
+    plugin["internal/plugin"]
+    wire["internal/plugin/wire"]
     treecopy["internal/treecopy"]
     provider["internal/provider"]
     report["internal/report"]
@@ -174,6 +196,14 @@ flowchart TB
     config --> rule
     config --> core
     config --> check
+    config --> plugin
+    plugin --> program
+    plugin --> wire
+    plugin --> core
+    plugin --> check
+    cmd_errata_ext_csv --> extcsv
+    extcsv --> wire
+    extcsv --> lineend
     engine --> protocol
     engine --> rule
     engine --> provider
@@ -307,11 +337,15 @@ reader imports `core` and no other reader, and `core` imports no reader.
 | Package | Owns | Knows nothing about |
 |---|---|---|
 | `cmd/errata` | `main`: signal handling and the exit code | anything else; it calls `cli.Execute` |
+| `cmd/errata-ext-csv` | the CSV plugin's `main`: it hands stdin, stdout and stderr to `internal/ext/csv` and exits with its status | anything else |
 | `internal/cli` | flags, wiring, the exit code contract (0 clean, 1 errata, 2 usage) | how a check runs or how output looks |
 | `internal/config` | the `errata.yaml` format, strict decoding, load errors, the line each check starts on; builds each rule's extractors and compiles its assert through `rule.Compile`, so a type error is a load error | running anything |
 | `internal/engine` | which checks run, in what order, and which are skipped; the run of each witness on its fixture | the check protocol's details, output formats |
 | `internal/protocol` | the check protocol: run a program, map its exit code to a verdict; run a generated check's generator and compare its stdout with the committed file | config, providers, output |
 | `internal/treecopy` | a throwaway copy of the repository's working tree for a check to run in, at a stable path for each slot of the pool in the user's cache: a git repository of its own that borrows the objects through alternates, on the same branch, with the working tree's changes, untracked files and ignored files copied on top and git's index when a tracked file differs; whether a tree can be copied truly (ADR [0019](adr/0019-a-program-check-runs-in-a-copy-of-the-tree.md)) | checks, the pool, what a check writes, which checks pay for a copy |
+| `internal/plugin` | the plugin host: `errata.lock`, where a build sits and the check of its sha256, the describe, build and extract requests, the check of each reply against the protocol and the rule's bounds, a plugin's extractor kind | the plugin's format; fetching or installing a build; which rules need it |
+| `internal/ext/csv` | the csv kind of plugin protocol 1: its fields, its specs and their defaults, the read of a file with `encoding/csv` and each cell's line as errata counts it | errata's other packages but `wire` and `core/lineend`; files, programs and the network |
+| `internal/plugin/wire` | the messages of plugin protocol 1 and their strict decoding | errata's other packages: it imports only the standard library, so a plugin can import it |
 | `internal/program` | starting a program and waiting for it: argv, working directory, environment, stdin, timeout, a bound on each output stream, the kill of the process group | what its exit or its output means; checks, config, output |
 | `internal/rule` | evaluating a rule: run its extractors, compare their values or evaluate its assert, fail closed; the CEL environment, the assert helpers, the embedded time zone database and the limits | how an extractor reads a file, config, output |
 | `internal/semver` | versions and ranges as npm, Cargo, PEP 440, Go modules and RubyGems write them: their order, precision, satisfaction and overlap, for agree's `compare: semver` and the assert helpers alike | files, rules, CEL |
@@ -388,7 +422,10 @@ Four seams carry the design:
 4. **`check.Extractor`.** `extract.Build` turns a spec into one, and `rule` calls it with the
    repository root. A new file format is a new reader, a package under `internal/extract` with a
    `Spec`, a `Build` and a `core.Kind` beside the `Spec` that import `core` and no other reader,
-   and one line in the facade's list of kinds; `rule` does not change.
+   and one line in the facade's list of kinds; `rule` does not change. A plugin's kind is one
+   more implementation, which `internal/plugin` makes from the plugin's describe reply and
+   `config` adds to an entry with `extract.Spec.With`, since the registry is fixed when errata
+   is built (ADR [0020](adr/0020-a-plugin-is-an-executable-errata-speaks-to-over-stdin-and-stdout.md)).
 
 The types on either side of them, and who implements each:
 
@@ -454,7 +491,8 @@ classDiagram
 A class shows the fields a seam passes and every method of an interface; a struct's other fields are
 left out. `Check`, `Kind`, `Program`, `Generated`, `Rule`, `Extractor` and `Assertion` are in
 `check`; `Runner` is `engine`'s, `Provider` is `provider`'s and `Reporter` is `report`'s. Each
-reader implements `Extractor`, and `rule` implements `Assertion`.
+reader implements `Extractor`, and so does `internal/plugin` for each plugin; `rule` implements
+`Assertion`.
 
 ## The extractor registry and core
 
@@ -644,6 +682,16 @@ flowchart LR
 ```
 
 ## Decisions taken in the code
+
+**A plugin runs only at the checksum its lock pins.** `errata.lock` pins each plugin's version and
+the sha256 of its executable for each platform. A run hashes each build once, before its first
+request, and refuses one that is not a regular file, whose path leads out of the vendored directory
+or the cache through a linked directory, or whose sum differs, so a rule that needs it
+is unknown with both sums named. A build sits at a path that holds its sum, written once, so two
+repositories that pin different builds of one version never share a file and a later request in
+the run starts the bytes the first one hashed. The plugin starts in an empty directory with only
+the Go runtime's variables of errata's environment, under the protocol's timeouts and bounds, so
+it reads nothing errata did not send it.
 
 **cobra for the CLI, not Bubble Tea.** Bubble Tea is a framework for interactive terminal
 programs. errata runs in CI first, where there is no terminal, and its contract is an exit code and

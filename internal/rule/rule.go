@@ -71,7 +71,7 @@ func count(n int, noun string) string {
 // found no value while allow_empty does not list it. An extractor that
 // skip_not_literal lists has its not literal values left out, and one whose
 // every value was left out found no value. cancelled is set when the context
-// ended before an extractor ran.
+// ended before an extractor ran or while one ran and failed.
 func extractAll(ctx context.Context, root string, r check.Rule, names []string) (extracted []check.Extracted, problems []string, cancelled string) {
 	byName := make(map[string]check.NamedExtractor, len(r.Extractors))
 	for _, e := range r.Extractors {
@@ -81,10 +81,13 @@ func extractAll(ctx context.Context, root string, r check.Rule, names []string) 
 	// extractors that read them; one that failed has no entry.
 	read := map[string][]check.Value{}
 	for _, name := range r.Order(names) {
-		if err := ctx.Err(); err != nil {
-			return extracted, problems, fmt.Sprintf("cancelled before extractor %q ran: %v", name, err)
+		if ctx.Err() != nil {
+			return extracted, problems, cancelMessage(ctx, fmt.Sprintf("extractor %q ran", name))
 		}
 		values, why, err := runExtractor(ctx, root, byName[name], read)
+		if err != nil && ctx.Err() != nil {
+			return extracted, problems, cancelMessage(ctx, fmt.Sprintf("extractor %q finished", name))
+		}
 		if err != nil {
 			problems = append(problems, fmt.Sprintf("extractor %q: %v", name, err))
 			continue
@@ -100,6 +103,13 @@ func extractAll(ctx context.Context, root string, r check.Rule, names []string) 
 		}
 	}
 	return extracted, problems, ""
+}
+
+// cancelMessage is the message of a rule that errata's run stopped, as an
+// interrupt does, before what happened, in the form a program check's
+// message takes, with the context's cause.
+func cancelMessage(ctx context.Context, what string) string {
+	return fmt.Sprintf("cancelled: errata's run stopped before %s (%v)", what, context.Cause(ctx))
 }
 
 // runExtractor runs e (extractOne). An extractor that found no value
@@ -316,15 +326,24 @@ func assert(ctx context.Context, root string, r check.Rule) (check.Verdict, stri
 	case len(problems) > 0:
 		return check.VerdictUnknown, strings.Join(problems, "\n"), nil, extracted
 	}
+	verdict, message, blamed := evaluate(ctx, r, extracted)
+	return verdict, message, blamed, extracted
+}
 
+// evaluate is the verdict of r's compiled expression over what its
+// extractors returned, its message and the value a false assert blames.
+// An evaluation that fails because errata's run was cancelled says so.
+func evaluate(ctx context.Context, r check.Rule, extracted []check.Extracted) (check.Verdict, string, *check.Blame) {
 	holds, off, err := evalAssert(ctx, r, normalized(r, extracted))
 	switch {
+	case err != nil && ctx.Err() != nil:
+		return check.VerdictUnknown, cancelMessage(ctx, "the assert finished"), nil
 	case err != nil:
-		return check.VerdictUnknown, "assert: " + err.Error() + "\n" + saw(r, extracted), nil, extracted
+		return check.VerdictUnknown, "assert: " + err.Error() + "\n" + saw(r, extracted), nil
 	case holds:
-		return check.VerdictTrue, "", nil, extracted
+		return check.VerdictTrue, "", nil
 	default:
-		return check.VerdictFalse, "assert: the expression is false\n" + sawFalse(r, extracted, off, check.AllValues(ctx)), blameOf(extracted, off), extracted
+		return check.VerdictFalse, "assert: the expression is false\n" + sawFalse(r, extracted, off, check.AllValues(ctx)), blameOf(extracted, off)
 	}
 }
 

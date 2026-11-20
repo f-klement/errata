@@ -196,6 +196,9 @@ func compileWith(expr string, extractors []check.NamedExtractor, lim limits, ext
 type extractorSet struct {
 	names, whole, read []string
 	fields             map[string][]string
+	// readsAny is whether an extractor may read any of the others
+	// (check.Description.ReadsAny).
+	readsAny bool
 }
 
 // readExtractors is the extractorSet of extractors.
@@ -212,6 +215,7 @@ func readExtractors(extractors []check.NamedExtractor) extractorSet {
 		if x.Extractor != nil {
 			// One that did not build reads nothing: its own error says why.
 			set.read = append(set.read, x.Description.Reads...)
+			set.readsAny = set.readsAny || x.Description.ReadsAny
 		}
 	}
 	return set
@@ -305,7 +309,8 @@ func traceChecks(expr string, ast *cel.Ast, lim limits, fields map[string][]stri
 }
 
 // usedExtractors refuses an extractor of set that the expression, whose
-// free variables are used, does not use and no other extractor reads, and
+// free variables are used, does not use and no other extractor reads or
+// may read, and
 // is the extractors the expression reads through by_file.
 func usedExtractors(set extractorSet, used map[string]bool) ([]string, error) {
 	var (
@@ -316,7 +321,7 @@ func usedExtractors(set extractorSet, used map[string]bool) ([]string, error) {
 		if used[byFilePrefix+name] {
 			grouped = append(grouped, name)
 		}
-		if !used[name] && !used[byFilePrefix+name] && !slices.Contains(set.read, name) {
+		if !used[name] && !used[byFilePrefix+name] && !set.readsAny && !slices.Contains(set.read, name) {
 			// It would still run, but the relation would hold or fail without
 			// testing the place the author added it for.
 			errs = append(errs, fmt.Errorf("extractor %q is declared but assert does not use it", name))
@@ -1494,8 +1499,8 @@ func (it *keyIterator) Value() any            { return it }
 // interruption when CEL saw the context end, and nil when Eval stopped
 // waiting.
 func (a *assertion) stopped(parent context.Context, cause error) error {
-	if err := parent.Err(); err != nil {
-		return &stopError{msg: "cancelled: " + err.Error(), cause: cause}
+	if parent.Err() != nil {
+		return &stopError{msg: fmt.Sprintf("cancelled: %v", context.Cause(parent)), cause: cause}
 	}
 	return &stopError{msg: fmt.Sprintf("the evaluation did not finish within the timeout of %s", a.limits.timeout), cause: cause}
 }

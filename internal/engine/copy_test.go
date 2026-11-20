@@ -567,3 +567,31 @@ func TestACopyThatCannotBeMadeIsUnknown(t *testing.T) {
 		}
 	}
 }
+
+// A check whose copy the caller's cancel cut short, as an interrupt of the
+// run does, says the run was cancelled, where it said errata could not
+// copy the repository and advised in_place. The copy is made under a
+// context already cancelled, as one made in the moment after an interrupt
+// is. Planted break: copyFailed's case for a cancelled run dropped.
+func TestACopyCutShortByACancelSaysSo(t *testing.T) {
+	root := committed(t, map[string]string{"f": "x"})
+	home, err := treecopy.Home(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree, err := treecopy.Open(t.Context(), root, home, treecopy.Budget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	e := &Engine{Root: root, Run: func(context.Context, string, check.Check) check.Result {
+		t.Fatal("the check ran without its copy")
+		return check.Result{}
+	}}
+	r := e.run(ctx, job{c: program("a", "true"), copies: tree}, 0, func() {})
+	want := "cancelled: errata's run stopped before the check's copy was made, so it did not run (context canceled)"
+	if r.Verdict != check.VerdictUnknown || r.Message != want {
+		t.Fatalf("%s %q, want unknown and %q", r.Verdict, r.Message, want)
+	}
+}

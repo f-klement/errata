@@ -330,7 +330,7 @@ func TestAgreeCancelled(t *testing.T) {
 	cancel()
 	c := agreeRule(named("a", fake{values: []check.Value{at("x", "f", 1)}}))
 	res := Run(ctx, "", c)
-	if res.Verdict != check.VerdictUnknown || !strings.Contains(res.Message, `cancelled before extractor "a" ran`) {
+	if res.Verdict != check.VerdictUnknown || res.Message != `cancelled: errata's run stopped before extractor "a" ran (context canceled)` {
 		t.Fatalf("verdict %s message %q, want unknown and the cancellation", res.Verdict, res.Message)
 	}
 }

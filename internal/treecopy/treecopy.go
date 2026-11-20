@@ -42,8 +42,9 @@ import (
 // thousands of MiB, and copying 32 MiB costs about what the checkout does.
 const Budget = 32 << 20
 
-// gitTimeout bounds each git command a copy runs.
-const gitTimeout = time.Minute
+// gitTimeout bounds each git command a copy runs. It is a variable so a
+// test can make it short.
+var gitTimeout = time.Minute
 
 // maxOutput is the most bytes of a git command's output a copy holds; the
 // byte past it stops the command, and the copy is not made.
@@ -530,17 +531,26 @@ func copyFile(src, dst string, perm fs.FileMode) error {
 }
 
 // git runs git with args in dir and returns its stdout, or an error that
-// ends with the last line of its stderr. It never prompts, takes no lock
-// it may skip, so it writes nothing to a repository it only reads, and runs
-// no hook: hooks are for a checkout the user makes, and a copy is none.
+// ends with the last line of its stderr. When the caller cancelled ctx, as
+// an interrupt of errata's run does, the error says so and wraps ctx's
+// cause; when git ran past gitTimeout, it names the timeout. git never
+// prompts, takes no lock it may skip, so it writes nothing to a repository
+// it only reads, and runs no hook: hooks are for a checkout the user makes,
+// and a copy is none.
 func git(ctx context.Context, dir string, args ...string) ([]byte, error) {
 	p := program.Run(ctx, program.Spec{
 		Argv:    append([]string{"git", "--no-optional-locks", "-c", "core.hooksPath=" + os.DevNull}, args...),
 		Dir:     dir,
-		Env:     []string{"GIT_TERMINAL_PROMPT=0", "LC_ALL=C"},
+		Env:     append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C"),
 		Timeout: gitTimeout,
 		Bound:   maxOutput,
 	})
+	if p.Cancelled {
+		return nil, fmt.Errorf("git %s: cancelled: %w", args[0], context.Cause(ctx))
+	}
+	if p.TimedOut {
+		return nil, fmt.Errorf("git %s: did not finish within %s", args[0], gitTimeout)
+	}
 	if p.Err != nil {
 		return nil, fmt.Errorf("git %s: %w: %s", args[0], p.Err, lastLine(p.Stderr))
 	}

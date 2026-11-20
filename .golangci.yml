@@ -88,6 +88,44 @@ linters:
             - github.com/f-klement/errata/internal/check$
             - github.com/f-klement/errata/internal/minimatch$
             - github.com/f-klement/errata/internal/semver$
+        # A plugin built from this repository reads only the bytes a request
+        # carries: it opens no file, starts no program and uses no network
+        # (docs/plugin-protocol.md, How errata runs a plugin). An allow list, as
+        # above, so a package that reaches the disk or the network through a
+        # path no deny list names is refused too. It holds wire and lineend,
+        # the two packages of errata's a plugin imports, as well. Its main,
+        # below, adds os for stdin, stdout and the exit status, and nothing
+        # else.
+        plugin-is-offline:
+          list-mode: strict
+          files:
+            - "**/internal/ext/**/*.go"
+            - "**/internal/plugin/wire/*.go"
+            - "**/internal/extract/core/lineend/*.go"
+            - "!$test"
+          allow:
+            - bytes$
+            - encoding/csv$
+            - encoding/json$
+            - errors$
+            - fmt$
+            - io$
+            - reflect$
+            - regexp$
+            - slices$
+            - strconv$
+            - strings$
+            - unicode/utf8$
+            - github.com/f-klement/errata/internal/plugin/wire$
+            - github.com/f-klement/errata/internal/extract/core/lineend$
+        plugin-main-is-offline:
+          list-mode: strict
+          files:
+            - "**/cmd/errata-ext-*/*.go"
+            - "!$test"
+          allow:
+            - os$
+            - github.com/f-klement/errata/internal/ext/
     nolintlint:
       require-explanation: true
       require-specific: true

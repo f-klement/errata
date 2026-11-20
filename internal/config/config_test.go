@@ -145,18 +145,18 @@ func TestLoad(t *testing.T) {
 		write(filepath.Join(root, "ci", "checks.yaml")): {File: "ci/checks.yaml"},
 		outside: {File: outside, Outside: true},
 	} {
-		cfg, err := Load(root, path)
+		cfg, err := Load(t.Context(), root, path)
 		if err != nil {
 			t.Fatal(err)
 		}
 		for i, line := range []int{3, 7} {
 			want.Line = line
 			if got := cfg.Checks[i].At; got != want {
-				t.Errorf("Load(%s): check %d is at %+v, want %+v", path, i, got, want)
+				t.Errorf("Load(t.Context(), %s): check %d is at %+v, want %+v", path, i, got, want)
 			}
 		}
 	}
-	if _, err := Load(root, filepath.Join(t.TempDir(), "absent.yaml")); err == nil {
+	if _, err := Load(t.Context(), root, filepath.Join(t.TempDir(), "absent.yaml")); err == nil {
 		t.Fatal("Load of a missing file succeeded")
 	}
 }
@@ -175,12 +175,12 @@ func TestLoadOutsideTheRootFromTheWorkingDirectory(t *testing.T) {
 	}
 	t.Chdir(dir)
 	for _, path := range []string{"ci.yaml", "repo/../ci.yaml"} {
-		cfg, err := Load("repo", path)
+		cfg, err := Load(t.Context(), "repo", path)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if got, want := cfg.Checks[0].At, (check.Location{File: path, Line: 3, Outside: true}); got != want {
-			t.Errorf("Load(repo, %s): check is at %+v, want %+v", path, got, want)
+			t.Errorf("Load(t.Context(), repo, %s): check is at %+v, want %+v", path, got, want)
 		}
 	}
 	// Inside the root, a path relative to the working directory is made
@@ -188,12 +188,12 @@ func TestLoadOutsideTheRootFromTheWorkingDirectory(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "checks.yaml"), []byte(good), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := Load("repo", "repo/checks.yaml")
+	cfg, err := Load(t.Context(), "repo", "repo/checks.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got, want := cfg.Checks[0].At, (check.Location{File: "checks.yaml", Line: 3}); got != want {
-		t.Errorf("Load(repo, repo/checks.yaml): check is at %+v, want %+v", got, want)
+		t.Errorf("Load(t.Context(), repo, repo/checks.yaml): check is at %+v, want %+v", got, want)
 	}
 }
 
@@ -340,7 +340,7 @@ func TestLoadRefusesAConfigOverTheLimit(t *testing.T) {
 		if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		_, err := Load(root, path)
+		_, err := Load(t.Context(), root, path)
 		switch {
 		case size == MaxConfigBytes && err != nil:
 			t.Errorf("a config of %d bytes: %v", size, err)

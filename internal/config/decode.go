@@ -97,6 +97,12 @@ func structAsWritten(t reflect.Type) reflect.Type {
 // case; capturing the JSON before that decode lets parse refuse a key in the
 // wrong case instead of having it merged with the right one.
 func toJSON(raw []byte) (json.RawMessage, error) {
+	return toJSONAs(raw, typedTarget)
+}
+
+// toJSONAs is toJSON with the coercions of target, the type the YAML is
+// written as.
+func toJSONAs(raw []byte, target reflect.Type) (json.RawMessage, error) {
 	var (
 		out        json.RawMessage
 		captureErr error
@@ -107,7 +113,7 @@ func toJSON(raw []byte) (json.RawMessage, error) {
 		// on what the per-check pass reports with the check's name.
 		return json.NewDecoder(strings.NewReader("{}"))
 	}
-	if err := sigsyaml.UnmarshalStrict(raw, reflect.New(typedTarget).Interface(), capture); err != nil {
+	if err := sigsyaml.UnmarshalStrict(raw, reflect.New(target).Interface(), capture); err != nil {
 		return nil, err
 	}
 	if captureErr != nil {

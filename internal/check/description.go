@@ -22,6 +22,11 @@ type Description struct {
 	// Reads names the extractors of the rule whose values the extractor
 	// reads, which the rule runs before it.
 	Reads []string
+	// ReadsAny is whether the extractor may read any extractor of its
+	// rule: a plugin's that errata cannot run, so cannot ask which it
+	// reads. The rule then refuses none of them as unused; the extractor
+	// fails when it runs, and its rule is unknown.
+	ReadsAny bool
 	// MaxBytes is the spec's max_bytes, 0 for DefaultMaxBytes: the most
 	// bytes the extractor's values hold in all, which the rule holds them
 	// to where they reach it, beside MaxValues.

@@ -169,3 +169,20 @@ func TestCompileLetsAReadExtractorGoUnnamed(t *testing.T) {
 		t.Fatalf("Compile: %v, want releases refused", err)
 	}
 }
+
+// An extractor that may read any other, a plugin's errata cannot run, lets
+// every extractor of its rule go unnamed; one that did not build does not.
+// Planted breaks: ReadsAny ignored; the ReadsAny of one that did not build
+// counted.
+func TestCompileLetsEveryExtractorGoUnnamedBesideOneThatReadsAny(t *testing.T) {
+	plug := check.NamedExtractor{Name: "plug", Extractor: fake{}, Description: check.Description{ReadsAny: true}}
+	other := check.NamedExtractor{Name: "other", Extractor: fake{}}
+	if _, err := Compile("size(plug) > 0", []check.NamedExtractor{plug, other}); err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	plug.Extractor = nil
+	_, err := Compile("size(plug) > 0", []check.NamedExtractor{plug, other})
+	if err == nil || err.Error() != `extractor "other" is declared but assert does not use it` {
+		t.Fatalf("Compile: %v, want other refused", err)
+	}
+}

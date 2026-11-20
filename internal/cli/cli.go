@@ -41,7 +41,7 @@ func Execute(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 }
 
 // loader reads the config at path under root, as config.Load does.
-type loader func(root, path string) (config.Config, error)
+type loader func(ctx context.Context, root, path string) (config.Config, error)
 
 // execute is Execute with the loader as an argument. The testscripts pass
 // one that wraps config.Load, to run a reader that the extract package does
@@ -152,13 +152,13 @@ func (f configFlags) file(absRoot string) string {
 // which check runs the checks from. A config that does not load is an error
 // that names the file, which Execute prints and exits 2 on; a config whose
 // required list and checks differ is one, so check runs nothing.
-func loadConfig(load loader, f configFlags) (string, config.Config, error) {
+func loadConfig(ctx context.Context, load loader, f configFlags) (string, config.Config, error) {
 	absRoot, err := filepath.Abs(f.repoRoot)
 	if err != nil {
 		return "", config.Config{}, err
 	}
 	path := f.file(absRoot)
-	cfg, err := load(absRoot, path)
+	cfg, err := load(ctx, absRoot, path)
 	if err != nil {
 		return "", config.Config{}, fmt.Errorf("load %s: %w", path, err)
 	}
@@ -189,7 +189,7 @@ func newCheckCmd(load loader) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			absRoot, cfg, err := loadConfig(load, flags)
+			absRoot, cfg, err := loadConfig(cmd.Context(), load, flags)
 			if err != nil {
 				return err
 			}
@@ -252,7 +252,7 @@ func newListCmd(load loader) *cobra.Command {
 			if !ok {
 				return fmt.Errorf("unknown --format %q, want one of %s", format, strings.Join(report.ListFormatNames(), ", "))
 			}
-			_, cfg, err := loadConfig(load, flags)
+			_, cfg, err := loadConfig(cmd.Context(), load, flags)
 			if err != nil {
 				return err
 			}

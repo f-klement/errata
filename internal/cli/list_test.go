@@ -22,7 +22,7 @@ type loadCall struct{ root, path string }
 // recordingLoader returns a loader that records each call and answers with
 // checks and err, whatever the file holds.
 func recordingLoader(calls *[]loadCall, checks []check.Check, err error) loader {
-	return func(root, path string) (config.Config, error) {
+	return func(_ context.Context, root, path string) (config.Config, error) {
 		*calls = append(*calls, loadCall{root, path})
 		return config.Config{Checks: checks}, err
 	}

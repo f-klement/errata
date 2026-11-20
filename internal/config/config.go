@@ -4,6 +4,7 @@ package config
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,6 +25,7 @@ import (
 	"github.com/f-klement/errata/internal/check"
 	"github.com/f-klement/errata/internal/extract"
 	"github.com/f-klement/errata/internal/extract/core"
+	"github.com/f-klement/errata/internal/plugin"
 	"github.com/f-klement/errata/internal/rule"
 )
 
@@ -96,8 +98,10 @@ var ruleKeys = []string{"extract", "agree", "compare", "syntax", "assert", "allo
 // at once, so a user fixes the file in one pass rather than one error a run.
 // Each check's location names the file relative to root, the repository
 // root, when the file is inside it, and as path, marked outside, otherwise.
-func Load(root, path string) (Config, error) {
-	return LoadWith(root, path, BuiltIn)
+//
+// ctx bounds the plugins its entries run to describe and build them.
+func Load(ctx context.Context, root, path string) (Config, error) {
+	return LoadWith(ctx, root, path, BuiltIn)
 }
 
 // Builder makes the extractor of one entry under a rule's extract:, and
@@ -115,12 +119,16 @@ func BuiltIn(s extract.Spec) (check.Extractor, check.Description, error) {
 // LoadWith is Load with the extractors made by build. The CLI's tests pass a
 // builder that wraps BuiltIn in a reader that marks values holding $( or
 // ${ not literal, and describes them so.
-func LoadWith(root, path string, build Builder) (Config, error) {
+func LoadWith(ctx context.Context, root, path string, build Builder) (Config, error) {
 	raw, err := readConfig(path)
 	if err != nil {
 		return Config{}, err
 	}
-	cfg, err := parse(raw, build)
+	plugins, err := plugin.Open(root, extract.Keys())
+	if err != nil {
+		return Config{}, err
+	}
+	cfg, err := parseWith(ctx, raw, build, plugins)
 	if err != nil {
 		return Config{}, err
 	}
@@ -203,6 +211,14 @@ var ErrNoChecks = errors.New("the file holds no checks: a config with none would
 // key that differs from a known one only in case. newExtractor makes each
 // rule's extractors.
 func parse(raw []byte, newExtractor Builder) (Config, error) {
+	return parseWith(context.Background(), raw, newExtractor, nil)
+}
+
+// parseWith is parse with the plugins a lock file pins, nil for none. Each
+// entry of a plugin's kind is decoded with the kind the plugin describes,
+// and the entries of each plugin are built in one request before any check
+// is (readPlugins).
+func parseWith(ctx context.Context, raw []byte, newExtractor Builder, plugins *plugin.Set) (Config, error) {
 	f, first, err := decodeFile(raw)
 	if err != nil {
 		return Config{}, err
@@ -220,7 +236,8 @@ func parse(raw []byte, newExtractor Builder) (Config, error) {
 	if errs = append(errs, plainKey(first, "defaults", reflect.TypeFor[defaults]())...); len(errs) > 0 {
 		return Config{}, errors.Join(errs...)
 	}
-	b := checksBuild{def: def, newExtractor: newExtractor, seen: map[string]bool{}, at: lines(first), plain: plainStrings(first)}
+	b := checksBuild{def: def, newExtractor: newExtractor, seen: map[string]bool{}, at: lines(first), plain: plainStrings(first),
+		plugins: readPlugins(ctx, plugins, f.Checks, first)}
 	checks, ids, errs := b.checks(f.Checks)
 	// The built-in check is no entry of the file, so required does not
 	// list it.
@@ -294,6 +311,7 @@ type checksBuild struct {
 	seen         map[string]bool
 	at           []int
 	plain        []written
+	plugins      pluginSpecs
 }
 
 // checks builds every entry, and returns the checks that load, the id each
@@ -330,7 +348,7 @@ func (b *checksBuild) entry(i int, raw json.RawMessage) (string, check.Check, er
 	if len(p.errs) > 0 {
 		return id, check.Check{}, fmt.Errorf("checks[%d]: check %q: decode: %w", i, p.id, errors.Join(p.errs...))
 	}
-	c, err := build(raw, b.def, b.newExtractor)
+	c, err := build(raw, b.def, b.newExtractor, b.plugins.of(i))
 	if i < len(b.at) {
 		c.At.Line = b.at[i]
 	}
@@ -466,8 +484,8 @@ func entryID(raw json.RawMessage) string {
 // build decodes one check strictly, applies the defaults def while the
 // entry's own keys are known, builds its extractors and validates it. err
 // names the check, by its id when the id itself decodes.
-func build(raw json.RawMessage, def defaults, newExtractor Builder) (check.Check, error) {
-	e, keys, err := decodeEntry(raw)
+func build(raw json.RawMessage, def defaults, newExtractor Builder, plugins entryPlugins) (check.Check, error) {
+	e, keys, err := decodeEntry(raw, plugins)
 	if err != nil {
 		return check.Check{}, err
 	}
@@ -510,7 +528,7 @@ func build(raw json.RawMessage, def defaults, newExtractor Builder) (check.Check
 
 // decodeEntry decodes one check strictly, and returns its keys as written
 // with it. err names the check, by its id when the id itself decodes.
-func decodeEntry(raw json.RawMessage) (checkEntry, map[string]json.RawMessage, error) {
+func decodeEntry(raw json.RawMessage, plugins entryPlugins) (checkEntry, map[string]json.RawMessage, error) {
 	var named struct {
 		ID string `json:"id"`
 	}
@@ -527,7 +545,10 @@ func decodeEntry(raw json.RawMessage) (checkEntry, map[string]json.RawMessage, e
 		return refuse(err)
 	}
 	var e checkEntry
-	if err := decodeStrict(raw, &e); err != nil {
+	if err := decodeStrict(plugins.strip(raw), &e); err != nil {
+		return refuse(err)
+	}
+	if err := plugins.addTo(&e); err != nil {
 		return refuse(err)
 	}
 	return e, keys, nil

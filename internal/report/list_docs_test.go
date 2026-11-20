@@ -55,7 +55,7 @@ func TestListJSONExampleIsWhatListPrints(t *testing.T) {
 	if err := os.WriteFile(path, []byte(fenced(t, section, "yaml")), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := config.Load(root, path)
+	cfg, err := config.Load(t.Context(), root, path)
 	if err != nil {
 		t.Fatalf("the reference's errata.yaml does not load: %v", err)
 	}

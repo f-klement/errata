@@ -2,12 +2,14 @@ package treecopy
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // gitEnv keeps the user's and the system's git config out of a test.
@@ -612,5 +614,31 @@ func TestGitErrorSaysWhy(t *testing.T) {
 	}
 	if _, err := gitSome(t.Context(), dir, "rev-parse", "HEAD"); err == nil {
 		t.Fatal("gitSome outside a repository: no error")
+	}
+}
+
+// A git the caller cancels ends with an error that says so and wraps the
+// context's cause, not with the kill's exit status, here for a git whose
+// alias sleeps 5 s. Planted break: the case for a cancelled run dropped,
+// which gave "signal: killed".
+func TestGitCancelledSaysSo(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(100*time.Millisecond, cancel)
+	defer cancel()
+	_, err := git(ctx, t.TempDir(), "-c", "alias.slow=!sleep 5", "slow")
+	if !errors.Is(err, context.Canceled) || err.Error() != "git -c: cancelled: context canceled" {
+		t.Fatalf("a cancelled git: %v", err)
+	}
+}
+
+// A git that runs past gitTimeout ends with an error that names the
+// timeout, not with the kill's exit status. Planted break: the case for a
+// timed out run dropped, which gave "signal: killed".
+func TestGitTimedOutSaysSo(t *testing.T) {
+	defer func(was time.Duration) { gitTimeout = was }(gitTimeout)
+	gitTimeout = 100 * time.Millisecond
+	_, err := git(t.Context(), t.TempDir(), "-c", "alias.slow=!sleep 5", "slow")
+	if err == nil || err.Error() != "git -c: did not finish within 100ms" {
+		t.Fatalf("a git past its timeout: %v", err)
 	}
 }

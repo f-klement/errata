@@ -159,6 +159,8 @@ errata is not a schema validator, an admission controller or a security policy e
   code, as `errata --help` prints it.
 - [examples/errata.example.yaml](examples/errata.example.yaml) shows every feature twice, over the
   files of a made up service.
+- [docs/plugin-protocol.md](docs/plugin-protocol.md) specifies the protocol errata will speak with
+  a plugin, an extractor kind shipped as an executable of its own; v0.5.0 builds it.
 
 ## Local Development
 

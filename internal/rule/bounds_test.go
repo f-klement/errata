@@ -184,7 +184,7 @@ func TestRuleStopsBeforeTheNextExtractorOnCancel(t *testing.T) {
 		check.NamedExtractor{Name: "b", Extractor: ranFake{name: "b", ran: &ran, fake: fake{values: []check.Value{at("x", "f", 1)}}}},
 	)
 	res := Run(ctx, "", c)
-	if res.Verdict != check.VerdictUnknown || !strings.Contains(res.Message, `cancelled before extractor "b" ran`) || len(ran) != 0 {
+	if res.Verdict != check.VerdictUnknown || res.Message != `cancelled: errata's run stopped before extractor "b" ran (context canceled)` || len(ran) != 0 {
 		t.Fatalf("verdict %s message %q ran %q, want unknown, b cancelled and never run", res.Verdict, res.Message, ran)
 	}
 }
@@ -213,14 +213,35 @@ func (b blocking) ExtractWith(ctx context.Context, root string, _ map[string][]c
 }
 
 // An extractor that blocks until its context ends returns when the run is
-// cancelled, and its rule is unknown with the reason. The extractor cancels
-// the run itself, so no timer runs. Planted break: the rule hands the
-// extractor a context of its own, which never ends.
+// cancelled, and its rule is unknown and says it was cancelled, in the
+// form a program check's message takes, where it named the extractor's
+// error as a problem. The extractor cancels the run itself, so no timer
+// runs. Planted breaks: the rule hands the extractor a context of its own,
+// which never ends, so the extractor returns after its 5 s; the check of
+// the context after a failed extractor dropped.
 func TestABlockedExtractorReturnsOnCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
+	start := time.Now()
 	res := Run(ctx, "", agreeRule(check.NamedExtractor{Name: "a", Extractor: blocking{cancel}}))
-	if res.Verdict != check.VerdictUnknown || !strings.Contains(res.Message, `extractor "a": context canceled`) {
+	if res.Verdict != check.VerdictUnknown || res.Message != `cancelled: errata's run stopped before extractor "a" finished (context canceled)` {
 		t.Fatalf("verdict %s message %q, want unknown with the cancellation", res.Verdict, res.Message)
+	}
+	if took := time.Since(start); took > 4*time.Second {
+		t.Fatalf("the cancelled extractor took %s to return", took)
+	}
+}
+
+// An assert whose run is cancelled after its extractors ran says so in
+// the same form, where it said "assert: cancelled: ..." after the
+// expression and the values. The one extractor cancels the run as it
+// returns. Planted break: assert's case for a cancelled run dropped.
+func TestAnAssertCancelledSaysSo(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	res := Run(ctx, "", assertRule(t, "a[0] == 'x'", check.NamedExtractor{Name: "a", Extractor: cancelling{cancel}}))
+	want := "cancelled: errata's run stopped before the assert finished (context canceled)"
+	if res.Verdict != check.VerdictUnknown || res.Message != want {
+		t.Fatalf("verdict %s message %q, want unknown and %q", res.Verdict, res.Message, want)
 	}
 }

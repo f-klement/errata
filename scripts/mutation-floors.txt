@@ -102,6 +102,8 @@ internal/check                     85        85      5
 internal/cli                       85        85      5
 internal/config                    85        85      5
 internal/engine                    85        85      5
+# ext/csv: new with the CSV plugin (#51), held to the floor every reader has.
+internal/ext/csv                   85        85      5
 # The facade: 100%, efficacy 100%, 22 of 22 covered since tool_version (#46) on
 # 2026-10-23. It read 65.00% before, 7 of its 20 mutants after the first func
 # literal of the kinds table, with a floor of 64, until the comparisons that say
@@ -214,6 +216,10 @@ internal/extract/yaml              85        85      5
 # minimatch: 98.42%, 15 of its 950 not covered (2 of them indexFrom's
 # unreachable guard in brace.go), efficacy 92.51%, on 2026-10-30.
 internal/minimatch                 85        85      5      mutant 8.6 measuring 122 measured 3010608824
+# plugin and plugin/wire: new with the plugin host (#136), held to the
+# floor every reader has.
+internal/plugin                    85        85      5
+internal/plugin/wire               85        85      5
 internal/program                   85        85      5
 # protocol: 98.25%, 1 of its 57 not covered, efficacy 89.29%, on 2026-10-30
 # with case expressions covered. It had the floor 78 at 78.57% (3 of 14 not

@@ -263,6 +263,39 @@ names its condition after its place.
 **Check protocol.** The way errata runs a program check. errata runs the
 program and reads its result. The program can be in any language.
 
+**Plugin.** An executable named `errata-ext-<name>`, released from errata's repository on tags
+of its own, that provides the extractor kind whose key is `<name>`. errata installs it on demand
+and runs it from its cache or the repository's vendored directory, never from `PATH` (ADR 0020).
+Not a Go plugin and not a module.
+
+**Plugin protocol.** The way errata speaks to a plugin: one JSON request on stdin and one JSON
+reply on stdout, a process for each request. Its three requests are describe (the plugin's name,
+version and fields), build (each entry's spec checked and described) and extract (the values in
+the files errata hands it). Specified in `docs/plugin-protocol.md`.
+
+**Protocol version.** The integer version of the plugin protocol a plugin and errata speak. errata
+offers every version it speaks in the describe request and the plugin chooses one; a plugin that
+speaks none of them makes every rule with an entry of its kind unknown. Every change to a request
+or a reply is a new version.
+
+**Plugin host.** The part of errata that installs, verifies and runs plugins, and implements
+`check.Extractor` for a plugin's kind, so a rule reads a plugin's values as it reads a built in
+reader's. It is `internal/plugin`; installing is still to come.
+
+**Lock file.** `errata.lock`, at the top of a repository: the version of each plugin the
+repository uses, the sha256 of its executable for each platform, and where the build came from.
+errata runs only a build whose sha256 is the one the lock pins.
+
+**Vendored plugin directory.** `.errata/plugins` in a repository: plugin builds the repository
+carries, laid out as errata's plugin cache is. When it exists errata looks for plugins there and
+not in the cache.
+
+**Plugin source.** The place errata fetches a plugin's release from: errata's own GitHub releases,
+or a mirror of them that takes their place. Once the lock pins a version, the source is only where
+its bytes come from, and the pin vouches for them. A version's first pin comes from errata's
+releases, or from a mirror only when the user trusts it explicitly, since that mirror would also
+serve the checksums file (ADR 0021).
+
 **Copy of the tree.** A throwaway git repository in the user's cache that holds what the
 repository's working tree holds, ignored files included, and borrows its objects, in which errata
 runs a program check or a generated check beside the others, so nothing it writes reaches the

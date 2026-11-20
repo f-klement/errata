@@ -196,6 +196,22 @@ func TestRunGeneratedTimeoutIsUnknown(t *testing.T) {
 	}
 }
 
+// A generator whose run errata cancels says so, and is no timeout. Planted
+// break: generatorFailed's case for a cancelled run dropped, which read the
+// killed generator as one that failed.
+func TestRunGeneratedCancelledIsNoTimeout(t *testing.T) {
+	root, c := generated(t, []byte(""), `sleep 5 & wait`)
+	c.Timeout = 0
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(100*time.Millisecond, cancel)
+	res := RunGenerated(ctx, root, c)
+	cancel()
+	want := "cancelled: errata's run stopped before the generator finished (context canceled)"
+	if res.Verdict != check.VerdictUnknown || res.Message != want {
+		t.Fatalf("got %s %q, want unknown and %q", res.Verdict, res.Message, want)
+	}
+}
+
 // max_bytes bounds the generator's stdout: output of exactly max_bytes is
 // compared, and a byte more stops the generator and its children at once
 // and is unknown, not an erratum, though it cannot equal a file within the

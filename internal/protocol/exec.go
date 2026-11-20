@@ -10,6 +10,8 @@
 //   - exit 0: the claim is true
 //   - exit 1: the claim is false
 //   - any other exit, a crash, or a timeout: unknown, the check could not evaluate
+//   - errata's run cancelled before the program finished, as an interrupt
+//     cancels it: unknown, with a message that says the run was cancelled
 //
 // Stdout is the message. If stdout is a JSON object with a "message" string,
 // errata uses that string instead, which leaves room to add fields later
@@ -36,6 +38,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -61,6 +64,9 @@ func Run(ctx context.Context, root string, c check.Check) (res check.Result) {
 	switch {
 	case p.Err == nil:
 		res.Verdict = check.VerdictTrue
+	case p.Cancelled:
+		res.Verdict = check.VerdictUnknown
+		res.Message = cancelled(ctx, "the program")
 	case p.TimedOut:
 		res.Verdict = check.VerdictUnknown
 		res.Message = fmt.Sprintf("did not finish within %s", c.Timeout)
@@ -90,15 +96,25 @@ func run(ctx context.Context, root string, c check.Check, argv []string, bound i
 	return program.Run(ctx, program.Spec{
 		Argv: argv,
 		Dir:  check.WorkDir(ctx, root),
-		Env: []string{
-			"ERRATA_ROOT=" + root,
-			"ERRATA_CHECK_ID=" + c.ID,
-			"ERRATA_SCOPE=" + string(c.Scope),
-		},
+		// A program check and a generator are the repository's own code,
+		// so they get errata's whole environment.
+		Env: append(os.Environ(),
+			"ERRATA_ROOT="+root,
+			"ERRATA_CHECK_ID="+c.ID,
+			"ERRATA_SCOPE="+string(c.Scope),
+		),
 		Timeout: c.Timeout,
 		Bound:   bound,
 		Drain:   drain,
 	})
+}
+
+// cancelled is the message of a check whose program, what, errata's run
+// stopped before it finished, as an interrupt does: the check is unknown
+// for the run, not for its timeout, which it did not reach. It names the
+// context's cause, as a rule cancelled before an extractor ran does.
+func cancelled(ctx context.Context, what string) string {
+	return fmt.Sprintf("cancelled: errata's run stopped before %s finished (%v)", what, context.Cause(ctx))
 }
 
 // withCut is msg followed by a line for each stream in cut, the streams

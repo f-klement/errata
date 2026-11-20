@@ -141,7 +141,7 @@ func TestLoadReturnsRequired(t *testing.T) {
 	if err := os.WriteFile(path, []byte("required: [a]\nchecks:\n"+program("a")), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := Load(root, path)
+	cfg, err := Load(t.Context(), root, path)
 	if err != nil {
 		t.Fatal(err)
 	}

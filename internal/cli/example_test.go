@@ -45,7 +45,7 @@ func TestExampleRunsGreen(t *testing.T) {
 	if mutationRun {
 		t.Skip("a mutation build's copy of the module holds no .git, and the example needs the repository above examples/")
 	}
-	cfg, err := config.Load(examples, filepath.Join(examples, "errata.example.yaml"))
+	cfg, err := config.Load(t.Context(), examples, filepath.Join(examples, "errata.example.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
