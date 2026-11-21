@@ -1375,6 +1375,8 @@ unleash() {
         if [ -n "$runnable" ]; then
             need=$(estimate "$runnable" "$dry_pass")
             if ! fits "$need"; then
+                # At a share of the workers, the figures a second chance alone reads (second_look).
+                [ "$(workers)" -ge "$yaml_workers" ] || echo "$runnable ${dry_pass:-0} $(per_mutant) ${measuring_s:-0}" >"$pw/again"
                 left_out "$p" "its $runnable mutants need about $need s, $(workers) at once at $(per_mutant) s each, and $(left_s) s are left before the deadline"
                 return 0
             fi
@@ -1637,6 +1639,36 @@ if [ "$at_once" -gt 1 ] && [ -n "$deadline" ]; then
     done
 fi
 
+# second_look <index>: a second chance alone, once the slots have ended. A package its slot left out
+# for time at its share of the workers, whose estimate at all of them fits the time left, runs
+# again alone with all of them; its pass measures again and decides again by its own estimate. The
+# estimate is need_at's, from the figures the slot measured: its count, its coverage pass, its
+# mutant at the share, and its measuring. alone_look decides this before the slots only for a
+# package whose floors row holds a mutant time, and few rows do: on 2026-11-20 a landing gate
+# running two packages at once left internal/ext/hcl out four times, its 218 mutants about 2873 s
+# at one worker, 13.1 s each beside the other slot, with 2768 s left; at two workers they needed
+# about half that, and the other slot's packages had ended within minutes. Run alone, the same
+# scope took 7 min 53 s on the slowest node and passed. A package that still does not fit stays
+# left out, and the log says why.
+second_look() {
+    pw=$work/p/$1
+    [ -e "$pw/again" ] || return 0
+    p=$(cat "$pw/name")
+    read -r sl_n sl_pass sl_mutant sl_measuring <"$pw/again"
+    row_measuring=$sl_measuring
+    sl_all=$(need_at "$sl_n" "$sl_mutant" "$sl_pass" "$yaml_workers")
+    sl_why="its $sl_n mutants at $sl_mutant s need about $sl_all s at all $yaml_workers workers, and $(left_s) s are left"
+    if ! fits "$sl_all"; then
+        echo "==> mutation: $p: left out at its share of the workers; $sl_why, so it stays left out"
+        return 0
+    fi
+    echo "==> mutation: $p: left out at its share of the workers; $sl_why, so it runs again alone with all of them"
+    rm -f "$pw/left" "$pw/summary" "$pw/again"
+    echo "$sl_n $sl_pass" >"$pw/dry"
+    pkg_workers=$yaml_workers
+    run_one "$1"
+}
+
 # run_one <index>: the package alone, with its memory line.
 run_one() {
     pw=$work/p/$1
@@ -1739,6 +1771,7 @@ else
         fi
     done
     memory_line "$at_once at once:$names" "$work/memory" | tee "$work/memory.line"
+    for i in $run; do second_look "$i"; done
 fi
 
 : >"$work/summary"

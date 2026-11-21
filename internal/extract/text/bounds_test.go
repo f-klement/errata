@@ -102,12 +102,13 @@ func markdownBounds(t *testing.T, large bool) {
 			if strings.HasPrefix(c.name, "a search") {
 				x.search.TimeLimit = 100 * time.Millisecond
 			}
-			// read extracts body as the case's README.md, runs times, and
-			// returns the fastest run, which wants refused.
-			read := func(body, refused string, runs int) time.Duration {
+			// read extracts body as the case's README.md up to runs times,
+			// and returns the fastest run, stopping at the first that takes
+			// no more than enough. Each run wants refused.
+			read := func(body, refused string, runs int, enough time.Duration) time.Duration {
 				root := extracttest.Repo(t, map[string]string{"README.md": body})
 				fastest := time.Duration(math.MaxInt64)
-				for range runs {
+				for i := 0; i < runs && fastest > enough; i++ {
 					start := time.Now()
 					got, err := x.Extract(t.Context(), root)
 					fastest = min(fastest, time.Since(start))
@@ -125,13 +126,19 @@ func markdownBounds(t *testing.T, large bool) {
 				return fastest
 			}
 			if c.quarter == "" {
-				if took := read(c.body, c.refused, 1); c.bound > 0 && took > c.bound*extracttest.RaceSlowdown {
-					t.Errorf("took %v, over %v", took, c.bound*extracttest.RaceSlowdown)
+				// A bound is a wall clock, which a loaded node can hold one
+				// read past: the case takes the fastest of up to three.
+				runs, bound := 1, c.bound*extracttest.RaceSlowdown
+				if bound > 0 {
+					runs = 3
+				}
+				if took := read(c.body, c.refused, runs, bound); bound > 0 && took > bound {
+					t.Errorf("took %v in the fastest of three tries, over %v", took, bound)
 				}
 				return
 			}
-			quarter := read(c.quarter, c.quarterRefused, 2)
-			whole := read(c.body, c.refused, 2)
+			quarter := read(c.quarter, c.quarterRefused, 2, 0)
+			whole := read(c.body, c.refused, 2, 0)
 			t.Logf("the input took %v, a quarter of it %v", whole, quarter)
 			if limit := 8*quarter + 100*time.Millisecond; whole > limit {
 				t.Errorf("the input took %v, over %v, eight times the %v of a quarter of it and a tenth of a second", whole, limit, quarter)

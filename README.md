@@ -1,7 +1,7 @@
 # errata
 
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![release](https://img.shields.io/github/v/tag/f-klement/errata?sort=semver&label=release)](https://github.com/f-klement/errata/releases)
+[![release](https://img.shields.io/github/v/release/f-klement/errata?label=release)](https://github.com/f-klement/errata/releases)
 [![docker hub](https://img.shields.io/docker/v/fklement/errata?sort=semver&label=docker%20hub&logo=docker&cacheSeconds=3600)](https://hub.docker.com/r/fklement/errata/tags)
 [![docker pulls](https://img.shields.io/docker/pulls/fklement/errata?cacheSeconds=21600)](https://hub.docker.com/r/fklement/errata)
 [![go](https://img.shields.io/github/go-mod/go-version/f-klement/errata?logo=go)](go.mod)
@@ -103,6 +103,13 @@ The checksums file comes from the same release page as errata itself, so it prov
 published, as `sha256sum -c checksums.txt` does for errata's download. errata's releases carry no
 signature. Once a version is in the lock, a release or a mirror that later serves other bytes is
 refused.
+
+A plugin's releases are on errata's releases page, tagged `errata-ext-<name>/v<version>`, such as
+`errata-ext-csv/v0.1.0`, and never marked as the latest release. Each holds the plugin's
+executable for every platform errata ships for, `errata-ext-<name>_<os>_<arch>` (`.exe` on
+Windows), the checksums file `errata-ext-<name>_checksums.txt`, and for a plugin that links code
+under another licence, such as `hcl`, that code's notices, `errata-ext-<name>_NOTICES.txt`. A
+mirror holds the same files in a directory named by the tag, `errata-ext-csv/v0.1.0/`.
 
 Set `ERRATA_PLUGIN_SOURCE` to install from a mirror of the releases. A mirror installs any version
 the lock already pins, and the pin checks what it serves. A version the lock does not pin yet is

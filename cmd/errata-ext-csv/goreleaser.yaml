@@ -1,0 +1,37 @@
+# The release of errata-ext-csv, on a tag errata-ext-csv/v<version> (ADR 0021, What a plugin
+# release publishes; ci/README.md, Plugin releases). ci/release.sh runs it in a clone of the
+# mirror at the tag, with ERRATA_EXT_VERSION set to the tag's version without the v, and
+# --skip=validate, since GoReleaser reads no semver in such a tag: {{ .Version }} would be the
+# whole tag, so every template here reads the variable instead. The asset names are the ones
+# internal/plugin/install fetches (TestReleaseConfigNamesWhatInstallFetches holds them together).
+# `make plugin-release-dry PLUGIN=csv` builds them locally and uploads nothing.
+version: 2
+
+project_name: errata-ext-csv
+
+builds:
+  - main: ./cmd/errata-ext-csv
+    binary: errata-ext-csv
+    env: [CGO_ENABLED=0]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X github.com/f-klement/errata/internal/ext/csv.Version={{ .Env.ERRATA_EXT_VERSION }}
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+
+# Each platform's asset is the executable itself, not an archive: one sha256 is then the same
+# bytes in the checksums file, errata.lock, the cache and a vendored directory.
+archives:
+  - formats: [binary]
+    name_template: "errata-ext-csv_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: errata-ext-csv_checksums.txt
+
+release:
+  github:
+    owner: f-klement
+    name: errata
+  name_template: "errata-ext-csv {{ .Env.ERRATA_EXT_VERSION }}"
+  # errata's own release stays the latest, so the releases page and releases/latest name it.
+  make_latest: false

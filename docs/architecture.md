@@ -135,7 +135,9 @@ imports none of them, so a run never fetches.
 
 **The plugins** (`cmd/errata-ext-<name>`, `internal/ext/<name>`) are executables built and
 released from this repository, which errata runs only through the host. Each is a `main` that
-hands stdin, stdout and stderr to its package under `internal/ext`, which answers one request. The
+hands stdin, stdout and stderr to its package under `internal/ext`, which answers one request, and
+a `goreleaser.yaml` beside it, from which a tag `errata-ext-<name>/vX.Y.Z` releases it under the
+names `internal/plugin/install` fetches. The
 first is `csv`, which reads a cell of a CSV or TSV file with `encoding/csv`; the second is `hcl`,
 which reads an attribute of a Terraform, Packer or Nomad file with HashiCorp's `hcl/v2` and
 evaluates nothing. A plugin package imports `wire` and `core/lineend`, so it numbers lines by

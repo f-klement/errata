@@ -7,7 +7,7 @@
 
 GO        ?= go
 BIN       ?= $(CURDIR)/bin
-VERSION   ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+VERSION   ?= $(shell git describe --tags --match 'v[0-9]*' --always --dirty 2>/dev/null || echo dev)
 LDFLAGS   := -s -w -X github.com/f-klement/errata/internal/cli.Version=$(VERSION)
 
 GOLANGCI_LINT_VERSION := v2.15.0
@@ -60,7 +60,7 @@ FUZZ_TARGETS = $(shell find internal -name testdata -prune -o -name '*_test.go' 
 	| xargs grep -HE '^func Fuzz[A-Za-z0-9_]*[(][A-Za-z_][A-Za-z0-9_]* \*testing\.F[)]' \
 	| sed 's|^\(.*\)/[^/]*_test\.go:func \(Fuzz[A-Za-z0-9_]*\).*|./\1:\2|' | LC_ALL=C sort -u)
 
-.PHONY: check gate precheck seat-check build tools lint fmt test cover slow fuzz fuzz-first fuzz-rest mutation vuln dogfood public-dry release-dry image-dry ci-local ci-test tool-sums hooks cli-doc cli-doc-check loc clean
+.PHONY: check gate precheck guards seat-check build tools lint fmt test cover slow fuzz fuzz-first fuzz-rest mutation vuln dogfood public-dry release-dry plugin-release-dry image-dry ci-local ci-test tool-sums hooks cli-doc cli-doc-check loc clean
 
 # ci/ is stripped from the public mirror, so a public clone runs the gate
 # without the publish and autopatch targets. CI's test job passes CI_TEST=apart
@@ -113,13 +113,30 @@ precheck:
 	GO=$(GO) sh scripts/floors-gaps.sh
 	$(MAKE) --no-print-directory lint $(if $(wildcard ci/public-tree.sh),public-dry)
 
+# The tree guards: the checks that read the whole tree rather than a package, which a seat's
+# change can break in a file it never opened, and which only the gate ran until 2026-11-21.
+# Between 2026-11-01 and 2026-11-20, 12 gates went red on a stale expectation, at 231 gate
+# minutes, among them dogfood's docs checks over docs/reference.md (2) and ci/tests/pipeline.sh's
+# count of the README's docs pages (landD f0f7b4d2). Each guard takes seconds. dogfood is errata's
+# own errata.yaml over the tree. ci/tests/pipeline.sh holds the CI file, the README's docs links
+# and the release archives to each other, mutation-floors.sh the floors table to every package and
+# to the last release, tracked-files.sh every tracked file's kind, and crap.sh the CRAP baseline to
+# its first version and to the last release. A seat's pod and the gate's clone carry no tags, so
+# there the two checks against the last release print a skip, and only CI's test job, which
+# fetches the tags, runs them. The public mirror has no ci/, so there it is dogfood.
+# scripts/slowtests's test and scripts/floors-gaps.sh, guards of the same kind, run in seat-check
+# and precheck.
+GUARD_SUITES = ci/tests/pipeline.sh ci/tests/mutation-floors.sh ci/tests/tracked-files.sh ci/tests/crap.sh
+guards: dogfood $(if $(wildcard ci/test-ci.sh),$(BIN)/jq)
+	$(if $(wildcard ci/test-ci.sh),JQ=$(BIN)/jq ci/test-ci.sh $(GUARD_SUITES))
+
 # What a seat runs on its final commit before handing it back (docs/agents/waves-seat.md, item 7), in
 # one call: ci/run-suite.sh make seat-check PKGS="internal/a internal/b", the package directories
 # it touched. In the v0.4.0 wave 3, 7 of 30 gates went red on a check this runs in minutes: a fuzz
 # find in the seat's own package (3), a CRAP score of 10 or more (2), and a slow test that
 # scripts/slowtests did not list (2). The fast checks run first: the race tests of PKGS,
-# scripts/slowtests's own test, precheck, PKGS's fuzz targets for 60 s each, then cover, which
-# runs every test. A PKGS that is empty once canon_dirs has spelled it (./ and / are), holds
+# scripts/slowtests's own test, precheck, the tree guards, PKGS's fuzz targets for 60 s each,
+# then cover, which runs every test. A PKGS that is empty once canon_dirs has spelled it (./ and / are), holds
 # anything but a plain directory from the root, or names a directory without Go files is refused, since fuzz would
 # match none of it and pass. Globbing is off while it is checked, so a glob is checked as written.
 # Last, ci/seat-review.sh prints the review checks report.txt holds (weakened, atbase, shuffle)
@@ -144,6 +161,7 @@ seat-check:
 	$(GO) test -race -count=1 $(addprefix ./,$(SEAT_PKGS))
 	$(GO) test -count=1 ./scripts/slowtests/
 	$(MAKE) --no-print-directory precheck
+	$(MAKE) --no-print-directory guards
 	$(MAKE) --no-print-directory fuzz FUZZTIME=60s MUTATION_SCOPE="$(SEAT_PKGS)"
 	$(MAKE) --no-print-directory cover$(if $(SEAT_TEST_TIMEOUT), TEST_TIMEOUT=$(SEAT_TEST_TIMEOUT))
 	$(if $(wildcard ci/seat-review.sh),GO=$(GO) sh ci/seat-review.sh "$(SEAT_BASE)")
@@ -607,6 +625,15 @@ ci-local:
 release-dry: $(BIN)/goreleaser
 	$(BIN)/goreleaser check
 	$(BIN)/goreleaser release --snapshot --clean --skip=publish,ko
+
+# A plugin's release assets for every platform, as a tag errata-ext-<PLUGIN>/v<version>
+# publishes them, into ./dist: dist/errata-ext-<PLUGIN>_checksums.txt names each asset, and
+# dist/artifacts.json maps each name to its file (ci/README.md, Plugin releases). No token, no
+# upload. The version stands in for the one ci/release.sh cuts from the tag.
+plugin-release-dry: $(BIN)/goreleaser
+	@test -n "$(PLUGIN)" || { echo "usage: make plugin-release-dry PLUGIN=<name>, for cmd/errata-ext-<name>" >&2; exit 2; }
+	ERRATA_EXT_VERSION=0.0.0-snapshot $(BIN)/goreleaser check --config cmd/errata-ext-$(PLUGIN)/goreleaser.yaml
+	ERRATA_EXT_VERSION=0.0.0-snapshot $(BIN)/goreleaser release --snapshot --clean --skip=publish --config cmd/errata-ext-$(PLUGIN)/goreleaser.yaml
 
 # docs/cli.md, the command line reference, from the help errata prints. A release runs
 # cli-doc in the commit it tags (ci/README.md, Setting it up); the tag pipeline's

@@ -1,6 +1,7 @@
 package rule
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"strconv"
@@ -221,7 +222,12 @@ func TestCalendarIntervalBoundsItsSteps(t *testing.T) {
 
 // A calendar_interval call costs its event's bytes and its steps, so a
 // comprehension over many heavy events reaches the cost limit, and one
-// over light ones does not. Planted break: the cost tracker left out.
+// over light ones does not. The heavy events run under a minute rather than
+// EvalTimeout's 5 s: about 17 of them reach the cost limit, which took about
+// a second under -race and over 5 s on a loaded node, where the timeout then
+// ended the evaluation first. A minute still ends a call that never returns
+// as a named failure, not go test's panic. Planted break: the cost tracker
+// left out, which reads all 20 and returns no error.
 func TestCalendarIntervalHasACost(t *testing.T) {
 	if got := calendarSteps("*:0/15"); got != 1+4+24 {
 		t.Errorf("*:0/15 takes %d steps, want 29", got)
@@ -234,8 +240,12 @@ func TestCalendarIntervalHasACost(t *testing.T) {
 	if _, err := eval(t, expr, light...); err != nil {
 		t.Errorf("20 light events: %v", err)
 	}
+	a, err := compileWith(expr, described([]string{"v"}, nil), limits{cost: CostLimit, timeout: time.Minute, grace: stopGrace})
+	if err != nil {
+		t.Fatal(err)
+	}
 	heavy := slices.Repeat([]string{"*:*:0/0.001"}, 20)
-	if _, err := eval(t, expr, heavy...); err == nil || !strings.Contains(err.Error(), "cost limit") {
+	if _, err := a.Eval(context.Background(), asExtracted(map[string][]string{"v": heavy}, nil, nil)); err == nil || !strings.Contains(err.Error(), "cost limit") {
 		t.Errorf("20 events of 60000 steps: %v, want the cost limit", err)
 	}
 }
