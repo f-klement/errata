@@ -434,3 +434,18 @@ func TestARedirectToPlainHTTPIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// An install makes the cache directory and its parents when they are not
+// there, as a CI job's XDG_CACHE_HOME of a fresh checkout is not: v0.5.0
+// stopped on "mkdir <cache>/errata: no such file or directory". Planted
+// break: makeDir that leaves the cache's own directory to os.Mkdir.
+func TestAnInstallMakesAMissingCacheDirectory(t *testing.T) {
+	w := newWorld(t)
+	w.cache = filepath.Join(w.cache, "not", "there")
+	w.in.Cache = w.cache
+	sums := w.publish("0.1.0", []string{this}, "")
+	w.install(Request{Plugins: []string{"csv@0.1.0"}})
+	if _, err := os.Stat(w.cached("csv", "0.1.0", this, sums[this])); err != nil {
+		t.Fatal(err)
+	}
+}

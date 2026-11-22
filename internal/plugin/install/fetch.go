@@ -375,11 +375,18 @@ func (t temp) remove() { _ = os.RemoveAll(t.dir) }
 // one that is a symbolic link or no directory, so errata writes no file
 // through a link to a place outside the vendored directory or the cache,
 // such as one another user can write (ADR 0021). It records each directory
-// it makes in the repository, which a failed install removes again.
+// it makes in the repository, which a failed install removes again. The
+// cache itself, such as a CI job's XDG_CACHE_HOME in a fresh checkout, may
+// not be there yet: errata makes it and its parents, as a run's copies do.
 func (j *job) makeDir(owner, dir string) error {
 	rel, err := filepath.Rel(owner, dir)
 	if err != nil || !filepath.IsLocal(rel) {
 		return fmt.Errorf("%s is not below %s", dir, owner)
+	}
+	if owner != j.in.Root {
+		if err := os.MkdirAll(owner, 0o700); err != nil {
+			return err
+		}
 	}
 	at := owner
 	for _, part := range strings.Split(rel, string(filepath.Separator)) {
