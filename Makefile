@@ -60,7 +60,7 @@ FUZZ_TARGETS = $(shell find internal -name testdata -prune -o -name '*_test.go' 
 	| xargs grep -HE '^func Fuzz[A-Za-z0-9_]*[(][A-Za-z_][A-Za-z0-9_]* \*testing\.F[)]' \
 	| sed 's|^\(.*\)/[^/]*_test\.go:func \(Fuzz[A-Za-z0-9_]*\).*|./\1:\2|' | LC_ALL=C sort -u)
 
-.PHONY: check gate precheck guards seat-check build tools lint fmt test cover slow fuzz fuzz-first fuzz-rest mutation vuln dogfood public-dry release-dry plugin-release-dry image-dry ci-local ci-test tool-sums hooks cli-doc cli-doc-check loc clean
+.PHONY: check gate precheck guards seat-check seat-tree build tools lint fmt test cover slow fuzz fuzz-first fuzz-rest mutation vuln dogfood public-dry release-dry plugin-release-dry image-dry ci-local ci-test tool-sums hooks cli-doc cli-doc-check loc clean
 
 # ci/ is stripped from the public mirror, so a public clone runs the gate
 # without the publish and autopatch targets. CI's test job passes CI_TEST=apart
@@ -153,7 +153,7 @@ canon_dirs = $(patsubst %/,%,$(patsubst %/.,%,$(patsubst ./%,%,$(subst //,/,$(su
 SEAT_PKGS = $(call canon_dirs,$(PKGS))
 SEAT_BASE ?= $(shell git merge-base origin/main HEAD 2>/dev/null || git merge-base main HEAD 2>/dev/null)
 seat-check:
-	@[ -n "$(strip $(SEAT_PKGS))" ] || { echo "make seat-check: REFUSED: PKGS is empty; name the package directories the change touched, such as PKGS=\"internal/config internal/cli\"" >&2; exit 2; }
+	@[ -n "$(strip $(SEAT_PKGS))" ] || { echo "make seat-check: REFUSED: PKGS is empty; name the package directories the change touched, such as PKGS=\"internal/config internal/cli\"; a change with no Go package ends on make seat-tree GATE_BASE=<base>" >&2; exit 2; }
 	@set -f; for p in $(SEAT_PKGS); do \
 		printf '%s\n' "$$p" | grep -qE '^[A-Za-z0-9_-]+(/[A-Za-z0-9_-]+)*$$' || { echo "make seat-check: REFUSED: '$$p' in PKGS is not a package directory from the repository's root, such as internal/config: letters, digits, _, - and /, with no glob, . or .." >&2; exit 2; }; \
 		find "$$p" -maxdepth 1 -name '*.go' -type f 2>/dev/null | grep -q . || { echo "make seat-check: REFUSED: '$$p' in PKGS holds no Go file" >&2; exit 2; }; \
@@ -165,6 +165,19 @@ seat-check:
 	$(MAKE) --no-print-directory fuzz FUZZTIME=60s MUTATION_SCOPE="$(SEAT_PKGS)"
 	$(MAKE) --no-print-directory cover$(if $(SEAT_TEST_TIMEOUT), TEST_TIMEOUT=$(SEAT_TEST_TIMEOUT))
 	$(if $(wildcard ci/seat-review.sh),GO=$(GO) sh ci/seat-review.sh "$(SEAT_BASE)")
+
+# What a seat whose change holds no Go package, only scripts, CI files or docs, runs on its final
+# commit instead, since seat-check refuses an empty PKGS: precheck, whose public-dry scans the
+# tree the mirror would get, the tree guards, and the suites of ci/tests the change reaches since
+# GATE_BASE, the commit the seat's branch starts from. On 2026-11-20 a seat that changed
+# scripts/mutation.sh alone ran its suites by hand, and a node name in a comment reached the
+# landing gate, where public-dry turned it red. The public mirror has no ci/, so there it is
+# precheck and dogfood.
+seat-tree:
+	@[ -n "$(GATE_BASE)" ] || { echo "make seat-tree: REFUSED: GATE_BASE is empty; name the commit the seat's branch starts from, such as GATE_BASE=\$$(git merge-base origin/main HEAD)" >&2; exit 2; }
+	$(MAKE) --no-print-directory precheck
+	$(MAKE) --no-print-directory guards
+	$(if $(wildcard ci/test-ci.sh),$(MAKE) --no-print-directory ci-test CI_TEST_SELECT=changed)
 
 build:
 	CGO_ENABLED=0 $(GO) build -trimpath -ldflags '$(LDFLAGS)' -o errata ./cmd/errata
