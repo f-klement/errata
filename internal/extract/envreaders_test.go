@@ -25,9 +25,11 @@ func (fakeSpec) Bound() int64 { return 0 }
 // fakeEnv is an env reader of a file named *.fake, or of one that starts
 // with #!, declared as a reader package declares one: its value of a
 // variable names the variable, the file, and whether the facade handed it
-// the YAML parser it hands the CI readers.
+// the YAML parser it hands the CI readers. Its Order is past every real
+// reader's, so env lists it last, and a reader added later does not share
+// it.
 var fakeEnv = check.EnvChoice{
-	Order:      70,
+	Order:      1000,
 	Chooses:    func(file string) bool { return path.Ext(file) == ".fake" },
 	Sniffs:     func(head []byte) bool { return string(head) == "#!" },
 	SniffBytes: 2,
@@ -87,7 +89,7 @@ func TestEnvAsksARegisteredReader(t *testing.T) {
 		t.Errorf("got  %s\nwant %s", g, want)
 	}
 	_, err = env.Build(env.Spec{Name: "A", Files: []string{"x"}, Readers: map[string]string{"x": "nope"}}, rs)
-	extracttest.WantError(t, err, "write one of envfile, shell, gitlab-ci, github-actions, jenkins, systemd, fake")
+	extracttest.WantError(t, err, "write one of envfile, shell, gitlab-ci, github-actions, jenkins, systemd, k8s-env, dockerfile, fake")
 }
 
 // Every registered env reader's name test, as env asks them: a name
@@ -127,7 +129,7 @@ func TestEnvChoosesByName(t *testing.T) {
 		// reads, those with no Syntax. Of these only .sh is an env reader's,
 		// shell's (rows above); the rest go to none.
 		"lib/x.bash": "", "x.zsh": "", "x.ksh": "", "x.pl": "", "main.tf": "", "terraform.tfvars": "",
-		"Dockerfile": "", "Makefile": "", "x.mk": "", "config.yml": "", "config.toml": "",
+		"Makefile": "", "x.mk": "", "config.yml": "", "config.toml": "",
 		"docker-compose.yml": "",
 		// The dependency kind's manifests and locks go to no env reader.
 		"go.mod": "", "go.work": "", "package.json": "", "package-lock.json": "",
@@ -161,6 +163,14 @@ func TestEnvChoosesByName(t *testing.T) {
 		"etc/environment": "envfile", "etc/environment.j2": "envfile", "etc/default/x.sh": "shell",
 		"default/grub": "", "environment": "", "etc/x/environment": "", "etc/default/grub.d/x.cfg": "",
 		"etc/default/x.sh.j2": "", ".env.sh.j2": "envfile",
+		// k8s-env takes no name: a manifest is any YAML or JSON file, and
+		// readers: gives it one.
+		"deploy/api.yaml": "", "k8s/deployment.yml": "", "manifests/pod.json": "",
+		// dockerfile takes the names docker build and podman read, a
+		// template's too; a Dockerfile's ignore file goes to none.
+		"Dockerfile": "dockerfile", "api/Dockerfile.prod": "dockerfile", "api.Dockerfile": "dockerfile",
+		"Containerfile": "dockerfile", "Dockerfile.j2": "dockerfile", "Dockerfile.dockerignore": "",
+		"Dockerfiles": "", ".dockerignore": "",
 	} {
 		if got := rs.Choose(file); got != want {
 			t.Errorf("%s: %q, want %q", file, got, want)
@@ -169,12 +179,12 @@ func TestEnvChoosesByName(t *testing.T) {
 }
 
 // env lists the readers by their Order, envfile, shell, gitlab-ci,
-// github-actions, jenkins, systemd, and not in the order kinds lists them, where
-// gitlab-ci comes before shell. Planted break: shell's Order past
-// gitlab-ci's.
+// github-actions, jenkins, systemd, k8s-env, dockerfile, and not in the order
+// kinds lists them, where gitlab-ci comes before shell. Planted break: shell's
+// Order past gitlab-ci's.
 func TestEnvListsItsReadersInOrder(t *testing.T) {
 	_, err := Build(Of(env.Kind, env.Spec{Name: "A", Files: []string{".env"}, Readers: map[string]string{".env": "yaml"}}))
-	extracttest.WantError(t, err, `readers gives ".env" the reader "yaml"; write one of envfile, shell, gitlab-ci, github-actions, jenkins, systemd`)
+	extracttest.WantError(t, err, `readers gives ".env" the reader "yaml"; write one of envfile, shell, gitlab-ci, github-actions, jenkins, systemd, k8s-env, dockerfile`)
 }
 
 // readersOf refuses two env readers at one Order, one with no Chooses or

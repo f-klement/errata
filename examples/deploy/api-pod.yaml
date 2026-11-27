@@ -1,0 +1,35 @@
+# The API as the cluster runs it: the migration runs first, in an init container.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: migrate
+          image: registry.example.com/larder/api:1.4.0
+          args: ["migrate"]
+          env:
+            - name: LOG_LEVEL
+              value: info
+      containers:
+        - name: api
+          image: registry.example.com/larder/api:1.4.0
+          envFrom:
+            - configMapRef:
+                name: api-settings
+          env:
+            - name: PORT
+              value: "8080"
+            - name: LOG_LEVEL
+              value: info
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+spec:
+  ports:
+    - port: 80
+      targetPort: 8080

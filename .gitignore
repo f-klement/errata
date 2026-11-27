@@ -1,6 +1,8 @@
 /errata
 /bin
 /dist
+# a plugin's notices, which ci/plugin-notices.sh writes for its release
+/build
 /target
 node_modules/
 .env

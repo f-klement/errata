@@ -23,11 +23,12 @@ var shared = []string{"core", "extracttest", "coretest"}
 // readers share that core does not hold, such as the parse of a format
 // several readers read (Markdown, for text and markdown; HTML, for those
 // and html; go.mod, for tool_version and dependency; the literal data of a
-// programming language, for literal and code) and the targets every reader of a document markup reads
+// programming language, for literal and code; the walk from a Kubernetes
+// object to its containers, for the Kubernetes readers) and the targets every reader of a document markup reads
 // (markup), which no reader can own, since no reader imports another (#30,
 // #86). Each must be below core (notBelowCore), so that the list cannot
 // excuse a reader importing a reader.
-var belowCore = []string{"core/mdparse", "core/markup", "core/htmlparse", "core/gomod", "core/litparse"}
+var belowCore = []string{"core/mdparse", "core/markup", "core/htmlparse", "core/gomod", "core/litparse", "core/workload"}
 
 // Each kind is a reader of its own, and no reader imports another: a reader
 // imports core and nothing else of internal/extract, and core imports no

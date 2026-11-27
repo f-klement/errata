@@ -1,0 +1,96 @@
+# The dockerfile extractor returns the values of one instruction of a
+# Dockerfile, in every stage or in one, each at its own line: an ARG
+# before the first FROM expands into the image, and a LABEL whose keys
+# each take a line gives each value its line.
+exec errata check -c agree.yaml
+stdout '^0 errata, 0 unknown. Coverage: ran 2, skipped 0.$'
+
+! exec errata check -c drifted.yaml
+stdout '^FALSE version-drifted \(repo\)$'
+stdout '^          "1.4.0" at Dockerfile:8 key "org.opencontainers.image.version" \(image\)$'
+stdout '^          "1.4.1" at values.yaml:2 \(chart\)$'
+
+# An image whose variable only the build knows is returned as written and
+# marked not literal, so the rule is unknown.
+! exec errata check -c computed.yaml
+stdout '^UNKNOWN base-agrees \(repo\)$'
+stdout '^          "alpine:\$\{TAG\}" at Dockerfile:6$'
+
+# A stage the file does not have is no value, and says so.
+! exec errata check -c nostage.yaml
+stdout 'extractor "image" found no value: the Dockerfile has no stage "test"'
+
+# The env kind reads a Dockerfile as a reader of its own, each value with
+# its stage.
+exec errata check -c env.yaml
+stdout '^0 errata, 0 unknown. Coverage: ran 1, skipped 0.$'
+
+# errata list prints the extractor with its max_bytes written out.
+exec errata list -c agree.yaml -f json
+stdout '"dockerfile": \{\n\s+"file": "Dockerfile",\n\s+"max_bytes": 33554432,\n\s+"instruction": "FROM",\n\s+"stage": "build"\n\s+\}'
+-- Dockerfile --
+ARG GO_VERSION=1.23 TAG
+FROM golang:${GO_VERSION} AS build
+ENV PORT=8080
+RUN go build -o /app .
+
+FROM alpine:${TAG}
+LABEL org.opencontainers.image.source="https://example.com/app" \
+      org.opencontainers.image.version="1.4.0"
+COPY --from=build /app /app
+-- values.yaml --
+go: golang:1.23
+drifted: 1.4.1
+port: "8080"
+-- agree.yaml --
+checks:
+  - id: go-agrees
+    reason: The chart names the Go image the build stage starts from.
+    scope: repo
+    extract:
+      chart: {yaml: {file: values.yaml, path: go}}
+      image: {dockerfile: {file: Dockerfile, instruction: FROM, stage: build}}
+    agree: [chart, image]
+  - id: port-agrees
+    reason: The chart sets the port the build stage sets.
+    scope: repo
+    extract:
+      chart: {yaml: {file: values.yaml, path: port}}
+      image: {dockerfile: {file: Dockerfile, instruction: ENV, key: PORT}}
+    agree: [chart, image]
+-- drifted.yaml --
+checks:
+  - id: version-drifted
+    reason: The chart deploys the version the image carries.
+    scope: repo
+    extract:
+      chart: {yaml: {file: values.yaml, path: drifted}}
+      image: {dockerfile: {file: Dockerfile, instruction: label, key: org.opencontainers.image.version}}
+    agree: [chart, image]
+-- computed.yaml --
+checks:
+  - id: base-agrees
+    reason: The final stage starts from the image the chart names.
+    scope: repo
+    extract:
+      chart: {yaml: {file: values.yaml, path: go}}
+      image: {dockerfile: {file: Dockerfile, instruction: FROM, stage: "1"}}
+    agree: [chart, image]
+-- nostage.yaml --
+checks:
+  - id: test-stage
+    reason: The test stage starts from the Go image.
+    scope: repo
+    extract:
+      chart: {yaml: {file: values.yaml, path: go}}
+      image: {dockerfile: {file: Dockerfile, instruction: FROM, stage: test}}
+    agree: [chart, image]
+-- env.yaml --
+checks:
+  - id: port-env
+    reason: The chart sets the port the image sets.
+    scope: repo
+    extract:
+      chart: {yaml: {file: values.yaml, path: port}}
+      image: {env: {name: PORT, files: [Dockerfile]}}
+    agree: [chart, image]

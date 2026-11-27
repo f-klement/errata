@@ -58,7 +58,7 @@ func TestTemplateReadersScanBlocks(t *testing.T) {
 			t.Errorf("%s marks a template's values with core.TemplateNotLiteral and reads through neither core.TemplateRead nor core.TemplateBlocks, so a value inside a template block is literal there", d.Name())
 		}
 	}
-	for _, want := range []string{"envfile", "ini", "jenkins", "properties", "shell"} {
+	for _, want := range []string{"dockerfile", "envfile", "ini", "jenkins", "properties", "shell"} {
 		if !slices.Contains(marking, want) {
 			t.Errorf("%s no longer calls core.TemplateNotLiteral, or the test no longer reads it; found %v", want, marking)
 		}

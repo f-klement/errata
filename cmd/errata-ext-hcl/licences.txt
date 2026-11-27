@@ -1,0 +1,12 @@
+# The licence of each module errata-ext-hcl links besides errata's, by SPDX identifier, as the
+# module's licence file reads. A module comes in only after a person has read its licence and
+# written its row here. The release writes errata-ext-hcl_NOTICES.txt from these rows and the
+# module cache (ci/plugin-notices.sh). TestEveryLinkedModuleHasALicenceRow, in
+# internal/plugin/install, and the release refuse a linked module with no row and a row for a
+# module the plugin no longer links.
+github.com/agext/levenshtein             Apache-2.0
+github.com/apparentlymart/go-textseg/v17 MIT
+github.com/hashicorp/hcl/v2              MPL-2.0
+github.com/mitchellh/go-wordwrap         MIT
+github.com/zclconf/go-cty                MIT
+golang.org/x/text                        BSD-3-Clause

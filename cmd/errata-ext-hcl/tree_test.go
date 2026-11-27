@@ -7,8 +7,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -24,8 +22,8 @@ type pkg struct {
 	SFiles     []string
 	CgoFiles   []string
 	Module     *struct {
-		Path, Version, Dir string
-		Main               bool
+		Path, Version string
+		Main          bool
 	}
 }
 
@@ -133,97 +131,5 @@ func TestNoLinkedPackageCanOpenAFileOrTheNetwork(t *testing.T) {
 				t.Errorf("%s imports %s, which is not among the standard packages that cannot open a file, start a program or use the network", p.ImportPath, imp)
 			}
 		}
-	}
-}
-
-// licences are the licence of each module the plugin links besides
-// errata's, as its licence file reads, by SPDX identifier. A module comes
-// in only after a person has read its licence and written its row.
-var licences = map[string]string{
-	"github.com/agext/levenshtein":             "Apache-2.0",
-	"github.com/apparentlymart/go-textseg/v17": "MIT",
-	"github.com/hashicorp/hcl/v2":              "MPL-2.0",
-	"github.com/mitchellh/go-wordwrap":         "MIT",
-	"github.com/zclconf/go-cty":                "MIT",
-	"golang.org/x/text":                        "BSD-3-Clause",
-}
-
-// noticeFile matches the files of a module's root that hold its licence
-// or the notices it asks to be kept.
-var noticeFile = regexp.MustCompile(`(?i)^(licen[cs]e|notice|copying|patents)(\.(md|txt))?$`)
-
-// notices is the text of errata-ext-hcl_NOTICES.txt for modules: for each,
-// its path and version, its licence, where its source is, and its licence
-// and notice files as the module ships them.
-func notices(t *testing.T, modules []module) string {
-	t.Helper()
-	var b strings.Builder
-	b.WriteString("errata-ext-hcl links the Go modules below, unmodified, besides errata's own code\n" +
-		"(MIT, in errata's LICENSE) and Go's standard library. Each section names the module and\n" +
-		"the version linked, its licence by SPDX identifier, and where its source is, and then\n" +
-		"holds the module's licence and notice files as the module ships them.\n")
-	for _, m := range modules {
-		b.WriteString("\n" + strings.Repeat("=", 80) + "\n" + m.Path + " " + m.Version + "\nLicence: " + licences[m.Path] +
-			"\nSource: https://proxy.golang.org/" + m.Path + "/@v/" + m.Version + ".zip\n")
-		entries, err := os.ReadDir(m.Dir)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, e := range entries {
-			if e.Type().IsRegular() && noticeFile.MatchString(e.Name()) {
-				text, err := os.ReadFile(filepath.Join(m.Dir, e.Name()))
-				if err != nil {
-					t.Fatal(err)
-				}
-				b.WriteString("\n" + strings.Repeat("-", 80) + "\n" + e.Name() + "\n\n" + strings.TrimRight(string(text), "\n") + "\n")
-			}
-		}
-	}
-	return b.String()
-}
-
-// module is a module the plugin links.
-type module struct{ Path, Version, Dir string }
-
-// modules are the modules the plugin links besides errata's, by path.
-func modules(t *testing.T) []module {
-	t.Helper()
-	var out []module
-	for _, p := range linked(t) {
-		if m := p.Module; m != nil && !m.Main && !slices.ContainsFunc(out, func(o module) bool { return o.Path == m.Path }) {
-			out = append(out, module{m.Path, m.Version, m.Dir})
-		}
-	}
-	slices.SortFunc(out, func(a, b module) int { return strings.Compare(a.Path, b.Path) })
-	return out
-}
-
-// NOTICES.txt is errata-ext-hcl_NOTICES.txt, which the plugin's release
-// publishes beside its executables (ADR 0021): it names every module the
-// plugin links on any platform, at the version linked, with its licence
-// and the licence and notice files that module ships, so a bump of a
-// module, a module more and a module less each fail here.
-// ERRATA_WRITE_NOTICES=1 writes the file anew, to be read in the diff.
-// Planted breaks: a module left out of the file; go-cty's licence row
-// removed.
-func TestNoticesNameEveryLinkedModule(t *testing.T) {
-	ms := modules(t)
-	for _, m := range ms {
-		if licences[m.Path] == "" {
-			t.Fatalf("the plugin links %s %s, whose licence has no row in licences; read its licence, add the row, and list it in NOTICES.txt", m.Path, m.Version)
-		}
-	}
-	want := notices(t, ms)
-	if os.Getenv("ERRATA_WRITE_NOTICES") == "1" {
-		if err := os.WriteFile("NOTICES.txt", []byte(want), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	got, err := os.ReadFile("NOTICES.txt")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != want {
-		t.Fatalf("NOTICES.txt is not the notices of the modules the plugin links; run ERRATA_WRITE_NOTICES=1 go test -run TestNoticesNameEveryLinkedModule ./cmd/errata-ext-hcl and read the diff")
 	}
 }

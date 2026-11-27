@@ -24,6 +24,8 @@ required:
   - unit-log-level-matches-env-file
   - quadlet-image-matches-compose
   - backup-alert-covers-one-run
+  - api-container-port-matches-service
+  - migrate-log-level-matches-api
   - every-api-port-agrees
   - log-level-agrees
   - admin-port-agrees
@@ -60,6 +62,8 @@ required:
   - base-image-knows-deploy-and-web1
   - larder-owns-its-devices
   - larder-device-links
+  - larder-images-one-release
+  - larder-web-probe-and-cache
   - restore-reads-the-backup-dir
   - app-env-sets-every-value
   - every-route-is-documented
@@ -223,10 +227,11 @@ checks:
       services.exists(s, s.name == 'api' && s.port == api[0]) &&
       services.exists(s, s.name == 'admin' && s.port == admin[0])
 
-  # Claim: the start scripts and the Jenkins pipeline start the API on one port. shell reads what
+  # Claim: the start scripts, the Jenkins pipeline and the image start the API on one port. shell reads what
   # each script assigns; dev.zsh is a zsh script, which language reads as bash, since errata has
-  # no zsh dialect. jenkins reads what the pipeline's top level environment block sets.
-  # See docs/reference.md#shell; #jenkins.
+  # no zsh dialect. jenkins reads what the pipeline's top level environment block sets, and
+  # dockerfile what the image's last stage sets with ENV.
+  # See docs/reference.md#shell; #jenkins; #dockerfile.
   - id: start-script-port-agrees
     reason: >
       Developers start the API with scripts/start.sh and CI tests it through Jenkins. A port
@@ -236,7 +241,8 @@ checks:
       script: {shell: {file: scripts/start.sh, name: API_PORT}}
       dev: {shell: {file: scripts/dev.zsh, name: API_PORT, language: bash}}
       pipeline: {jenkins: {file: Jenkinsfile, variable: API_PORT}}
-    agree: [script, dev, pipeline]
+      image: {dockerfile: {file: Dockerfile, instruction: ENV, key: API_PORT, stage: "1"}}
+    agree: [script, dev, pipeline, image]
 
   # Claim: the systemd unit runs the API on the port the chart exposes. systemd reads the unit
   # with the drop-ins beside it in systemd's order, and splits Environment= into variables: the
@@ -293,6 +299,34 @@ checks:
     assert: |
       duration(stale[0]) >= calendar_interval(timer[0]) &&
       duration(stale[0]) <= calendar_interval(timer[0]) * 2
+
+  # Claim: the API's container listens on the port its Service sends to. k8s-env reads PORT
+  # from the env: of the container named api in each workload of the manifest, and the last
+  # entry of the name wins, as the kubelet sets it.
+  # See docs/reference.md#k8s-env; #compare.
+  - id: api-container-port-matches-service
+    reason: >
+      The Service forwards to targetPort. A container that listens elsewhere answers nothing,
+      and the readiness probe keeps the pod out of the load balancer.
+    scope: repo
+    extract:
+      env: {k8s-env: {file: deploy/api-pod.yaml, variable: PORT, container: api}}
+      service: {yaml: {file: deploy/api-pod.yaml, kind: Service, path: "spec.ports[0].targetPort"}}
+    agree: [env, service]
+
+  # Claim: the migration's init container logs at the level the app container does. A value
+  # from valueFrom or envFrom is not literal, so a level a ConfigMap gives fails the rule
+  # rather than passing unread.
+  # See docs/reference.md#k8s-env; #values-a-file-only-computes.
+  - id: migrate-log-level-matches-api
+    reason: >
+      Support reads the logs of both containers side by side. When the levels differ, the
+      migration's debug lines are missing exactly when a rollout fails.
+    scope: repo
+    extract:
+      migrate: {k8s-env: {file: deploy/api-pod.yaml, variable: LOG_LEVEL, container: migrate, max_bytes: 65536}}
+      api: {k8s-env: {file: deploy/api-pod.yaml, variable: LOG_LEVEL, container: api}}
+    agree: [migrate, api]
 
   # Claim: every file that sets API_PORT sets 8080. env reads one variable across files of
   # different kinds, each with the reader its name chooses, and a glob takes in every script.
@@ -390,15 +424,15 @@ checks:
   # pyproject.toml's requires-python, a range, beside .python-version; semver lets a range
   # agree with the versions that satisfy it, and syntax: pep440 reads each as pip does.
   # github-actions reads a job's env and a step's with:, and jenkins the environment of the
-  # test stage.
-  # See docs/reference.md#compare; #tool_version; #gitlab-ci; #github-actions; #jenkins; #text.
+  # test stage. dockerfile reads the default of the ARG the image's FROM names.
+  # See docs/reference.md#compare; #tool_version; #gitlab-ci; #github-actions; #jenkins; #dockerfile; #text.
   - id: python-version-agrees
     reason: >
       The image, both pipelines and the README name the Python the API needs. A pipeline left
       on an older Python tests code the image never runs.
     scope: repo
     extract:
-      image: {regex: {file: Dockerfile, pattern: '^FROM python:([\d.]+)'}}
+      image: {dockerfile: {file: Dockerfile, instruction: ARG, key: PYTHON_VERSION}}
       pins: {tool_version: {tool: python, files: [.python-version, pyproject.toml]}}
       gitlab: {gitlab-ci: {file: .gitlab-ci.yml, job: test, variable: PYTHON_VERSION}}
       github: {github-actions: {file: .github/workflows/ci.yml, job: lint, variable: PYTHON_VERSION}}
@@ -410,8 +444,9 @@ checks:
     syntax: pep440
 
   # Claim: both GitLab test jobs run in the image the Dockerfile builds the API from. gitlab-ci
-  # with key reads a job keyword rather than a variable.
-  # See docs/reference.md#gitlab-ci.
+  # with key reads a job keyword rather than a variable. dockerfile reads the image of the
+  # second stage, counted from 0, with the ARG before the first FROM expanded into it.
+  # See docs/reference.md#gitlab-ci; #dockerfile.
   - id: ci-tests-in-the-runtime-image
     reason: >
       Tests in another image than production's pass on libraries production lacks. Pinning
@@ -420,7 +455,7 @@ checks:
     extract:
       test: {gitlab-ci: {file: .gitlab-ci.yml, job: test, key: image}}
       lint: {gitlab-ci: {file: .gitlab-ci.yml, job: lint, key: image}}
-      runtime: {regex: {file: Dockerfile, pattern: '^FROM (python:\S+)$'}}
+      runtime: {dockerfile: {file: Dockerfile, instruction: FROM, stage: "1"}}
     agree: [test, lint, runtime]
 
   # Claim: the changelog's newest heading and the web page name the release the package
@@ -920,6 +955,37 @@ checks:
       scale: {udev: {file: deploy/udev/rules.d/60-larder-scale.rules, key: SYMLINK, tests: {"ATTRS{idVendor}": "0403"}}}
       printer: {udev: {files: [deploy/udev/rules.d/*.rules], key: SYMLINK, op: "+=", tests: {"ATTR{idVendor}": "0a5f"}}}
     assert: scale == ['larder-scale'] && printer == ['larder-printer']
+
+  # Claim: the web and worker Deployments run images of one release. k8s picks each container by
+  # name in its Deployment, so a sidecar added before it does not move the read, and files: reads
+  # every manifest, adding nothing for a file with no worker Deployment.
+  # See docs/reference.md#k8s.
+  - id: larder-images-one-release
+    reason: >
+      The web front end queues jobs in the format of its release, and a worker a release behind
+      fails each one it cannot read.
+    scope: repo
+    extract:
+      web: {k8s: {file: deploy/manifests.yaml, object: {kind: Deployment, name: web}, container: web, path: image}}
+      worker: {k8s: {files: ['deploy/*.yaml'], object: {apiVersion: apps/v1, kind: Deployment, namespace: default, name: worker}, container: worker, path: image}}
+    assert: size(web) == 1 && size(worker) == 1 && web[0].split(':')[1] == worker[0].split(':')[1]
+
+  # Claim: the web container's readiness probe asks the port it serves on, and its page cache sits
+  # on the memory volume the pod gives it. port: picks the container's port by its name, and
+  # volume: the pod's volume, or with container: the container's mount of it.
+  # See docs/reference.md#k8s.
+  - id: larder-web-probe-and-cache
+    reason: >
+      A probe on another port keeps every web pod out of the Service, and a cache on the
+      container's own disk fills the node.
+    scope: repo
+    extract:
+      port: {k8s: {file: deploy/manifests.yaml, object: {apiVersion: apps/v1, kind: Deployment, namespace: default, name: web}, container: web, port: http, path: containerPort}}
+      protocol: {k8s: {files: ['deploy/*.yaml'], object: {kind: Deployment, name: web}, container: web, port: http, path: protocol}}
+      probe: {k8s: {file: deploy/manifests.yaml, object: {kind: Deployment, name: web}, container: web, path: readinessProbe.httpGet.port}}
+      mount: {k8s: {files: ['deploy/*.yaml'], object: {apiVersion: apps/v1, kind: Deployment, namespace: default, name: web}, container: web, volume: cache, path: mountPath}}
+      medium: {k8s: {file: deploy/manifests.yaml, object: {kind: Deployment, name: web}, volume: cache, path: emptyDir.medium}}
+    assert: port == probe && protocol == ['TCP'] && mount == ['/var/cache/larder'] && medium == ['Memory']
 
   # Claim: the restore command in the admin guide reads from the directory the backup script
   # writes to. The script lets an operator point it elsewhere through a variable, a value

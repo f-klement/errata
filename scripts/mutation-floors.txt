@@ -147,8 +147,13 @@ internal/extract/core/litparse     85        85      5      from internal/extrac
 # markup: new in v0.2.5 (#30), what the markup readers share.
 internal/extract/core/markup       85        85      5
 internal/extract/core/mdparse      85        85      5      from internal/extract/text
+# workload: new in v0.6.0 (#91), the walk from a Kubernetes object to its
+# containers, which the Kubernetes readers share.
+internal/extract/core/workload     85        85      5
 # dependency: new in v0.3.0 (#45), held to the floor every reader has.
 internal/extract/dependency        85        85      5
+# dockerfile: new in v0.6.0 (#53), held to the floor every reader has.
+internal/extract/dockerfile        85        85      5
 # env: 100%, efficacy 100%, on 2026-10-25.
 internal/extract/env               85        85      5
 # envfile: 100% on a dry run.
@@ -185,6 +190,10 @@ internal/extract/jenkins           85        85      5
 internal/extract/json              85        85      5
 # jsonc: new in v0.4.0 (#67), held to the floor every reader has.
 internal/extract/jsonc             85        85      5
+# k8s: new in v0.6.0 (#91), held to the floor every reader has.
+internal/extract/k8s               85        85      5
+# k8senv: new in v0.6.0 (#57), held to the floor every reader has.
+internal/extract/k8senv            85        85      5
 # literal: new in v0.3.0 (#84), held to the floor every reader has.
 internal/extract/literal           85        85      5
 # markdown: new in v0.2.5 (#30), held to the floor every reader has.

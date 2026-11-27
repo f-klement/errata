@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/f-klement/errata/internal/extract/core"
+	"github.com/f-klement/errata/internal/extract/dockerfile"
 	"github.com/f-klement/errata/internal/extract/env"
 	"github.com/f-klement/errata/internal/extract/envfile"
 	"github.com/f-klement/errata/internal/extract/extracttest"
@@ -184,6 +185,7 @@ func TestDescribeLabel(t *testing.T) {
 		{Of(shell.Kind, shell.Spec{File: "deploy.sh", Name: "X"}), "shell"},
 		{Of(githubactions.Kind, githubactions.Spec{File: "ci.yml", Job: "test", Key: "runs-on"}), "github-actions"},
 		{Of(jenkins.Kind, jenkins.Spec{File: "Jenkinsfile", Variable: "X"}), "jenkins"},
+		{Of(dockerfile.Kind, dockerfile.Spec{OneFile: core.OneFile{File: "Dockerfile"}, Instruction: "FROM"}), "dockerfile"},
 		{Of(env.Kind, env.Spec{Name: "X", Files: []string{".env"}}), "env"},
 		{Of(filestat.ExistsKind, filestat.Spec{File: "a"}), "exists"},
 		{Of(filestat.SizeKind, filestat.Spec{File: "a"}), "size"},

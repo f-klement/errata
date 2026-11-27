@@ -147,8 +147,10 @@ and use no network. depguard reads only this repository's files, so a test of `c
 holds every package that plugin links from outside the standard library, `hcl/v2` and its
 dependencies among them, to an allow list of its own: the standard packages they import today,
 none of which opens a file by name, starts a program or uses the network, and no assembly or cgo
-file, on every platform errata ships for. The same test checks its release's notices against the
-modules it links.
+file, on every platform errata ships for. A test of `internal/plugin/install` holds the modules
+each plugin links to the reviewed licence rows of its `licences.txt`, from which the release
+writes its notices; a plugin without the file has no rows, so it may link no module besides
+errata's.
 
 **report** (`internal/report`) writes a `check.Report` as text, JUnit or SARIF, and a listing as
 text or JSON.
@@ -291,10 +293,13 @@ flowchart TB
         shell["internal/extract/shell"]
         githubactions["internal/extract/githubactions"]
         jenkins["internal/extract/jenkins"]
+        k8senv["internal/extract/k8senv"]
         etc["internal/extract/etc"]
         sudoers["internal/extract/sudoers"]
         table["internal/extract/table"]
         udev["internal/extract/udev"]
+        k8s["internal/extract/k8s"]
+        dockerfile["internal/extract/dockerfile"]
         env["internal/extract/env"]
         filestat["internal/extract/filestat"]
     end
@@ -310,6 +315,7 @@ flowchart TB
         htmlparse["internal/extract/core/htmlparse"]
         gomod["internal/extract/core/gomod"]
         litparse["internal/extract/core/litparse"]
+        workload["internal/extract/core/workload"]
     end
     subgraph testonly ["imported only by test files"]
         coretest["internal/extract/coretest"]
@@ -349,6 +355,9 @@ flowchart TB
     litparse --> core
     literal --> litparse
     code --> litparse
+    workload --> core
+    k8s --> workload
+    k8senv --> workload
     coretest --> core
     extracttest --> check
     extracttest --> lineend
@@ -371,7 +380,7 @@ reader imports `core` and no other reader, and `core` imports no reader.
 |---|---|---|
 | `cmd/errata` | `main`: signal handling and the exit code | anything else; it calls `cli.Execute` |
 | `cmd/errata-ext-csv` | the CSV plugin's `main`: it hands stdin, stdout and stderr to `internal/ext/csv` and exits with its status | anything else |
-| `cmd/errata-ext-hcl` | the HCL plugin's `main`: it hands stdin, stdout and stderr to `internal/ext/hcl` and exits with its status; its tests hold what it links offline and keep its release's `NOTICES.txt` | anything else |
+| `cmd/errata-ext-hcl` | the HCL plugin's `main`: it hands stdin, stdout and stderr to `internal/ext/hcl` and exits with its status; its tests hold what it links offline; `licences.txt` holds the reviewed licence of each module it links, from which `ci/plugin-notices.sh` writes its release's notices, and a test of `internal/plugin/install` holds the rows to the modules it links | anything else |
 | `internal/cli` | flags, wiring, the exit code contract (0 clean, 1 errata, 2 usage) | how a check runs or how output looks |
 | `internal/config` | the `errata.yaml` format, strict decoding, load errors, the line each check starts on; builds each rule's extractors and compiles its assert through `rule.Compile`, so a type error is a load error | running anything |
 | `internal/engine` | which checks run, in what order, and which are skipped; the run of each witness on its fixture | the check protocol's details, output formats |
@@ -408,12 +417,14 @@ reader imports `core` and no other reader, and `core` imports no reader.
 | `internal/extract/marker` | the values the markers in the files git tracks tag for one rule, and the markers no rule reads | the other readers |
 | `internal/extract/core/htmlparse` | the HTML parse the html, text and markdown readers share: golang.org/x/net/html's tokenizer with each token's offsets from its raw bytes, under a token limit, leaving out what a browser does not show | any one reader |
 | `internal/extract/core/gomod` | the go.mod and go.work parse the tool_version and dependency readers share: golang.org/x/mod/modfile, the go command's parser, under a limit on the lines and tokens a file can hold, with each module version kept as the file writes it and a panic in modfile turned into a refusal | any one reader |
+| `internal/extract/core/workload` | the objects of a manifest file, its documents and the items of its `List`s, and which file name parses as JSON; the walk from a Kubernetes object in core's tree to its pod spec, where each built in workload kind puts it and under `spec.template` for any other, and to its containers, init containers and ephemeral containers by name, each with its line; and which text the kubelet changes when it expands `$(NAME)` and `$$` | any one reader; files, and the cluster the objects describe |
 | `internal/extract/core/mdparse` | the Markdown parse the text and markdown readers share: goldmark's CommonMark, with GitHub's tables on request, under a guard on its time, nodes and continuations, and the prose that maps text built from the file back to its lines | any one reader |
 | `internal/extract/xml` | XML, with an XPath 1.0 subset of its own | the other readers |
 | `internal/extract/ini`, `internal/extract/properties` | one reader each of entries for core's entry extractor: INI in the plain, git, ansible, tox, php and systemd dialects (the last with Podman's grammar for a Quadlet file), and Java properties; `ini` also declares the `systemd` kind, a unit read in the systemd dialect with its drop-ins and its `Environment=` split into variables, and its environment files | each other |
 | `internal/extract/envfile` | dotenv files as docker compose reads them, a reader of entries for core's entry extractor, with compose's substitutions resolved from the keys set before | the other readers |
 | `internal/extract/shell` | the assignments and defaults of a variable in a shell script, parsed with mvdan.cc/sh/v3 under a guard on the depth of its stack, and the values the shell computes marked not literal | the other readers |
 | `internal/extract/jenkins` | the value of an environment variable that a stage of a declarative Jenkinsfile sees, read with a lexer of Groovy's comments and string forms that keeps no statement, and the values Groovy computes marked not literal | the other readers; Groovy's evaluation |
+| `internal/extract/k8senv` | the value one environment variable has in each container, init container and ephemeral container of the Kubernetes workloads a manifest holds: the last `env:` entry of the name, else each `envFrom` source whose prefix starts it, through `core/workload`'s walk, across YAML documents, a JSON object and `List` items; what the API server refuses as a string, YAML 1.1's `yes` and `off` among it, refused; and a value from `valueFrom`, `envFrom` or the kubelet's `$(NAME)` expansion marked not literal | the other readers, whose parsers it gets from the facade; the ConfigMaps, Secrets and cluster the values come from |
 | `internal/extract/toolversion` | the files that pin a tool's version, read by their names: its own line reader, core/gomod's go.mod parse (golang.org/x/mod/modfile), and the JSON and TOML parsers the facade hands it for the manifests and rust-toolchain.toml | the other readers, whose parsers it gets from the facade |
 | `internal/extract/packageversion` | the version a package gives itself in each of its manifests (package.json, pyproject.toml, Cargo.toml, a VERSION file), read by the file's name, with the versions the build computes marked not literal | the other readers, whose parsers it gets from the facade |
 | `internal/extract/dependency` | one package's version in every manifest and lockfile a rule lists (Go, npm, pnpm, Yarn, Python, Cargo, Bundler, Composer), each file read by the reader its base name chooses, each value marked a range or a resolved version in its origin, and a range rewritten as its tool reads it; a go.mod's module path, go.mod and go.work read through core/gomod's parse; the Gemfile read through core's lexer table | the other readers, whose parsers it gets from the facade, and any registry or package manager |
@@ -423,6 +434,8 @@ reader imports `core` and no other reader, and `core` imports no reader.
 | `internal/extract/sudoers` | sudoers and the drop-ins of sudoers.d, read as sudo reads them: Defaults settings with their scopes as conditions, and the commands user specifications grant one user list entry as records, with the four kinds of alias resolved and `#include`, `@include`, `#includedir` and `@includedir` followed inside the repository in sudo's order | the other readers; the host's users, groups and host name |
 | `internal/extract/table` | one column of the rows of a Unix field table (fstab, passwd, group, hosts, exports, crypttab), split into the columns its man page names as the table's tool splits a line, a row selected by the values its columns hold, a list column's items each one value, and a template's computed cells marked | the other readers; the host the tables configure, and what it resolves: a UUID or LABEL, a netgroup, an nss compat line |
 | `internal/extract/udev` | udev rules files read as systemd-udevd reads them: rules joined over lines, match and assignment keys with the operators udev takes, the rules it drops, GOTO and LABEL, the files of rules.d directories in udev's order, and each value with its rule's match keys and the GOTOs before it as its condition | the other readers; the devices the rules apply to and the host's users and groups |
+| `internal/extract/k8s` | the objects of Kubernetes manifest files, YAML, JSON and `List` items, selected by apiVersion, kind, namespace and name, and through core/workload's walk a container, its ports and mounts, or a pod's volume by name, with what the kubelet expands and a template computes marked not literal | the other readers, whose parsers it gets from the facade; Helm and Kustomize renders, and the cluster |
+| `internal/extract/dockerfile` | the values of one instruction of a Dockerfile, FROM, EXPOSE, LABEL, ENV or ARG, in every stage or in one, parsed with BuildKit's own parser and each word expanded with BuildKit's shell lexer against the ARG and ENV values before it, each value at the line its word is on, and the values only the build knows marked not literal | the other readers; the build, the base image and the build arguments |
 | `internal/extract/env` | one variable across the files a rule lists: the reader each file's name or shebang chooses, a glob over git's tracked files, and each value's origin, its reader and its job, step or stage | the readers, which the facade hands it as functions |
 | `internal/extract/filestat` | the `exists` and `size` kinds: whether a file is at a name and how many bytes it holds, from core's `Stat`, without opening the file | the other readers |
 | `internal/extract/extracttest`, `internal/extract/coretest` | what the extractors' tests share; only test files import them, and Gremlins and the `make cover` total leave them alone | any reader: `coretest` imports `core` alone, and `extracttest` nothing of errata's but `check` and `core/lineend`, since `core`'s own tests import it |
@@ -571,10 +584,13 @@ flowchart LR
         k_github["github-actions"]
         k_jenkins["jenkins"]
         k_systemd["systemd"]
+        k_k8senv["k8s-env"]
         k_etc["etc"]
         k_sudoers["sudoers"]
         k_table["table"]
         k_udev["udev"]
+        k_k8s["k8s"]
+        k_dockerfile["dockerfile"]
         k_env["env"]
         k_exists["exists"]
         k_size["size"]
@@ -591,13 +607,13 @@ flowchart LR
 Two kinds, `exists` and `size`, come from one package, `filestat`, and two, `ini` and `systemd`,
 from `ini`, since the systemd kind reads through the ini reader's systemd dialect. The `env` kind
 reads one variable across several files, each with the reader its name or shebang chooses:
-`envfile`, `shell`, `gitlab-ci`, `github-actions`, `jenkins` and `systemd` declare themselves env
+`envfile`, `shell`, `gitlab-ci`, `github-actions`, `jenkins`, `systemd`, `k8s-env` and `dockerfile` declare themselves env
 readers, each at an
-`Order` of its own, and the facade hands them to `env` as functions, so `env` imports none of them.
+`Order` of its own (`k8s-env` chooses no file by its name, so only `readers:` gives it one), and the facade hands them to `env` as functions, so `env` imports none of them.
 A reader that needs another format's parser, such as `tool_version` reading a `package.json`, gets
 it from the facade in `core.Parsers` for the same reason. Wherever two kinds must share more than a
 parser, the shared code goes below `core`, as `core/gitindex`, `core/clip`, `core/markup`,
-`core/mdparse`, `core/htmlparse` and `core/gomod` do, never in a reader.
+`core/mdparse`, `core/htmlparse`, `core/gomod` and `core/workload` do, never in a reader.
 
 `core` holds these, in the order a read meets them:
 

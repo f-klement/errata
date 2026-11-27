@@ -9,6 +9,18 @@ spec:
       containers:
         - name: web
           image: registry.example.com/larder/web:1.4.0
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+          readinessProbe:
+            httpGet: {path: /healthz, port: 3000}
+          volumeMounts:
+            - name: cache
+              mountPath: /var/cache/larder
+      volumes:
+        - name: cache
+          emptyDir: {medium: Memory}
 ---
 apiVersion: apps/v1
 kind: Deployment

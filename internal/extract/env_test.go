@@ -24,8 +24,12 @@ func TestEnvAsksEachReader(t *testing.T) {
 		".gitlab-ci.yml":           "build:\n  variables: {PORT: \"3\"}\n  script: [b]\n",
 		".github/workflows/ci.yml": "on: push\njobs:\n  test:\n    runs-on: x\n    steps:\n      - id: up\n        env: {PORT: \"4\"}\n        run: up\n",
 		"Jenkinsfile":              "pipeline {\n  environment { PORT = '5' }\n  stages { stage('a') { steps { sh 'a' } } }\n}\n",
+		"deploy/api.yaml":          "kind: Pod\nmetadata: {name: api}\nspec:\n  containers:\n  - name: web\n    env: [{name: PORT, value: \"6\"}]\n",
+		"deploy/job.json":          `{"kind": "Job", "spec": {"template": {"spec": {"initContainers": [{"name": "i", "env": [{"name": "PORT", "value": "7"}]}]}}}}`,
+		"Dockerfile":               "ARG PORT=8\nFROM a AS web\nENV PORT=9\n",
 	})
-	x, err := Build(Of(env.Kind, env.Spec{Name: "PORT", Files: []string{".env", "deploy.sh", "bin/run", ".gitlab-ci.yml", ".github/workflows/ci.yml", "Jenkinsfile"}}))
+	x, err := Build(Of(env.Kind, env.Spec{Name: "PORT", Files: []string{".env", "deploy.sh", "bin/run", ".gitlab-ci.yml", ".github/workflows/ci.yml", "Jenkinsfile", "deploy/api.yaml", "deploy/job.json", "Dockerfile"},
+		Readers: map[string]string{"deploy/api.yaml": "k8s-env", "deploy/job.json": "k8s-env"}}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +46,9 @@ func TestEnvAsksEachReader(t *testing.T) {
 		got = append(got, fmt.Sprintf("%s%s@%s:%d [%s]", v.Text, mark, v.At.File, v.At.Line, v.Origin))
 	}
 	want := `1@.env:1 [envfile]; 2@deploy.sh:1 [shell]; "$(cat port)"!@bin/run:2 [shell]; 3@.gitlab-ci.yml:2 [gitlab-ci job "build"]; ` +
-		`4@.github/workflows/ci.yml:7 [github-actions job "test" step "up"]; 5@Jenkinsfile:2 [jenkins pipeline]`
+		`4@.github/workflows/ci.yml:7 [github-actions job "test" step "up"]; 5@Jenkinsfile:2 [jenkins pipeline]; ` +
+		`6@deploy/api.yaml:6 [k8s-env Pod "api" container "web"]; 7@deploy/job.json:1 [k8s-env Job init container "i"]; ` +
+		`8@Dockerfile:1 [dockerfile global]; 9@Dockerfile:3 [dockerfile stage "web"]`
 	if g := strings.Join(got, "; "); g != want {
 		t.Errorf("got  %s\nwant %s", g, want)
 	}

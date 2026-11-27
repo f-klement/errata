@@ -221,8 +221,11 @@ checks:
       sudo:     {sudoers: {file: etc/sudoers, defaults: secure_path}}
       mounts:   {table: {file: etc/fstab, column: mntops, row: {file: /srv}}}
       udev:     {udev: {file: udev/99-x.rules, key: MODE, tests: {SUBSYSTEM: usb}}}
+      image:    {dockerfile: {file: Dockerfile, instruction: FROM, stage: build}}
       unit:     {systemd: {file: deploy/api.service, section: Service, key: Environment, variable: PORT}}
-    assert: int(replicas[0]) <= int(nodes[0]) && size(sshd) + size(mounts) + size(prose) + size(note) + size(pom) + size(port) + size(cfg) + size(pkg) + size(dep) + size(marker) + size(hosts) + size(setting) + size(version) + size(ts) + size(five) + size(unit) + size(sudo) + size(udev) > 0
+      pod:      {k8s-env: {file: deploy/api.yaml, variable: PORT, container: api}}
+      manifest: {k8s: {file: deploy/api.yaml, object: {kind: Deployment, name: api}, container: api, path: image}}
+    assert: int(replicas[0]) <= int(nodes[0]) && size(sshd) + size(mounts) + size(prose) + size(note) + size(pom) + size(port) + size(cfg) + size(pkg) + size(dep) + size(marker) + size(hosts) + size(setting) + size(version) + size(ts) + size(five) + size(unit) + size(sudo) + size(udev) + size(pod) + size(image) + size(manifest) > 0
 -- assert.json --
 {
   "version": 1,
@@ -274,6 +277,26 @@ checks:
             "row": "web"
           }
         },
+        "image": {
+          "dockerfile": {
+            "file": "Dockerfile",
+            "max_bytes": 33554432,
+            "instruction": "FROM",
+            "stage": "build"
+          }
+        },
+        "manifest": {
+          "k8s": {
+            "file": "deploy/api.yaml",
+            "max_bytes": 33554432,
+            "object": {
+              "kind": "Deployment",
+              "name": "api"
+            },
+            "container": "api",
+            "path": "image"
+          }
+        },
         "marker": {
           "markdown": {
             "file": "README.md",
@@ -311,6 +334,14 @@ checks:
         "pkg": {
           "package_version": {
             "max_bytes": 33554432
+          }
+        },
+        "pod": {
+          "k8s-env": {
+            "file": "deploy/api.yaml",
+            "max_bytes": 33554432,
+            "variable": "PORT",
+            "container": "api"
           }
         },
         "pom": {
@@ -404,7 +435,7 @@ checks:
         }
       },
       "relation": {
-        "assert": "int(replicas[0]) <= int(nodes[0]) && size(sshd) + size(mounts) + size(prose) + size(note) + size(pom) + size(port) + size(cfg) + size(pkg) + size(dep) + size(marker) + size(hosts) + size(setting) + size(version) + size(ts) + size(five) + size(unit) + size(sudo) + size(udev) > 0"
+        "assert": "int(replicas[0]) <= int(nodes[0]) && size(sshd) + size(mounts) + size(prose) + size(note) + size(pom) + size(port) + size(cfg) + size(pkg) + size(dep) + size(marker) + size(hosts) + size(setting) + size(version) + size(ts) + size(five) + size(unit) + size(sudo) + size(udev) + size(pod) + size(image) + size(manifest) > 0"
       },
       "normalize": [],
       "allow_empty": [],

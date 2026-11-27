@@ -60,7 +60,10 @@ new user needs it, with four checks worked through from the files to the fix, an
   - [`sudoers`](#sudoers)
   - [`table`](#table)
   - [`udev`](#udev)
+  - [`k8s`](#k8s)
+  - [`dockerfile`](#dockerfile)
   - [`systemd`](#systemd)
+  - [`k8s-env`](#k8s-env)
   - [`env`](#env)
   - [`exists` and `size`](#exists-and-size)
 - [Plugins](#plugins)
@@ -1043,7 +1046,9 @@ extract:
 | [`shell`](#shell) | `file`, `name`, and `language` to name the dialect | every value the script assigns the variable, and every default an expansion gives it (see [`shell`](#shell)) |
 | [`github-actions`](#github-actions) | `file`, `job`, `step` for a step by its id or name, and `variable` or `key` | the value the step, or the job, sees of an environment variable or a key such as `runs-on` or `with.node-version`, one for each job of a matrix (see [`github-actions`](#github-actions)) |
 | [`jenkins`](#jenkins) | `file`, `variable`, and `stage` | the value a stage of a declarative Jenkinsfile sees of an environment variable (see [`jenkins`](#jenkins)) |
+| [`dockerfile`](#dockerfile) | `file`, `instruction`, `key` for one key, and `stage` | the values one instruction of a Dockerfile sets: each stage's image, each port, or each value of a label, an environment variable or a build argument (see [`dockerfile`](#dockerfile)) |
 | [`systemd`](#systemd) | `file`, `section` and `key`, and `variable` for one variable of `Environment=`; `variable` alone for an environment file | every value of the key in a systemd unit or a Podman Quadlet file with its drop-ins applied, or every value the unit's `Environment=` or an environment file gives the variable (see [`systemd`](#systemd)) |
+| [`k8s-env`](#k8s-env) | `file`, `variable`, and `container` for the containers of one name | the value each container of the manifest's Kubernetes workloads sees of an environment variable from its `env:` and `envFrom:`, each naming the object and the container (see [`k8s-env`](#k8s-env)) |
 | [`env`](#env) | `name`, `files`, and `readers` to give a file its reader | every value of one variable in the files, each read by the reader its name chooses, and each naming its reader and its job, step or stage (see [`env`](#env)) |
 | [`exists`](#exists-and-size) | `file` | `true` when a regular file is there, and `false` when none is, not an unknown (see [`exists` and `size`](#exists-and-size)) |
 | [`size`](#exists-and-size) | `file` | the size of the regular file in bytes, in decimal (see [`exists` and `size`](#exists-and-size)) |
@@ -1366,9 +1371,13 @@ set before it, a name alone that compose takes from the environment, and in a te
 plain `3.10` ([`gitlab-ci`](#gitlab-ci)), `shell` for a value the shell expands, such as
 `$(git describe)` ([`shell`](#shell)), `github-actions` for a `${{ }}` expression
 other than a matrix variable, or a plain `3.10` ([`github-actions`](#github-actions)), `jenkins` for
-a value Groovy computes, such as `credentials('id')` ([`jenkins`](#jenkins)), `etc` for a value
+a value Groovy computes, such as `credentials('id')` ([`jenkins`](#jenkins)), `k8s-env` for a
+value from `valueFrom` or `envFrom`, or one the kubelet expands, such as `$(HOST)` ([`k8s-env`](#k8s-env)), `dockerfile` for a
+value only the build knows, such as `$TARGETARCH` or a build argument with no default
+([`dockerfile`](#dockerfile)), `etc` for a value
 OpenSSH expands, such as `%h/.ssh/keys`, and in a template file ([`etc`](#etc)), `table` in a
-template file ([`table`](#table)), `literal` for a
+template file ([`table`](#table)), `k8s` for a command, an arg, an env value or a `subPathExpr` the kubelet
+expands, such as `$(PORT)`, and in a template file ([`k8s`](#k8s)), `literal` for a
 value a program computes, such as `os.environ["PORT"]` or `"v" + VERSION` ([`literal`](#literal)), `code` for
 the same and for a Go value only the running program knows, such as `os.Getenv("PORT")` ([`code`](#code)), and `env` for
 any of these that the reader of its file marks; a `${{ }}` read with `yaml:` is still plain text,
@@ -1434,7 +1443,7 @@ counts only the values left.
 `skip_not_literal` may list only an extractor that can return a not literal value: for any other the
 key would load and leave nothing out, so it does not load. That holds for every kind but `ini`,
 `properties`, `tool_version`, `package_version`, `dependency`, `envfile`, `gitlab-ci`, `shell`,
-`github-actions`, `jenkins`, `etc`, `table`, `literal` and `code`, for an `ini` extractor whose file errata models no transform for, such as
+`github-actions`, `jenkins`, `dockerfile`, `etc`, `table`, `literal` and `code`, for an `ini` extractor whose file errata models no transform for, such as
 `pytest.ini`, and for a `properties` file that is neither a template nor one of Spring Boot's or
 Log4j's. The message names the kind, and
 for `ini` the dialect and the file:
@@ -4918,6 +4927,129 @@ read:
 - The rules a package installs under `/usr/lib/udev/rules.d` are not in the repository unless it
   holds them, and a file of theirs may mask or be masked by one errata reads.
 
+### `k8s`
+
+`k8s` reads a path in the Kubernetes objects of manifest files, each object selected by the fields
+it writes, and in a workload object one container, one of its ports or one volume by name. It
+reads the files as they are written: the objects Helm and Kustomize render belong to the
+Kubernetes provider's render operation, and a rule over them uses that once it exists. It never
+runs kubectl or reaches a cluster.
+
+```yaml
+extract:
+  image:    {k8s: {files: [deploy/**/*.yaml], object: {kind: Deployment, namespace: api, name: api}, container: api, path: image}}
+  port:     {k8s: {file: deploy/api.yaml, object: {kind: Deployment, name: api}, container: api, port: http, path: containerPort}}
+  mount:    {k8s: {file: deploy/api.yaml, object: {kind: Deployment, name: api}, container: api, volume: data, path: mountPath}}
+  claim:    {k8s: {file: deploy/api.yaml, object: {kind: StatefulSet, name: db}, volume: data, path: persistentVolumeClaim.claimName}}
+  replicas: {k8s: {files: [deploy/*.json], object: {apiVersion: apps/v1, kind: Deployment}, path: spec.replicas}}
+  hosts:    {k8s: {file: deploy/cert.yaml, object: {kind: Certificate, name: web}, path: "spec.dnsNames[*]"}}
+```
+
+`object` selects objects by `kind`, which it must name, and by `apiVersion`, `namespace` and
+`name` (`metadata.name`), each when it is set, each compared with the text the object writes.
+`apiVersion` is compared whole, so `apps/v1` does not select `extensions/v1beta1`. `namespace`
+matches the object's `metadata.namespace`, or `default` for an object that writes none, which is
+where `kubectl apply` puts it with no `-n` and no namespace in the context. Left out, `namespace`
+matches every namespace. Every object a selector matches returns values: two Deployments named
+`api` in two namespaces both do when `namespace` is left out, so an `agree` rule compares both,
+and a rule meant for one names its namespace. A cluster scoped object, such as a `ClusterRole` or
+a `Namespace`, writes no namespace, so `namespace: default` selects it too: which kinds have no
+namespace is the API server's to say, and errata reads no cluster.
+
+The objects are the documents of a YAML file, the one object of a `.json` file, and the items of
+a `List`, a kind whose name ends in `List` and that holds `items`, such as `v1` `List` or
+`DeploymentList`. A template file is read as the file it renders, so `deploy.json.j2` is JSON.
+`files:` reads every file a list or a glob names, as [A set of files](#a-set-of-files) says, and a
+file with no object the selector matches adds no value. With `file:`, such a file makes the rule
+unknown, as does a file that does not parse.
+
+Without `container` or `volume`, `path` is read from the object, in the path grammar of
+[Paths](#paths), so a custom resource is read as any other object. `container` names a container
+of the object's pod spec, among its `containers`, `initContainers` and `ephemeralContainers`, and
+`path` is read from it. The pod spec is `spec` of a `Pod`, `template.spec` of a `PodTemplate`,
+`spec.jobTemplate.spec.template.spec` of a `CronJob`, and `spec.template.spec` of every other
+kind: `Deployment`, `StatefulSet`, `DaemonSet`, `ReplicaSet`, `Job`, `ReplicationController` and
+any custom resource built the same way, such as an Argo `Rollout`. A `Pod`, `PodTemplate` or
+`CronJob` of another API group is a custom resource. `port` names one of the container's
+`ports`, and `volume` one of the pod's `volumes`, or with `container` one of the container's
+`volumeMounts`. A container, port or volume the object does not hold makes the rule unknown, and
+the message names those it holds.
+
+A value is the text the file writes: `image` is kept as written, tag and digest included. The
+kubelet expands `$(NAME)` and reads `$$` as `$` in a container's `command`, `args`, an `env`
+entry's `value` and a volume mount's `subPathExpr`, so such a value is not literal, also when
+`path` reaches it from a `List`, as [Values a file only computes](#values-a-file-only-computes)
+says. An alias of such a value outside a container stays literal, except where the alias shares
+the whole pod spec, or a mapping above it such as `template`: there it is marked too. `$(` with no
+`)` after it, and `$()`, the kubelet keeps as written. In a template file, a value with the
+engine's marks, or inside one of its blocks, is not literal. A `{{ }}` in a file that is no template, such as an alert rule in a
+ConfigMap, is plain text.
+
+### `dockerfile`
+
+`dockerfile` returns the values one instruction of a Dockerfile sets, each at the file and the line
+its word is written on. `instruction` is one of `FROM`, `EXPOSE`, `LABEL`, `ENV` and `ARG`, in any
+case. `FROM` returns each stage's image and `EXPOSE` each port. `LABEL`, `ENV` and `ARG` return
+the value of each key, or of `key` alone when it is set. `stage` keeps the values of one stage: the
+name its `FROM` gives after `AS`, in any case, or its index from 0, as `COPY --from` counts the
+stages. An `ARG` before the first `FROM` is in no stage, so `stage` leaves it out.
+
+```yaml
+extract:
+  go:      {dockerfile: {file: Dockerfile, instruction: FROM, stage: build}}
+  version: {dockerfile: {file: Dockerfile, instruction: LABEL, key: org.opencontainers.image.version}}
+  port:    {dockerfile: {file: deploy/Containerfile, instruction: ENV, key: PORT, stage: "1"}}
+```
+
+errata parses the file with BuildKit's own parser, so the escape directive, continued lines, the
+comment and blank lines inside an instruction, heredocs and a byte order mark read as `docker
+build` reads them. A value on a continued line is at its own line: in a `LABEL` whose keys each
+take a line, each value is at the line of its key. A heredoc's lines are the command's input, not
+instructions.
+
+Each word is expanded as BuildKit expands it, with its quotes and escapes, `$VAR`, `${VAR}` and
+the `${VAR:-word}` forms, against the variables the file sets before it. The image of a `FROM` is
+expanded against the `ARG`s before the first `FROM`, so `ARG GO=1.23` then `FROM
+golang:${GO}-alpine` returns `golang:1.23-alpine`. A name that no `ARG` before the first `FROM`
+declares, and that is none of the platform arguments BuildKit gives, such as `TARGETARCH`, is
+unset there, as BuildKit expands it: `FROM alpine:${TAG:-3.20}` returns `alpine:3.20`, and
+`FROM alpine:$TAG` returns `alpine:`, both literal. In a template file no name is unset there,
+since the engine may write the `ARG` that declares it, so both are returned as written and marked
+not literal. Inside a stage, an `ENV` expands against the
+`ENV`s and `ARG`s before it in the stage, all its words against the variables before the
+instruction; an `ARG` with no default takes the value of the `ARG` of its name before the first
+`FROM`. A stage `FROM` an earlier stage, by its name, starts with the variables that stage ended
+with. The image is otherwise returned as written: errata adds no registry, tag or digest.
+
+A value that names a variable only the build knows is returned as written and marked not literal:
+an `ARG` with no default, which only `--build-arg` sets (its value is empty), a variable BuildKit
+gives, such as `$TARGETARCH`, and a variable the base image sets. In a template file, such as
+`Dockerfile.j2`, a value on a line the engine writes or inside one of its blocks is not literal,
+a line of the engine's, such as `{% if %}`, is no instruction, and an image the engine writes,
+such as `FROM {{ base }}`, is returned as written. `skip_not_literal` leaves such values out.
+
+errata refuses these files, which `docker build` refuses too, and the rule is unknown: one the
+parser refuses, an instruction `docker build` does not know, an instruction but `ARG` before the
+first `FROM`, a `FROM` of neither one word nor `image AS name`, a stage name an earlier stage has,
+an `ARG`, `ENV` or `LABEL` key with no name, and a line of more than 65536 bytes, which BuildKit's
+scanner cannot hold. errata does not check the rest of what `docker build` checks: a stage name
+`docker build` refuses, such as `1bad`, an unknown flag, such as `ENV --nope`, and `--unset`
+without the labs syntax all read. In a template, two stages of one name are taken, since the
+engine may write one in each branch of an `if`: `stage` selects both, and a stage `FROM` the
+name starts with the first one's variables. A file over max_bytes divided by 32, 1 MiB at the
+default, is refused before the parser reads it (see [Limits](#limits)). A `stage` the file does
+not have is no value, and the message names it.
+
+`ENV --unset NAME` drops the variable for the instructions after it, so a word that names it is not
+literal; `LABEL --unset` drops labels and leaves the variables. errata reads no JSON form: it reads
+`EXPOSE ["80"]`, which `docker build` refuses, as BuildKit's lexer reads the word, quotes dropped,
+and returns `[80]`. It reads no `# syntax=` directive either, so a file written for another
+frontend is read as BuildKit's.
+
+The [`env`](#env) kind reads a Dockerfile too: the value of each `ENV` and `ARG` that sets the
+variable, each naming its stage as `stage "build"`, `stage 1` for one with no name, or `global` for
+an `ARG` before the first `FROM`.
+
 ### `systemd`
 
 `systemd` returns the values of a key in a section of a systemd unit, read as systemd 257
@@ -5076,6 +5208,72 @@ errata does not read: a unit in `/etc` or `/usr/lib` that the unit file override
 overridden by, an alias's drop-ins, `PassEnvironment=` and the manager's own environment, which
 values systemd's specifiers expand to, and which keys a section of a unit type takes.
 
+### `k8s-env`
+
+`k8s-env` returns the value one environment variable has in each container of the Kubernetes
+workloads a manifest holds, from the container's `env:` and `envFrom:`. Each value names the
+object and the container it holds for. errata reads the file only: it reads no ConfigMap, Secret
+or cluster, and runs neither kubectl nor the kubelet.
+
+```yaml
+checks:
+  - id: api-port-agrees
+    reason: The container listens on the port the Service sends to.
+    scope: repo
+    extract:
+      env:     {k8s-env: {file: deploy/api.yaml, variable: PORT, container: api}}
+      service: {yaml: {file: deploy/api.yaml, kind: Service, path: "spec.ports[0].targetPort"}}
+    agree: [env, service]
+```
+
+The file is a manifest as `kubectl apply -f` reads it: every document of a YAML file, or the one
+object of a file whose name ends in `.json`, and each item of a `List`, which is any object whose
+`kind` ends in `List` and whose `items` is a sequence, a `List` inside a `List` too. A template
+file is read as the file it renders, so `deploy.json.j2` is JSON. errata finds
+the pod spec of each object where its kind puts it: `spec` for a Pod, `template.spec` for a
+PodTemplate, `spec.jobTemplate.spec.template.spec` for a CronJob, and `spec.template.spec` for
+every other kind, a custom resource such as an Argo Rollout among them. It reads the
+`containers`, `initContainers` and `ephemeralContainers` there, each by its `name`; `container:`
+keeps the containers of that name, in any group, and a file in which no workload holds a container
+of that name is unknown, since the rule names a container the file does not have. A container's
+origin names its group, as in `Deployment "prod/api" init container "migrate"`: the kind, then the
+namespace and the name the object's `metadata` gives, when it gives them. A kind that is not
+letters and digits, or is longer than 63 bytes, is written in quotes, as the name is.
+
+Each container gives at most one value, as the kubelet builds its environment: what `envFrom` gives
+first, then each `env:` entry in order over it. So:
+
+- the last `env:` entry whose `name` is the variable gives the value, and `envFrom` does not count;
+- with no such entry, each `envFrom` source whose `prefix` starts the name, with at least one
+  character after it, may give it, and each is a value, not literal, whose text names the source,
+  such as `configMapRef api-config`; errata cannot tell which of them holds the key;
+- a container with neither gives no value, and a file whose containers give none is no value,
+  which `allow_empty` decides.
+
+A value is literal when the entry writes it with `value:`. It is not literal
+([Values a file only computes](#values-a-file-only-computes)) when it comes from `valueFrom`,
+whose text names the source, such as `secretKeyRef db/password` or `fieldRef metadata.name`, or
+when the kubelet would change its text: a `$(NAME)` it expands, or a `$$` it writes as `$`. An
+entry with no `value:`, or a null one, sets the empty string.
+
+kubectl reads YAML as YAML 1.1 does, and the API server takes only a string for an `env:` name or
+value. errata refuses what the server would in each `env:` entry of the variable's name, not the
+last alone, so the rule is unknown, naming the line: a number such as `value: 8080`, a boolean such
+as `true`, a plain `yes`, `no`, `on`, `off`, `y` or `n` in any of YAML 1.1's spellings, which
+errata's YAML 1.2 reads as a string, and a mapping or a sequence. Quote it: `value: "8080"`. An
+entry that writes a `value` other than the empty string beside a `valueFrom` is refused too, as the
+server refuses it. errata does not check the entries of other names. A file that does not parse is
+unknown too.
+
+`variable` is a name Kubernetes accepts, any printable ASCII but `=` since Kubernetes 1.34, and
+both it and `container` are 1024 bytes at most. Without `container:`, errata reads every
+container.
+
+`k8s-env` is an env reader: [`env`](#env) reads a manifest with it when `readers:` gives the file
+`k8s-env`, since a manifest has no name of its own. errata does not read: a template that renders a
+manifest, such as a Helm chart, until the provider renders it; the variables the kubelet adds for
+each Service; the image's own `ENV`; and which keys a ConfigMap or Secret holds.
+
 ### `env`
 
 `env` reads one variable in every file a rule lists, so one rule says that every place that sets
@@ -5117,18 +5315,20 @@ A file's name chooses its reader:
 | `.gitlab-ci.yml`, with its local includes | `gitlab-ci` | the value each job sees, as `job:` would name it ([`gitlab-ci`](#gitlab-ci)) |
 | a `.yml` or `.yaml` file directly in `.github/workflows` | `github-actions` | the value each job's steps see from the workflow's and the job's `env:`, and the value of each step whose own `env:` sets the variable ([`github-actions`](#github-actions)) |
 | `Jenkinsfile` | `jenkins` | the value the pipeline's top sees, and the value of each stage whose `environment` sets the variable ([`jenkins`](#jenkins)) |
+| `Dockerfile`, `Containerfile`, `dockerfile`, either name with a suffix such as `Dockerfile.prod`, or after one such as `api.Dockerfile`; not `Dockerfile.dockerignore`, nor a name ending `.md`, `.orig`, `.rej` or `.bak` | `dockerfile` | the value of each `ENV` and `ARG` that sets the variable, each naming its stage ([`dockerfile`](#dockerfile)) |
 | a unit ending in `.service`, `.socket`, `.mount` or `.swap`, and a Quadlet `.container` | `systemd` | each value `Environment=` gives the variable in the unit's `[Service]`, `[Socket]`, `[Mount]` or `[Swap]`, or the Quadlet's `[Container]`, with the unit's drop-ins applied ([`systemd`](#systemd)) |
 
 A file whose name chooses none is read as a shell script when its first line is a `#!` that names a
 shell errata reads, such as `bin/deploy` with `#!/usr/bin/env bash`. Any other file makes the rule
 unknown, naming it, until `readers:` gives it a reader by its entry in `files`. `systemd` reads
-such a file as `EnvironmentFile=` reads one:
+such a file as `EnvironmentFile=` reads one, and `k8s-env` reads a Kubernetes manifest, which no
+name chooses ([`k8s-env`](#k8s-env)):
 
 ```yaml
 env:
   name: API_PORT
-  files: [ci/build.yml, config/app.env, deploy/api.vars]
-  readers: {ci/build.yml: gitlab-ci, config/app.env: envfile, deploy/api.vars: systemd}
+  files: [ci/build.yml, config/app.env, deploy/api.vars, "deploy/k8s/*.yaml"]
+  readers: {ci/build.yml: gitlab-ci, config/app.env: envfile, deploy/api.vars: systemd, "deploy/k8s/*.yaml": k8s-env}
 ```
 
 An entry with `*`, `?` or `[` is a glob. errata matches it against the files git tracks, read from
@@ -5553,6 +5753,8 @@ core machine.
 | envfile work | the budget of an ini or properties read | each statement costs a line's work, each pass of a substitution its bytes, and each byte it copies from a key 32 units, so a read copies at most a 32nd of its budget, 134 MB at 32 MiB, and a chain of keys that each repeat the one before is refused before its values fill memory. That bounds the bytes copied; the memory is about three times that, since a value grows by appends and the reader keeps a copy of each key's value: 32 MiB of `${A}` for a value of 4 KiB is refused in 0.45 s after 733 MB allocated, anon 395 MiB above its base on a 2 core worker. A word inside a word is read again at each level, so nesting costs the square of its depth and is refused for work long before 1000 levels, the depth limit. Real files spend 1.9 to 5.6 units a byte (20 files: compose-go's fixtures and five projects' `.env.example`). At 32 MiB on a worker node the slowest shape that reads takes 1.6 s on a 4 core worker and 3.1 s on a 2 core one (a key on each line). The most memory measured is 6.7 million distinct keys of four letters: the reader keeps every key's value for the substitutions after it, so it reads in 3.1 s after 801 MB allocated, anon 517 MiB above its base, on the 2 core worker, and the same as a template file such as `.env.j2`. Words nested 2.8 million deep are refused in 2.3 s |
 | shell nesting | 20000 calls of the parser's stack, and syntax 20000 levels deep | mvdan.cc/sh recurses on nesting, and a stack overflow ends the process: 1 MiB of `"$("` passed Go's 1 GB limit. The parser reads through a check that counts its stack every 16 KiB, so it stops within 16 KiB of the limit; about 340 levels of parentheses in `(( ))` or 1800 of `$( )` reach it. A pipeline, a list or a sum is one level deeper for each command or term, and errata walks it by recursion: 32 MiB of `+1` passed Go's limit there. See [`shell`](#shell) for the times and memory |
 | a shell statement | an eighth of `max_bytes`, 4 MiB at the default | the parser holds one statement's syntax whole while it reads it, up to 200 bytes of memory for each byte: 4 MiB of `a\|a\|a` took 0.87 GB and 8 MiB 1.7 GB, so 32 MiB would take about 6.6 GB; the limit refuses it with 0.88 GB, and eight groups of `a;a;a` at the limit read with 1.43 GB. Counted to the 1 KiB the parser reads at a time. The largest statement of eight real scripts measured is 149802 bytes |
+| Dockerfile size | `max_bytes` divided by 32, 1 MiB at the default | BuildKit's parser builds the syntax of the whole file before errata reads an instruction, and holds up to 164 bytes of it for each byte of the file: on builder, 1 MiB of lines of one unknown word held 164 MiB once parsed and 2 MiB 329 MiB, of `ENV a=` pairs 159 and 319 MiB, of `EXPOSE 1` words 79 and 158 MiB, and of `FROM a` lines 49 and 99 MiB, so 32 MiB would hold about 5.2 GB. errata refuses a larger file before the parser sees it, naming the limit. At the default the densest file read holds 164 MiB, and at the 64 MiB ceiling 329 MiB; a read of the densest shape allocates up to 469 MiB for each MiB of the file. Set `max_bytes` higher to read a larger Dockerfile |
+| Dockerfile line | 65536 bytes with its line end, as BuildKit's scanner holds a line | a longer line is refused, naming it, as `docker build` refuses it; a stage `FROM` another copies its variables, and each copied variable is charged to the read's work, so a file of many stages, each `FROM` one with many variables, is refused for work (see [`dockerfile`](#dockerfile)) |
 | Jenkinsfile nesting | 1000 levels of blocks, and of strings and the `${ }` inside them | the lexer reads a string's `${ }` and the strings inside it on a stack of its own, and the scan keeps one entry for each block it is inside, so a file of nothing but `{` or `"${` is refused at the limit instead of growing either stack. Memory stays at about 150 MB for every shape measured at 32 MiB (see [`jenkins`](#jenkins)) |
 | go.mod and go.work lines and tokens | `max_bytes` divided by 64 | `tool_version` and `dependency` check it before golang.org/x/mod/modfile parses the file, since it builds the syntax of the whole file first, at 150 to 440 bytes a line or token: without the limit, 32 MiB of lines of one short token took 2.1 GB and 4.1 s, and of commas on one line 1.9 GB. errata counts an upper bound in one pass: each line end, each `(`, `)`, `[`, `]`, `{`, `}` and comma, each quote and backquote that can start a string, and each start of a word. A go.mod of requirements holds one for every 7 bytes, so at the default the limit reads one of about 3.5 MB. The densest files measured at the limit take about 0.5 to 0.75 s and up to about 320 MB: 32 MiB of unknown directives of 129 bytes, or of lines ending in a comment, since modfile keeps an error for each line |
 | Go source tokens | `max_bytes` divided by 8, 4194304 at the default | `code` counts a Go file's tokens with `go/scanner`, which builds nothing, before `go/parser` builds the syntax of the whole file and the reader its constants, up to about 175 bytes of memory for each token. Without the limit, 8 MiB of `const A = 1+1+...` lines took 447 MiB, so 32 MiB would take about 1.8 GB, past a 2 GiB runner. The densest shape measured at the limit, 400000 `const Ai float32 = P` lines and a constant that sums them, 15 MB, read in 2.2 s with 691 MiB anon on the build node, and 743 MiB on a slower worker node; 15 MB of `const A1 = 1` lines took 314 MiB. A real Go file has a token for every 4 to 6 bytes, so one of up to about 16 MiB reads at the default |

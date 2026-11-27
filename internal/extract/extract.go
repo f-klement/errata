@@ -4,8 +4,8 @@
 // package of its own below this one (yaml, json, jsonc for jsonc and json5,
 // toml, regex, text, comment, literal, code, markdown, asciidoc, rst, html, marker, xml, ini and
 // systemd, properties, toolversion,
-// packageversion, dependency, envfile, gitlabci, shell, githubactions, jenkins,
-// etc, sudoers, table, udev, and filestat for exists and size), and the readers share
+// packageversion, dependency, envfile, gitlabci, shell, githubactions, jenkins, k8senv,
+// etc, sudoers, table, udev, k8s, dockerfile, and filestat for exists and size), and the readers share
 // internal/extract/core; no reader imports another. The env
 // kind asks those that declare themselves env readers for one variable
 // across several files, through the functions this package hands it. Below, a kind is always an
@@ -34,6 +34,7 @@ import (
 	"github.com/f-klement/errata/internal/extract/comment"
 	"github.com/f-klement/errata/internal/extract/core"
 	"github.com/f-klement/errata/internal/extract/dependency"
+	"github.com/f-klement/errata/internal/extract/dockerfile"
 	"github.com/f-klement/errata/internal/extract/env"
 	"github.com/f-klement/errata/internal/extract/envfile"
 	"github.com/f-klement/errata/internal/extract/etc"
@@ -45,6 +46,8 @@ import (
 	"github.com/f-klement/errata/internal/extract/jenkins"
 	ejson "github.com/f-klement/errata/internal/extract/json"
 	"github.com/f-klement/errata/internal/extract/jsonc"
+	"github.com/f-klement/errata/internal/extract/k8s"
+	"github.com/f-klement/errata/internal/extract/k8senv"
 	"github.com/f-klement/errata/internal/extract/literal"
 	"github.com/f-klement/errata/internal/extract/markdown"
 	"github.com/f-klement/errata/internal/extract/marker"
@@ -101,6 +104,9 @@ var kinds = registry(
 	// systemd reads a unit in the ini reader's systemd dialect, with its
 	// drop-ins, and is an env reader.
 	register(ini.SystemdKind, ini.BuildSystemd),
+	// k8s-env reads env: and envFrom: of a manifest's containers with the
+	// yaml and json readers' parsers, and is an env reader.
+	register(k8senv.Kind, with(k8senv.Build, parsers)),
 	// etc reads the keyword and value family of Unix configuration files,
 	// and the files they include, by its own logic.
 	register(etc.Kind, etc.Build),
@@ -112,6 +118,12 @@ var kinds = registry(
 	// udev reads udev rules files, and the files of rules.d directories in
 	// udev's order, by its own logic.
 	register(udev.Kind, udev.Build),
+	// k8s reads the objects of Kubernetes manifests with the yaml and json
+	// readers' parsers.
+	register(k8s.Kind, with(k8s.Build, parsers)),
+	// dockerfile reads a Dockerfile with BuildKit's parser, and is an env
+	// reader.
+	register(dockerfile.Kind, dockerfile.Build),
 	// env asks the kinds above that declare themselves env readers;
 	// envReaders is filled from kinds once kinds is, so env's Build reads it
 	// when it is called.

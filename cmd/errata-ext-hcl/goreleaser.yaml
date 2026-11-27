@@ -27,11 +27,13 @@ archives:
 
 # The plugin links modules under other licences than errata's, HCL's MPL-2.0 among them, and
 # their notices ship beside it as one more asset, which the checksums file lists as it lists the
-# executables (cmd/errata-ext-hcl's tests keep NOTICES.txt).
+# executables. ci/release.sh and make plugin-release-dry write the file into build/ before
+# GoReleaser runs, with ci/plugin-notices.sh, from the modules the tag links and the module cache; it
+# is in no commit. GoReleaser fails on a glob that matches nothing.
 checksum:
   name_template: errata-ext-hcl_checksums.txt
   extra_files:
-    - glob: ./cmd/errata-ext-hcl/NOTICES.txt
+    - glob: ./build/errata-ext-hcl_NOTICES.txt
       name_template: errata-ext-hcl_NOTICES.txt
 
 release:
@@ -42,5 +44,5 @@ release:
   # errata's own release stays the latest, so the releases page and releases/latest name it.
   make_latest: false
   extra_files:
-    - glob: ./cmd/errata-ext-hcl/NOTICES.txt
+    - glob: ./build/errata-ext-hcl_NOTICES.txt
       name_template: errata-ext-hcl_NOTICES.txt

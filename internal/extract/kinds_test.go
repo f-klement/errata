@@ -328,6 +328,7 @@ var describes = []string{
 	`{"systemd": {"file": "api.service", "section": "Service", "key": "ExecStart"}}`,
 	`{"systemd": {"file": "api.env", "variable": "A"}}`,
 	`{"ini": {"file": "api.service", "section": "Service", "key": "ExecStart"}}`,
+	`{"k8s-env": {"file": "deploy.yaml", "variable": "A", "container": "web"}}`,
 	`{"etc": {"file": "sshd_config", "key": "Port"}}`,
 	`{"etc": {"files": ["sysctl.d/*.conf"], "key": "vm.swappiness"}}`,
 	`{"etc": {"file": "roles/x/templates/limits.conf.j2", "key": "nofile", "block": "*"}}`,
@@ -339,6 +340,10 @@ var describes = []string{
 	`{"table": {"file": "roles/x/templates/exports.j2", "column": "options"}}`,
 	`{"udev": {"file": "99-x.rules", "key": "MODE", "tests": {"SUBSYSTEM": "usb"}}}`,
 	`{"udev": {"files": ["etc/udev/rules.d/*.rules"], "key": "SYMLINK", "op": "+="}}`,
+	`{"k8s": {"file": "deploy.yaml", "object": {"kind": "Deployment", "name": "api"}, "container": "api", "path": "image"}}`,
+	`{"k8s": {"files": ["deploy/*.yaml"], "object": {"kind": "Service"}, "path": "spec.type"}}`,
+	`{"dockerfile": {"file": "Dockerfile", "instruction": "FROM", "stage": "build"}}`,
+	`{"dockerfile": {"file": "Dockerfile.j2", "instruction": "ENV", "key": "A"}}`,
 	`{"env": {"name": "A", "files": [".env"]}}`,
 	`{"exists": {"file": "a"}}`,
 	`{"size": {"file": "a"}}`,
@@ -357,6 +362,7 @@ var mayNotLiteral = map[string]bool{
 	`{"github-actions": {"file": "ci.yml", "job": "j", "key": "runs-on"}}`:                 true,
 	`{"env": {"name": "A", "files": [".env"]}}`:                                            true,
 	`{"systemd": {"file": "api.service", "section": "Service", "key": "ExecStart"}}`:       true,
+	`{"k8s-env": {"file": "deploy.yaml", "variable": "A", "container": "web"}}`:            true,
 	`{"literal": {"file": "settings.py", "path": "DEBUG"}}`:                                true,
 	`{"code": {"file": "server.go", "const": "DefaultPort"}}`:                              true,
 	`{"code": {"file": "__init__.py", "name": "__version__"}}`:                             true,
@@ -366,6 +372,9 @@ var mayNotLiteral = map[string]bool{
 	`{"table": {"file": "roles/x/templates/exports.j2", "column": "options"}}`:             true,
 	`{"udev": {"file": "99-x.rules", "key": "MODE", "tests": {"SUBSYSTEM": "usb"}}}`:       true,
 	`{"udev": {"files": ["etc/udev/rules.d/*.rules"], "key": "SYMLINK", "op": "+="}}`:      true,
+	// k8s marks a value the kubelet expands, or a template computes.
+	`{"k8s": {"file": "deploy.yaml", "object": {"kind": "Deployment", "name": "api"}, "container": "api", "path": "image"}}`: true,
+	`{"k8s": {"files": ["deploy/*.yaml"], "object": {"kind": "Service"}, "path": "spec.type"}}`:                              true,
 }
 
 // builtNotLiteral is whether x, built from raw, may return a not literal

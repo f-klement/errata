@@ -46,8 +46,8 @@ type releaseFile struct {
 // Every plugin's release publishes the names install fetches (ADR 0021):
 // its executable for each platform errata ships for, as assetName names it,
 // the checksums file checksumsName names, and, for a plugin whose directory
-// holds NOTICES.txt, that file as noticesName names it, listed in the
-// checksums file; and the release is never marked latest. So the
+// holds licences.txt, the notices ci/plugin-notices.sh writes into build/ as
+// noticesName names them, listed in the checksums file; and the release is never marked latest. So the
 // configuration and install cannot drift apart. The snapshot build of each
 // plugin shows that GoReleaser renders the names as this test does
 // (ci/README.md, Plugin releases). Planted breaks: the csv name template
@@ -132,15 +132,16 @@ func binaryAsset(tmpl, platform string) string {
 }
 
 // noticesFiles is the one extra file a plugin whose directory holds
-// NOTICES.txt publishes, under noticesName, and nothing for one without.
+// licences.txt publishes, the notices ci/plugin-notices.sh writes into build/
+// under noticesName before GoReleaser runs, and nothing for one without.
 func noticesFiles(t *testing.T, dir, name string) []releaseFile {
 	t.Helper()
-	_, err := os.Stat(filepath.Join(dir, "NOTICES.txt"))
+	_, err := os.Stat(filepath.Join(dir, "licences.txt"))
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
 		t.Fatal(err)
 	}
-	return []releaseFile{{Glob: "./cmd/errata-ext-" + name + "/NOTICES.txt", NameTemplate: noticesName(name)}}
+	return []releaseFile{{Glob: "./build/" + noticesName(name), NameTemplate: noticesName(name)}}
 }

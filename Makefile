@@ -647,6 +647,7 @@ release-dry: $(BIN)/goreleaser
 plugin-release-dry: $(BIN)/goreleaser
 	@test -n "$(PLUGIN)" || { echo "usage: make plugin-release-dry PLUGIN=<name>, for cmd/errata-ext-<name>" >&2; exit 2; }
 	ERRATA_EXT_VERSION=0.0.0-snapshot $(BIN)/goreleaser check --config cmd/errata-ext-$(PLUGIN)/goreleaser.yaml
+	GO=$(GO) sh ci/plugin-notices.sh $(PLUGIN) build
 	ERRATA_EXT_VERSION=0.0.0-snapshot $(BIN)/goreleaser release --snapshot --clean --skip=publish --config cmd/errata-ext-$(PLUGIN)/goreleaser.yaml
 
 # docs/cli.md, the command line reference, from the help errata prints. A release runs
