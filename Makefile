@@ -13,7 +13,7 @@ LDFLAGS   := -s -w -X github.com/f-klement/errata/internal/cli.Version=$(VERSION
 GOLANGCI_LINT_VERSION := v2.15.0
 GREMLINS_VERSION      := v0.6.0
 GOVULNCHECK_VERSION   := v1.10.0
-GORELEASER_VERSION    := v2.20.2
+GORELEASER_VERSION    := v2.20.3
 SYFT_VERSION          := v1.57.2
 KO_VERSION            := v0.19.1
 JQ_VERSION            := 1.8.2
@@ -611,7 +611,8 @@ image-dry: $(BIN)/ko
 	done && echo "image-dry: entrypoint, user and PATH as documented"
 
 # CI's gate with CI's directory layout: Go's module, build and lint caches
-# inside the project, as the shared runner cache needs them. Two defects that
+# inside the project, as a job's are before ci/node-cache.sh links the build
+# and lint caches to the node's volume, which this target has not. Two defects that
 # only CI saw came from that layout (a cache directory named like a source
 # file, and checks reading dependency sources), so run this before pushing a
 # change to the caches or the directory layout (the .go job's variables, this
