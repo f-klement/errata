@@ -40,6 +40,7 @@ func TestEveryKindNumbersALoneCRsLine(t *testing.T) {
 		"c.go":           "x := 1\r// v=1\n",
 		"k.yaml":         "kind: Pod\rspec:\r  containers: [{name: c, env: [{name: V, value: '1'}]}]\r",
 		"k.json":         "{\"kind\": \"Pod\",\r\"spec\": {\"containers\": [{\"name\": \"c\", \"env\": [{\"name\": \"V\", \"value\": \"2\"}]}]}}\r",
+		"compose.yaml":   "services:\r  web:\r    image: w\r",
 		"m.md":           "# A\r\r```\rv\r```\r",
 		"t.md":           "a\r\rv=1\r",
 		"h.html":         "<p>a\r\r<pre>v</pre>",
@@ -83,6 +84,7 @@ func TestEveryKindNumbersALoneCRsLine(t *testing.T) {
 		`{"table": {"file": "fstab", "column": "spec", "row": {"file": "v"}}}`:                             "/b@3",
 		`{"udev": {"file": "u.rules", "key": "MODE"}}`:                                                     "0@2 1@3",
 		`{"dockerfile": {"file": "Dockerfile", "instruction": "LABEL", "key": "v"}}`:                       "1@5",
+		`{"compose": {"file": "compose.yaml", "service": "web", "key": "image"}}`:                          "w@3",
 	} {
 		e, err := Build(decode(t, raw))
 		if err != nil {

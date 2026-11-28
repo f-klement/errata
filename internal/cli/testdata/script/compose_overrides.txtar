@@ -1,0 +1,53 @@
+# A compose rule's overrides: takes three forms, which the loader keeps
+# apart. With no overrides: key the rule names its file as -f does, so an
+# override beside it, which docker compose run without -f merges, leaves
+# the rule unknown, the message naming both ways out.
+! exec errata check -c absent.yaml
+stdout '^UNKNOWN image-is-w \(repo\)$'
+stdout 'list it in overrides: to read the two merged, or write overrides: \[\] to read compose.yaml alone as -f does'
+
+# overrides: [] reads the file alone, as docker compose -f compose.yaml does.
+exec errata check -c empty.yaml
+stdout '^0 errata, 0 unknown. Coverage: ran 1, skipped 0.$'
+
+# A listed override is merged over the file.
+exec errata check -c listed.yaml
+stdout '^0 errata, 0 unknown. Coverage: ran 1, skipped 0.$'
+
+# errata list prints the empty list, so it is not taken for an absent key.
+exec errata list -c empty.yaml -f json
+stdout '"overrides": \[\]'
+exec errata list -c absent.yaml -f json
+! stdout '"overrides"'
+-- absent.yaml --
+checks:
+  - id: image-is-w
+    reason: The service runs image w.
+    scope: repo
+    extract:
+      image: {compose: {file: compose.yaml, service: web, key: image}}
+    assert: image.all(i, i == "w")
+-- empty.yaml --
+checks:
+  - id: image-is-w
+    reason: The service runs image w.
+    scope: repo
+    extract:
+      image: {compose: {file: compose.yaml, overrides: [], service: web, key: image}}
+    assert: image.all(i, i == "w")
+-- listed.yaml --
+checks:
+  - id: image-is-o
+    reason: The service runs image o where the override is merged.
+    scope: repo
+    extract:
+      image: {compose: {file: compose.yaml, overrides: [compose.override.yaml], service: web, key: image}}
+    assert: image.all(i, i == "o")
+-- compose.yaml --
+services:
+  web:
+    image: w
+-- compose.override.yaml --
+services:
+  web:
+    image: o

@@ -5,7 +5,7 @@
 // toml, regex, text, comment, literal, code, markdown, asciidoc, rst, html, marker, xml, ini and
 // systemd, properties, toolversion,
 // packageversion, dependency, envfile, gitlabci, shell, githubactions, jenkins, k8senv,
-// etc, sudoers, table, udev, k8s, dockerfile, and filestat for exists and size), and the readers share
+// etc, sudoers, table, udev, k8s, dockerfile, compose, and filestat for exists and size), and the readers share
 // internal/extract/core; no reader imports another. The env
 // kind asks those that declare themselves env readers for one variable
 // across several files, through the functions this package hands it. Below, a kind is always an
@@ -32,6 +32,7 @@ import (
 	"github.com/f-klement/errata/internal/extract/asciidoc"
 	"github.com/f-klement/errata/internal/extract/code"
 	"github.com/f-klement/errata/internal/extract/comment"
+	"github.com/f-klement/errata/internal/extract/compose"
 	"github.com/f-klement/errata/internal/extract/core"
 	"github.com/f-klement/errata/internal/extract/dependency"
 	"github.com/f-klement/errata/internal/extract/dockerfile"
@@ -124,6 +125,9 @@ var kinds = registry(
 	// dockerfile reads a Dockerfile with BuildKit's parser, and is an env
 	// reader.
 	register(dockerfile.Kind, dockerfile.Build),
+	// compose reads a Docker Compose project with compose-go and the yaml
+	// reader's parser, and is an env reader.
+	register(compose.Kind, with(compose.Build, parsers.YAML)),
 	// env asks the kinds above that declare themselves env readers;
 	// envReaders is filled from kinds once kinds is, so env's Build reads it
 	// when it is called.

@@ -193,6 +193,7 @@ its own in the reference.
 | a setting of a systemd unit or a Podman Quadlet, with its drop-ins, such as `ExecStart=`, `Environment=`, `OnCalendar=` or `Image=` | [`systemd`](reference.md#systemd) |
 | a variable a Kubernetes container sees from its `env:` and `envFrom:` | [`k8s-env`](reference.md#k8s-env) |
 | a Dockerfile's base image, port, label, `ENV` or `ARG`, in every stage or one | [`dockerfile`](reference.md#dockerfile) |
+| a value of a Docker Compose service after overrides, `extends:`, `include:`, profiles and `.env`, such as its image or an environment variable | [`compose`](reference.md#compose) |
 | one variable in every file that sets it | [`env`](reference.md#env) |
 | whether a file is there, and its size | [`exists`](reference.md#exists-and-size), [`size`](reference.md#exists-and-size) |
 | anything else a regular expression finds | [`regex`](reference.md#regex) |

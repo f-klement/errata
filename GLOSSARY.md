@@ -249,7 +249,7 @@ other than a matrix variable, or a number YAML retypes, `jenkins` a value Groovy
 such as `credentials('id')` or `"${BUILD_NUMBER}"`, `k8s-env` a value from a ConfigMap, a Secret
 or the pod, or one the kubelet expands, such as `$(HOST)`, `dockerfile` a value only the build knows,
 such as a build argument with no default or `$TARGETARCH`, `etc` a value OpenSSH expands, such as
-`%h/.ssh/keys`, `table` a cell of a template's line the engine writes or may leave out, `udev` a value udev substitutes in, such as `disk/%k`, `k8s` a command, an arg, an env value or a subPathExpr the kubelet expands, such as `$(PORT)`, `literal` a value a program computes, such
+`%h/.ssh/keys`, `table` a cell of a template's line the engine writes or may leave out, `udev` a value udev substitutes in, such as `disk/%k`, `k8s` a command, an arg, an env value or a subPathExpr the kubelet expands, such as `$(PORT)`, `compose` a value that names a variable the project's `.env` files do not set, such as `${TAG:-latest}`, `literal` a value a program computes, such
 as `os.environ["PORT"]`, or a name the file changes after it assigns it, `code` the same and a Go
 value only the running program knows, such as `os.Getenv("PORT")` or a `var` the file assigns,
 and `env` any of these

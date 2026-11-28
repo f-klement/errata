@@ -62,6 +62,7 @@ new user needs it, with four checks worked through from the files to the fix, an
   - [`udev`](#udev)
   - [`k8s`](#k8s)
   - [`dockerfile`](#dockerfile)
+  - [`compose`](#compose)
   - [`systemd`](#systemd)
   - [`k8s-env`](#k8s-env)
   - [`env`](#env)
@@ -1010,6 +1011,8 @@ extract:
     github-actions: {file: .github/workflows/ci.yml, job: test, step: setup, key: with.node-version}
   image_tag:
     jenkins: {file: Jenkinsfile, variable: IMAGE_TAG, stage: deploy}
+  web_image:
+    compose: {file: compose.yaml, service: web, key: image}
   every_port:
     env: {name: API_PORT, files: [.env, deploy.sh, .gitlab-ci.yml, .github/workflows/*.yml, Jenkinsfile]}
   old_config:
@@ -1049,6 +1052,7 @@ extract:
 | [`dockerfile`](#dockerfile) | `file`, `instruction`, `key` for one key, and `stage` | the values one instruction of a Dockerfile sets: each stage's image, each port, or each value of a label, an environment variable or a build argument (see [`dockerfile`](#dockerfile)) |
 | [`systemd`](#systemd) | `file`, `section` and `key`, and `variable` for one variable of `Environment=`; `variable` alone for an environment file | every value of the key in a systemd unit or a Podman Quadlet file with its drop-ins applied, or every value the unit's `Environment=` or an environment file gives the variable (see [`systemd`](#systemd)) |
 | [`k8s-env`](#k8s-env) | `file`, `variable`, and `container` for the containers of one name | the value each container of the manifest's Kubernetes workloads sees of an environment variable from its `env:` and `envFrom:`, each naming the object and the container (see [`k8s-env`](#k8s-env)) |
+| [`compose`](#compose) | `file`, `service`, `key`, `overrides` for the files merged over it, and `profiles` | every value below the key in the service's effective configuration, each at the file and line that set it (see [`compose`](#compose)) |
 | [`env`](#env) | `name`, `files`, and `readers` to give a file its reader | every value of one variable in the files, each read by the reader its name chooses, and each naming its reader and its job, step or stage (see [`env`](#env)) |
 | [`exists`](#exists-and-size) | `file` | `true` when a regular file is there, and `false` when none is, not an unknown (see [`exists` and `size`](#exists-and-size)) |
 | [`size`](#exists-and-size) | `file` | the size of the regular file in bytes, in decimal (see [`exists` and `size`](#exists-and-size)) |
@@ -1377,7 +1381,8 @@ value only the build knows, such as `$TARGETARCH` or a build argument with no de
 ([`dockerfile`](#dockerfile)), `etc` for a value
 OpenSSH expands, such as `%h/.ssh/keys`, and in a template file ([`etc`](#etc)), `table` in a
 template file ([`table`](#table)), `k8s` for a command, an arg, an env value or a `subPathExpr` the kubelet
-expands, such as `$(PORT)`, and in a template file ([`k8s`](#k8s)), `literal` for a
+expands, such as `$(PORT)`, and in a template file ([`k8s`](#k8s)), `compose` for a value that names a variable the project's
+`.env` files do not set ([`compose`](#compose)), `literal` for a
 value a program computes, such as `os.environ["PORT"]` or `"v" + VERSION` ([`literal`](#literal)), `code` for
 the same and for a Go value only the running program knows, such as `os.Getenv("PORT")` ([`code`](#code)), and `env` for
 any of these that the reader of its file marks; a `${{ }}` read with `yaml:` is still plain text,
@@ -5050,6 +5055,181 @@ The [`env`](#env) kind reads a Dockerfile too: the value of each `ENV` and `ARG`
 variable, each naming its stage as `stage "build"`, `stage 1` for one with no name, or `global` for
 an `ARG` before the first `FROM`.
 
+### `compose`
+
+`compose` reads one service of a Docker Compose project and returns the values of one key, `key`, in
+the service's effective configuration: what `docker compose config` prints for it, built by
+compose-go, the loader docker compose uses. `file` is the project's main file and `overrides` the
+files merged over it, in their order, as `docker compose -f compose.yaml -f compose.prod.yaml` takes
+them; errata merges no override file a rule does not list. A rule with no `overrides` key is refused
+where `docker compose` run without `-f` in the file's directory would load more than the file: when
+an override file of a name docker compose finds lies beside it (`compose.override.yml`,
+`compose.override.yaml`, `docker-compose.override.yml` or `docker-compose.override.yaml`), or the
+`.env` file beside it sets `COMPOSE_FILE`, even from the shell. The two runs give different values,
+and the rule does not say which it means. To read the file with the override merged, list the
+override in `overrides`. To read the file alone, as `docker compose -f compose.yaml` does, write
+`overrides: []`: an empty list loads no override beside the file and ignores `COMPOSE_FILE`, as `-f`
+does, and `errata list` prints it as an empty list, apart from no key. `extends:` and `include:`
+apply, and `${VAR}` takes its value from the project's `.env` file. `profiles` are the profiles
+active, as `--profile` names them; when a rule lists none, `COMPOSE_PROFILES` in the `.env` file
+names them. A service no active profile enables makes the rule unknown, naming its profiles.
+
+```yaml
+extract:
+  image: {compose: {file: compose.yaml, service: web, key: image}}
+  port:  {compose: {file: compose.yaml, overrides: [compose.prod.yaml], service: web, key: environment.API_PORT}}
+  ports: {compose: {file: deploy/compose.yaml, service: api, key: ports, profiles: [debug]}}
+```
+
+`key` is a path of keys and list indexes in the shape `docker compose config --format json`
+writes, with a `.` between them: `image`, `build.context`, `ports.0.published`,
+`labels.com.example.team`. A key that holds a mapping or a list returns every value below it, each
+naming its key, such as `ports.0.target`. A key may hold dots, as a label's does; the longest key
+the mapping holds is read first. compose-go writes the long form of a short one: the port
+`"8080:80"` gives `ports.0.published` 8080, `ports.0.target` 80, `ports.0.protocol` tcp and
+`ports.0.mode` ingress, all at the line of `"8080:80"`. An image is the text as the file writes
+it, with its variables filled in. An `x-` key, such as `x-team`, or one below the top of the
+service, such as `build.x-cache` or `ports.0.x-note`, reads as any other key, though `docker
+compose config --format json` leaves it out. A number reads as that JSON writes it, so `1.50`
+reads `1.5`. A build ssh key reads as a mapping of its id to its path, so `ssh: [default,
+key=/k]` gives `build.ssh.key` `/k`, and `build.ssh.default`, which has no path, not literal. A
+key the service does not hold returns no value. compose-go drops an `x-` key inside a ulimit,
+such as `ulimits.nofile.x-note`, so that key returns no value either.
+
+Each value stands at the file and line that set it: an override's line over the main file's, the
+main file's over the service it extends, and a service of an included project at its own file. Where
+compose-go appends one file's list to another's, as for `ports`, each item stands at the file that
+wrote it. An item of `extra_hosts`, which compose-go sorts, stands at the line of the item that
+wrote it. A port range such as `"8000-8001:80-81"` gives a port for each number in it, each at the
+line of the range. A value compose-go derives that no file writes stands at the service's line in
+the last file that sets the service.
+
+Under `environment`, a variable the service's `environment:` does not set takes its value from
+its `env_file:` files, the last one that sets it winning, at that file's line, as docker compose
+gives it to the container. A variable `environment:` lists without a value, such as `- API_KEY`,
+takes its value from the project's `.env` when that sets it. Otherwise it is the shell's when
+docker compose runs, so it is not literal and its text is its name. A build arg written without a
+value, such as `args: [TAG]`, follows the same rule.
+
+errata does not read a `label_file:`, so a read of `labels`, or of a key that holds it, is
+refused on a service that names one, naming the file. A `pre_start` hook inherits its service's
+keys, as compose-go has it, so a read of a hook's `labels` is refused the same way, and a read of
+a hook's `environment` is refused when the hook or its service names an `env_file:`.
+
+#### What compose reads
+
+errata reads every file the project uses itself before compose-go loads it, and refuses the
+rule, naming the path, when an `include:`, an `extends:` file, an `env_file:` or an include's
+`env_file:` lies outside the repository, through `..` or a link, or is absolute, under `~` or
+remote, such as `oci://` or `git@github.com:org/repo.git`. An include's `project_directory` is
+refused too. errata copies each file it read into a new temporary directory in `TMPDIR`, which it
+removes when the rule is read, and hands compose-go that directory in place of the repository
+([ADR 0022](adr/0022-the-compose-reader-hands-compose-go-a-copy-of-the-files-errata-read.md)). It
+holds at most `max_bytes` and 150 files, so a run holds at most its parallel width times
+`max_bytes` there at once. compose-go
+opens every file from there: an include, an extends file, an included project's `.env` and an
+include's `env_file:`. So compose-go reads only the bytes errata read, and never a file of the
+repository or of the directory errata runs in. The loader errata hands it refuses an include or
+extends path errata has not read. compose-go opens an include's `env_file:` without asking that
+loader, so a path there that holds a `$` is refused, and errata reads the path as written.
+
+A file that includes itself, or one that includes it, is refused, naming the files of the cycle.
+errata resolves each path as docker compose does. An include, an include's `env_file:` and a
+service's extends file are relative to the directory of the project that loads the file naming
+them; an extends file that an extends file names is relative to the directory of the file that
+names it. Only the services an extends chain reaches are followed, so a service of an extends file
+that no chain reaches names nothing errata reads or refuses. compose-go asks errata for such a
+path by the path and the file whose load reached it, and nothing more. So when one path leads to
+two files within what one file loads, as when two projects of different directories load the same
+file, the rule is refused, naming the path and both files; writing one of them differently, as
+`./y.yaml` for `y.yaml`, reads. A file of an included project, or one a
+service extends from another file, may not write a path under `~` or a `develop.watch` path that
+is absolute or holds `..`, since compose-go expands `~` from the environment errata runs in for
+those files and follows the links of a watch path. A watch path through a link inside the
+repository is returned as written, below the root, where docker compose would follow the link.
+`max_bytes` bounds every file read in all, and one extractor reads and includes at most 150
+files, an include visited again counted again.
+
+`${VAR}` reads only the `.env` file of the project, and of each included project its own `.env` or
+the `env_file:` of its `include:` entry, never the environment errata runs in. In an included
+project a variable the including project sets wins over its own, as docker compose has it. A value
+that names a variable those files do not set is not literal, even with a default such as
+`${TAG:-latest}`, since docker compose would read the variable from the shell first; its text is
+what the file wrote. A variable the `.env` file or an include's `env_file:` sets from one no file
+sets, such as `TAG=${HOME}`, counts as not set, for the same reason. A path that names such a
+variable, in an `include:` or an `extends:` file, is refused, naming the path and the variable,
+since docker compose would read another file when the shell sets it, as it does for
+`${ENV:-dev}/compose.yaml`. So is an extends service name that names one. errata follows the extends
+chain of every service before it loads the project, so such a path or name refuses every rule over
+the project, a rule on a service the chain does not reach too. A service's `env_file:` path that
+names one is refused when the rule reads `environment` or [`env`](#env) reads the service; a read of
+another key, such as `image`, still reads. An item of a list compose-go turns into a mapping, by the
+item's name, whose name names one, such as `- ${X:-A}=1` or `- ${X:-NPM_TOKEN}`, is refused when the
+rule reads that list or a key that holds it, such as `build`, and `env` refuses a service whose
+`environment:` writes one: docker compose would set the key the shell names. The lists are those
+compose-go 2.16.2 has, a test reading them from compose-go itself: `environment`, `labels`,
+`annotations`, `sysctls`, `networks`, `models`, `depends_on`, `gpus.N.options`,
+`volumes.N.volume.labels`, `build.args`, `build.labels`, `build.additional_contexts`, `build.ssh`,
+`deploy.labels`, the `options` of a device under `deploy.resources`, the `environment` of a
+`develop.watch` exec and of a `post_start` or `pre_stop` hook, and each of these lists that a
+`pre_start` hook writes or inherits from its service. An item of `extra_hosts` or
+`build.extra_hosts` is refused when its host names such a variable: compose-go sorts the hosts, so
+the shell would move every item's index. An address that names one reads, not literal. A key of the
+mapping form, such as `"${X}": 1`, is the key as written, since compose-go does not fill in a
+mapping's keys. A build arg item without a value whose name the files' variables give, such as `-
+${A}` with `A=FOO` in `.env`, is the arg `FOO`, not literal, with the item as its text.
+
+A project built from more than one file or service is read coarsely: one with an override, an
+`include:`, or an `extends:` of a service in the same file or another. When any file it reads
+looks up a variable no file sets, anywhere, every value read from it is not literal, though
+errata still reads it, and a key that holds nothing is refused. [`env`](#env) gives nothing
+for a service that sets no such variable; it relies on its refusals of a variable name, an
+`env_file:` or a profile the shell could choose instead. compose-go merges such a
+project's files by rules that differ by key, by list and by kind of merge, and six review rounds
+each found another one where a value from the shell changed a value errata read as literal. So
+with `image: "${X:-d}"` on the service `db` in an override, the service `web`'s `image: w` reads
+not literal. The same project with `X` set in `.env` reads literal, and so does a single file
+that looks up `X` in another service. In a project built this way a refusal also checks every
+service of the name in every file the project reads, with the services each extends, not only
+those errata finds compose-go merges: an `env` read of a variable is refused when an included
+project's service of the same name writes `- ${K:-FOO}=1`.
+
+A single file with no `include:` and no `extends:` keeps its marks value by value. A value is
+literal only where errata can show that no source that could have given it, or been folded into it,
+names a variable the files do not set. Within one file compose-go still folds the items of a list:
+it keeps one item per key of `cap_add`, `dns`, `tmpfs`, `expose`, `volumes`, `ports` and the like,
+such as a volume's target, and merges a `pre_start` hook with its service as it merges an override.
+So an item from the shell may take another item's place or move its index, and every value of such a
+list is not literal when an item of it names such a variable. The same holds for `logging`, whose
+options a hook keeps only when it names the service's driver. A list an override replaces whole,
+`command`, `entrypoint` or `healthcheck.test`, takes the hook's items alone. compose-go also builds
+`develop` from `x-develop`, merging the two where a service writes both, and adds to `depends_on` a
+service that `links`, `volumes_from` or a namespace such as `network_mode: service:db` names. A
+value below `develop` or `depends_on` is not literal when `x-develop`, or one of those keys, names
+such a variable. A key below such a list, `logging`, `develop` or `depends_on` that holds nothing,
+such as `cap_add.1`, is refused there, since the shell's value may stand at it. A `pre_start` hook
+takes its service's keys but `volumes`; a value it takes stands at the service's line and is literal
+only where the service's value is. A service whose `profiles:` names such a variable is refused,
+under the profile its default names too, since the shell decides whether the service is active.
+`${VAR:?message}` for an unset variable makes the rule unknown, with the message. A file that does
+not parse, that compose-go's schema refuses, or that holds more than one YAML document makes the
+rule unknown.
+
+`compose` is an env reader: [`env`](#env) reads a file named `compose.yaml`, `compose.yml`,
+`docker-compose.yaml` or `docker-compose.yml` with it, and returns the variable's value in each
+service, active under a profile or not, by the services' names, each naming the service as `service
+"web"`. It reads the file as `docker compose` run without `-f` in its directory loads it: with the
+first override file beside it merged over it, in the order `compose.override.yml`,
+`compose.override.yaml`, `docker-compose.override.yml`, `docker-compose.override.yaml`, so that a
+project with an override is read as one built from more than one file. An override file is no
+project on its own, so `env` does not choose it. `env` refuses a file when the `.env` file beside it
+sets `COMPOSE_FILE`, even from the shell, since docker compose then loads the files that variable
+names, and errata does not follow it: its separator differs by platform, and its files may leave the
+chosen one out. `COMPOSE_PATH_SEPARATOR` only splits `COMPOSE_FILE`, and `COMPOSE_PROFILES` chooses
+services, not files. `env` also refuses a file of one of these names that docker compose passes over
+for another beside it, in the order `compose.yaml`, `compose.yml`, `docker-compose.yml`,
+`docker-compose.yaml`.
+
 ### `systemd`
 
 `systemd` returns the values of a key in a section of a systemd unit, read as systemd 257
@@ -5316,6 +5496,7 @@ A file's name chooses its reader:
 | a `.yml` or `.yaml` file directly in `.github/workflows` | `github-actions` | the value each job's steps see from the workflow's and the job's `env:`, and the value of each step whose own `env:` sets the variable ([`github-actions`](#github-actions)) |
 | `Jenkinsfile` | `jenkins` | the value the pipeline's top sees, and the value of each stage whose `environment` sets the variable ([`jenkins`](#jenkins)) |
 | `Dockerfile`, `Containerfile`, `dockerfile`, either name with a suffix such as `Dockerfile.prod`, or after one such as `api.Dockerfile`; not `Dockerfile.dockerignore`, nor a name ending `.md`, `.orig`, `.rej` or `.bak` | `dockerfile` | the value of each `ENV` and `ARG` that sets the variable, each naming its stage ([`dockerfile`](#dockerfile)) |
+| `compose.yaml`, `compose.yml`, `docker-compose.yaml` and `docker-compose.yml` | `compose` | the value each service's container gets, from its `environment:` or else its `env_file:` ([`compose`](#compose)) |
 | a unit ending in `.service`, `.socket`, `.mount` or `.swap`, and a Quadlet `.container` | `systemd` | each value `Environment=` gives the variable in the unit's `[Service]`, `[Socket]`, `[Mount]` or `[Swap]`, or the Quadlet's `[Container]`, with the unit's drop-ins applied ([`systemd`](#systemd)) |
 
 A file whose name chooses none is read as a shell script when its first line is a `#!` that names a
@@ -5377,8 +5558,7 @@ for a workflow. `max_bytes` is the most bytes the listed files hold in all, a Gi
 includes too, each read to what the files before it left. `files` lists at most 64 entries, and
 one extractor reads at most 10000 files, empty ones too, since each costs an open whatever it
 holds (see [Limits](#limits)). Dockerfile
-`ENV` and `ARG`, compose `environment:` and Kubernetes `env:` entries join the readers in later
-releases.
+`ENV` and `ARG` and Kubernetes `env:` entries join the readers in later releases.
 
 ### `exists` and `size`
 

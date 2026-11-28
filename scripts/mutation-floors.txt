@@ -123,6 +123,8 @@ internal/extract/asciidoc          85        85      5
 # code: new in v0.3.0 (#85), held to the floor every reader has.
 internal/extract/code              85        85      5
 internal/extract/comment           85        85      5
+# compose: new in v0.6.0 (#54), held to the floor every reader has.
+internal/extract/compose           85        85      5
 # core: 85.08%, 111 of 744 not covered, efficacy 95.73%, on 2026-10-25 with
 # env's reader in, before case expressions were covered; #209 did not measure
 # it again. 110 of those 111 were case expressions, which no longer count as not

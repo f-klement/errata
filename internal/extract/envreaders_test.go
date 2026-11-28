@@ -89,7 +89,7 @@ func TestEnvAsksARegisteredReader(t *testing.T) {
 		t.Errorf("got  %s\nwant %s", g, want)
 	}
 	_, err = env.Build(env.Spec{Name: "A", Files: []string{"x"}, Readers: map[string]string{"x": "nope"}}, rs)
-	extracttest.WantError(t, err, "write one of envfile, shell, gitlab-ci, github-actions, jenkins, systemd, k8s-env, dockerfile, fake")
+	extracttest.WantError(t, err, "write one of envfile, shell, gitlab-ci, github-actions, jenkins, systemd, k8s-env, dockerfile, compose, fake")
 }
 
 // Every registered env reader's name test, as env asks them: a name
@@ -130,7 +130,9 @@ func TestEnvChoosesByName(t *testing.T) {
 		// shell's (rows above); the rest go to none.
 		"lib/x.bash": "", "x.zsh": "", "x.ksh": "", "x.pl": "", "main.tf": "", "terraform.tfvars": "",
 		"Makefile": "", "x.mk": "", "config.yml": "", "config.toml": "",
-		"docker-compose.yml": "",
+		// compose reads a project's main file; an override file is no
+		// project alone, so it goes to none.
+		"docker-compose.yml": "compose", "compose.yaml": "compose", "compose.override.yaml": "",
 		// The dependency kind's manifests and locks go to no env reader.
 		"go.mod": "", "go.work": "", "package.json": "", "package-lock.json": "",
 		"npm-shrinkwrap.json": "", "pnpm-lock.yaml": "", "yarn.lock": "", "pyproject.toml": "",
@@ -179,12 +181,12 @@ func TestEnvChoosesByName(t *testing.T) {
 }
 
 // env lists the readers by their Order, envfile, shell, gitlab-ci,
-// github-actions, jenkins, systemd, k8s-env, dockerfile, and not in the order
+// github-actions, jenkins, systemd, k8s-env, dockerfile, compose, and not in the order
 // kinds lists them, where gitlab-ci comes before shell. Planted break: shell's
 // Order past gitlab-ci's.
 func TestEnvListsItsReadersInOrder(t *testing.T) {
 	_, err := Build(Of(env.Kind, env.Spec{Name: "A", Files: []string{".env"}, Readers: map[string]string{".env": "yaml"}}))
-	extracttest.WantError(t, err, `readers gives ".env" the reader "yaml"; write one of envfile, shell, gitlab-ci, github-actions, jenkins, systemd, k8s-env, dockerfile`)
+	extracttest.WantError(t, err, `readers gives ".env" the reader "yaml"; write one of envfile, shell, gitlab-ci, github-actions, jenkins, systemd, k8s-env, dockerfile, compose`)
 }
 
 // readersOf refuses two env readers at one Order, one with no Chooses or

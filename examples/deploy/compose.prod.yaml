@@ -1,0 +1,9 @@
+services:
+  api:
+    environment:
+      API_PORT: "8080"
+  probe:
+    image: registry.example.com/larder/probe:1.0.0
+    profiles: [prod]
+    environment:
+      API_PORT: "8080"

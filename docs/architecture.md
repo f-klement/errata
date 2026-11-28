@@ -300,6 +300,7 @@ flowchart TB
         udev["internal/extract/udev"]
         k8s["internal/extract/k8s"]
         dockerfile["internal/extract/dockerfile"]
+        compose["internal/extract/compose"]
         env["internal/extract/env"]
         filestat["internal/extract/filestat"]
     end
@@ -436,6 +437,7 @@ reader imports `core` and no other reader, and `core` imports no reader.
 | `internal/extract/udev` | udev rules files read as systemd-udevd reads them: rules joined over lines, match and assignment keys with the operators udev takes, the rules it drops, GOTO and LABEL, the files of rules.d directories in udev's order, and each value with its rule's match keys and the GOTOs before it as its condition | the other readers; the devices the rules apply to and the host's users and groups |
 | `internal/extract/k8s` | the objects of Kubernetes manifest files, YAML, JSON and `List` items, selected by apiVersion, kind, namespace and name, and through core/workload's walk a container, its ports and mounts, or a pod's volume by name, with what the kubelet expands and a template computes marked not literal | the other readers, whose parsers it gets from the facade; Helm and Kustomize renders, and the cluster |
 | `internal/extract/dockerfile` | the values of one instruction of a Dockerfile, FROM, EXPOSE, LABEL, ENV or ARG, in every stage or in one, parsed with BuildKit's own parser and each word expanded with BuildKit's shell lexer against the ARG and ENV values before it, each value at the line its word is on, and the values only the build knows marked not literal | the other readers; the build, the base image and the build arguments |
+| `internal/extract/compose` | one service's value in a Docker Compose project's effective configuration, which compose-go builds from the main file, its overrides, extends, include, profiles and the `.env` files' variables, at the file and line that set it, which it reconstructs by loading each contributing file alone and walking that file's YAML; the files compose-go may open, each read and bounded first and handed to compose-go as a copy in a temporary directory, the only tree it opens files in (ADR [0022](adr/0022-the-compose-reader-hands-compose-go-a-copy-of-the-files-errata-read.md)) | the other readers, whose YAML parser it gets from the facade; the process's environment and any file outside the repository, which compose-go never sees |
 | `internal/extract/env` | one variable across the files a rule lists: the reader each file's name or shebang chooses, a glob over git's tracked files, and each value's origin, its reader and its job, step or stage | the readers, which the facade hands it as functions |
 | `internal/extract/filestat` | the `exists` and `size` kinds: whether a file is at a name and how many bytes it holds, from core's `Stat`, without opening the file | the other readers |
 | `internal/extract/extracttest`, `internal/extract/coretest` | what the extractors' tests share; only test files import them, and Gremlins and the `make cover` total leave them alone | any reader: `coretest` imports `core` alone, and `extracttest` nothing of errata's but `check` and `core/lineend`, since `core`'s own tests import it |
@@ -591,6 +593,7 @@ flowchart LR
         k_udev["udev"]
         k_k8s["k8s"]
         k_dockerfile["dockerfile"]
+        k_compose["compose"]
         k_env["env"]
         k_exists["exists"]
         k_size["size"]
@@ -607,7 +610,7 @@ flowchart LR
 Two kinds, `exists` and `size`, come from one package, `filestat`, and two, `ini` and `systemd`,
 from `ini`, since the systemd kind reads through the ini reader's systemd dialect. The `env` kind
 reads one variable across several files, each with the reader its name or shebang chooses:
-`envfile`, `shell`, `gitlab-ci`, `github-actions`, `jenkins`, `systemd`, `k8s-env` and `dockerfile` declare themselves env
+`envfile`, `shell`, `gitlab-ci`, `github-actions`, `jenkins`, `systemd`, `k8s-env`, `dockerfile` and `compose` declare themselves env
 readers, each at an
 `Order` of its own (`k8s-env` chooses no file by its name, so only `readers:` gives it one), and the facade hands them to `env` as functions, so `env` imports none of them.
 A reader that needs another format's parser, such as `tool_version` reading a `package.json`, gets

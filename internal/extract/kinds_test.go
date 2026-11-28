@@ -344,6 +344,7 @@ var describes = []string{
 	`{"k8s": {"files": ["deploy/*.yaml"], "object": {"kind": "Service"}, "path": "spec.type"}}`,
 	`{"dockerfile": {"file": "Dockerfile", "instruction": "FROM", "stage": "build"}}`,
 	`{"dockerfile": {"file": "Dockerfile.j2", "instruction": "ENV", "key": "A"}}`,
+	`{"compose": {"file": "compose.yaml", "service": "web", "key": "image"}}`,
 	`{"env": {"name": "A", "files": [".env"]}}`,
 	`{"exists": {"file": "a"}}`,
 	`{"size": {"file": "a"}}`,
@@ -375,6 +376,7 @@ var mayNotLiteral = map[string]bool{
 	// k8s marks a value the kubelet expands, or a template computes.
 	`{"k8s": {"file": "deploy.yaml", "object": {"kind": "Deployment", "name": "api"}, "container": "api", "path": "image"}}`: true,
 	`{"k8s": {"files": ["deploy/*.yaml"], "object": {"kind": "Service"}, "path": "spec.type"}}`:                              true,
+	`{"compose": {"file": "compose.yaml", "service": "web", "key": "image"}}`:                                                true,
 }
 
 // builtNotLiteral is whether x, built from raw, may return a not literal
@@ -489,13 +491,14 @@ func TestDescribeCarriesMaxBytes(t *testing.T) {
 // kinds that find their files by their own logic are the exceptions,
 // gitlab-ci among them since it reads the files a pipeline includes, and
 // etc since it reads the files a configuration file includes, udev, which
-// reads rules.d directories in udev's order, and
-// systemd, which reads a unit's drop-ins, and so
+// reads rules.d directories in udev's order,
+// systemd, which reads a unit's drop-ins, and compose, which reads the
+// files a project includes and extends, and so
 // are a spec of files:, which builds a core.FileSet of FileReaders, and a
 // regex that searches for another extractor's values, which reads once
 // those values are known. Planted break: text's FromShared removed.
 func TestEveryOneFileReaderIsAFileReader(t *testing.T) {
-	ownFiles := map[string]bool{"tool_version": true, "package_version": true, "dependency": true, "env": true, "exists": true, "size": true, "gitlab-ci": true, "marker": true, "etc": true, "systemd": true, "sudoers": true, "udev": true}
+	ownFiles := map[string]bool{"tool_version": true, "package_version": true, "dependency": true, "env": true, "exists": true, "size": true, "gitlab-ci": true, "marker": true, "etc": true, "systemd": true, "sudoers": true, "udev": true, "compose": true}
 	seen := map[string]bool{}
 	// describes holds json only as a file set.
 	for _, raw := range append(slices.Clone(describes), `{"json": {"file": "a.json", "path": "a"}}`) {

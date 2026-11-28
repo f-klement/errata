@@ -23,6 +23,7 @@ required:
   - unit-port-matches-chart
   - unit-log-level-matches-env-file
   - quadlet-image-matches-compose
+  - compose-prod-runs-the-api-port
   - backup-alert-covers-one-run
   - api-container-port-matches-service
   - migrate-log-level-matches-api
@@ -284,6 +285,22 @@ checks:
       quadlet: {systemd: {file: deploy/quadlet/api.container, section: Container, key: Image}}
       compose: {yaml: {file: deploy/compose.yaml, path: services.api.image}}
     agree: [quadlet, compose]
+
+  # Claim: in production compose gives the API, and the probe that checks it, the port the
+  # developers' .env names. compose reads the service as docker compose -f deploy/compose.yaml
+  # -f deploy/compose.prod.yaml --profile prod builds it, the override merged over the main file;
+  # the probe runs only under the prod profile.
+  # See docs/reference.md#compose; #envfile.
+  - id: compose-prod-runs-the-api-port
+    reason: >
+      The production override sets the port for the API and its probe. A port that differs
+      from the one developers run starts an API the probe and the clients do not reach.
+    scope: repo
+    extract:
+      api: {compose: {file: deploy/compose.yaml, overrides: [deploy/compose.prod.yaml], service: api, key: environment.API_PORT, profiles: [prod]}}
+      probe: {compose: {file: deploy/compose.yaml, overrides: [deploy/compose.prod.yaml], service: probe, key: environment.API_PORT, profiles: [prod]}}
+      dev: {envfile: {file: .env, name: API_PORT}}
+    agree: [api, probe, dev]
 
   # Claim: the backup alert's threshold lies between one run of the backup timer and two.
   # calendar_interval reads OnCalendar= as systemd reads a calendar event, here every six hours.
