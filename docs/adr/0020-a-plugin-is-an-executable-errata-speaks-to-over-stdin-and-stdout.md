@@ -24,7 +24,7 @@ Protocol 1 is for offline extractor plugins: a plugin reads the files errata sen
 else. A live provider, such as the Kubernetes and bare metal providers of later releases, needs
 the network and credentials to reach a cluster or a host. That grant comes with a later protocol
 version, designed with the release that needs it; protocol 1 gives a plugin neither (owner,
-2026-11-19).
+2026-11-19). [ADR 0023](0023-a-provider-is-a-plugin-that-speaks-protocol-2.md) is that design.
 
 ## Why an executable
 

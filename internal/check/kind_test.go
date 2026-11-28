@@ -34,7 +34,7 @@ func (*fake) ListLines(Check, Quoter) []Line { return nil }
 // breaks: Validate asking the kind of an unknown scope, which added the
 // kind's refusal, and Validate leaving the kind's errors out.
 func TestValidateAsksTheKind(t *testing.T) {
-	c := Check{ID: "f", Reason: "r", Scope: ScopeLive, Kind: &fake{}}
+	c := Check{ID: "f", Reason: "r", Scope: ScopeLive, Provider: "kube", Kind: &fake{}}
 	if err := c.Validate(); err != nil {
 		t.Fatalf("fake check at live: %v", err)
 	}
@@ -65,5 +65,33 @@ func TestFieldsKeepTheirOrder(t *testing.T) {
 	}
 	if want := `{"z":"<a & b>","a":{"y":1,"b":[]}}` + "\n"; b.String() != want {
 		t.Errorf("Fields = %s, want %s", b.String(), want)
+	}
+}
+
+// A live or applied check names its provider, a repo check names none, and
+// the name is one a plugin may have. Planted breaks: providerError not
+// called; the repo case dropped; the name's pattern accepting upper case.
+func TestAProviderIsNamedByLiveAndAppliedChecksAlone(t *testing.T) {
+	for _, tc := range []struct {
+		scope    Scope
+		provider string
+		want     string
+	}{
+		{ScopeLive, "", `provider is required on a check of scope live: name the plugin that reaches the running system`},
+		{ScopeApplied, "", `provider is required on a check of scope applied`},
+		{ScopeRepo, "kube", "provider is for a live or applied check"},
+		{ScopeLive, "Kube", `provider "Kube" must be a plugin's name`},
+		{ScopeLive, "k/../x", `provider "k/../x" must be a plugin's name`},
+	} {
+		c := Check{ID: "f", Reason: "r", Scope: tc.scope, Provider: tc.provider, Kind: &fake{}}
+		if err := c.ValidateKeys(); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s with provider %q: %v, want %s", tc.scope, tc.provider, err, tc.want)
+		}
+	}
+	for _, name := range []string{"kubernetes", "bare-metal", "k_8"} {
+		c := Check{ID: "f", Reason: "r", Scope: ScopeLive, Provider: name, Kind: &fake{}}
+		if err := c.Validate(); err != nil {
+			t.Errorf("provider %s: %v", name, err)
+		}
 	}
 }

@@ -1,8 +1,9 @@
 // Command fake is the plugin the plugin host's tests build and run. It
-// speaks protocol 1 through package wire, and misbehaves on purpose: its
-// executable's name chooses how it describes itself, and an entry's mode
-// how it builds and extracts. Its kind reads lines that hold the entry's
-// word.
+// speaks protocol 1 through package wire, and protocol 2 under the names
+// that describe a provider (describe2), and misbehaves on purpose: its
+// executable's name chooses how it describes itself, and an entry's or a
+// provider request's mode how it builds, extracts, renders, reads and
+// predicts. Its kind reads lines that hold the entry's word.
 package main
 
 import (
@@ -48,7 +49,9 @@ func main() {
 	case wire.OpBuild:
 		build(name, in)
 	case wire.OpExtract:
-		extract(in)
+		extract(name, in)
+	case wire.OpRender, wire.OpRead, wire.OpPredict:
+		provide(in)
 	default:
 		fail(fmt.Errorf("no op %q", op.Op))
 	}
@@ -68,9 +71,13 @@ func reply(v any) {
 }
 
 func describe(name string) {
+	if d, ok := describe2(name); ok {
+		reply(d)
+		return
+	}
 	switch name {
 	case "newer":
-		reply(map[string]any{"protocols": []int{2, 3}, "name": name, "version": version})
+		reply(map[string]any{"protocols": []int{3, 4}, "name": name, "version": version})
 		return
 	case "liar":
 		name = "other"
@@ -80,14 +87,7 @@ func describe(name string) {
 		os.Stdout.WriteString(`{"protocol": 1, "name": "broken", "version": "` + version + `", "where": "files", "fields": [], "extra": 1}`)
 		return
 	}
-	reply(wire.DescribeReply{Protocol: 1, Name: name, Version: version, Where: wire.WhereFiles, Fields: []wire.Field{
-		{Name: "word", Type: wire.TypeString, Required: true},
-		{Name: "mode", Type: wire.TypeString},
-		{Name: "tags", Type: wire.TypeMap},
-		{Name: "limit", Type: wire.TypeInt},
-		{Name: "loud", Type: wire.TypeBool},
-		{Name: "names", Type: wire.TypeStrings},
-	}})
+	reply(wire.DescribeReply{Protocol: 1, Name: name, Version: version, Where: wire.WhereFiles, Fields: fields})
 }
 
 // spec is an entry of the fake kind as a request carries it.
@@ -105,6 +105,7 @@ func build(name string, in []byte) {
 	if err := wire.Decode(in, &req); err != nil {
 		fail(err)
 	}
+	chose(name, req.Protocol)
 	if name == "short" {
 		reply(wire.BuildReply{Built: []wire.Built{}})
 		return
@@ -167,11 +168,12 @@ func builtOf(s spec, rule string) wire.Built {
 	return wire.Built{Spec: raw, Description: &d}
 }
 
-func extract(in []byte) {
+func extract(name string, in []byte) {
 	var req wire.ExtractRequest
 	if err := wire.Decode(in, &req); err != nil {
 		fail(err)
 	}
+	chose(name, req.Protocol)
 	var s spec
 	if err := wire.DecodeSpec(req.Spec, &s); err != nil {
 		fail(err)
@@ -283,4 +285,130 @@ func bend(mode string, v wire.Value) wire.Value {
 		v.Text = nil
 	}
 	return v
+}
+
+// fields are the fields of the fake kind.
+var fields = []wire.Field{
+	{Name: "word", Type: wire.TypeString, Required: true},
+	{Name: "mode", Type: wire.TypeString},
+	{Name: "tags", Type: wire.TypeMap},
+	{Name: "limit", Type: wire.TypeInt},
+	{Name: "loud", Type: wire.TypeBool},
+	{Name: "names", Type: wire.TypeStrings},
+}
+
+// describe2 is the protocol 2 reply of the names that speak it: kube, a
+// provider of render, read and predict whose read and predict need
+// FAKE_KUBE and FAKE_ABSENT; renderer, of render alone; both, of extract
+// and read; and badops, which names an operation the protocol lacks.
+func describe2(name string) (wire.DescribeReply, bool) {
+	d := wire.DescribeReply{Protocol: wire.Protocol2, Name: name, Version: version}
+	switch name {
+	case "kube":
+		d.Operations, d.Env = []string{wire.OpRender, wire.OpRead, wire.OpPredict}, []string{"FAKE_KUBE", "FAKE_ABSENT"}
+	case "renderer":
+		d.Operations = []string{wire.OpRender}
+	case "both":
+		d.Operations, d.Where, d.Fields = []string{wire.OpExtract, wire.OpRead}, wire.WhereFiles, fields
+	case "badops":
+		d.Operations = []string{"apply"}
+	default:
+		return d, false
+	}
+	return d, true
+}
+
+// chose fails a request that is not written in the version name chose.
+func chose(name string, protocol int) {
+	want := wire.Protocol
+	if d, ok := describe2(name); ok {
+		want = d.Protocol
+	}
+	if protocol != want {
+		fail(fmt.Errorf("the request is written in protocol %d, and %s chose %d", protocol, name, want))
+	}
+}
+
+// provide answers a render, read or predict request by its spec's mode.
+// With no mode it replies with a file op holding the op and the protocol,
+// a file env holding its environment, and each file of the request under
+// in/.
+func provide(in []byte) {
+	var req wire.ProviderRequest
+	if err := wire.Decode(in, &req); err != nil {
+		fail(err)
+	}
+	var s struct {
+		Mode string `json:"mode"`
+		Size int    `json:"size"`
+		Null bool   `json:"null"`
+	}
+	if err := json.Unmarshal(req.Spec, &s); err != nil {
+		fail(err)
+	}
+	msg := "no cluster\nhere"
+	switch s.Mode {
+	case "error":
+		reply(wire.ProviderReply{Error: &msg})
+	case "gap":
+		reply(wire.ProviderReply{Gap: &msg})
+	case "badpath":
+		reply(wire.ProviderReply{Files: []wire.File{{Path: "a/../b", Data: []byte("x")}}})
+	case "dup":
+		reply(wire.ProviderReply{Files: []wire.File{{Path: "a", Data: []byte("x")}, {Path: "a", Data: []byte("y")}}})
+	case "big":
+		reply(wire.ProviderReply{Files: []wire.File{{Path: "a", Data: bytes.Repeat([]byte("x"), s.Size)}}})
+	case "sleep":
+		time.Sleep(time.Minute)
+	case "longest":
+		longest(req.MaxBytes, s.Size, s.Null)
+	default:
+		out := []wire.File{
+			{Path: "op", Data: []byte(req.Op + " " + strconv.Itoa(req.Protocol) + " " + strconv.FormatInt(req.MaxBytes, 10))},
+			{Path: "env", Data: []byte(strings.Join(os.Environ(), "\n"))},
+		}
+		for _, f := range req.Files {
+			out = append(out, wire.File{Path: "in/" + f.Path, Data: f.Data})
+		}
+		reply(wire.ProviderReply{Files: out})
+	}
+}
+
+// longest writes the longest reply whose files errata admits for maxBytes:
+// wire.MaxFiles files of no data, nil when null, else empty, whose paths, of <, > and &, which JSON writes in 6 bytes
+// each, are maxBytes together, then a newline and pad spaces. The paths are the shortest strings of the three in turn, and
+// the last is < alone, as long as the rest of maxBytes, which must be
+// longer than the others and at most 4096 bytes.
+func longest(maxBytes int64, pad int, null bool) {
+	data := []byte{}
+	if null {
+		data = nil
+	}
+	files := make([]wire.File, 0, wire.MaxFiles)
+	var total int64
+	for path := []byte("<"); len(files) < wire.MaxFiles-1; path = nextPath(path) {
+		files = append(files, wire.File{Path: string(path), Data: data})
+		total += int64(len(path))
+	}
+	last := maxBytes - total
+	if last <= int64(len(files[len(files)-1].Path)) || last > 4096 {
+		fail(fmt.Errorf("max_bytes %d leaves a last path of %d bytes", maxBytes, last))
+	}
+	files = append(files, wire.File{Path: strings.Repeat("<", int(last)), Data: data})
+	reply(wire.ProviderReply{Files: files})
+	os.Stdout.WriteString("\n" + strings.Repeat(" ", pad))
+}
+
+// nextPath is the string of <, > and & after path, the shortest first.
+func nextPath(path []byte) []byte {
+	const letters = "<>&"
+	next := append([]byte{}, path...)
+	for i := len(next) - 1; i >= 0; i-- {
+		if at := strings.IndexByte(letters, next[i]); at < len(letters)-1 {
+			next[i] = letters[at+1]
+			return next
+		}
+		next[i] = letters[0]
+	}
+	return append(next, letters[0])
 }

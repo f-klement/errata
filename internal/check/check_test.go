@@ -135,6 +135,9 @@ func TestPropertyWellFormedCheckValidates(t *testing.T) {
 			Kind:    &Program{Run: rapid.SliceOfN(rapid.String(), 1, 4).Draw(t, "run")},
 			Timeout: time.Duration(rapid.Int64Min(0).Draw(t, "timeout")),
 		}
+		if c.Scope != ScopeRepo {
+			c.Provider = rapid.StringMatching(`[a-z][a-z0-9_-]{0,63}`).Draw(t, "provider")
+		}
 		if err := c.Validate(); err != nil {
 			t.Fatalf("well-formed check rejected: %v", err)
 		}

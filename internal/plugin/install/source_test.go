@@ -200,6 +200,26 @@ func TestAnotherPlatformIsAddedToAURLEntry(t *testing.T) {
 	}
 }
 
+// A build --platform adds to a URL entry gets the env the entry records
+// for this platform, since it is not run to name its own, and this
+// platform's line keeps its env. Planted break: urlPlatform leaving the
+// new platform's env empty.
+func TestAnotherPlatformsURLBuildGetsThisPlatformsEnv(t *testing.T) {
+	w := newWorld(t)
+	r := release{name: "nginx", version: "0.3.0"}
+	there := []byte("not a program at all")
+	w.putMirror(r, assetName("nginx", other()), there)
+	at := "https://mirror.example/errata-ext-nginx/v0.3.0/" + assetName("nginx", other())
+	here := "nginx 0.3.0 " + this + " sha256:" + strings.Repeat("a", 64) + " source=url:https://mirror.example/x env=HOME,KUBECONFIG\n"
+	if err := os.WriteFile(filepath.Join(w.root, "errata.lock"), []byte(here), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	w.install(Request{Plugins: []string{"nginx"}, URL: at, SHA256: sumOf(there), Platform: other()})
+	if !strings.Contains(w.lock(), here) || !strings.Contains(w.lock(), "nginx 0.3.0 "+other()+" sha256:"+sumOf(there)+" source=url:"+at+" env=HOME,KUBECONFIG\n") {
+		t.Fatalf("the lock is\n%s", w.lock())
+	}
+}
+
 // A reinstall of a URL entry into a repository that vendors fails when
 // another platform's URL serves other bytes than its pin, and writes no
 // lock. Planted breaks: reinstallURL or vendorPin passing over the error.

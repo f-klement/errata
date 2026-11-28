@@ -6,16 +6,16 @@ exec sh -c 'errata check --fail-on-skip >/dev/null; echo code=$?'
 stdout code=1
 ! exec errata check --fail-on-skip
 stdout '^0 errata, 0 unknown. Coverage: ran 1, skipped 1. A skip fails this run.$'
-stdout '^  skipped pinned-image \(live\): no provider can read a live system$'
+stdout '^  skipped pinned-image \(live\): no installed plugin provides read: errata-ext-kube is not installed; install it with errata plugin install kube$'
 
 ! exec errata check --fail-on-skip --format junit
 stdout '<testsuite name="errata" tests="2" failures="0" errors="1" skipped="0">'
-stdout '<error message="skipped: no provider can read a live system">r</error>'
+stdout '<error message="skipped: no installed plugin provides read: errata-ext-kube is not installed; install it with errata plugin install kube">r</error>'
 ! stdout '<skipped'
 
 ! exec errata check --fail-on-skip --format sarif
 stdout '"executionSuccessful": false,$'
-stdout '"level": "error",\n\s+"message": \{\n\s+"text": "check pinned-image skipped \(live\): no provider can read a live system"'
+stdout '"level": "error",\n\s+"message": \{\n\s+"text": "check pinned-image skipped \(live\): no installed plugin provides read: errata-ext-kube is not installed; install it with errata plugin install kube"'
 
 # A run with no skip passes with the flag, and says nothing about it.
 exec errata check --fail-on-skip -c repo.yaml
@@ -34,7 +34,7 @@ stdout '"level": "note",\n\s+"message": \{\n\s+"text": "check pinned-image skipp
 -- errata.yaml --
 checks:
   - {id: always, reason: r, scope: repo, run: ['true']}
-  - {id: pinned-image, reason: r, scope: live, run: ['true']}
+  - {id: pinned-image, reason: r, scope: live, provider: kube, run: ['true']}
 -- repo.yaml --
 checks:
   - {id: always, reason: r, scope: repo, run: ['true']}

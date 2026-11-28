@@ -13,7 +13,7 @@ import (
 
 // SourceEnv is the variable that sets the plugin source when --source is
 // not given (ADR 0021).
-const SourceEnv = "ERRATA_PLUGIN_SOURCE"
+const SourceEnv = plugin.SourceEnv
 
 func newPluginCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -80,7 +80,7 @@ func installer(root string, cmd *cobra.Command) (*install.Installer, error) {
 	return &install.Installer{
 		Root:     absRoot,
 		Cache:    cache,
-		Token:    os.Getenv("GITHUB_TOKEN"),
+		Token:    os.Getenv(plugin.TokenEnv),
 		Builtin:  extract.Keys(),
 		Platform: plugin.Platform(),
 		Out:      cmd.OutOrStdout(),

@@ -19,7 +19,7 @@ var sample = check.Report{Results: []check.Result{
 	{Check: check.Check{ID: "ok", Scope: check.ScopeRepo, Reason: "r"}, Verdict: check.VerdictTrue},
 	{Check: check.Check{ID: "ci-node", Scope: check.ScopeRepo, Reason: "CI moved.\nDocs must follow."}, Verdict: check.VerdictFalse, Message: "says atlas, runs on builder"},
 	{Check: check.Check{ID: "broken", Scope: check.ScopeRepo, Reason: "r"}, Verdict: check.VerdictUnknown},
-	{Check: check.Check{ID: "owner", Scope: check.ScopeApplied, Reason: "r"}, Gap: "no provider can read and predict a live system"},
+	{Check: check.Check{ID: "owner", Scope: check.ScopeApplied, Reason: "r"}, Gap: "no installed plugin provides predict: errata-ext-kube is not installed; install it with errata plugin install kube"},
 }}
 
 func TestText(t *testing.T) {
@@ -36,7 +36,7 @@ UNKNOWN broken (repo)
   why:  r
 
 1 erratum, 1 unknown. Coverage: ran 3, skipped 1.
-  skipped owner (applied): no provider can read and predict a live system
+  skipped owner (applied): no installed plugin provides predict: errata-ext-kube is not installed; install it with errata plugin install kube
 `
 	if got := buf.String(); got != want {
 		t.Fatalf("text output differs.\ngot:\n%s\nwant:\n%s", got, want)
@@ -52,7 +52,7 @@ func TestTextSkipsFail(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := `0 errata, 0 unknown. Coverage: ran 1, skipped 1. A skip fails this run.
-  skipped owner (applied): no provider can read and predict a live system
+  skipped owner (applied): no installed plugin provides predict: errata-ext-kube is not installed; install it with errata plugin install kube
 `
 	if got := buf.String(); got != want {
 		t.Fatalf("text output differs.\ngot:\n%s\nwant:\n%s", got, want)
@@ -120,7 +120,7 @@ func TestJUnitSkipsFail(t *testing.T) {
 		t.Fatalf("counts = %+v", s)
 	}
 	c := s.Cases[3]
-	if c.Skipped != nil || c.Error == nil || c.Error.Message != "skipped: no provider can read and predict a live system" || c.Error.Body != "r" {
+	if c.Skipped != nil || c.Error == nil || c.Error.Message != "skipped: no installed plugin provides predict: errata-ext-kube is not installed; install it with errata plugin install kube" || c.Error.Body != "r" {
 		t.Fatalf("case = %+v", c)
 	}
 }

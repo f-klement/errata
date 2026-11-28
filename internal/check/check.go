@@ -53,6 +53,10 @@ type Check struct {
 	// where any other may run in a copy of the tree on the pool (ADR 0019).
 	// A rule only reads and takes none.
 	InPlace bool
+	// Provider is the name of the plugin a live or applied check needs,
+	// errata-ext-<Provider>, which must provide the operation the scope
+	// needs (ADR 0023). A repo check names none.
+	Provider string
 }
 
 var idPattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
@@ -86,6 +90,8 @@ func (c Check) validate(withKind bool) error {
 	}
 	if !c.Scope.known() {
 		errs = append(errs, fmt.Errorf("scope %q must be one of repo, live, applied", c.Scope))
+	} else if err := c.providerError(); err != nil {
+		errs = append(errs, err)
 	}
 	if withKind {
 		// ValidateKeys leaves the kind out, so only Validate asks for its
@@ -98,6 +104,23 @@ func (c Check) validate(withKind bool) error {
 	errs = append(errs, validateWitnesses(c)...)
 	if len(errs) > 0 {
 		return fmt.Errorf("check %q: %w", c.ID, errors.Join(errs...))
+	}
+	return nil
+}
+
+var providerPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
+
+// providerError is the problem with c's provider, for a known scope: one
+// left out on a live or applied check, one a repo check names, or a name
+// no plugin can have.
+func (c Check) providerError() error {
+	switch {
+	case c.Scope == ScopeRepo && c.Provider != "":
+		return errors.New("provider is for a live or applied check, which needs a plugin to reach the running system; a repo check reads only files")
+	case c.Scope != ScopeRepo && c.Provider == "":
+		return fmt.Errorf("provider is required on a check of scope %s: name the plugin that reaches the running system, such as provider: kubernetes for errata-ext-kubernetes", c.Scope)
+	case c.Provider != "" && !providerPattern.MatchString(c.Provider):
+		return fmt.Errorf("provider %q must be a plugin's name: lower case ASCII letters, digits, _ and -, starting with a letter, at most 64 bytes", c.Provider)
 	}
 	return nil
 }

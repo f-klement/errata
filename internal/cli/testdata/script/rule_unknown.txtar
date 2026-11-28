@@ -10,7 +10,7 @@ stdout '^UNKNOWN endpoint-asserted \(repo\)$'
 stdout -count=2 'said: extractor "service": '
 ! stdout 'assert: the expression'
 stdout '^0 errata, 2 unknown. Coverage: ran 3, skipped 1.$'
-stdout 'skipped live-program \(live\): no provider can read a live system'
+stdout 'skipped live-program \(live\): no installed plugin provides read: errata-ext-kube is not installed; install it with errata plugin install kube'
 
 -- errata.yaml --
 checks:
@@ -34,4 +34,5 @@ checks:
   - id: live-program
     reason: r
     scope: live
+    provider: kube
     run: ['true']

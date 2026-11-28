@@ -85,7 +85,7 @@ func describe(request []byte) ([]byte, error) {
 		return nil, err
 	}
 	if !slices.Contains(req.Protocols, wire.Protocol) {
-		return json.Marshal(wire.Version{Protocols: wire.Protocols, Name: Name, Version: Version})
+		return json.Marshal(wire.Version{Protocols: []int{wire.Protocol}, Name: Name, Version: Version})
 	}
 	return json.Marshal(wire.DescribeReply{Protocol: wire.Protocol, Name: Name, Version: Version, Where: wire.WhereFiles, Fields: fields})
 }

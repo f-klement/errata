@@ -98,10 +98,13 @@ func checkLong() string {
 reason, and print the errata and the coverage: how many checks ran, how many
 it skipped, and the gap behind each skip.
 
-A repo check runs on the files. A live or applied check needs a provider for
-a running system, which errata does not have yet, so errata skips it and
-prints a line naming the check, its scope and the gap, such as "skipped
-pinned-image (live): no provider can read a live system". A program check
+A repo check runs on the files. A live or applied check names its provider,
+the plugin that reaches the running system, and runs when that plugin is
+installed and provides read (live) or predict (applied). Otherwise errata
+skips it and prints a line naming the check, its scope and the gap, such as
+"skipped pinned-image (live): no installed plugin provides read:
+errata-ext-kube is not installed; install it with errata plugin install
+kube". A program check
 runs with the repository root as its working directory. When two or more
 program or generated checks that last took a second or more can run at
 once, each runs in a copy of the repository of its own, made in the user's
@@ -297,6 +300,13 @@ nothing for 60 s while errata reads the body.
 A run looks for plugins in .errata/plugins alone once the repository has
 it, so while it is there every install vendors what it installs, as
 --vendor does, and says so.
+
+A provider plugin, which a live or applied check names, names in its
+describe reply the variables of errata's environment its read and predict
+requests get, such as KUBECONFIG. errata prints them, with the ones its
+last pin did not record, and records them in errata.lock, so review of the
+lock shows a release that asks for more. A run refuses a build that names
+one the lock does not record; an install of it records it.
 
 errata names no plugin it does not install from errata's releases. A plugin
 from elsewhere comes from a file, or from an https URL with the sha256 you

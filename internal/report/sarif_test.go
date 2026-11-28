@@ -41,7 +41,7 @@ var sarifSample = check.Report{Results: []check.Result{
 	),
 	{Check: check.Check{ID: "program", Scope: check.ScopeRepo, Reason: "CI moved.\nDocs must follow.", Kind: &check.Program{Run: []string{"false"}}}, Verdict: check.VerdictFalse, Message: "says atlas, runs on builder"},
 	{Check: check.Check{ID: "broken", Scope: check.ScopeRepo, Reason: "why broken"}, Verdict: check.VerdictUnknown, Message: "program not found"},
-	{Check: check.Check{ID: "owner", Scope: check.ScopeApplied, Reason: "r"}, Gap: "no provider can read and predict a live system"},
+	{Check: check.Check{ID: "owner", Scope: check.ScopeApplied, Reason: "r"}, Gap: "no installed plugin provides predict: errata-ext-kube is not installed; install it with errata plugin install kube"},
 }}
 
 // The shape of the output the tests read back. It is decoded from the
@@ -587,7 +587,7 @@ func TestSARIFNotifications(t *testing.T) {
 	if u.Level != "error" || u.Message.Text != "check broken is unknown: program not found\nwhy: why broken" || u.Rule.ID != "broken" || u.Rule.Index != 3 {
 		t.Fatalf("unknown notification = %+v", u)
 	}
-	if s.Level != "note" || s.Message.Text != "check owner skipped (applied): no provider can read and predict a live system" || s.Rule.ID != "owner" || s.Rule.Index != 4 {
+	if s.Level != "note" || s.Message.Text != "check owner skipped (applied): no installed plugin provides predict: errata-ext-kube is not installed; install it with errata plugin install kube" || s.Rule.ID != "owner" || s.Rule.Index != 4 {
 		t.Fatalf("skip notification = %+v", s)
 	}
 

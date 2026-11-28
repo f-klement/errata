@@ -34,7 +34,8 @@ index of the clone and keeps the entries below `examples`
 Paths in its output are relative to `examples`.
 
 Every check of scope `repo` holds. The checks of scope `live` and `applied` are skipped, since
-errata cannot read a running system yet, and the coverage line names each one. The run counts
+the provider they name, the plugin `errata-ext-kubernetes`, is not installed, and the coverage line
+names each one with that gap. The run counts
 one check more than the file holds: errata adds `errata-unbound-markers` whenever a rule reads
 markers, and it is false for a marker no rule reads.
 

@@ -5,7 +5,9 @@
 // program.Run, one process for each request. Each plugin is one more
 // extractor kind, a check.ExtractorKind whose spec is the fields the
 // plugin declares, so extract.Build returns a plugin's extractor as it
-// returns a built in reader's.
+// returns a built in reader's. A plugin that speaks protocol 2 may also be
+// a provider (ADR 0023), which Providers returns for the checks that name
+// it, and whose Render, Read and Predict send it those requests.
 //
 // A plugin errata cannot run, whether the lock pins no build for this
 // platform, the build is not installed, its checksum differs, or it did not
@@ -76,41 +78,81 @@ func (s *Set) Has(key string) bool {
 // Kind is the extractor kind of the plugin the lock pins under key, which
 // Has reports, described by the plugin on the first call.
 func (s *Set) Kind(ctx context.Context, key string) *check.ExtractorKind {
-	p, ok := s.plugins[key]
-	if !ok {
-		pin, _ := s.lock.Pin(key)
-		p = s.load(ctx, pin)
-		s.plugins[key] = p
-	}
-	return p.kind()
+	return s.plugin(ctx, key).kind()
 }
 
 // Plugin is one plugin of a Set: its pin, its build, and its description,
 // or why errata cannot run it.
 type Plugin struct {
-	pin      Pin
-	exe      exe
-	desc     wire.DescribeReply
+	pin  Pin
+	exe  exe
+	desc wire.DescribeReply
+	// env is the names the lock records for the build p runs, the one
+	// for the platform errata runs on (Pin.Env).
+	env      []string
 	unusable error
+	// noKind is why p reads no entry of its kind: unusable, or a protocol
+	// 2 plugin that does not provide extract.
+	noKind error
 }
 
-// load finds pin's build and asks it to describe itself.
+// load finds pin's build and asks it to describe itself (start), and
+// says why the plugin reads no entry of its kind, if it does not.
 func (s *Set) load(ctx context.Context, pin Pin) *Plugin {
 	p := &Plugin{pin: pin}
+	p.unusable = s.start(ctx, p)
+	p.noKind = p.unusable
+	if p.noKind == nil && !p.desc.Provides(wire.OpExtract) {
+		p.noKind = fmt.Errorf("plugin %s provides %s, not extract, so it reads no entry of an extractor", p.exe.label, strings.Join(p.desc.Operations, ", "))
+	}
+	return p
+}
+
+// start finds the build the lock pins for p and asks it to describe
+// itself, and returns why errata cannot run it, or nil.
+func (s *Set) start(ctx context.Context, p *Plugin) error {
+	pin := p.pin
 	sum, ok := pin.Sums[s.platform]
 	if !ok {
-		p.unusable = fmt.Errorf("%s pins no build of plugin errata-ext-%s %s for %s; add the release's checksum for it", LockFile, pin.Name, pin.Version, s.platform)
-		return p
+		return fmt.Errorf("%s pins no build of plugin errata-ext-%s %s for %s; add the release's checksum for it", LockFile, pin.Name, pin.Version, s.platform)
 	}
 	owner, base, err := s.base()
 	if err != nil {
-		p.unusable = fmt.Errorf("plugin errata-ext-%s %s: %w", pin.Name, pin.Version, err)
-		return p
+		return fmt.Errorf("plugin errata-ext-%s %s: %w", pin.Name, pin.Version, err)
 	}
 	p.exe = newExe("errata-ext-"+pin.Name+" "+pin.Version, owner, BuildPath(base, pin.Name, pin.Version, s.platform, sum), sum)
 	p.exe.install = installHint(pin, owner == s.root)
-	p.unusable = p.describe(ctx)
-	return p
+	p.env = pin.Env[s.platform]
+	if err := p.describe(ctx); err != nil {
+		return err
+	}
+	return p.recorded(owner == s.root)
+}
+
+// recorded refuses a plugin whose describe names a variable for read and
+// predict that the lock does not record for its build (Plugin.env): a build that
+// asks for more than was accepted when it was installed. vendored says
+// errata looked in the vendored directory.
+func (p *Plugin) recorded(vendored bool) error {
+	for _, name := range p.desc.Env {
+		if !slices.Contains(p.env, name) {
+			return fmt.Errorf("plugin %s names %s for its read and predict requests, and %s does not record it for the plugin: %s records the variables its build names, once you accept that it gets them", p.exe.label, name, LockFile, acceptHint(p.pin, vendored))
+		}
+	}
+	return nil
+}
+
+// acceptHint is the command that records in the lock the variables pin's
+// build names: an install of what the lock pins, which describes the
+// build again, from where pin says it came from.
+func acceptHint(pin Pin, vendored bool) string {
+	switch {
+	case pin.Source == SourceFile:
+		return "errata plugin install --file <path to errata-ext-" + pin.Name + ">"
+	case vendored:
+		return "errata plugin install --vendor"
+	}
+	return "errata plugin install"
 }
 
 // installHint is what a message that pin's build is not installed ends
@@ -130,6 +172,13 @@ func installHint(pin Pin, vendored bool) string {
 	return "; install what " + LockFile + " pins with errata plugin install"
 }
 
+// notPinned is why a plugin name the lock does not pin is missing, with
+// the command that installs and pins it. It is the same command in a
+// repository that vendors, since an install vendors there anyway.
+func notPinned(name string) string {
+	return "errata-ext-" + name + " is not installed; install it with errata plugin install " + name
+}
+
 // base is the directory errata looks for builds in, the repository's
 // vendored directory when it has one, else the cache, and owner, the
 // directory above it errata does not own: the repository's root, or the
@@ -146,7 +195,7 @@ func (s *Set) base() (owner, base string, err error) {
 // choose a version errata offered, names another plugin or release, or
 // declares where or a field the protocol does not allow.
 func (p *Plugin) describe(ctx context.Context) error {
-	out, stderr, err := p.exe.run(ctx, wire.DescribeRequest{Op: wire.OpDescribe, Protocols: wire.Protocols}, limits{describeTimeout, describeStdout})
+	out, stderr, err := p.exe.run(ctx, wire.DescribeRequest{Op: wire.OpDescribe, Protocols: wire.Protocols}, limits{timeout: describeTimeout, stdout: describeStdout})
 	if err != nil {
 		return err
 	}
@@ -169,6 +218,15 @@ func (p *Plugin) describe(ctx context.Context) error {
 	return nil
 }
 
+// Described is what a build says of itself in its describe reply: its
+// version, and for a protocol 2 plugin the operations it provides and the
+// variables its read and predict requests get, nil for a protocol 1 one.
+type Described struct {
+	Version    string
+	Operations []string
+	Env        []string
+}
+
 // Describe sends the build at path the describe request, under the rules
 // a run's requests have (an environment of the Go runtime's variables
 // alone, an empty working directory, the 10 s bound), once it has checked
@@ -176,18 +234,23 @@ func (p *Plugin) describe(ctx context.Context) error {
 // no symbolic link between. It refuses a reply that names another plugin
 // than name, gives another version than version, or speaks no protocol
 // errata speaks, as a run does; version "" takes any semantic version. It
-// returns the version the build gives. errata plugin install describes a
-// build this way before it keeps it (ADR 0021).
-func Describe(ctx context.Context, owner, path, name, version, sum string) (string, error) {
+// returns what the build says of itself. errata plugin install describes a
+// build this way before it keeps it (ADR 0021), and records its Env in the
+// lock.
+func Describe(ctx context.Context, owner, path, name, version, sum string) (Described, error) {
 	label := "errata-ext-" + name
 	if version != "" {
 		label += " " + version
 	}
 	p := &Plugin{pin: Pin{Name: name, Version: version}, exe: newExe(label, owner, path, sum)}
 	if err := p.describe(ctx); err != nil {
-		return "", err
+		return Described{}, err
 	}
-	return p.desc.Version, nil
+	d := Described{Version: p.desc.Version}
+	if p.desc.Protocol == wire.Protocol2 {
+		d.Operations, d.Env = slices.Clone(p.desc.Operations), slices.Clone(p.desc.Env)
+	}
+	return d, nil
 }
 
 // refuse is the error of a reply to op that errata does not read, with
@@ -281,7 +344,7 @@ func (p *Plugin) fieldIndex(name string) int {
 // the Go type of its protocol type. For a plugin errata could not describe
 // it is a map of any value, so the entry is read as it is written.
 func (p *Plugin) schema() reflect.Type {
-	if p.unusable != nil {
+	if p.noKind != nil {
 		return reflect.TypeFor[map[string]any]()
 	}
 	fields := []reflect.StructField{
@@ -340,15 +403,15 @@ func Build(ctx context.Context, specs []any) {
 
 // build sends specs, every entry of p's kind, in one build request.
 func (p *Plugin) build(ctx context.Context, specs []*Spec) {
-	if p.unusable != nil {
-		failAll(specs, p.unusable)
+	if p.noKind != nil {
+		failAll(specs, p.noKind)
 		return
 	}
-	req := wire.BuildRequest{Protocol: wire.Protocol, Op: wire.OpBuild, Entries: make([]wire.Entry, len(specs))}
+	req := wire.BuildRequest{Protocol: p.desc.Protocol, Op: wire.OpBuild, Entries: make([]wire.Entry, len(specs))}
 	for i, s := range specs {
 		req.Entries[i] = wire.Entry{Rule: s.rule, Spec: object(s.fields)}
 	}
-	out, stderr, err := p.exe.run(ctx, req, limits{buildTimeout, buildStdout})
+	out, stderr, err := p.exe.run(ctx, req, limits{timeout: buildTimeout, stdout: buildStdout})
 	if err != nil {
 		failAll(specs, err)
 		return

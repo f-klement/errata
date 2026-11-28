@@ -852,4 +852,4 @@ errata check --root examples --config examples/errata.example.yaml
 ```
 
 Every check of scope `repo` holds. The `live` and `applied` checks are skipped, each with its gap
-under the coverage line.
+under the coverage line, since the provider they name, `errata-ext-kubernetes`, is not installed.

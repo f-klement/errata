@@ -40,8 +40,9 @@ func (j *job) file(ctx context.Context) error {
 		return err
 	}
 	pin := plugin.Pin{Name: name, Version: k.version, Sums: map[string]string{j.in.Platform: k.sum}, Source: plugin.SourceFile}
-	j.lock.Put(pin)
+	j.put(pin, k.desc)
 	j.say("errata-ext-%s %s %s: sha256 %s, copied from %s; %s pins it as a file", name, k.version, j.in.Platform, k.sum, j.req.File, plugin.LockFile)
+	j.sayProvides(pin, k.desc)
 	return j.vendorPin(ctx, pin, k.path)
 }
 
@@ -80,8 +81,9 @@ func (j *job) url(ctx context.Context) error {
 	}
 	pin := j.urlPin(name, k.version)
 	pin.Sums[j.in.Platform], pin.URLs[j.in.Platform] = sum, j.req.URL
-	j.lock.Put(pin)
+	j.put(pin, k.desc)
 	j.say("errata-ext-%s %s %s: sha256 %s matches --sha256; %s pins it with its URL", name, k.version, j.in.Platform, sum, plugin.LockFile)
+	j.sayProvides(pin, k.desc)
 	return j.vendorPin(ctx, pin, k.path)
 }
 
@@ -136,7 +138,10 @@ func (j *job) urlPlatform(ctx context.Context, name, platform, sum string) error
 		return err
 	}
 	pin = j.urlPin(name, pin.Version)
+	was := pin
+	pin.Sums = maps.Clone(pin.Sums)
 	pin.Sums[platform], pin.URLs[platform] = sum, j.req.URL
+	pin.Env = withEnv(pin, was, j.in.Platform, was.Env[j.in.Platform])
 	j.lock.Put(pin)
 	j.say("errata-ext-%s %s %s: sha256 %s matches --sha256; not run, since errata runs on %s; %s pins it with its URL", name, pin.Version, platform, sum, j.in.Platform, plugin.LockFile)
 	if !j.vendor {

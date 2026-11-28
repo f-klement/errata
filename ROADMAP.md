@@ -310,6 +310,11 @@ The files that describe containers and clusters, read in core.
   and `Chart.lock`. Kustomize files as they state them: images, namespace, name prefix, generator
   literals and chart versions, through local resources and components. Neither renders anything.
 - `--base`, the diff range, detected in GitLab, GitHub Actions and Jenkins.
+- A YAML value under a tag the reader does not know, such as `!Ref`, `!ENV` or `!secret`, is not
+  literal: the program that loads the file computes it. A plugin may still give a tag its meaning.
+- An `encoding:` setting for Java properties files. By default a raw non-ASCII byte is refused,
+  since `Properties.load` and Spring Boot read ISO-8859-1 where ResourceBundle reads UTF-8.
+- PowerShell files for the comment, literal and marker readers.
 
 ## v0.6.1: fields git cannot remove
 
@@ -338,13 +343,21 @@ The feature no other tool ships.
 
 No new features. Deepen what the earlier releases have bent, and harden what CI users depend on.
 
+A rule run does less repeated work, with no value changed. A regex extractor over many files
+compiles its pattern once rather than once per file, and a pattern that can only match at the
+start of a file stops after its first search; together they take the rules of a large repository
+from about 4.3 s to 2.5 s on a two core machine. git's index is read once for each generation of
+the run rather than for every glob and every witness, which cuts a small config's rule time by
+about 40 percent. The index is read again after every check that runs in the repository, so no
+rule reads an index older than the files it reads.
+
 ## Plugins
 
 The plugin protocol ships in v0.5.0. After that, each plugin is released on its own tag, apart
 from the releases above, and a plugin that is not scheduled has no release yet.
 
 A plugin is built when a real repository needs it: one errata already checks, or one a user names
-in an issue. Otherwise the smallest plugin is built first.
+in an issue. Otherwise the plugin that reaches the most repositories for its size is built first.
 
 These integrations are core and never need a plugin: YAML, JSON, TOML, regex, CEL (with globs,
 records, string functions and the other features of v0.2.1 and v0.2.2), INI, XML, Java
@@ -376,6 +389,13 @@ Planned as plugins, with no release yet:
   value is read), Helmfile, Skaffold, Tilt and DevSpace, buildx bake files and `.dockerignore`,
   cluster configs (kind, k3d, minikube, k3s, kubeadm, Talos), Carvel ytt and OpenShift Templates,
   and the keys and recipients of SOPS files and Sealed Secrets, whose values are never decrypted.
+- Infrastructure and operations: AWS CloudFormation and SAM templates, Terraform and OpenTofu lock
+  files with provider and module versions, Azure Pipelines, Prometheus and Alertmanager rules,
+  Grafana dashboards, Ansible playbooks and roles, Istio resources, and OPA Rego policies.
+- Package manifests: Pipenv, conda, pixi, PDM and `setup.cfg`; pnpm catalogs, Bun and Deno; NuGet
+  lock files; gemspecs; PowerShell module manifests; LuaRocks rockspecs and LÖVE's `conf.lua`.
+- Data formats: Gettext PO catalogs, EDN, Turtle, JSON Lines, property lists, and `.env` files as
+  the Node, Python, Ruby and Vite loaders each read them.
 
 ## Later
 

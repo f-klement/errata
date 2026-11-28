@@ -53,7 +53,7 @@ func (d durations) pays(name string) bool {
 func writeDurations(home string, jobs []job, results []check.Result) error {
 	d := durations{}
 	for i, j := range jobs {
-		if j.gap == "" && runsProgram(j.c) {
+		if j.runs() && runsProgram(j.c) {
 			d[results[i].Name()] = results[i].Duration.Milliseconds()
 		}
 	}

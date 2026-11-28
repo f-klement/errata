@@ -38,7 +38,7 @@ type extractor struct {
 // all, or the build request's, when it failed. Such an entry loads, and its
 // rule is unknown when it runs.
 func (s *Spec) cannotRun() (check.Extractor, bool) {
-	why := s.plugin.unusable
+	why := s.plugin.noKind
 	if s.res.done {
 		why = s.res.failed
 	}
@@ -50,7 +50,7 @@ func (s *Spec) cannotRun() (check.Extractor, bool) {
 // run builds the extractor that returns why.
 func (s *Spec) extractor() (check.Extractor, error) {
 	switch {
-	case !s.res.done && s.plugin.unusable == nil:
+	case !s.res.done && s.plugin.noKind == nil:
 		return nil, fmt.Errorf("%s: the entry was not sent to its plugin in a build request", s.plugin.pin.Name)
 	case s.res.refused != nil:
 		return nil, s.res.refused
@@ -97,8 +97,8 @@ func (x *extractor) ExtractWith(ctx context.Context, root string, values map[str
 	if err != nil {
 		return nil, err
 	}
-	req := wire.ExtractRequest{Protocol: wire.Protocol, Op: wire.OpExtract, Spec: object(x.s.res.fields), Files: files, Values: sent, MaxBytes: x.limit}
-	out, stderr, err := x.s.plugin.exe.run(ctx, req, limits{extractTimeout, x.stdoutBound(files)})
+	req := wire.ExtractRequest{Protocol: x.s.plugin.desc.Protocol, Op: wire.OpExtract, Spec: object(x.s.res.fields), Files: files, Values: sent, MaxBytes: x.limit}
+	out, stderr, err := x.s.plugin.exe.run(ctx, req, limits{timeout: extractTimeout, stdout: x.stdoutBound(files)})
 	if err != nil {
 		return nil, err
 	}

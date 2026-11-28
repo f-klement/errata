@@ -256,7 +256,7 @@ func TestSpecText(t *testing.T) {
 var listedFields = map[reflect.Type]map[string]string{
 	reflect.TypeFor[check.Check](): {
 		"ID": "id", "Reason": "reason", "Scope": "scope", "Timeout": "timeout", "InPlace": "in_place",
-		"At": "fields", "Kind": "kinds", "Witness": "witness",
+		"At": "fields", "Kind": "kinds", "Witness": "witness", "Provider": "provider",
 	},
 	reflect.TypeFor[check.Program]():   {"Run": "run"},
 	reflect.TypeFor[check.Generated](): {"File": "generated.file", "Run": "generated.run", "MaxBytes": "generated.max_bytes"},

@@ -138,6 +138,9 @@ type job struct {
 	vendor bool
 	said   []string
 	made   []string
+	// before is the env each plugin's pin recorded before j put a new
+	// one, for the plugins j pinned again.
+	before map[string][]string
 }
 
 // nothing reports whether j installs what the lock pins and the lock pins
@@ -157,6 +160,84 @@ func (j *job) run(ctx context.Context) error {
 		return j.pinned(ctx)
 	}
 	return j.named(ctx)
+}
+
+// put pins pin in the lock with the variables desc, the describe reply
+// of its build for this platform, names for read and predict (withEnv),
+// and keeps the names a pin of the same plugin recorded here before, to
+// print the ones that are new.
+func (j *job) put(pin plugin.Pin, desc plugin.Described) {
+	old, ok := j.lock.Pin(pin.Name)
+	pin.Env = withEnv(pin, old, j.in.Platform, desc.Env)
+	if ok {
+		if j.before == nil {
+			j.before = map[string][]string{}
+		}
+		j.before[pin.Name] = old.Env[j.in.Platform]
+	}
+	j.lock.Put(pin)
+}
+
+// withEnv is the env of each platform pin pins, once an install has
+// described its build for here, which names names: here gets names; a
+// platform old pins the same build for keeps what old records for it,
+// since an install on that platform described that build; any other gets
+// names, as a plugin built from one source mostly names the same
+// variables everywhere. So an install on each OS records that OS's names
+// and leaves the others' as they were, and a plugin whose names differ by
+// OS runs on each (docs/reference.md, errata.lock).
+func withEnv(pin, old plugin.Pin, here string, names []string) map[string][]string {
+	env := map[string][]string{}
+	for platform, sum := range pin.Sums {
+		got := names
+		if was, ok := old.Sums[platform]; ok && was == sum && platform != here {
+			got = old.Env[platform]
+		}
+		if len(got) > 0 {
+			env[platform] = slices.Clone(got)
+		}
+	}
+	return env
+}
+
+// sayProvides adds the line that says what pin's build, a protocol 2
+// plugin whose describe reply is desc, provides and which of errata's
+// variables its read and predict get, the ones its earlier pin did not
+// record named apart, so an install or an upgrade shows every variable a
+// provider is given. A protocol 1 build, which provides extract alone and
+// gets none, adds nothing.
+func (j *job) sayProvides(pin plugin.Pin, desc plugin.Described) {
+	if len(desc.Operations) == 0 {
+		return
+	}
+	line := "errata-ext-" + pin.Name + " " + pin.Version + " provides " + strings.Join(desc.Operations, ", ")
+	switch {
+	case !slices.Contains(desc.Operations, "read") && !slices.Contains(desc.Operations, "predict"):
+	case len(desc.Env) == 0:
+		line += "; its read and predict get no variable of errata's environment"
+	default:
+		line += "; its read and predict get " + strings.Join(desc.Env, ", ") + " from errata's environment, as " + plugin.LockFile + " now records" + j.newNames(pin.Name, desc.Env)
+	}
+	j.say("%s", line)
+}
+
+// newNames is what a line adds of the names of env that the plugin name's
+// earlier pin did not record, or "" for none or no earlier pin.
+func (j *job) newNames(name string, env []string) string {
+	old, ok := j.before[name]
+	if !ok {
+		return ""
+	}
+	var added []string
+	for _, n := range env {
+		if !slices.Contains(old, n) {
+			added = append(added, n)
+		}
+	}
+	if len(added) == 0 {
+		return ""
+	}
+	return "; new since its last pin: " + strings.Join(added, ", ")
 }
 
 // say adds a line to what j prints.

@@ -202,7 +202,7 @@ func newCheckCmd(load loader) *cobra.Command {
 			}
 			defer discardOutputs(pending)
 
-			e := engine.New(absRoot, nil)
+			e := engine.New(absRoot, cfg.Providers)
 			e.SkipsFail = failOnSkip
 			rep := e.Execute(runContext(cmd.Context(), allValues), cfg.Checks)
 			var errs []error

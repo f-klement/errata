@@ -208,6 +208,7 @@ Every check has these keys:
 | `id` | yes | lower-case words joined by single hyphens, unique in the file |
 | `reason` | yes | why the check exists and what breaks without it |
 | `scope` | yes | `repo`, `live` or `applied`; a rule and a generated check are always `repo` |
+| `provider` | scope `live` or `applied` | the plugin that reaches the running system, by its name: `kubernetes` for `errata-ext-kubernetes`. Lower case letters, digits, `_` and `-`, starting with a letter. A repo check does not load with it: see [Scopes](#scopes) |
 | `run` | program check, unless the file sets a [default run](#defaults) | the command, as a list of arguments, run from the repository root |
 | `timeout` | no | program check and generated check: a positive Go duration such as `10s` or `2m`; default `30s`. Zero or less does not load |
 | `generated` | generated check | the committed file and its generator: see [`generated`](#generated) |
@@ -5664,6 +5665,7 @@ csv     0.1.0    darwin/arm64 sha256:91aa...07c2
 toml2   1.2.0    linux/amd64  sha256:5d6e...a9b8 source=file
 ini2    0.3.0    linux/amd64  sha256:0c1d...44f5 source=url:https://x.example/ini2_linux_amd64
 ini2    0.3.0    darwin/arm64 sha256:7e2a...19c0 source=url:https://x.example/ini2_darwin_arm64
+kubernetes 0.1.0 linux/amd64 sha256:a41f...6d2e env=KUBECONFIG,HOME
 ```
 
 Fields are separated by spaces or tabs. The name is 1 to 64 lower case letters, digits, `_` and
@@ -5674,11 +5676,25 @@ then `/amd64` or `/arm64`. The checksum is the sha256 of the bare executable, in
 digits. The fifth field records where the build came from: none for a release of errata's
 repository (tagged `errata-ext-<name>/v<version>`), `source=file` for a file the user installed,
 on one platform only, and `source=url:<url>` for a download the user gave the sum of, one https
-URL with no user name or password for each platform. A mirror is not recorded. Every line of one
-name gives the same version and the same kind of source, and no platform twice. A line that starts
+URL with no user name or password for each platform. A mirror is not recorded. The last field,
+`env=` and names joined by commas, records the variables of errata's environment a
+[provider](#scopes)'s read and predict requests get, as the describe reply of that platform's
+build named them; a build that names none has no such field. Every line of one name gives the
+same version and the same kind of source, and no platform twice; each line has its own env, since
+a plugin may name `USERPROFILE` on Windows where it names `HOME` elsewhere. errata 0.5 and earlier
+read a line with an env field as malformed and fail to load the config, so a team whose lock pins
+a provider runs this release or later everywhere it reads the lock. A line that starts
 with `#` and a blank line are skipped. Any other line errata cannot read makes the config fail to
 load, naming the line, and so does a file over 1 MiB. A repository with no `errata.lock` uses no
 plugin.
+
+`errata plugin install` records a provider's env field from the build it describes, the one for
+the platform it runs on, and prints the names, with those its last pin did not record, so a
+release that asks for another variable changes the lock and its review shows it. Another
+platform's line keeps its env while it pins the same build, so an install on each OS records that
+OS's names; a build the lock did not pin before gets this platform's names. A run refuses a
+provider whose build names a variable its platform's field does not hold, naming the variable and
+the install that records it.
 
 `errata plugin install` rewrites the file in the form above, one line for each build in the
 order of the platforms. It keeps the comment and blank lines at the top of the file, before the
@@ -6061,11 +6077,42 @@ status is not a verdict ([`generated`](#generated)).
 | Scope | Question | Needs |
 |---|---|---|
 | `repo` | Is this claim true of the files? | nothing |
-| `live` | Is this claim true of the running system? | read access (not built yet) |
-| `applied` | Will this claim be true after an apply? | read access and a dry run (not built yet) |
+| `live` | Is this claim true of the running system? | the provider the check names, installed, providing read |
+| `applied` | Will this claim be true after an apply? | the provider the check names, installed, providing predict, a dry run |
 
-errata never applies anything. Until a provider for a running system exists, `live` and `applied`
-checks are skipped by name, and the coverage line gives the gap for each. A skip does not fail the
+A provider is a plugin that speaks [protocol 2](plugin-protocol.md#protocol-2) and provides render,
+read or predict ([ADR 0023](adr/0023-a-provider-is-a-plugin-that-speaks-protocol-2.md)). A `live`
+or `applied` check names its provider with `provider:`, and the key is required on both scopes:
+
+```yaml
+checks:
+  - id: deployed-image-matches-chart
+    reason: A hand edit can pin an older image than the chart names.
+    scope: live
+    provider: kubernetes
+    run: [sh, checks/live/deployed-image.sh]
+```
+
+errata reaches the check's scope when `errata.lock` pins `errata-ext-kubernetes`, its build is
+installed (`errata plugin install kubernetes`) and its describe reply names the operation the
+scope needs. Until this release a live or applied check loaded without `provider:`, and was
+always skipped; such a config no longer loads, and the message names the key to add. The check then runs as any program check does: it reaches the running system
+itself, and errata does not call the plugin for it. When the plugin is not pinned or not
+installed, or provides other operations, errata skips the check by name and the coverage line
+gives its gap, which names the operation and the plugin, and for one that is pinned and not
+installed, the install that puts it where errata looks (`--vendor` in a repository with
+`.errata/plugins`, `--file` for a pin from a file):
+
+```text
+  skipped deployed-image-matches-chart (live): no installed plugin provides read: errata-ext-kubernetes is not installed; install it with errata plugin install kubernetes
+```
+
+When the lock pins the plugin and errata cannot run it, the check is unknown and fails the run:
+that is a fault, not a missing system. The faults are a lock that pins no build for the platform
+errata runs on, a build that differs from its pin, a describe reply that breaks the protocol, and
+one that names a variable for read and predict that the lock does not record for the plugin.
+
+errata never applies anything, and a provider only reads and predicts. A skip does not fail the
 run unless `errata check` is given `--fail-on-skip`.
 
 ## Command line
@@ -6219,6 +6266,7 @@ required:
 | `version` | the version of this shape, now `1` |
 | `checks` | every check, in the order the config holds them |
 | `id`, `reason`, `scope` | as the config writes them; a reason in a block keeps its last line break |
+| `provider` | live or applied check: the plugin it names (see [Scopes](#scopes)); left out for a repo check |
 | `at` | where the check is written |
 | `at.file` | the config's path relative to the root, or as given for a config outside the root |
 | `at.line` | the line the check starts on, counted from 1 |

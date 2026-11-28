@@ -12,11 +12,10 @@ import (
 	"github.com/f-klement/errata/internal/config"
 )
 
-// unreachable are the scopes no run in CI can reach, since errata has no
-// provider for a running system yet (docs/reference.md#scopes). The example's
-// checks of these scopes are skipped, and every other check runs. When a
-// provider lands, this list shrinks and the example's checks of that scope
-// must hold in CI.
+// unreachable are the scopes no run in CI can reach, since the example's
+// repository pins no provider plugin and CI has no cluster
+// (docs/reference.md#scopes). The example's checks of these scopes are
+// skipped, and every other check runs.
 var unreachable = []check.Scope{check.ScopeLive, check.ScopeApplied}
 
 // examples is the example directory, from this package's directory.

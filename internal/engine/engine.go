@@ -69,8 +69,9 @@ func (t Table) Dispatch(ctx context.Context, root string, c check.Check) check.R
 	return run(ctx, root, c)
 }
 
-// Execute runs every check that the available providers can reach and skips
-// the rest with the reason. The report holds a result for each check, in
+// Execute runs every check whose scope the provider it names can reach,
+// skips the rest with the gap, and makes unknown a check whose provider
+// errata cannot run (provider.Reach). The report holds a result for each check, in
 // the order of checks, each followed by its witnesses' results, whatever
 // order they finish in. Rules and their witnesses run at once on a pool as
 // wide as the CPUs the process may use (width, read once for the run), and
@@ -82,7 +83,7 @@ func (t Table) Dispatch(ctx context.Context, root string, c check.Check) check.R
 // (check.WithRun), and each job that runs alone ends what the run kept of
 // its files (check.Wrote) before the next job starts.
 func (e *Engine) Execute(ctx context.Context, checks []check.Check) check.Report {
-	jobs := plan(provider.Union(e.Providers), checks)
+	jobs := plan(e.Providers, checks)
 	width := e.width()
 	home, err := treecopy.Home(e.Root)
 	timed := err == nil && e.inCopies(ctx, width, home, jobs)
@@ -99,20 +100,28 @@ func (e *Engine) Execute(ctx context.Context, checks []check.Check) check.Report
 }
 
 // job is one result of a report to compute: a check skipped with its gap,
-// a run of the check, or a run of it on its witness. copies, when set, is
-// the tree the job runs in a copy of.
+// a check unknown for its provider's fault, a run of the check, or a run of
+// it on its witness. copies, when set, is the tree the job runs in a copy
+// of.
 type job struct {
 	c       check.Check
 	gap     string
+	fault   string
 	witness string
 	copies  *treecopy.Tree
 }
 
-// plan is the jobs of checks, in the order of their results in the report.
-func plan(caps provider.Capabilities, checks []check.Check) []job {
+// plan is the jobs of checks, in the order of their results in the report,
+// with ps the providers installed (provider.Reach).
+func plan(ps []provider.Provider, checks []check.Check) []job {
 	var jobs []job
 	for _, c := range checks {
-		if ok, gap := provider.Reaches(caps, c.Scope); !ok {
+		gap, fault := provider.Reach(ps, c.Provider, c.Scope)
+		if fault != nil {
+			jobs = append(jobs, job{c: c, fault: fault.Error()})
+			continue
+		}
+		if gap != "" {
 			jobs = append(jobs, job{c: c, gap: gap})
 			continue
 		}
@@ -126,10 +135,14 @@ func plan(caps provider.Capabilities, checks []check.Check) []job {
 
 // alone is whether j runs with no other job: a check that may write to
 // the repository (mayWrite), on the repository or on a witness, and runs
-// there rather than in a copy. A rule only reads, and a skip runs nothing.
+// there rather than in a copy. A rule only reads, and a skip or a fault
+// runs nothing.
 func (j job) alone() bool {
-	return j.gap == "" && mayWrite(j.c) && j.copies == nil
+	return j.runs() && mayWrite(j.c) && j.copies == nil
 }
+
+// runs is whether j runs its check: it is neither a skip nor a fault.
+func (j job) runs() bool { return j.gap == "" && j.fault == "" }
 
 // inCopies sets the tree of the repository at e.Root on each job that
 // would run alone, whose check runs a program (runsProgram), does not keep
@@ -206,6 +219,9 @@ func mayWrite(c check.Check) bool {
 func (e *Engine) run(ctx context.Context, j job, slot int, made func()) check.Result {
 	if j.gap != "" {
 		return check.Result{Check: j.c, Gap: j.gap}
+	}
+	if j.fault != "" {
+		return check.Result{Check: j.c, Verdict: check.VerdictUnknown, Message: "errata cannot run the provider the check names: " + j.fault}
 	}
 	if j.copies == nil {
 		return e.runAt(ctx, e.Root, j)

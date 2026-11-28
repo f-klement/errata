@@ -34,8 +34,9 @@ flowchart TD
     build -->|"a program or a generated check"| checks
     load -.->|"a load error"| usage["exit 2"]
     checks --> exec["engine.Execute: rules at once on a pool, the report in config order"]
-    exec --> reach{"provider.Reaches the check's scope?"}
+    exec --> reach{"provider.Reach: the plugin the check names reaches its scope?"}
     reach -->|"no"| skip["skipped, with its gap"]
+    reach -.->|"errata cannot run it"| unknown["unknown, naming the fault"]
     reach -->|"yes"| copies{"engine.inCopies: two or more programs or generators to run, and two workers?"}
     copies -->|"yes, for each program and generator"| copy["treecopy.Tree.Make: a copy of the tree of its own, on the pool"]
     copies -->|"no, or a rule"| dispatch["engine.Dispatch by the check's kind"]
@@ -65,8 +66,9 @@ load, or an `--output` file errata cannot write. `errata list` takes the same lo
 check as loaded, defaults filled in, through `report.ListFormats`; it runs nothing. A write that
 fails gives exit 2 even when a check failed, since a report errata was asked for is missing.
 
-Each check names its scope. A check whose scope no provider reaches is skipped with its gap,
-what the run lacks to reach that scope; [GLOSSARY.md](../GLOSSARY.md) defines provider, gap and
+Each check names its scope, and a live or applied check names its provider, the plugin that
+reaches the running system. A check whose provider is not installed or does not provide the
+operation its scope needs is skipped with its gap, what the run lacks to reach that scope; [GLOSSARY.md](../GLOSSARY.md) defines provider, gap and
 coverage. The text report prints the coverage line, which counts the checks that ran and those
 skipped, and lists each skipped check with its gap under it.
 
@@ -119,6 +121,9 @@ when the plugin describes itself; `internal/plugin/wire` holds the protocol's me
 strict decoding and the check of a describe reply, which a plugin built from this repository
 imports too, with `internal/extract/core/lineend` to count lines as errata does and nothing else
 of errata.
+The host speaks protocol 2 too, whose render, read and predict requests make a plugin a provider:
+`plugin.Set.Providers` gives `config` a `provider.Provider` for each plugin a check names
+([ADR 0023](adr/0023-a-provider-is-a-plugin-that-speaks-protocol-2.md)).
 
 **install** (`internal/plugin/install`) is `errata plugin install`
 ([ADR 0021](adr/0021-errata-runs-a-plugin-only-at-the-checksum-its-release-published.md)). It
@@ -159,9 +164,11 @@ text or JSON.
 `Kind`, `Rule`, `Extractor`, `Value`, `Location`, `Assertion`, `Result` and `Report`. It imports
 nothing from errata, so any package can read them.
 
-**provider** (`internal/provider`) is the interface a live system will plug into. It declares
-capabilities, which the engine reads to skip a `live` or `applied` check that nothing can reach.
-There is no concrete provider yet, so today every such check is skipped.
+**provider** (`internal/provider`) is the interface a live system plugs into. It declares
+capabilities, which `provider.Reach` reads to skip a `live` or `applied` check whose provider
+cannot reach its scope. The concrete providers are plugins, which `internal/plugin` wraps; such a
+provider is also a `provider.Explained`, which says itself why it is missing, lacks an operation
+or cannot run, so the plugin host alone names a plugin and the command that installs it.
 
 ## Package dependencies
 
@@ -229,10 +236,12 @@ flowchart TB
     config --> core
     config --> check
     config --> plugin
+    config --> provider
     plugin --> program
     plugin --> wire
     plugin --> core
     plugin --> check
+    plugin --> provider
     cmd_errata_ext_csv --> extcsv
     extcsv --> wire
     extcsv --> lineend
@@ -383,15 +392,15 @@ reader imports `core` and no other reader, and `core` imports no reader.
 | `cmd/errata-ext-csv` | the CSV plugin's `main`: it hands stdin, stdout and stderr to `internal/ext/csv` and exits with its status | anything else |
 | `cmd/errata-ext-hcl` | the HCL plugin's `main`: it hands stdin, stdout and stderr to `internal/ext/hcl` and exits with its status; its tests hold what it links offline; `licences.txt` holds the reviewed licence of each module it links, from which `ci/plugin-notices.sh` writes its release's notices, and a test of `internal/plugin/install` holds the rows to the modules it links | anything else |
 | `internal/cli` | flags, wiring, the exit code contract (0 clean, 1 errata, 2 usage) | how a check runs or how output looks |
-| `internal/config` | the `errata.yaml` format, strict decoding, load errors, the line each check starts on; builds each rule's extractors and compiles its assert through `rule.Compile`, so a type error is a load error | running anything |
+| `internal/config` | the `errata.yaml` format, strict decoding, load errors, the line each check starts on; builds each rule's extractors and compiles its assert through `rule.Compile`, so a type error is a load error; the providers its checks name | running anything |
 | `internal/engine` | which checks run, in what order, and which are skipped; the run of each witness on its fixture | the check protocol's details, output formats |
 | `internal/protocol` | the check protocol: run a program, map its exit code to a verdict; run a generated check's generator and compare its stdout with the committed file | config, providers, output |
 | `internal/treecopy` | a throwaway copy of the repository's working tree for a check to run in, at a stable path for each slot of the pool in the user's cache: a git repository of its own that borrows the objects through alternates, on the same branch, with the working tree's changes, untracked files and ignored files copied on top and git's index when a tracked file differs; whether a tree can be copied truly (ADR [0019](adr/0019-a-program-check-runs-in-a-copy-of-the-tree.md)) | checks, the pool, what a check writes, which checks pay for a copy |
-| `internal/plugin` | the plugin host: `errata.lock` and its writing, where a build sits and the check of its sha256, the describe, build and extract requests, the check of each reply against the protocol and the rule's bounds, a plugin's extractor kind | the plugin's format; fetching a build or the network; which rules need it |
+| `internal/plugin` | the plugin host: `errata.lock` and its writing, where a build sits and the check of its sha256, the describe, build and extract requests, and render, read and predict, the check of each reply against the protocol and the rule's bounds, a plugin's extractor kind, a plugin as a `provider.Provider`, the variables read and predict get | the plugin's format; fetching a build or the network; which rules need it |
 | `internal/plugin/install` | `errata plugin install`: the plugin source and its mirrors, the releases API, the checksums file, every download and its 256 MiB bound, the trust of a first pin, a file or a URL with its sum, the cache's and the vendored directory's files and the order they are written in | how a run finds and runs a build; the protocol beyond describe; which rules need a plugin |
 | `internal/ext/csv` | the csv kind of plugin protocol 1: its fields, its specs and their defaults, the read of a file with `encoding/csv` and each cell's line as errata counts it | errata's other packages but `wire` and `core/lineend`; files, programs and the network |
 | `internal/ext/hcl` | the hcl kind of plugin protocol 1: its path and the one way it is written, the parse of a file with `hclsyntax`, the walk of a path through blocks, attributes, objects and lists, which values are literal, and each value's line as errata counts it | errata's other packages but `wire` and `core/lineend`; evaluating an expression; files, programs and the network |
-| `internal/plugin/wire` | the messages of plugin protocol 1 and their strict decoding | errata's other packages: it imports only the standard library, so a plugin can import it |
+| `internal/plugin/wire` | the messages of plugin protocols 1 and 2 and their strict decoding | errata's other packages: it imports only the standard library, so a plugin can import it |
 | `internal/program` | starting a program and waiting for it: argv, working directory, environment, stdin, timeout, a bound on each output stream, the kill of the process group | what its exit or its output means; checks, config, output |
 | `internal/rule` | evaluating a rule: run its extractors, compare their values or evaluate its assert, fail closed; the CEL environment, the assert helpers, the embedded time zone database and the limits | how an extractor reads a file, config, output |
 | `internal/semver` | versions and ranges as npm, Cargo, PEP 440, Go modules and RubyGems write them: their order, precision, satisfaction and overlap, for agree's `compare: semver` and the assert helpers alike | files, rules, CEL |
@@ -441,7 +450,7 @@ reader imports `core` and no other reader, and `core` imports no reader.
 | `internal/extract/env` | one variable across the files a rule lists: the reader each file's name or shebang chooses, a glob over git's tracked files, and each value's origin, its reader and its job, step or stage | the readers, which the facade hands it as functions |
 | `internal/extract/filestat` | the `exists` and `size` kinds: whether a file is at a name and how many bytes it holds, from core's `Stat`, without opening the file | the other readers |
 | `internal/extract/extracttest`, `internal/extract/coretest` | what the extractors' tests share; only test files import them, and Gremlins and the `make cover` total leave them alone | any reader: `coretest` imports `core` alone, and `extracttest` nothing of errata's but `check` and `core/lineend`, since `core`'s own tests import it |
-| `internal/provider` | the provider interface, capabilities, the reconciler model, scope gating | any concrete live system (none yet) |
+| `internal/provider` | the provider interface, capabilities, the reconciler model, scope gating and the gap it names | any concrete live system and how a plugin is run |
 | `internal/report` | output formats: `text`, `junit` and `sarif` for a run, `text` and `json` for `errata list` | where the results came from |
 | `internal/heapcap` | the heap watchdog that every package's tests link under the `mutation` tag only | errata's own code: only test files built with the tag import it |
 | `internal/check` | the domain types: `Check`, `Rule`, `Extractor`, `Assertion`, `Value`, `Location`, `Extracted`, `Scope`, `Verdict`, `Result`, `Report`, and `ExtractorKind` with the `Description` and `Shape` it gives of what an extractor returns | every other package |
@@ -464,9 +473,12 @@ Four seams carry the design:
    protocol. A further runner, such as an in-process Kubernetes ownership check, plugs in here
    without the engine changing.
 2. **`provider.Provider`.** It declares capabilities, so the engine can skip a `live` or `applied`
-   check by name when nothing can reach it. The render, read and predict methods are left out on
-   purpose: their signatures should come from the first real provider (Kubernetes), not from a
-   guess.
+   check by name when the provider it names cannot reach it. A plugin speaking protocol 2 is one
+   (`plugin.Provider`, [ADR 0023](adr/0023-a-provider-is-a-plugin-that-speaks-protocol-2.md)); its
+   render, read and predict live on that type, since only the plugin host sends them. A provider
+   that is also a `provider.Explained` gives `Reach` its own fault and its own reason for a gap,
+   which `plugin.Provider` asserts it does; a provider that is not one is judged by its
+   capabilities alone.
 3. **`report.Reporter`.** Text, JUnit and SARIF are three implementations over the same
    `check.Report`; an interactive view would be a fourth. `report.Formats` makes each with
    errata's version, which SARIF writes as the driver's version.
@@ -524,6 +536,11 @@ classDiagram
         Capabilities() Capabilities
         Reconciler() ReconcilerModel
     }
+    class Explained {
+        <<interface>>
+        Fault() error
+        Lacks(op) string
+    }
     class Reporter {
         <<interface>>
         Write(w, Report)
@@ -536,12 +553,13 @@ classDiagram
     Rule --> Assertion : the compiled assert
     Runner ..> Check : runs
     Provider ..> Check : reaches its scope
+    Explained ..> Provider : says why one cannot
     Reporter ..> Check : writes each result of
 ```
 
 A class shows the fields a seam passes and every method of an interface; a struct's other fields are
 left out. `Check`, `Kind`, `Program`, `Generated`, `Rule`, `Extractor` and `Assertion` are in
-`check`; `Runner` is `engine`'s, `Provider` is `provider`'s and `Reporter` is `report`'s. Each
+`check`; `Runner` is `engine`'s, `Provider` and `Explained` are `provider`'s and `Reporter` is `report`'s. Each
 reader implements `Extractor`, and so does `internal/plugin` for each plugin; `rule` implements
 `Assertion`.
 
@@ -787,8 +805,7 @@ text, such as `y` as `true` or `007` as `7`, is refused.
 **A check that cannot evaluate is unknown, and an unknown fails the run.** A crashing program, a
 timeout or a missing binary gives `VerdictUnknown`. It is kept apart from the errata, which hold
 only claims shown false, and it fails the run all the same (ADR
-[0001](adr/0001-an-unknown-fails-the-run-without-being-an-erratum.md)). A skip is only for a scope that no
-provider can reach, and the coverage line names each one with its gap. A skip passes the run
+[0001](adr/0001-an-unknown-fails-the-run-without-being-an-erratum.md)). A skip is only for a scope that the provider a check names cannot reach, and the coverage line names each one with its gap. A skip passes the run
 unless `--fail-on-skip` sets `check.Report.SkipsFail`; `Report.Failed` then counts it, and each
 reporter writes it as a failure, so the output agrees with the exit code.
 

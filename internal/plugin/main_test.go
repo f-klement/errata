@@ -69,8 +69,12 @@ func placeFake(t *testing.T, base, name string) string {
 
 // pinLine is a lock line that pins name at 0.1.0 for this platform at sum.
 func pinLine(name, sum string) string {
-	return name + " 0.1.0 " + Platform() + " sha256:" + sum
+	return name + " 0.1.0 " + Platform() + " sha256:" + sum + fakeEnv[name]
 }
+
+// fakeEnv is the env field of the lock line of each name the fake
+// describes with an env (describe2), which an install would record.
+var fakeEnv = map[string]string{"kube": " env=FAKE_KUBE,FAKE_ABSENT"}
 
 // newRepo is a repository holding files, with the fake vendored under
 // each of names and a lock that pins it.

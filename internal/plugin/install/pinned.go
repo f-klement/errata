@@ -52,7 +52,9 @@ func (j *job) reinstallURL(ctx context.Context, pin plugin.Pin) error {
 	if err := j.vendorPin(ctx, pin, k.path); err != nil {
 		return err
 	}
+	j.put(pin, k.desc)
 	j.say("errata-ext-%s %s %s: sha256 %s matches %s, from %s", pin.Name, pin.Version, j.in.Platform, sum, plugin.LockFile, at)
+	j.sayProvides(pin, k.desc)
 	return nil
 }
 

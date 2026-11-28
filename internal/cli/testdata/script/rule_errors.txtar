@@ -64,6 +64,9 @@ stderr 'check "blank-assert": assert is blank: write the expression or remove th
 ! exec errata check -c live-rule.yaml
 stderr 'check "live-rule": .*scope "live": a rule reads files, so its scope is repo; a live extractor comes with a provider'
 
+! exec errata check -c no-provider.yaml
+stderr 'check "no-provider": provider is required on a check of scope applied: name the plugin that reaches the running system'
+
 ! exec errata check -c case-check.yaml
 stderr 'check "case-check": decode: key "Agree" must be spelled "agree"'
 
@@ -237,6 +240,7 @@ checks:
   - id: live-rule
     reason: r
     scope: live
+    provider: kube
     extract: {service: {yaml: {file: s.yaml, path: a}}}
     agree: [service]
 -- case-check.yaml --
@@ -289,3 +293,6 @@ checks:
     reason: r
     extract: {service: {yaml: {file: s.yaml, path: a}}}
     agree: [service]
+-- no-provider.yaml --
+checks:
+  - {id: no-provider, reason: r, scope: applied, run: ['true']}

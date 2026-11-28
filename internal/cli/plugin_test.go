@@ -74,3 +74,74 @@ func TestPluginInstallInstallsAndPins(t *testing.T) {
 		t.Fatalf("exit %d: %s", code, errs.String())
 	}
 }
+
+// A live and an applied check run when the plugin they name is installed
+// and provides read and predict, and a live check whose plugin provides
+// render alone is skipped with a gap naming what it provides; the run
+// sees the installed plugins through errata.lock. Planted break: check
+// building the engine with no providers, as before #138, which skipped
+// all three.
+func TestAnInstalledProviderMakesItsScopeReachable(t *testing.T) {
+	bin := t.TempDir()
+	kube, _ := fakePlugin(t, bin, "kube")
+	renderer, _ := fakePlugin(t, bin, "renderer")
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	root := t.TempDir()
+	var out, errs bytes.Buffer
+	for _, path := range []string{kube, renderer} {
+		if code := Execute(t.Context(), []string{"plugin", "install", "--root", root, "--file", path}, &out, &errs); code != ExitOK {
+			t.Fatalf("install %s: exit %d: %s", path, code, errs.String())
+		}
+	}
+	for _, want := range []string{
+		"errata-ext-kube 0.1.0 provides render, read, predict; its read and predict get FAKE_KUBE, FAKE_ABSENT from errata's environment, as errata.lock now records\n",
+		"errata-ext-renderer 0.1.0 provides render\n",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("the install does not say %q:\n%s", want, out.String())
+		}
+	}
+	if lock, err := os.ReadFile(filepath.Join(root, "errata.lock")); err != nil || !strings.Contains(string(lock), " source=file env=FAKE_KUBE,FAKE_ABSENT\n") {
+		t.Errorf("the lock does not record kube's env: %s, %v", lock, err)
+	}
+	config := filepath.Join(root, "errata.yaml")
+	if err := os.WriteFile(config, []byte(`checks:
+  - {id: live, reason: r, scope: live, provider: kube, run: ['true']}
+  - {id: applied, reason: r, scope: applied, provider: kube, run: ['true']}
+  - {id: rendered, reason: r, scope: live, provider: renderer, run: ['true']}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	if code := Execute(t.Context(), []string{"check", "--root", root, "--config", config}, &out, &errs); code != ExitOK {
+		t.Fatalf("exit %d: %s%s", code, out.String(), errs.String())
+	}
+	for _, want := range []string{
+		"Coverage: ran 2, skipped 1.",
+		"skipped rendered (live): no installed plugin provides read: errata-ext-renderer 0.1.0 provides render\n",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("the run does not say %q:\n%s", want, out.String())
+		}
+	}
+}
+
+// An install that pins a provider again says which variables its read and
+// predict get that its last pin did not record. Planted break: newNames
+// comparing with the new pin, which named none.
+func TestAnUpgradeNamesTheVariablesItAdds(t *testing.T) {
+	kube, _ := fakePlugin(t, t.TempDir(), "kube")
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	root := t.TempDir()
+	old := "kube 0.0.1 " + plugin.Platform() + " sha256:" + strings.Repeat("a", 64) + " source=file env=FAKE_KUBE\n"
+	if err := os.WriteFile(filepath.Join(root, "errata.lock"), []byte(old), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out, errs bytes.Buffer
+	if code := Execute(t.Context(), []string{"plugin", "install", "--root", root, "--file", kube}, &out, &errs); code != ExitOK {
+		t.Fatalf("exit %d: %s", code, errs.String())
+	}
+	if want := "as errata.lock now records; new since its last pin: FAKE_ABSENT\n"; !strings.Contains(out.String(), want) {
+		t.Errorf("the install does not say %q:\n%s", want, out.String())
+	}
+}

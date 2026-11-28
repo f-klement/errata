@@ -111,6 +111,7 @@ func TestListJSONKeysAreDocumented(t *testing.T) {
 	// The agree rule compares as semver, so relation.syntax is written.
 	checks := listChecks()
 	checks[1].Rule().Compare = check.CompareSemver
+	checks = append(checks, check.Check{ID: "l", Reason: "r", Scope: check.ScopeLive, Provider: "kube", Kind: &check.Program{Run: []string{"true"}}})
 	if err := (ListJSON{}).WriteList(&buf, checks, nil); err != nil {
 		t.Fatal(err)
 	}

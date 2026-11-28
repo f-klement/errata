@@ -62,6 +62,7 @@ checks:
       The probe takes long.
       A second line.
     scope: live
+    provider: kube
     run: [sh, -c, 'echo "a b" > out']
     timeout: 2m
 -- program.json --
@@ -90,6 +91,7 @@ checks:
       "id": "slow-probe",
       "reason": "The probe takes long.\nA second line.\n",
       "scope": "live",
+      "provider": "kube",
       "at": {
         "file": "program.yaml",
         "line": 6,
@@ -482,6 +484,7 @@ lint-passes (repo) program check
 slow-probe (live) program check
   why: The probe takes long.
        A second line.
+  provider: kube
   run: sh -c `echo "a b" > out`
   timeout: 2m0s
 

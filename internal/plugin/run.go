@@ -106,11 +106,19 @@ const (
 )
 
 // limits are the bounds of one request: the timeout, and the bound on
-// stdout.
+// stdout; and env, the names of the variables of errata's environment the
+// request gets beside environ's, which only a read or a predict request
+// sets.
 type limits struct {
 	timeout time.Duration
 	stdout  int64
+	env     []string
 }
+
+// errNotInstalled is the error of a build that is not where the lock's
+// pin says, which a check that names its plugin as a provider takes for a
+// gap rather than a fault.
+var errNotInstalled = errors.New("not installed")
 
 // exe is one plugin's build: the name a message gives it, such as
 // errata-ext-csv 0.1.0, where its executable is, the sha256 the lock pins
@@ -165,7 +173,7 @@ func (x exe) run(ctx context.Context, req any, lim limits) (stdout, stderr []byt
 	p := program.Run(ctx, program.Spec{
 		Argv:        []string{x.path},
 		Dir:         dir,
-		Env:         environ(runtime.GOOS, os.LookupEnv),
+		Env:         append(environ(runtime.GOOS, os.LookupEnv), passed(lim.env, os.LookupEnv)...),
 		Stdin:       in,
 		Timeout:     lim.timeout,
 		Bound:       lim.stdout,
@@ -236,7 +244,7 @@ func (x exe) verify() error {
 func (x exe) regular() (fs.FileInfo, error) {
 	link, err := os.Lstat(x.path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil, fmt.Errorf("plugin %s is not installed: errata looks for it at %s%s", x.label, x.path, x.install)
+		return nil, fmt.Errorf("plugin %s is %w: errata looks for it at %s%s", x.label, errNotInstalled, x.path, x.install)
 	}
 	if err != nil {
 		return nil, err
@@ -318,6 +326,15 @@ func (x exe) notRegular(m fs.FileMode) error {
 	return fmt.Errorf("plugin %s at %s is not a regular file (%s), so errata does not run it: install the build itself there, not a link to it", x.label, x.path, m.Type())
 }
 
+// The variables errata itself reads (wire.ErrataEnv): the token errata
+// plugin install sends to GitHub's releases API, and the mirror it
+// installs from. errata reads them by these names alone, and passes
+// neither to a plugin.
+const (
+	TokenEnv  = wire.TokenEnv
+	SourceEnv = wire.SourceEnv
+)
+
 // goRuntime are the variables a plugin gets when errata has them: the Go
 // runtime's, so an operator can tune a plugin written in Go.
 var goRuntime = []string{"GOMAXPROCS", "GOMEMLIMIT", "GOGC"}
@@ -332,7 +349,15 @@ func environ(goos string, lookup func(string) (string, bool)) []string {
 	if goos == "windows" {
 		names = append(names[:len(names):len(names)], "SYSTEMROOT")
 	}
-	env := []string{}
+	return append([]string{}, passed(names, lookup)...)
+}
+
+// passed is each of names that lookup finds, as NAME=value: goRuntime's
+// for every request, and the variables a plugin names for its read and
+// predict requests (docs/plugin-protocol.md, The environment of read and
+// predict).
+func passed(names []string, lookup func(string) (string, bool)) []string {
+	var env []string
 	for _, n := range names {
 		if v, ok := lookup(n); ok {
 			env = append(env, n+"="+v)

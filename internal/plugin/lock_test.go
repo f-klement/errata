@@ -61,6 +61,10 @@ func TestALockRefusesAMalformedLine(t *testing.T) {
 		"csv 0.1.0 linux/amd64 " + sumA + "\ncsv 0.2.0 linux/arm64 " + sumA:                              "pinned at 0.1.0 on an earlier line and at 0.2.0 here",
 		"csv 0.1.0 linux/amd64 " + sumA + "\ncsv 0.1.0 linux/arm64 " + sumA + " source=file":             "another source here",
 		"csv 0.1.0 linux/amd64 " + sumA + "\ncsv 0.1.0 linux/amd64 " + sumA:                              "pins linux/amd64 twice",
+		"k 0.1.0 linux/amd64 " + sumA + " env=HOME source=file":                                          `the field "env=HOME" is neither a source nor an env`,
+		"k 0.1.0 linux/amd64 " + sumA + " env=":                                                          `the env field: env lists ""`,
+		"k 0.1.0 linux/amd64 " + sumA + " env=HOME,github_token":                                         "the env field: env lists github_token, which is GITHUB_TOKEN",
+		"k 0.1.0 linux/amd64 " + sumA + " source=file env=A x":                                           "holds 7 fields",
 	} {
 		_, err := ParseLock([]byte(line + "\n"))
 		at := fmt.Sprintf("%s:%d: ", LockFile, strings.Count(line, "\n")+1)
@@ -130,21 +134,29 @@ func TestBuildPath(t *testing.T) {
 }
 
 // Format writes a line for each build, each plugin's platforms in the
-// order of Platforms and its source as ParseLock reads it, and Put sets a
-// pin in its place or after the others. Planted breaks: sourceField
-// writing no URL; Put appending a pin the lock holds already, or the
-// first pin it holds.
+// order of Platforms and its source and env as ParseLock reads them, each
+// platform's env its own, and Put sets a pin in its place or after the
+// others. Planted breaks: sourceField writing no URL; envField writing
+// one platform's env on every line; Put appending a pin the lock holds
+// already, or the first pin it holds.
 func TestALockIsWrittenAsItIsRead(t *testing.T) {
 	text := "csv 0.1.0 darwin/arm64 " + sumA + "\ncsv 0.1.0 linux/amd64 sha256:" + strings.Repeat("b", 64) + "\n" +
 		"toml 1.2.3 linux/amd64 " + sumA + " source=file\n" +
 		"ini 0.2.0 darwin/arm64 " + sumA + " source=url:https://example.com/a\n" +
-		"ini 0.2.0 linux/amd64 " + sumA + " source=url:https://example.com/b\n"
+		"ini 0.2.0 linux/amd64 " + sumA + " source=url:https://example.com/b\n" +
+		"kube 0.1.0 linux/amd64 " + sumA + " env=KUBECONFIG,HOME\n" +
+		"kube 0.1.0 windows/amd64 " + sumA + " env=KUBECONFIG,USERPROFILE\n" +
+		"kube 0.1.0 windows/arm64 " + sumA + "\n" +
+		"ocp 0.1.0 linux/amd64 " + sumA + " source=file env=KUBECONFIG\n"
 	l, err := ParseLock([]byte(text))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := string(l.Format()); got != text {
 		t.Fatalf("Format wrote\n%s\nwant\n%s", got, text)
+	}
+	if kube, _ := l.Pin("kube"); len(kube.Env) != 2 || strings.Join(kube.Env["linux/amd64"], " ") != "KUBECONFIG HOME" || strings.Join(kube.Env["windows/amd64"], " ") != "KUBECONFIG USERPROFILE" {
+		t.Fatalf("kube's env is %q", kube.Env)
 	}
 	l.Put(Pin{Name: "toml", Version: "1.3.0", Sums: map[string]string{"linux/amd64": strings.Repeat("c", 64)}, Source: SourceFile})
 	l.Put(Pin{Name: "zip", Version: "0.1.0", Sums: map[string]string{"linux/amd64": strings.Repeat("d", 64)}})

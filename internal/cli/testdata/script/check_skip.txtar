@@ -1,12 +1,13 @@
-# No provider exists yet, so live and applied checks are skipped by name and
-# the coverage line says so. A skip alone does not fail the run.
+# A live or applied check whose provider is not installed is skipped by
+# name, and the coverage line gives the gap: the operation the scope needs
+# and the plugin that would provide it. A skip alone does not fail the run.
 exec errata check
 stdout '^0 errata, 0 unknown. Coverage: ran 1, skipped 2.$'
-stdout 'skipped pinned-image \(live\): no provider can read a live system'
-stdout 'skipped field-owner \(applied\): no provider can read and predict a live system'
+stdout 'skipped pinned-image \(live\): no installed plugin provides read: errata-ext-kube is not installed; install it with errata plugin install kube'
+stdout 'skipped field-owner \(applied\): no installed plugin provides predict: errata-ext-kube is not installed; install it with errata plugin install kube'
 
 -- errata.yaml --
 checks:
   - {id: always, reason: r, scope: repo, run: ['true']}
-  - {id: pinned-image, reason: r, scope: live, run: ['true']}
-  - {id: field-owner, reason: r, scope: applied, run: ['true']}
+  - {id: pinned-image, reason: r, scope: live, provider: kube, run: ['true']}
+  - {id: field-owner, reason: r, scope: applied, provider: kube, run: ['true']}

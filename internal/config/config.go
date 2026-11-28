@@ -26,6 +26,7 @@ import (
 	"github.com/f-klement/errata/internal/extract"
 	"github.com/f-klement/errata/internal/extract/core"
 	"github.com/f-klement/errata/internal/plugin"
+	"github.com/f-klement/errata/internal/provider"
 	"github.com/f-klement/errata/internal/rule"
 )
 
@@ -52,6 +53,10 @@ type file struct {
 type Config struct {
 	Checks   []check.Check
 	Required []string
+	// Providers are the providers the checks name that the lock pins and
+	// that are installed (plugin.Set.Providers), for the engine to reach
+	// each check's scope with.
+	Providers []provider.Provider
 }
 
 type checkEntry struct {
@@ -65,6 +70,8 @@ type checkEntry struct {
 	// InPlace keeps a program or generated check in the repository rather
 	// than in a copy of the tree (ADR 0019).
 	InPlace bool `json:"in_place,omitempty"`
+	// Provider names the plugin a live or applied check needs (ADR 0023).
+	Provider string `json:"provider,omitempty"`
 
 	Extract    map[string]extract.Spec `json:"extract,omitempty"`
 	Agree      []string                `json:"agree,omitempty"`
@@ -133,9 +140,13 @@ func LoadWith(ctx context.Context, root, path string, build Builder) (Config, er
 		return Config{}, err
 	}
 	at := place(root, path)
+	var names []string
 	for i := range cfg.Checks {
 		cfg.Checks[i].At.File, cfg.Checks[i].At.Outside = at.File, at.Outside
+		names = append(names, cfg.Checks[i].Provider)
 	}
+	// A repo check names none, "", which no lock pins.
+	cfg.Providers = plugins.Providers(ctx, names)
 	return cfg, nil
 }
 
@@ -490,10 +501,11 @@ func build(raw json.RawMessage, def defaults, newExtractor Builder, plugins entr
 		return check.Check{}, err
 	}
 	c := check.Check{
-		ID:      e.ID,
-		Reason:  e.Reason,
-		Scope:   check.Scope(e.Scope),
-		Witness: e.Witness,
+		ID:       e.ID,
+		Reason:   e.Reason,
+		Scope:    check.Scope(e.Scope),
+		Witness:  e.Witness,
+		Provider: e.Provider,
 	}
 	row, errs := kindOf(keys)
 	if _, ok := keys["witness"]; ok && len(e.Witness) == 0 {

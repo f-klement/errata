@@ -67,8 +67,9 @@ compares that to the files. It never applies anything.
 **Live system.** The running system a repository describes. A Kubernetes cluster, a set of Docker
 containers, a host.
 
-**Provider.** The part of errata that talks to one kind of live system. A provider implements up to
-three operations and declares which ones it has.
+**Provider.** The plugin that talks to one kind of live system, such as `errata-ext-kubernetes`. A
+provider implements up to three operations and declares which ones it has. A live or applied check
+names its provider with `provider:`.
 
 **Render.** The provider operation that turns the files into the objects they describe.
 
@@ -303,8 +304,9 @@ repository's working tree holds, ignored files included, and borrows its objects
 runs a program check or a generated check beside the others, so nothing it writes reaches the
 repository or another check. A check with `in_place: true` runs in the repository instead, alone.
 
-**Gap.** What a run lacks to reach a check's scope: a provider operation that no available provider
-has, for example read for a live check. A check whose scope the run cannot reach is skipped, and its
+**Gap.** What a run lacks to reach a check's scope: the provider operation it needs, read for a live
+check and predict for an applied one, which the provider the check names does not supply because it
+is not installed or provides other operations. The gap names the operation and the plugin. A check whose scope the run cannot reach is skipped, and its
 gap is printed in the coverage. A skip does not fail the run unless `errata check` is given
 `--fail-on-skip`.
 

@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -145,7 +146,7 @@ func TestPropertyOneResultPerCheckInOrder(t *testing.T) {
 		n := rapid.IntRange(0, 20).Draw(t, "n")
 		checks := make([]check.Check, n)
 		for i := range checks {
-			checks[i] = check.Check{ID: string(rune('a' + i)), Scope: rapid.SampledFrom(scopes).Draw(t, "scope")}
+			checks[i] = check.Check{ID: string(rune('a' + i)), Scope: rapid.SampledFrom(scopes).Draw(t, "scope"), Provider: rapid.SampledFrom([]string{"fake", "other"}).Draw(t, "provider")}
 		}
 		caps := provider.Capabilities{Read: rapid.Bool().Draw(t, "read"), Predict: rapid.Bool().Draw(t, "predict")}
 
@@ -160,8 +161,8 @@ func TestPropertyOneResultPerCheckInOrder(t *testing.T) {
 			if res.Check.ID != checks[i].ID {
 				t.Fatalf("result %d is %s, want %s", i, res.Check.ID, checks[i].ID)
 			}
-			reachable, _ := provider.Reaches(caps, checks[i].Scope)
-			if res.Skipped() == reachable {
+			gap, _ := provider.Reach(e.Providers, checks[i].Provider, checks[i].Scope)
+			if res.Skipped() != (gap != "") || res.Gap != gap {
 				t.Fatalf("check %s scope %s caps %+v: skipped=%v", res.Check.ID, checks[i].Scope, caps, res.Skipped())
 			}
 		}
@@ -170,6 +171,32 @@ func TestPropertyOneResultPerCheckInOrder(t *testing.T) {
 			t.Fatalf("runner ran %d checks, want %d", len(ran), n-skipped)
 		}
 	})
+}
+
+// faultyProvider is a provider errata found and cannot run.
+type faultyProvider struct{ fakeProvider }
+
+func (faultyProvider) Fault() error { return errors.New("its build differs from its pin") }
+
+func (faultyProvider) Lacks(string) string { return "" }
+
+// A check whose provider errata cannot run is unknown, naming why, and
+// does not run; a repo check beside it runs. Planted break: plan dropping
+// the fault, which ran the live check.
+func TestAFaultyProviderMakesItsChecksUnknown(t *testing.T) {
+	var ran []string
+	e := &Engine{Providers: []provider.Provider{faultyProvider{fakeProvider{provider.Capabilities{Read: true}}}}, Run: alwaysTrue(&ran)}
+	rep := e.Execute(context.Background(), []check.Check{
+		{ID: "live", Scope: check.ScopeLive, Provider: "fake", Kind: &check.Program{}},
+		{ID: "repo", Scope: check.ScopeRepo, Kind: &check.Program{}},
+	})
+	live := rep.Results[0]
+	if live.Verdict != check.VerdictUnknown || live.Message != "errata cannot run the provider the check names: its build differs from its pin" {
+		t.Fatalf("live: %+v", live)
+	}
+	if len(ran) != 1 || ran[0] != "repo" {
+		t.Fatalf("ran %v, want repo alone", ran)
+	}
 }
 
 // New sends a generated check to the generator runner: a generator whose

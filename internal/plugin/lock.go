@@ -15,6 +15,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/f-klement/errata/internal/plugin/wire"
 )
 
 // LockFile is the lock file's name in the repository's root.
@@ -37,12 +39,23 @@ const maxLockBytes = 1 << 20
 // took the release's place is not recorded, so the lock reads the same
 // wherever a build was fetched from. A run checks every build against its
 // sum alike, whatever its source.
+//
+// Env is, for each platform, the names of the variables the read and
+// predict requests of the plugin's build for it get
+// (docs/plugin-protocol.md, The environment of read and predict), in the
+// order a describe reply named them; a platform whose build names none
+// has no entry. A plugin may name other variables on another OS, such as
+// USERPROFILE for HOME, so each platform has its own. A run refuses a
+// plugin whose describe names one its platform's entry lacks, so a
+// release that asks for another variable changes the lock, and review
+// sees it.
 type Pin struct {
 	Name    string
 	Version string
 	Sums    map[string]string
 	Source  string
 	URLs    map[string]string
+	Env     map[string][]string
 }
 
 // The sources of a Pin.
@@ -52,20 +65,49 @@ const (
 	SourceURL     = "url"
 )
 
-// readSource reads a line's fifth field, or the release for none: the
-// source and, for a URL, the URL.
-func readSource(fields []string) (source, at string, err error) {
-	if len(fields) == 0 {
-		return SourceRelease, "", nil
+// readOptions reads the fields of a line after its checksum into ln: at
+// most a source and then the env, each optional. No source is a release.
+func readOptions(fields []string, ln *lockLine) error {
+	ln.source = SourceRelease
+	if len(fields) > 0 && strings.HasPrefix(fields[0], "source=") {
+		var err error
+		if ln.source, ln.url, err = readSource(fields[0]); err != nil {
+			return err
+		}
+		fields = fields[1:]
 	}
-	v, ok := strings.CutPrefix(fields[0], "source=")
-	if ok && v == SourceFile {
+	if len(fields) == 0 {
+		return nil
+	}
+	list, ok := strings.CutPrefix(fields[0], "env=")
+	if !ok || len(fields) > 1 {
+		return fmt.Errorf("the field %s is neither a source nor an env: write source=file or source=url:<url>, then env=<NAME>,<NAME> for the variables read and predict get", strconv.Quote(fields[0]))
+	}
+	ln.env = strings.Split(list, ",")
+	return checkEnvNames(ln.env)
+}
+
+// readSource reads a line's source field: the source and, for a URL, the
+// URL.
+func readSource(field string) (source, at string, err error) {
+	v, _ := strings.CutPrefix(field, "source=")
+	if v == SourceFile {
 		return SourceFile, "", nil
 	}
-	if at, isURL := strings.CutPrefix(v, SourceURL+":"); ok && isURL {
+	if at, isURL := strings.CutPrefix(v, SourceURL+":"); isURL {
 		return SourceURL, at, checkURL(at)
 	}
-	return "", "", fmt.Errorf("the field %s is no source: write source=file or source=url:<url>, or leave it out for a release", strconv.Quote(fields[0]))
+	return "", "", fmt.Errorf("the field %s is no source: write source=file or source=url:<url>, or leave it out for a release", strconv.Quote(field))
+}
+
+// checkEnvNames refuses an env field's names that a describe reply's env
+// could not hold (wire.DescribeReply.Check).
+func checkEnvNames(names []string) error {
+	d := wire.DescribeReply{Protocol: wire.Protocol2, Operations: []string{wire.OpRead}, Env: names}
+	if err := d.Check(); err != nil {
+		return fmt.Errorf("the env field: %w", err)
+	}
+	return nil
 }
 
 // checkURL refuses a source URL that is not https with a host, or that
@@ -128,16 +170,18 @@ func ReadLock(root string) (Lock, error) {
 }
 
 // ParseLock reads a lock file's bytes. Each line that is not blank and does
-// not start with # pins one build of one plugin, in four fields and an
-// optional fifth:
+// not start with # pins one build of one plugin, in four fields and two
+// optional ones:
 //
 //	csv 0.1.0 linux/amd64 sha256:<64 hex digits>
 //	nginx 0.3.0 linux/amd64 sha256:<64 hex digits> source=file
+//	kubernetes 0.1.0 linux/amd64 sha256:<64 hex digits> env=KUBECONFIG,HOME
 //
 // the plugin's name, its version, the platform, the sha256 of the
-// executable, and where it came from when that is not a release of this
-// repository (Pin). Every line of one name names the same version and the
-// same kind of source, and no platform twice. A line that breaks any of
+// executable, where it came from when that is not a release of this
+// repository, and the variables its read and predict get when it names
+// any (Pin). Every line of one name names the same version and the same
+// kind of source, and no platform twice; each line has its own env. A line that breaks any of
 // this is refused with its number, and so is the whole file. The blank and
 // comment lines before the first line that pins a build are the Header.
 func ParseLock(data []byte) (Lock, error) {
@@ -183,7 +227,7 @@ func (l *Lock) add(text string, at map[string]int) error {
 	i, seen := at[ln.name]
 	if !seen {
 		at[ln.name] = len(l.Pins)
-		l.Pins = append(l.Pins, Pin{Name: ln.name, Version: ln.version, Sums: map[string]string{}, Source: ln.source, URLs: map[string]string{}})
+		l.Pins = append(l.Pins, Pin{Name: ln.name, Version: ln.version, Sums: map[string]string{}, Source: ln.source, URLs: map[string]string{}, Env: map[string][]string{}})
 		i = len(l.Pins) - 1
 	}
 	return l.Pins[i].merge(ln)
@@ -192,20 +236,21 @@ func (l *Lock) add(text string, at map[string]int) error {
 // lockLine is one line of the lock: one build of a plugin.
 type lockLine struct {
 	name, version, platform, sum, source, url string
+	env                                       []string
 }
 
 // parseLine reads one line of the lock, refusing a field that is not what
 // its place asks for.
 func parseLine(text string) (lockLine, error) {
 	f := strings.Fields(text)
-	if len(f) != 4 && len(f) != 5 {
-		return lockLine{}, fmt.Errorf("%s holds %d fields; a line is a name, a version, a platform and a checksum, such as csv 0.1.0 linux/amd64 sha256:<64 hex digits>, and a source when it is not a release", strconv.Quote(text), len(f))
+	if len(f) < 4 || len(f) > 6 {
+		return lockLine{}, fmt.Errorf("%s holds %d fields; a line is a name, a version, a platform and a checksum, such as csv 0.1.0 linux/amd64 sha256:<64 hex digits>, a source when it is not a release, and the env its read and predict get when it names any", strconv.Quote(text), len(f))
 	}
 	ln := lockLine{name: f[0], version: f[1], platform: f[2]}
-	var err error
-	if ln.source, ln.url, err = readSource(f[4:]); err != nil {
+	if err := readOptions(f[4:], &ln); err != nil {
 		return lockLine{}, err
 	}
+	var err error
 	if err := CheckName(ln.name); err != nil {
 		return lockLine{}, err
 	}
@@ -246,6 +291,9 @@ func (p *Pin) merge(ln lockLine) error {
 	}
 	p.Sums[ln.platform] = ln.sum
 	p.addURL(ln.platform, ln.url)
+	if len(ln.env) > 0 {
+		p.Env[ln.platform] = ln.env
+	}
 	return nil
 }
 
@@ -308,7 +356,7 @@ func (l Lock) Format() []byte {
 	for _, p := range l.Pins {
 		for _, platform := range Platforms {
 			if sum, ok := p.Sums[platform]; ok {
-				b.WriteString(p.Name + " " + p.Version + " " + platform + " sha256:" + sum + p.sourceField(platform) + "\n")
+				b.WriteString(p.Name + " " + p.Version + " " + platform + " sha256:" + sum + p.sourceField(platform) + p.envField(platform) + "\n")
 			}
 		}
 	}
@@ -343,9 +391,19 @@ func WriteLock(root string, l Lock) error {
 	return writeRenamed(filepath.Join(root, LockFile), data)
 }
 
-// same reports whether p and q pin the same builds from the same source.
+// envField is the env field of p's line for platform, after its space,
+// or "" for a build that names no variable.
+func (p Pin) envField(platform string) string {
+	if len(p.Env[platform]) == 0 {
+		return ""
+	}
+	return " env=" + strings.Join(p.Env[platform], ",")
+}
+
+// same reports whether p and q pin the same builds from the same source,
+// whose read and predict get the same variables.
 func (p Pin) same(q Pin) bool {
-	return p.Name == q.Name && p.Version == q.Version && p.Source == q.Source && maps.Equal(p.Sums, q.Sums) && maps.Equal(p.URLs, q.URLs)
+	return p.Name == q.Name && p.Version == q.Version && p.Source == q.Source && maps.Equal(p.Sums, q.Sums) && maps.Equal(p.URLs, q.URLs) && maps.EqualFunc(p.Env, q.Env, slices.Equal[[]string])
 }
 
 // writeRenamed writes data to path by a temporary file in its directory,

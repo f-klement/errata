@@ -136,7 +136,7 @@ func object(fields []fieldValue) json.RawMessage {
 // plugin errata could not describe is kept whole, once it is an object: the
 // rule is unknown when it runs, naming why.
 func (p *Plugin) decode(raw json.RawMessage) (any, error) {
-	if p.unusable != nil {
+	if p.noKind != nil {
 		var obj map[string]json.RawMessage
 		if err := json.Unmarshal(raw, &obj); err != nil {
 			return nil, fmt.Errorf("%s: %w", p.pin.Name, err)

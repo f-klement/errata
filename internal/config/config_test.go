@@ -31,6 +31,7 @@ checks:
   - id: two
     reason: why two
     scope: live
+    provider: kube
     run: [two]
     timeout: 5s
 `
@@ -48,6 +49,9 @@ func TestParse(t *testing.T) {
 	}
 	if cfg.Checks[1].Timeout != 5*time.Second {
 		t.Errorf("timeout = %s, want 5s", cfg.Checks[1].Timeout)
+	}
+	if cfg.Checks[0].Provider != "" || cfg.Checks[1].Provider != "kube" {
+		t.Errorf("providers = %q and %q, want none and kube", cfg.Checks[0].Provider, cfg.Checks[1].Provider)
 	}
 	if got := strings.Join(runOf(cfg.Checks[0]), " "); got != "sh one.sh" {
 		t.Errorf("run = %q", got)

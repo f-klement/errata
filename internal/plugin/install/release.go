@@ -188,15 +188,17 @@ func (j *job) fetchRelease(ctx context.Context, r release, pin plugin.Pin, sameP
 			return err
 		}
 	}
-	cached, err := j.keepRelease(ctx, r, sum)
+	k, err := j.keepRelease(ctx, r, sum)
 	if err != nil {
 		return err
 	}
-	if err := j.vendorRelease(ctx, r, sums, cached); err != nil {
+	if err := j.vendorRelease(ctx, r, sums, k.path); err != nil {
 		return err
 	}
-	j.lock.Put(plugin.Pin{Name: r.name, Version: r.version, Sums: maps.Clone(sums.platforms), Source: plugin.SourceRelease})
+	pin = plugin.Pin{Name: r.name, Version: r.version, Sums: maps.Clone(sums.platforms), Source: plugin.SourceRelease}
+	j.put(pin, k.desc)
 	j.say("%s %s: sha256 %s matches %s%s", r.label(), j.in.Platform, sum, checksumsName(r.name), pinSaid(samePin))
+	j.sayProvides(pin, k.desc)
 	return nil
 }
 
@@ -210,23 +212,25 @@ func pinSaid(samePin bool) string {
 }
 
 // keepRelease downloads r's build for this platform, checks it against
-// sum, describes it, keeps it in the cache and returns its path there.
+// sum, describes it, keeps it in the cache and returns it as kept there.
 // A good build the cache holds already is described and kept, not
 // downloaded again.
-func (j *job) keepRelease(ctx context.Context, r release, sum string) (string, error) {
+func (j *job) keepRelease(ctx context.Context, r release, sum string) (kept, error) {
 	cached := plugin.BuildPath(j.cacheBase(), r.name, r.version, j.in.Platform, sum)
 	if holds(cached, sum) {
-		_, err := plugin.Describe(ctx, j.in.Cache, cached, r.name, r.version, sum)
-		return cached, err
+		desc, err := plugin.Describe(ctx, j.in.Cache, cached, r.name, r.version, sum)
+		return kept{path: cached, version: desc.Version, sum: sum, desc: desc}, err
 	}
 	d := j.fromURL(ctx, r.url(assetName(r.name, j.in.Platform)), sum, checksumsName(r.name))
-	k, err := j.keep(ctx, d, r.name, r.version)
-	return k.path, err
+	return j.keep(ctx, d, r.name, r.version)
 }
 
 // kept is a build errata kept in the cache: its path there, the version it
-// gives, and its sha256.
-type kept struct{ path, version, sum string }
+// gives, its sha256, and what its describe reply said.
+type kept struct {
+	path, version, sum string
+	desc               plugin.Described
+}
 
 // keep fetches d, a build of name for this platform, into the cache's
 // directory, checking it as d says; sends it describe, which must give
@@ -237,11 +241,11 @@ func (j *job) keep(ctx context.Context, d download, name, version string) (kept,
 		return kept{}, err
 	}
 	defer t.remove()
-	got, err := plugin.Describe(ctx, j.in.Cache, t.path, name, version, t.sum)
+	desc, err := plugin.Describe(ctx, j.in.Cache, t.path, name, version, t.sum)
 	if err != nil {
 		return kept{}, err
 	}
-	k := kept{path: plugin.BuildPath(j.cacheBase(), name, got, j.in.Platform, t.sum), version: got, sum: t.sum}
+	k := kept{path: plugin.BuildPath(j.cacheBase(), name, desc.Version, j.in.Platform, t.sum), version: desc.Version, sum: t.sum, desc: desc}
 	return k, j.keepInCache(t.path, k.path, t.sum)
 }
 

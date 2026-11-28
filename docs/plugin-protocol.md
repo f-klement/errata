@@ -1,15 +1,18 @@
 # The plugin protocol
 
-This is version 1 of the protocol errata speaks with a plugin: an executable that provides one
-extractor kind, released on tags of its own. v0.5.0 builds the host that speaks it; no
+This is versions 1 and 2 of the protocol errata speaks with a plugin: an executable that provides
+one extractor kind, the provider operations of one kind of live system, or both, released on tags
+of its own. v0.5.0 builds the host that speaks it; no
 release of errata runs a plugin yet. [ADR 0020](adr/0020-a-plugin-is-an-executable-errata-speaks-to-over-stdin-and-stdout.md)
 says why a plugin is an executable spoken to over stdin and stdout, and not a Go plugin or a
 WebAssembly module.
 
 Protocol 1 is for offline extractor plugins, which read only the files errata sends them. It
-gives a plugin no network and no credentials. A live provider, which needs both to reach a cluster
-or a host, gets them in a later version of the protocol, designed with the release that brings
-the first one.
+gives a plugin no network and no credentials. Protocol 2 adds the provider operations render, read
+and predict beside extract, and gives read and predict, and nothing else, the environment
+variables the plugin names, such as `KUBECONFIG`, so they can reach a cluster or a host
+([ADR 0023](adr/0023-a-provider-is-a-plugin-that-speaks-protocol-2.md)). Everything this document
+says of protocol 1 holds in protocol 2 unless [Protocol 2](#protocol-2) says otherwise.
 
 ## Contents
 
@@ -22,6 +25,7 @@ the first one.
 - [Values](#values)
 - [What errata checks of a reply](#what-errata-checks-of-a-reply)
 - [Bounds](#bounds)
+- [Protocol 2](#protocol-2)
 - [Versions](#versions)
 
 ## The plugin
@@ -107,7 +111,7 @@ errata asks a plugin to describe itself once per run, before it reads the config
 the plugin's kind:
 
 ```json
-{"op": "describe", "protocols": [1]}
+{"op": "describe", "protocols": [1, 2]}
 ```
 
 `protocols` lists the versions of this protocol that errata speaks, lowest first. The plugin
@@ -157,7 +161,7 @@ later version may add a member to describe. A plugin that speaks none of the ver
 replies with the versions it does speak instead:
 
 ```json
-{"protocols": [2, 3], "name": "csv", "version": "0.4.0"}
+{"protocols": [3, 4], "name": "csv", "version": "0.4.0"}
 ```
 
 ## build
@@ -402,15 +406,160 @@ unknown with a message that starts `cancelled:`, as a program check's is: it say
 stopped, and names no timeout and no fault of the plugin. The function that starts every program
 errata runs tells a run whose caller cancelled it apart from one that passed its own timeout.
 
+## Protocol 2
+
+Protocol 2 is protocol 1 with the provider operations of [GLOSSARY.md](../GLOSSARY.md): render
+turns files into the objects they describe, read fetches the current state of the live system, and
+predict reports what an apply would produce without applying it. A plugin that provides one of them
+is a provider, and a live or applied check names it with `provider:` (see
+[Scopes](reference.md#scopes)). The plugin's name is still the key of its kind when it provides
+extract too, so `errata-ext-kubernetes` is the provider `kubernetes` and, if it provides extract,
+the extractor kind `kubernetes:`.
+
+### describe in protocol 2
+
+The describe request is the same, with `"protocols": [1, 2]`. A reply that chooses 2 adds two
+members:
+
+```json
+{
+  "protocol": 2,
+  "name": "kubernetes",
+  "version": "0.1.0",
+  "operations": ["render", "read", "predict"],
+  "env": ["KUBECONFIG", "HOME"]
+}
+```
+
+| Member | What it is |
+|---|---|
+| `operations` | the operations the plugin provides, each once, from `extract`, `render`, `read` and `predict`; at least one |
+| `env` | optional: the names of the environment variables the plugin's read and predict requests need, each once, each of ASCII letters, digits and `_`, not starting with a digit, at most 64 bytes, and at most 32 names. None of them is a variable errata itself reads, in any case: `GITHUB_TOKEN` and `ERRATA_PLUGIN_SOURCE` |
+| `where`, `fields` | as in protocol 1, required when `operations` holds `extract`, and refused when it does not |
+
+`env` is refused in a reply whose `operations` holds neither read nor predict, and so is a name of
+a variable errata itself reads, compared in any case, as Windows looks variables up:
+`GITHUB_TOKEN`, the token `errata plugin install` sends to GitHub's releases API, which a CI job
+may hold with write scope, and `ERRATA_PLUGIN_SOURCE`, the mirror it installs from. errata's own
+credential is for errata, and no provider needs it to reach a live system. A plugin that
+chooses protocol 1 provides extract alone, as before.
+
+A provider plugin may not run as an extractor kind, and an extractor plugin may not serve a check's
+`provider:`: an entry of a kind whose plugin's `operations` lacks `extract` is unknown, as an entry of
+a plugin that does not describe itself is, and a check whose provider lacks the operation its scope
+needs is skipped, with a gap that names the operation and the plugin.
+
+The build and extract requests of a plugin that chose 2 are protocol 1's with `"protocol": 2`.
+
+### The environment of read and predict
+
+A read or a predict request runs with protocol 1's environment and, beside it, each variable `env`
+names that errata's environment holds, with errata's value. A variable errata's environment lacks
+is left out, as a Go runtime variable is. `errata plugin install` prints the names and records them
+in `errata.lock` ([reference](reference.md#erratalock)), and a run passes only the names both
+`env` and the lock hold. The lock records the names for each platform's build, so a plugin may
+name other variables on another OS, such as `USERPROFILE` where it names `HOME` elsewhere. A
+plugin whose `env` names one the lock does not record for its platform does not run:
+each check that names it is unknown, with a message that names the variable and the install that
+records it, so a release that asks for another variable reaches a CI job only through a change to
+the lock. Describe, build, extract and render requests get protocol
+1's environment alone, whatever `env` says: render reads the files errata sends it, as extract does,
+and needs no network and no credentials. So in CI a job's tokens reach only the read and predict
+requests of a plugin that names them, and only those it names.
+
+The working directory is still an empty directory made for the request, so a variable that holds a
+relative path, such as `KUBECONFIG=deploy/kubeconfig`, finds nothing; it must be absolute. Unlike
+the other operations, read and predict reach the network: that is their purpose, and errata cannot
+see which hosts they reach.
+
+### render, read and predict
+
+errata sends each operation one request:
+
+```json
+{
+  "protocol": 2,
+  "op": "render",
+  "spec": {"chart": "deploy/chart", "values": ["deploy/values.yaml"]},
+  "files": [
+    {"path": "deploy/chart/Chart.yaml", "data": "YXBpVmVyc2lvbjogdjIK"}
+  ],
+  "max_bytes": 33554432
+}
+```
+
+| Member | What it is |
+|---|---|
+| `op` | `render`, `read` or `predict` |
+| `spec` | a JSON object that says what to render, read or predict, in the plugin's own members. This version of the protocol does not declare them; the plugin refuses a spec it does not read with an error |
+| `files` | the files the request reads, as an extract request sends them: render's sources, or for predict the objects an apply would send. A read request sends `[]` |
+| `max_bytes` | the bound on the reply's files, their paths and bytes together, and errata's default of 32 MiB when the caller sets none. Always 1 or more |
+
+The plugin replies with files, the objects the operation found, each a document under a path the
+plugin chooses:
+
+```json
+{"files": [{"path": "apps/v1/Deployment/api/api.yaml", "data": "a2luZDogRGVwbG95bWVudAo="}]}
+```
+
+or with an error, which makes what asked for the operation unknown:
+
+```json
+{"error": "deploy/chart/templates/a.yaml:3: function \"lookup\" is not defined"}
+```
+
+or, for read and predict alone, with a gap, when the live system cannot be reached at all, such as
+no cluster configured or no permission to read it:
+
+```json
+{"gap": "no cluster: KUBECONFIG names no context"}
+```
+
+A gap skips the check that asked, as a check whose provider is not installed is skipped: the run
+lacks the system, and the check's claim was not tested. A render reply with `gap` is refused. A
+reply holds exactly one of `files`, `error` and `gap`; one that holds two, or none, is refused.
+
+errata checks each file of a reply: its `path` is one or more names joined by `/`, none of them
+empty, `.` or `..`, with no `\` and no control character, and at most 4096 bytes; no path appears
+twice; and the paths and bytes of all the files together are at most the request's `max_bytes`. A
+reply that fails any of these is refused, and what asked for the operation is unknown, naming the
+plugin, its version and what was wrong.
+
+| Bound | Value | What errata reports past it |
+|---|---|---|
+| time of a render, read or predict request | 60 s | what asked is unknown: the plugin did not finish within 60 s. errata kills its process group |
+| stdout of a render, read or predict request | 6 times `max_bytes`, plus 22 bytes for each of 100000 files, plus 12: about 194 MiB at the default 32 MiB | the plugin is stopped at the byte past it, and what asked is unknown, naming the stream and the bound |
+| stderr | 1 MiB, as for every request | as for every request |
+| the files of a reply | 100000 files, and `max_bytes` for their paths and bytes together | what asked is unknown, naming the bound |
+
+The stdout bound is the longest reply whose files pass the files bound, written as Go's
+`encoding/json` writes it, without indentation, and a newline after it:
+
+- A byte of a path costs at most 6: Go writes `<`, `>` and `&` as `\u003c` and the like, and a
+  path holds no control character. A byte of data costs at most 6 too: base64 writes 4 bytes for
+  3, and 4 for the last 1 or 2. The paths and data together are at most `max_bytes`, hence 6
+  times `max_bytes`.
+- A file costs 22 bytes besides its path and data, `{"path":"","data":""}` and its comma, and a
+  reply holds at most 100000 files. An empty file's data is `""`: `null` is no value for any
+  member, and a reply that holds it is refused. Go writes a nil `[]byte` as `null`, so a plugin
+  in Go writes an empty file's data as an empty slice, as errata's `wire.File` does.
+- The reply's own member, `{"files":[]}`, with no comma after its last file, and a newline after
+  it, cost 12.
+
+A reply of 100000 files whose paths are all `<`, `>` and `&` reaches the bound exactly, and a byte
+more is cut; errata's tests send both. A plugin that indents its reply can pass the bound with
+files errata would admit. A cancelled run is not a timeout, as for every request.
+
 ## Versions
 
-The protocol has one integer version, 1 in this document. Every change to a request or a reply
+The protocol has one integer version, 2 in this document, and errata speaks 1 and 2. Every change to a request or a reply
 is a new version: a member added, removed or given another meaning, a new type of field, a new
 shape. Within one version neither side meets a member it does not know.
 
 A plugin declares the version it speaks in its describe reply, choosing from the versions errata
 offers, and may speak several. errata speaks every version from 1 to its newest, and offers them
-all; a release that stops speaking one is a breaking change of errata, which its release notes
+all, `[1, 2]` today. An extractor plugin needs nothing protocol 2 adds and may stay on 1. A
+release that stops speaking a version is a breaking change of errata, which its release notes
 name. The five members of describe that choose the version never change (describe, above), so
 the choice works between any two versions.
 
@@ -419,8 +568,8 @@ speak, and every rule with an entry of the plugin's kind is unknown, with a mess
 both sides and what to do:
 
 ```text
-plugin errata-ext-csv 0.4.0 speaks protocol 2, 3, and this errata speaks 1: install a release of
-errata-ext-csv for protocol 1, or upgrade errata
+plugin errata-ext-csv 0.4.0 speaks protocol 3, 4, and this errata speaks 1, 2: install a release
+of errata-ext-csv for protocol 1, 2, or upgrade errata
 ```
 
 The run fails, as it does for a plugin that is not installed, and no rule of another kind is

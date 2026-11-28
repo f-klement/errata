@@ -12,7 +12,7 @@ stdout '"uriBaseId": "%SRCROOT%"'
 stdout '"executionSuccessful": false,$'
 stdout '"text": "check broken is unknown: .*errata-no-such-program'
 stdout '"text": "check endpoint-agrees is unknown: extractor \\"service\\": '
-stdout '"text": "check pinned skipped \(live\): no provider can read a live system"'
+stdout '"text": "check pinned skipped \(live\): no installed plugin provides read: errata-ext-kube is not installed; install it with errata plugin install kube"'
 ! stdout '"ruleId": "(holds|broken|pinned|endpoint-agrees)"'
 ! stderr .
 
@@ -21,14 +21,14 @@ stdout '"text": "check pinned skipped \(live\): no provider can read a live syst
 exec errata check --format sarif -c clean.yaml
 stdout '"results": \[\]'
 stdout '"executionSuccessful": true,$'
-stdout '"text": "check pinned skipped \(live\): no provider can read a live system"'
+stdout '"text": "check pinned skipped \(live\): no installed plugin provides read: errata-ext-kube is not installed; install it with errata plugin install kube"'
 
 -- errata.yaml --
 checks:
   - {id: holds, reason: r, scope: repo, run: ['true']}
   - {id: drifted, reason: 'CI moved, so the docs must follow.', scope: repo, run: [sh, -c, 'echo says atlas, runs on builder; exit 1']}
   - {id: broken, reason: r, scope: repo, run: [errata-no-such-program]}
-  - {id: pinned, reason: r, scope: live, run: ['true']}
+  - {id: pinned, reason: r, scope: live, provider: kube, run: ['true']}
   - id: endpoint-agrees
     reason: r
     scope: repo
@@ -39,4 +39,4 @@ checks:
 -- clean.yaml --
 checks:
   - {id: holds, reason: r, scope: repo, run: ['true']}
-  - {id: pinned, reason: r, scope: live, run: ['true']}
+  - {id: pinned, reason: r, scope: live, provider: kube, run: ['true']}

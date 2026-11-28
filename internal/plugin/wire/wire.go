@@ -32,12 +32,17 @@ import (
 	"unicode/utf8"
 )
 
-// Protocol is the newest version of the protocol this package speaks, and
-// Protocols every version it speaks, lowest first.
+// Protocol is version 1 of the protocol, which an extractor plugin speaks;
+// it is the version the extractor plugins of this repository choose.
 const Protocol = 1
 
-// Protocols are the versions a describe request offers.
-var Protocols = []int{1}
+// Protocol2 is version 2, which adds the provider operations render, read
+// and predict beside extract (docs/plugin-protocol.md, Protocol 2).
+const Protocol2 = 2
+
+// Protocols are the versions a describe request offers, lowest first:
+// every version this package speaks.
+var Protocols = []int{Protocol, Protocol2}
 
 // MaxValues is the most values an extract reply may hold, each node of a
 // mapping one: check.MaxValues, which errata holds every extractor to. A
@@ -55,7 +60,41 @@ const (
 	OpDescribe = "describe"
 	OpBuild    = "build"
 	OpExtract  = "extract"
+	OpRender   = "render"
+	OpRead     = "read"
+	OpPredict  = "predict"
 )
+
+// Operations are the operations a protocol 2 plugin may provide, as
+// describe's operations names them.
+var Operations = []string{OpExtract, OpRender, OpRead, OpPredict}
+
+// ProviderTimeout is how long errata waits for a render, read or predict
+// reply before it kills the plugin (docs/plugin-protocol.md, Protocol 2).
+const ProviderTimeout = 60 * time.Second
+
+// MaxFiles is the most files a render, read or predict reply may hold.
+const MaxFiles = 100_000
+
+// MaxEnv is the most variable names describe's env may list.
+const MaxEnv = 32
+
+// The variables errata itself reads: TokenEnv, the token errata plugin
+// install sends to GitHub's releases API, and SourceEnv, the mirror it
+// installs from.
+const (
+	TokenEnv  = "GITHUB_TOKEN" //nolint:gosec // the variable's name, never its value
+	SourceEnv = "ERRATA_PLUGIN_SOURCE"
+)
+
+// ErrataEnv are the variables errata itself reads, as a credential or as
+// a setting of its own. describe's env may name none of them, in any case,
+// since Windows looks a variable up in any case: errata's credential is
+// for errata, and no provider needs it to reach a live system. It is the
+// one list of them; a test of package plugin holds every read of a
+// variable in errata's code to it, and one of docs/plugin-protocol.md
+// holds the spec's list to it.
+var ErrataEnv = []string{TokenEnv, SourceEnv}
 
 // The types of a field a plugin declares, as describe's reply names them.
 const (
@@ -313,27 +352,103 @@ func ReadVersion(data []byte) (Version, error) {
 	return v, nil
 }
 
-// DescribeReply is a plugin's description of itself in protocol 1: the
-// version it chose, its name and release, where an entry of its kind reads,
-// and the fields an entry takes besides errata's.
+// DescribeReply is a plugin's description of itself: the version it
+// chose, its name and release, and in protocol 2 the operations it
+// provides and the environment variables its read and predict requests
+// need. Where an entry of its kind reads, and the fields an entry takes
+// besides errata's, are set when it provides extract, which a protocol 1
+// plugin always does.
 type DescribeReply struct {
-	Protocol int     `json:"protocol"`
-	Name     string  `json:"name"`
-	Version  string  `json:"version"`
-	Where    string  `json:"where"`
-	Fields   []Field `json:"fields"`
+	Protocol   int      `json:"protocol"`
+	Name       string   `json:"name"`
+	Version    string   `json:"version"`
+	Operations []string `json:"operations,omitempty"`
+	Env        []string `json:"env,omitempty"`
+	Where      string   `json:"where,omitempty"`
+	Fields     []Field  `json:"fields,omitempty"`
 }
 
-// UnmarshalJSON reads a describe reply strictly, with every member protocol 1 requires.
+// UnmarshalJSON reads a describe reply strictly, with every member its
+// version requires and none it does not define.
 func (r *DescribeReply) UnmarshalJSON(data []byte) error {
 	type plain DescribeReply
-	return strict(data, (*plain)(r), "protocol", "name", "version", "where", "fields")
+	if err := strict(data, (*plain)(r), "protocol", "name", "version"); err != nil {
+		return err
+	}
+	m, err := members(data)
+	if err != nil {
+		return err
+	}
+	return r.versionMembers(data, m)
 }
 
-// Check refuses a describe reply whose where or fields protocol 1 does not
-// allow. errata checks every reply with it, and a plugin's tests can check
-// the reply the plugin writes.
+// versionMembers refuses a reply, whose members are m, that leaves out a
+// member its version requires or holds one its version does not define:
+// protocol 1 has no operations and no env, and in protocol 2 where and
+// fields come with extract alone.
+func (r *DescribeReply) versionMembers(data []byte, m map[string]bool) error {
+	switch r.Protocol {
+	case Protocol:
+		if m["operations"] || m["env"] {
+			return errors.New("protocol 1 has no member operations or env")
+		}
+		return present(data, "where", "fields")
+	case Protocol2:
+		if err := present(data, "operations"); err != nil {
+			return err
+		}
+		if slices.Contains(r.Operations, OpExtract) {
+			return present(data, "where", "fields")
+		}
+		if m["where"] || m["fields"] {
+			return errors.New("where and fields are for a plugin that provides extract")
+		}
+		return nil
+	}
+	return fmt.Errorf("protocol %d is not one this errata speaks", r.Protocol)
+}
+
+// MarshalJSON writes r as its version writes it: where and fields, even
+// when fields is empty, for a plugin that provides extract, and operations
+// and env in protocol 2.
+func (r DescribeReply) MarshalJSON() ([]byte, error) {
+	type plain DescribeReply
+	out := struct {
+		plain
+		Where  *string  `json:"where,omitempty"`
+		Fields *[]Field `json:"fields,omitempty"`
+	}{plain: plain(r)}
+	if r.Provides(OpExtract) {
+		fields := r.Fields
+		if fields == nil {
+			fields = []Field{}
+		}
+		out.Where, out.Fields = &r.Where, &fields
+	}
+	return json.Marshal(out)
+}
+
+// Provides reports whether the plugin provides op: in protocol 2 each
+// operation its operations names, and in any other, extract alone.
+func (r DescribeReply) Provides(op string) bool {
+	if r.Protocol != Protocol2 {
+		return op == OpExtract
+	}
+	return slices.Contains(r.Operations, op)
+}
+
+// Check refuses a describe reply whose operations, env, where or fields its
+// version does not allow. errata checks every reply with it, and a
+// plugin's tests can check the reply the plugin writes.
 func (r DescribeReply) Check() error {
+	if r.Protocol == Protocol2 {
+		if err := r.checkOperations(); err != nil {
+			return err
+		}
+	}
+	if !r.Provides(OpExtract) {
+		return nil
+	}
 	if r.Where != WhereFile && r.Where != WhereFiles {
 		return fmt.Errorf("where is %s, neither file nor files", strconv.Quote(r.Where))
 	}
@@ -345,6 +460,63 @@ func (r DescribeReply) Check() error {
 		seen[f.Name] = true
 	}
 	return nil
+}
+
+// checkOperations refuses a protocol 2 reply whose operations is empty,
+// names one the protocol does not have or one twice, or whose env the
+// protocol does not allow (checkEnv).
+func (r DescribeReply) checkOperations() error {
+	if len(r.Operations) == 0 {
+		return errors.New("operations names no operation")
+	}
+	for i, op := range r.Operations {
+		if !slices.Contains(Operations, op) {
+			return fmt.Errorf("operations names %s, which is none of extract, render, read and predict", strconv.Quote(op))
+		}
+		if slices.Contains(r.Operations[:i], op) {
+			return fmt.Errorf("operations names %s twice", op)
+		}
+	}
+	return r.checkEnv()
+}
+
+var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,63}$`)
+
+// checkEnv refuses an env that lists a name that is no variable's, one of
+// ErrataEnv, a name twice, or more than MaxEnv names, or that a plugin
+// providing neither read nor predict lists at all.
+func (r DescribeReply) checkEnv() error {
+	if len(r.Env) == 0 {
+		return nil
+	}
+	if !r.Provides(OpRead) && !r.Provides(OpPredict) {
+		return errors.New("env is for read and predict, and the plugin provides neither")
+	}
+	if len(r.Env) > MaxEnv {
+		return fmt.Errorf("env lists %d names, more than %d", len(r.Env), MaxEnv)
+	}
+	for i, n := range r.Env {
+		if !envName.MatchString(n) {
+			return fmt.Errorf("env lists %s, which is not ASCII letters, digits and _, not starting with a digit, at most 64 bytes", strconv.Quote(n))
+		}
+		if slices.Contains(r.Env[:i], n) {
+			return fmt.Errorf("env lists %s twice", n)
+		}
+		if e := errataOwn(n); e != "" {
+			return fmt.Errorf("env lists %s, which is %s, a variable errata itself reads: errata passes its own credential and settings to no plugin", n, e)
+		}
+	}
+	return nil
+}
+
+// errataOwn is the one of ErrataEnv that name is in some case, or "".
+func errataOwn(name string) string {
+	for _, e := range ErrataEnv {
+		if strings.EqualFold(name, e) {
+			return e
+		}
+	}
+	return ""
 }
 
 var fieldName = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
@@ -489,6 +661,17 @@ func (r *ExtractRequest) UnmarshalJSON(data []byte) error {
 type File struct {
 	Path string `json:"path"`
 	Data []byte `json:"data"`
+}
+
+// MarshalJSON writes f with nil data as "", as an empty file: Go writes a
+// nil []byte as null, which no member takes (Decode), so a plugin that
+// sent a file of nil data would have its reply refused.
+func (f File) MarshalJSON() ([]byte, error) {
+	type plain File
+	if f.Data == nil {
+		f.Data = []byte{}
+	}
+	return json.Marshal(plain(f))
 }
 
 // UnmarshalJSON reads a file of an extract request strictly, with its path and data.
@@ -640,4 +823,82 @@ type KeyValue struct {
 func (kv *KeyValue) UnmarshalJSON(data []byte) error {
 	type plain KeyValue
 	return strict(data, (*plain)(kv), "key", "value")
+}
+
+// ProviderRequest asks a protocol 2 plugin to render, read or predict: what
+// to, in Spec, a JSON object of the plugin's own members, from Files, and
+// the bound on the reply's files, their paths and bytes together.
+type ProviderRequest struct {
+	Protocol int             `json:"protocol"`
+	Op       string          `json:"op"`
+	Spec     json.RawMessage `json:"spec"`
+	Files    []File          `json:"files"`
+	MaxBytes int64           `json:"max_bytes"`
+}
+
+// UnmarshalJSON reads a render, read or predict request strictly, with
+// every member it requires, and refuses another op, a spec that is not an
+// object, and a max_bytes below 1.
+func (r *ProviderRequest) UnmarshalJSON(data []byte) error {
+	type plain ProviderRequest
+	if err := strict(data, (*plain)(r), "protocol", "op", "spec", "files", "max_bytes"); err != nil {
+		return err
+	}
+	if r.Op != OpRender && r.Op != OpRead && r.Op != OpPredict {
+		return fmt.Errorf("the op %s is none of render, read and predict", strconv.Quote(r.Op))
+	}
+	if _, err := memberNames(r.Spec); err != nil {
+		return fmt.Errorf("the spec: %w", err)
+	}
+	if r.MaxBytes < 1 {
+		return fmt.Errorf("max_bytes is %d; errata sends a bound of 1 byte or more", r.MaxBytes)
+	}
+	return nil
+}
+
+// ProviderReply is the files a render, read or predict request found, or
+// the error it failed with, or for read and predict the gap: why the live
+// system cannot be reached at all. Exactly one is set: Files is set, and
+// maybe empty, when the reply holds files.
+type ProviderReply struct {
+	Files []File  `json:"files,omitempty"`
+	Error *string `json:"error,omitempty"`
+	Gap   *string `json:"gap,omitempty"`
+}
+
+// UnmarshalJSON reads a reply that holds exactly one of files, error and gap.
+func (r *ProviderReply) UnmarshalJSON(data []byte) error {
+	type plain ProviderReply
+	if err := strict(data, (*plain)(r)); err != nil {
+		return err
+	}
+	m, err := members(data)
+	if err != nil {
+		return err
+	}
+	if len(m) != 1 {
+		return errors.New("a render, read or predict reply holds exactly one of files, error and gap")
+	}
+	return nil
+}
+
+// MarshalJSON writes r with its one member, files even when it is empty.
+func (r ProviderReply) MarshalJSON() ([]byte, error) {
+	switch {
+	case r.Error != nil:
+		return json.Marshal(struct {
+			Error string `json:"error"`
+		}{*r.Error})
+	case r.Gap != nil:
+		return json.Marshal(struct {
+			Gap string `json:"gap"`
+		}{*r.Gap})
+	}
+	files := r.Files
+	if files == nil {
+		files = []File{}
+	}
+	return json.Marshal(struct {
+		Files []File `json:"files"`
+	}{files})
 }

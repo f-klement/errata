@@ -363,7 +363,7 @@ func TestTheVendoredDirectoryTakesThePlaceOfTheCache(t *testing.T) {
 func TestAPluginOfAnotherProtocol(t *testing.T) {
 	root := newRepo(t, map[string]string{"a": "x\n"}, "newer")
 	_, err := extractOne(t, root, "newer", `{"file": "a"}`)
-	want := "plugin errata-ext-newer 0.1.0 speaks protocol 2, 3, and this errata speaks 1: install a release of errata-ext-newer for protocol 1, or upgrade errata"
+	want := "plugin errata-ext-newer 0.1.0 speaks protocol 3, 4, and this errata speaks 1, 2: install a release of errata-ext-newer for protocol 1, 2, or upgrade errata"
 	if err == nil || err.Error() != want {
 		t.Fatalf("got %v", err)
 	}
@@ -624,8 +624,8 @@ func TestDescribeReturnsTheVersionTheBuildGives(t *testing.T) {
 	copyFake(t, path)
 	sum := sumOf(t, path)
 	for _, want := range []string{"", "0.1.0"} {
-		if got, err := Describe(t.Context(), dir, path, "nginx", want, sum); err != nil || got != "0.1.0" {
-			t.Fatalf("Describe asking for %q = %q, %v; want 0.1.0", want, got, err)
+		if got, err := Describe(t.Context(), dir, path, "nginx", want, sum); err != nil || got.Version != "0.1.0" {
+			t.Fatalf("Describe asking for %q = %q, %v; want 0.1.0", want, got.Version, err)
 		}
 	}
 	if _, err := Describe(t.Context(), dir, path, "nginx", "0.2.0", sum); err == nil || !strings.Contains(err.Error(), "plugin errata-ext-nginx 0.2.0 describes itself as release") {

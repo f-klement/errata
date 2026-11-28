@@ -135,8 +135,14 @@ from; errata vouches only that the bytes match your sum.
   unknown is not an erratum, because its claim was not shown false, but it fails the run.
   An unknown key in `errata.yaml` is an error, so a misspelt `reason` cannot switch a check off.
 - **Coverage on every run.** Ran N, skipped M, and the gap behind each skip: the provider operation
-  the run lacked. A run in CI with no
+  the run lacked and the plugin that would provide it. A run in CI with no
   cluster says out loud which checks it could not reach.
+- **Checks against the running system.** A check of scope `live` asks the running system, and one
+  of scope `applied` asks what an apply would produce, by a dry run only. Each names its
+  provider, the plugin that reaches the system (`provider: kubernetes` for
+  `errata-ext-kubernetes`). errata runs the check when that plugin is installed and provides
+  read, for `live`, or predict, for `applied`, and otherwise skips it with the gap. See
+  [Scopes](docs/reference.md#scopes).
 - **Rules in YAML.** A rule reads values out of files, with [an extractor for each
   task](docs/handbook.md#the-extractors-by-task): structured and flat config files, the versions
   a repository pins, the variables CI jobs and scripts set, the prose, structure, comments and
@@ -160,8 +166,8 @@ from; errata vouches only that the bytes match your sum.
 
 Designed and not built yet, in the order of [ROADMAP.md](ROADMAP.md):
 
-- **Checks against the running system** (`live` scope) and against what an apply would produce
-  (`applied` scope, dry run only).
+- **Rules over the running system.** A rule over the objects a provider reads or predicts, through
+  the extractors errata has, rather than a program check that reaches the system itself.
 - **Fields git cannot remove.** A server-side apply dry run under the reconciler's field manager
   shows every field another manager keeps alive, and names that manager. No tool reports this
   today.

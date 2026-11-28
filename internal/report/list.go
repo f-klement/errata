@@ -55,9 +55,10 @@ type listDoc struct {
 	Required []string    `json:"required"`
 }
 
-// listCheck is one check of the JSON: its id, reason, scope, place and the
-// name of its kind, then the keys of its kind (check.Kind.ListFields), then
-// the fixtures it names under witness, an empty list when it names none.
+// listCheck is one check of the JSON: its id, reason, scope, the provider
+// a live or applied check names, its place and the name of its kind, then
+// the keys of its kind (check.Kind.ListFields), then the fixtures it names
+// under witness, an empty list when it names none.
 type listCheck check.Check
 
 func (c listCheck) MarshalJSON() ([]byte, error) {
@@ -65,9 +66,14 @@ func (c listCheck) MarshalJSON() ([]byte, error) {
 		{Key: "id", Value: c.ID},
 		{Key: "reason", Value: c.Reason},
 		{Key: "scope", Value: string(c.Scope)},
-		{Key: "at", Value: listAt{File: c.At.File, Line: c.At.Line, Outside: c.At.Outside}},
-		{Key: "type", Value: c.Kind.Name()},
 	}
+	if c.Provider != "" {
+		fields = append(fields, check.Field{Key: "provider", Value: c.Provider})
+	}
+	fields = append(fields,
+		check.Field{Key: "at", Value: listAt{File: c.At.File, Line: c.At.Line, Outside: c.At.Outside}},
+		check.Field{Key: "type", Value: c.Kind.Name()},
+	)
 	fields = append(fields, c.Kind.ListFields(check.Check(c))...)
 	return append(fields, check.Field{Key: "witness", Value: check.OrEmpty(c.Witness)}).MarshalJSON()
 }
@@ -135,11 +141,15 @@ func (ListText) WriteList(w io.Writer, checks []check.Check, required []string) 
 }
 
 // writeListEntry writes one check of the listing: its id, scope and kind,
-// then its reason, its kind's lines and its witnesses, and a blank line.
+// then its reason, the provider a live or applied check names, its kind's
+// lines and its witnesses, and a blank line.
 func writeListEntry(b *strings.Builder, c check.Check) {
 	one, _ := c.Kind.Nouns()
 	fmt.Fprintf(b, "%s (%s) %s\n", c.ID, c.Scope, one)
 	writeField(b, "why:", c.Reason)
+	if c.Provider != "" {
+		writeField(b, "provider:", c.Provider)
+	}
 	for _, l := range c.Kind.ListLines(c, listQuoter{}) {
 		writeField(b, l.Label, l.Text)
 	}
