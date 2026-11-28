@@ -1313,6 +1313,28 @@ unbuilt_verdict() {
     fi
 }
 
+# nothing_to_judge <package>: with a diff and a deadline, the dry run counts no mutant to run on
+# the changed lines and none that no test reaches, so there is nothing to judge. Its pass would
+# have measured the tests, timed a mutant, built the index and run gremlins' coverage twice only to
+# say "No mutants": on a push pipeline that held a package's slot for 14.6
+# minutes. A mutant no test reaches still takes the pass, which fails on it. Without a deadline no
+# dry run is made, as before, since the pass would then be its only cost. The dry run's counts go to
+# the pass's deadline check, which then makes none of its own (alone_look's is not made again).
+nothing_to_judge() {
+    [ -n "$diff_base" ] && [ -n "$deadline" ] || return 1
+    if [ -s "$pw/dry" ]; then
+        read -r runnable dry_pass <"$pw/dry"
+        [ "$runnable" = 0 ] || return 1
+    fi
+    diff=$(diff_file "$1")
+    config_for "$1" "$base_coef"
+    dry_once "$1" "$diff"
+    [ -n "$runnable" ] || return 1
+    echo "$runnable ${dry_pass:-0}" >"$pw/dry"
+    uncovered=$(sed -n 's/.*Not covered: \([0-9]*\).*/\1/p' "$pw/out" | head -n 1)
+    [ "$runnable" = 0 ] && [ "${uncovered:-}" = 0 ]
+}
+
 # unleash <package>: a gremlins pass judged against the package's floors. A package over the
 # timeout cap runs once more, and the second pass is judged: a mutant times out when the node
 # is busy as well as when it hangs, and one that hangs times out on both passes. On the build
@@ -1326,6 +1348,11 @@ unleash() {
     fi
     floors_for "$p"
     reach_ok=""
+    if nothing_to_judge "$p"; then
+        echo "==> mutation: $p: its dry run counts no mutant on the changed lines since $diff_base, and none that no test reaches, so no pass runs"
+        echo "$p: passed. No mutants on its changed lines, by the dry run; no pass ran." >>"$pw/summary"
+        return 0
+    fi
     measure_start=$(date +%s%N)
     measure_pass "$p"
     measure_mutant "$p"
